@@ -19,6 +19,7 @@
 #include "cedar/core/status.h"
 #include "cedar/cypher/execution_plan.h"
 #include "cedar/cypher/value.h"
+#include "cedar/cypher/validator.h"
 #include "cedar/types/cedar_types.h"
 
 namespace cedar {
@@ -262,6 +263,7 @@ class DistributedExecutor {
   std::unique_ptr<PartitionRouter> router_;
   std::unique_ptr<ParallelExecutor> parallel_executor_;
   std::unique_ptr<ResultMerger> result_merger_;
+  std::unique_ptr<cypher::QueryValidator> validator_;
   
   // Analyze query to determine if it's single-partition
   bool IsSinglePartitionQuery(

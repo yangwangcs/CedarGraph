@@ -346,6 +346,12 @@ DistributedExecutor::DistributedExecutor(
   router_ = std::make_unique<PartitionRouter>(meta_client_);
   parallel_executor_ = std::make_unique<ParallelExecutor>(worker_count);
   result_merger_ = std::make_unique<ResultMerger>();
+  {
+    queryd::GraphSchema schema;
+    if (meta_client_ && meta_client_->GetSchema(&schema).ok()) {
+      validator_ = std::make_unique<cypher::QueryValidator>(&schema);
+    }
+  }
 }
 
 DistributedExecutor::~DistributedExecutor() = default;
@@ -357,6 +363,20 @@ Status DistributedExecutor::Execute(
     cypher::ResultSet* result) {
   
   auto start = steady_clock::now();
+
+  // Parse and validate query
+  cypher::CypherParser parser(query);
+  auto stmt = parser.ParseStatement();
+  if (!stmt) {
+    return Status::InvalidArgument("Failed to parse query: " + parser.GetError());
+  }
+
+  if (validator_) {
+    Status v = validator_->Validate(*stmt);
+    if (!v.ok()) {
+      return Status::InvalidArgument("Query validation failed: " + v.ToString());
+    }
+  }
   
   // Check if single-partition query
   uint32_t partition_id;
