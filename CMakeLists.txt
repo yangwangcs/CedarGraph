@@ -356,6 +356,7 @@ set(CEDAR_CYPHER_SOURCES
     src/cypher/value.cc
     src/cypher/temporal_dialect.cc
     src/cypher/operators/temporal_operators.cc
+    src/cypher/validator.cc
 )
 
 add_library(cedar_cypher STATIC ${CEDAR_CYPHER_SOURCES})

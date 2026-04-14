@@ -1,0 +1,206 @@
+// Copyright (c) 2025 The Cedar Authors. All rights reserved.
+
+#include "cedar/cypher/validator.h"
+
+#include <sstream>
+
+namespace cedar::cypher {
+
+QueryValidator::QueryValidator(const queryd::GraphSchema* schema)
+    : schema_(schema) {}
+
+ cedar::Status QueryValidator::Validate(const QueryStatement& stmt) {
+  scope_.clear();
+  if (ValidateQueryStatement(stmt)) {
+    return cedar::Status::OK();
+  }
+  return cedar::Status::InvalidArgument(last_error_);
+}
+
+bool QueryValidator::ValidateQueryStatement(const QueryStatement& stmt) {
+  for (const auto& clause : stmt.clauses) {
+    if (auto* match = dynamic_cast<const MatchClause*>(clause.get())) {
+      if (!ValidateMatchClause(*match)) return false;
+    } else if (auto* where = dynamic_cast<const WhereClause*>(clause.get())) {
+      if (!ValidateWhereClause(*where)) return false;
+    } else if (auto* ret = dynamic_cast<const ReturnClause*>(clause.get())) {
+      if (!ValidateReturnClause(*ret)) return false;
+    }
+  }
+  return true;
+}
+
+bool QueryValidator::ValidateMatchClause(const MatchClause& clause) {
+  for (const auto& pattern : clause.patterns) {
+    for (const auto& elem : pattern.elements) {
+      if (std::holds_alternative<NodePattern>(elem)) {
+        if (!ValidateNodePattern(std::get<NodePattern>(elem))) return false;
+      } else if (std::holds_alternative<RelationshipPattern>(elem)) {
+        if (!ValidateRelationshipPattern(std::get<RelationshipPattern>(elem))) return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool QueryValidator::ValidateNodePattern(const NodePattern& node) {
+  if (!node.variable.empty()) {
+    std::vector<std::string> props;
+    for (const auto& label : node.labels) {
+      if (!ValidateLabel(label, true)) return false;
+      const auto* ls = schema_ ? schema_->GetNodeLabel(label) : nullptr;
+      if (ls) {
+        for (const auto& p : ls->properties) {
+          props.push_back(p.name);
+        }
+      }
+    }
+    PushScope(node.variable, props);
+  }
+  return true;
+}
+
+bool QueryValidator::ValidateRelationshipPattern(const RelationshipPattern& rel) {
+  for (const auto& type : rel.types) {
+    if (!ValidateLabel(type, false)) return false;
+  }
+  if (!rel.variable.empty()) {
+    std::vector<std::string> props;
+    for (const auto& type : rel.types) {
+      const auto* es = schema_ ? schema_->GetEdgeType(type) : nullptr;
+      if (es) {
+        for (const auto& p : es->properties) {
+          props.push_back(p.name);
+        }
+      }
+    }
+    PushScope(rel.variable, props);
+  }
+  return true;
+}
+
+bool QueryValidator::ValidateWhereClause(const WhereClause& clause) {
+  auto inferred = InferExpressionType(*clause.condition);
+  if (!inferred.has_value() || inferred.value() != ValueType::kBool) {
+    last_error_ = "WHERE clause must evaluate to a boolean";
+    return false;
+  }
+  return ValidateExpression(*clause.condition);
+}
+
+bool QueryValidator::ValidateReturnClause(const ReturnClause& clause) {
+  for (const auto& item : clause.items) {
+    if (!ValidateExpression(*item.expression)) return false;
+  }
+  return true;
+}
+
+bool QueryValidator::ValidateExpression(const Expression& expr) {
+  switch (expr.expr_type) {
+    case ExprType::LITERAL:
+    case ExprType::PARAMETER:
+      return true;
+    case ExprType::VARIABLE: {
+      const auto& v = static_cast<const VariableExpr&>(expr);
+      if (scope_.find(v.name) == scope_.end()) {
+        last_error_ = "Undefined variable: " + v.name;
+        return false;
+      }
+      return true;
+    }
+    case ExprType::PROPERTY: {
+      return ValidatePropertyAccess(static_cast<const PropertyExpr&>(expr));
+    }
+    case ExprType::COMPARISON: {
+      const auto& c = static_cast<const ComparisonExpr&>(expr);
+      return ValidateExpression(*c.left) && ValidateExpression(*c.right);
+    }
+    case ExprType::AND:
+    case ExprType::OR: {
+      const auto& l = static_cast<const LogicalExpr&>(expr);
+      return ValidateExpression(*l.left) && ValidateExpression(*l.right);
+    }
+    case ExprType::NOT: {
+      const auto& n = static_cast<const NotExpr&>(expr);
+      return ValidateExpression(*n.operand);
+    }
+    case ExprType::ARITHMETIC: {
+      const auto& a = static_cast<const ArithmeticExpr&>(expr);
+      return ValidateExpression(*a.left) && ValidateExpression(*a.right);
+    }
+    case ExprType::FUNCTION_CALL: {
+      const auto& f = static_cast<const FunctionCallExpr&>(expr);
+      for (const auto& arg : f.arguments) {
+        if (!ValidateExpression(*arg)) return false;
+      }
+      return true;
+    }
+    case ExprType::LIST_LITERAL:
+    case ExprType::MAP_LITERAL:
+      return true;
+  }
+  return true;
+}
+
+bool QueryValidator::ValidatePropertyAccess(const PropertyExpr& prop) {
+  auto it = scope_.find(prop.variable);
+  if (it == scope_.end()) {
+    last_error_ = "Undefined variable in property access: " + prop.variable;
+    return false;
+  }
+  return true;
+}
+
+bool QueryValidator::ValidateLabel(const std::string& label, bool is_node) {
+  if (!schema_) return true;
+  if (is_node) {
+    if (schema_->GetNodeLabel(label) == nullptr) {
+      last_error_ = "Unknown node label: " + label;
+      return false;
+    }
+  } else {
+    if (schema_->GetEdgeType(label) == nullptr) {
+      last_error_ = "Unknown edge type: " + label;
+      return false;
+    }
+  }
+  return true;
+}
+
+void QueryValidator::PushScope(const std::string& var,
+                               const std::vector<std::string>& props) {
+  scope_[var] = props;
+}
+
+void QueryValidator::PopScope(const std::string& var) {
+  scope_.erase(var);
+}
+
+std::optional<ValueType> QueryValidator::InferExpressionType(const Expression& expr) {
+  switch (expr.expr_type) {
+    case ExprType::LITERAL:
+      return static_cast<const LiteralExpr&>(expr).value.Type();
+    case ExprType::VARIABLE:
+    case ExprType::PROPERTY:
+      return ValueType::kString;
+    case ExprType::COMPARISON:
+      return ValueType::kBool;
+    case ExprType::AND:
+    case ExprType::OR:
+    case ExprType::NOT:
+      return ValueType::kBool;
+    case ExprType::ARITHMETIC:
+      return ValueType::kInt;
+    case ExprType::FUNCTION_CALL:
+      return ValueType::kString;
+    case ExprType::LIST_LITERAL:
+      return ValueType::kList;
+    case ExprType::MAP_LITERAL:
+      return ValueType::kMap;
+    case ExprType::PARAMETER:
+      return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+}  // namespace cedar::cypher

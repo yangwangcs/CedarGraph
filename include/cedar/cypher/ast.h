@@ -83,6 +83,17 @@ struct ComparisonExpr : Expression {
       : Expression(ExprType::COMPARISON), op(oper), left(std::move(l)), right(std::move(r)) {}
 };
 
+struct LogicalExpr : Expression {
+  enum Op { AND, OR };
+  Op op;
+  std::shared_ptr<Expression> left;
+  std::shared_ptr<Expression> right;
+  LogicalExpr(Op o, std::shared_ptr<Expression> l, std::shared_ptr<Expression> r)
+      : Expression(ExprType::AND), op(o), left(std::move(l)), right(std::move(r)) {
+    if (o == OR) expr_type = ExprType::OR;
+  }
+};
+
 // 逻辑表达式
 struct AndExpr : Expression {
   std::shared_ptr<Expression> left;
