@@ -1,0 +1,176 @@
+syntax = "proto3";
+
+package cedar.meta;
+
+// gRPC service defined below
+
+// ============================================================================
+// 基础类型
+// ============================================================================
+
+message SpaceDef {
+    string name = 1;
+    uint32 partition_num = 2;
+    uint32 replica_factor = 3;
+    int64 created_at_unix = 4;
+}
+
+message PartitionAssignment {
+    uint32 partition_id = 1;
+    string space_name = 2;
+    uint32 leader_node = 3;
+    repeated uint32 follower_nodes = 4;
+    uint64 version = 5;
+    int64 last_updated_unix = 6;
+}
+
+message SpacePartitionMap {
+    string space_name = 1;
+    uint32 num_partitions = 2;
+    uint32 replication_factor = 3;
+    map<uint32, PartitionAssignment> assignments = 4;
+    uint64 version = 5;
+}
+
+message NodeInfo {
+    uint32 node_id = 1;
+    string address = 2;
+    string data_path = 3;
+    uint32 num_cpu_cores = 4;
+    uint64 total_memory_bytes = 5;
+    uint64 total_disk_bytes = 6;
+    int64 registered_at_unix = 7;
+    int64 last_heartbeat_unix = 8;
+    string state = 9;  // ONLINE, OFFLINE, SUSPECTED
+}
+
+message NodeStatus {
+    uint32 node_id = 1;
+    double cpu_usage_percent = 2;
+    double memory_usage_percent = 3;
+    double disk_usage_percent = 4;
+    uint64 qps = 5;
+    uint64 latency_ms = 6;
+    repeated uint32 leader_partitions = 7;
+    repeated uint32 follower_partitions = 8;
+    int64 timestamp_unix = 9;
+}
+
+// ============================================================================
+// 请求/响应
+// ============================================================================
+
+message CreateSpaceRequest {
+    SpaceDef space = 1;
+}
+
+message CreateSpaceResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message GetSpaceRequest {
+    string space_name = 1;
+}
+
+message GetSpaceResponse {
+    bool success = 1;
+    string error_msg = 2;
+    SpaceDef space = 3;
+}
+
+message GetPartitionAssignmentRequest {
+    string space_name = 1;
+    uint32 partition_id = 2;
+}
+
+message GetPartitionAssignmentResponse {
+    bool success = 1;
+    string error_msg = 2;
+    PartitionAssignment assignment = 3;
+}
+
+message GetSpacePartitionMapRequest {
+    string space_name = 1;
+}
+
+message GetSpacePartitionMapResponse {
+    bool success = 1;
+    string error_msg = 2;
+    SpacePartitionMap partition_map = 3;
+}
+
+message RegisterNodeRequest {
+    NodeInfo node_info = 1;
+}
+
+message RegisterNodeResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message HeartbeatRequest {
+    NodeStatus status = 1;
+}
+
+message HeartbeatResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message GetNodeRequest {
+    uint32 node_id = 1;
+}
+
+message GetNodeResponse {
+    bool success = 1;
+    string error_msg = 2;
+    NodeInfo node_info = 3;
+}
+
+message GetAliveNodesRequest {}
+
+message GetAliveNodesResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated NodeInfo nodes = 3;
+}
+
+// Watch 请求 - 流式响应
+message WatchPartitionMapRequest {
+    string space_name = 1;
+    uint64 current_version = 2;  // 客户端当前版本
+}
+
+message PartitionMapChange {
+    string space_name = 1;
+    uint32 partition_id = 2;
+    string change_type = 3;  // LEADER_CHANGED, REPLICA_ADDED, etc.
+    uint32 old_leader = 4;
+    uint32 new_leader = 5;
+    uint64 version = 6;
+    int64 timestamp_unix = 7;
+}
+
+// ============================================================================
+// Meta Service gRPC 服务
+// ============================================================================
+
+service MetaService {
+    // Space 管理
+    rpc CreateSpace(CreateSpaceRequest) returns (CreateSpaceResponse);
+    rpc GetSpace(GetSpaceRequest) returns (GetSpaceResponse);
+    
+    // 分区管理
+    rpc GetPartitionAssignment(GetPartitionAssignmentRequest) returns (GetPartitionAssignmentResponse);
+    rpc GetSpacePartitionMap(GetSpacePartitionMapRequest) returns (GetSpacePartitionMapResponse);
+    
+    // 节点管理
+    rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+    rpc GetNode(GetNodeRequest) returns (GetNodeResponse);
+    rpc GetAliveNodes(GetAliveNodesRequest) returns (GetAliveNodesResponse);
+    
+    // Watch 接口 - 流式
+    rpc WatchPartitionMap(WatchPartitionMapRequest) returns (stream PartitionMapChange);
+}

@@ -1,0 +1,148 @@
+// Copyright 2025 The Cedar Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// =============================================================================
+// Metadata Server Admin API
+// =============================================================================
+// For cluster management, membership changes, and monitoring
+
+syntax = "proto3";
+
+package cedar.dtx.metad;
+
+option cc_generic_services = false;
+
+// =============================================================================
+// Cluster Membership Management
+// =============================================================================
+
+message AddNodeRequest {
+  uint32 node_id = 1;
+  string address = 2;
+  // For TLS
+  string certificate = 3;
+}
+
+message AddNodeResponse {
+  bool success = 1;
+  string error_message = 2;
+  // Current cluster configuration after add
+  repeated NodeInfo cluster_members = 3;
+}
+
+message RemoveNodeRequest {
+  uint32 node_id = 1;
+  bool force = 2;  // Remove even if node is unhealthy
+}
+
+message RemoveNodeResponse {
+  bool success = 1;
+  string error_message = 2;
+  repeated NodeInfo cluster_members = 3;
+}
+
+message NodeInfo {
+  uint32 node_id = 1;
+  string address = 2;
+  bool is_healthy = 3;
+  string role = 4;  // leader, follower, candidate
+  uint64 last_contact_ms = 5;
+}
+
+// =============================================================================
+// Cluster Status & Monitoring
+// =============================================================================
+
+message GetClusterStatusRequest {}
+
+message GetClusterStatusResponse {
+  string cluster_id = 1;
+  repeated NodeInfo nodes = 2;
+  uint32 leader_id = 3;
+  uint64 current_term = 4;
+  string raft_state = 5;  // leader, follower, candidate
+  
+  // Statistics
+  uint64 commit_index = 10;
+  uint64 last_applied = 11;
+  uint64 pending_commands = 12;
+}
+
+message GetNodeMetricsRequest {
+  uint32 node_id = 1;  // 0 = all nodes
+}
+
+message GetNodeMetricsResponse {
+  message NodeMetrics {
+    uint32 node_id = 1;
+    
+    // Raft metrics
+    uint64 raft_term = 2;
+    uint64 raft_log_index = 3;
+    uint64 raft_commit_index = 4;
+    uint64 raft_applied_index = 5;
+    
+    // Network metrics
+    uint64 rpc_requests_total = 10;
+    uint64 rpc_requests_failed = 11;
+    double rpc_latency_ms_avg = 12;
+    
+    // System metrics
+    uint64 memory_usage_bytes = 20;
+    uint64 disk_usage_bytes = 21;
+  }
+  
+  repeated NodeMetrics metrics = 1;
+  uint64 timestamp_ms = 2;
+}
+
+// =============================================================================
+// Read-only Query (Follower Read)
+// =============================================================================
+
+message QueryRequest {
+  string query_type = 1;  // space_list, node_list, partition_map, etc.
+  bytes query_data = 2;
+  // Consistency level
+  bool require_leader = 3;  // false = allow follower read
+  uint64 min_applied_index = 4;  // minimum log index that must be applied
+}
+
+message QueryResponse {
+  bool success = 1;
+  string error_message = 2;
+  bytes result_data = 3;
+  
+  // Read metadata for consistency verification
+  uint32 serving_node_id = 10;
+  uint64 applied_index_at_read = 11;
+  bool served_by_leader = 12;
+}
+
+// =============================================================================
+// Admin Service
+// =============================================================================
+
+service MetadAdminService {
+  // Membership management
+  rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+  
+  // Cluster status
+  rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse);
+  rpc GetNodeMetrics(GetNodeMetricsRequest) returns (GetNodeMetricsResponse);
+  
+  // Read-only queries (can be served by followers)
+  rpc Query(QueryRequest) returns (QueryResponse);
+}

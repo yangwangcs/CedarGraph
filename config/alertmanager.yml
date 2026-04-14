@@ -1,0 +1,71 @@
+# CedarGraph Alertmanager Configuration
+# 告警管理器配置
+
+global:
+  smtp_smarthost: 'localhost:587'
+  smtp_from: 'alerts@cedargraph.io'
+  smtp_auth_username: ''
+  smtp_auth_password: ''
+
+# Templates
+templates:
+- '/etc/alertmanager/templates/*.tmpl'
+
+# Route configuration
+route:
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 12h
+  receiver: 'default'
+  routes:
+    # Critical alerts go to pagerduty
+    - match:
+        severity: critical
+      receiver: 'pagerduty'
+      continue: true
+    
+    # Warning alerts go to Slack
+    - match:
+        severity: warning
+      receiver: 'slack'
+      continue: true
+
+# Receivers
+receivers:
+  - name: 'default'
+    email_configs:
+      - to: 'ops@cedargraph.io'
+        subject: 'CedarGraph Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Instance: {{ .Labels.instance }}
+          Time: {{ .StartsAt }}
+          {{ end }}
+
+  - name: 'slack'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#cedar-alerts'
+        title: 'CedarGraph Alert'
+        text: |
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          Instance: {{ .Labels.instance }}
+          {{ end }}
+
+  - name: 'pagerduty'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_KEY}'
+        description: '{{ .GroupLabels.alertname }}'
+
+# Inhibit rules
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'cluster', 'service']

@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package cedar.raft.internal;
+
+// Raft 投票请求
+message VoteRequest {
+  uint64 term = 1;
+  string candidate_id = 2;
+  uint32 partition_id = 3;
+  uint64 last_log_index = 4;
+  uint64 last_log_term = 5;
+}
+
+message VoteResponse {
+  uint64 term = 1;
+  bool vote_granted = 2;
+  string voter_id = 3;
+}
+
+// 日志条目
+message LogEntry {
+  uint64 term = 1;
+  uint64 index = 2;
+  bytes command = 3;
+  uint64 timestamp = 4;
+}
+
+// 日志追加请求
+message AppendEntriesRequest {
+  uint64 term = 1;
+  string leader_id = 2;
+  uint32 partition_id = 3;
+  uint64 prev_log_index = 4;
+  uint64 prev_log_term = 5;
+  repeated LogEntry entries = 6;
+  uint64 leader_commit = 7;
+}
+
+message AppendEntriesResponse {
+  uint64 term = 1;
+  bool success = 2;
+  uint32 partition_id = 3;
+  uint64 match_index = 4;
+  string follower_id = 5;
+}
+
+// 快照相关
+message SnapshotRequest {
+  uint64 term = 1;
+  string leader_id = 2;
+  uint32 partition_id = 3;
+  uint64 last_included_index = 4;
+  uint64 last_included_term = 5;
+  uint64 offset = 6;
+  bytes data = 7;
+  bool done = 8;
+}
+
+message SnapshotResponse {
+  uint64 term = 1;
+  bool success = 2;
+  uint32 partition_id = 3;
+}
+
+// 心跳
+message HeartbeatRequest {
+  uint64 term = 1;
+  string leader_id = 2;
+  uint32 partition_id = 3;
+  uint64 commit_index = 4;
+}
+
+message HeartbeatResponse {
+  uint64 term = 1;
+  bool success = 2;
+}
+
+service PartitionRaftService {
+  rpc RequestVote(VoteRequest) returns (VoteResponse);
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+  rpc InstallSnapshot(SnapshotRequest) returns (SnapshotResponse);
+  rpc SendHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}

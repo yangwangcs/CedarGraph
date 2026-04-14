@@ -1,0 +1,46 @@
+# CedarGraph Prometheus Monitoring Configuration
+# 普罗米修斯监控配置
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['localhost:9093']
+
+rule_files:
+  - /etc/prometheus/rules/cedar_alerts.yml
+
+scrape_configs:
+  # CedarGraph Storage Nodes
+  - job_name: 'cedar-storage'
+    static_configs:
+      - targets: 
+        - 'localhost:7000'
+        - 'localhost:7001'
+        - 'localhost:7002'
+    metrics_path: /metrics
+    scrape_interval: 10s
+    
+  # CedarGraph MetaD
+  - job_name: 'cedar-metad'
+    static_configs:
+      - targets:
+        - 'localhost:6000'
+        - 'localhost:6001'
+        - 'localhost:6002'
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # Node Exporter (System metrics)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['localhost:9100']
+
+  # CedarGraph Health Monitor
+  - job_name: 'cedar-health'
+    static_configs:
+      - targets: ['localhost:8080']
+    metrics_path: /health/metrics

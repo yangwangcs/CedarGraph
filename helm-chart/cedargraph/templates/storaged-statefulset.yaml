@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-storaged
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storaged
+spec:
+  serviceName: {{ include "cedargraph.fullname" . }}-storaged
+  replicas: {{ .Values.storaged.replicas }}
+  selector:
+    matchLabels:
+      {{- include "cedargraph.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: storaged
+  template:
+    metadata:
+      labels:
+        {{- include "cedargraph.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: storaged
+    spec:
+      initContainers:
+        # 等待 MetaD 就绪
+        - name: wait-for-metad
+          image: busybox:latest
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z {{ include "cedargraph.fullname" . }}-metad-0.{{ include "cedargraph.fullname" . }}-metad {{ .Values.metad.service.port }}; do
+                echo "Waiting for metad..."
+                sleep 2
+              done
+      containers:
+        - name: storaged
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: NODE_ROLE
+              value: "storaged"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_ID
+              value: "$(POD_NAME)"
+            - name: META_SERVERS
+              value: "{{ include "cedargraph.metad.endpoints" . }}"
+            - name: LOCAL_IP
+              value: "$(POD_NAME).{{ include "cedargraph.fullname" . }}-storaged"
+            - name: BIND_ADDRESS
+              value: "0.0.0.0:{{ .Values.storaged.service.port }}"
+            - name: DATA_DIR
+              value: "/data/storage"
+            - name: AUTO_REGISTER
+              value: "true"
+          ports:
+            - name: storaged
+              containerPort: {{ .Values.storaged.service.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.storaged.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data/storage
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "cedar-admin --host=localhost --port={{ .Values.storaged.service.port }} status"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "cedar-admin --host=localhost --port={{ .Values.storaged.service.port }} status"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: {{ .Values.global.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.storaged.persistence.size }}

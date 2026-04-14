@@ -1,0 +1,347 @@
+// Copyright 2025 The Cedar Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// =============================================================================
+// CedarGraph-DTx gRPC Service Definition
+// =============================================================================
+// 分布式事务协议的RPC接口定义
+// =============================================================================
+
+syntax = "proto3";
+
+package cedardtx;
+
+option go_package = "cedarpb/cedardtx";
+option java_package = "com.cedar.dtx.grpc";
+option java_multiple_files = true;
+
+// =============================================================================
+// 基础类型
+// =============================================================================
+
+message Empty {}
+
+message GrpcStatus {
+    bool ok = 1;
+    int32 code = 2;
+    string message = 3;
+    string details = 4;
+}
+
+// =============================================================================
+// CedarKey 传输格式
+// =============================================================================
+
+message CedarKeyProto {
+    uint64 entity_id = 1;
+    uint64 timestamp = 2;
+    uint64 target_id = 3;
+    uint32 column_id = 4;      // uint16 用 uint32
+    uint32 sequence = 5;       // uint16 用 uint32
+    uint32 entity_type = 6;    // uint8 用 uint32
+    uint32 flags = 7;          // uint8 用 uint32
+    uint32 part_id = 8;        // uint16 用 uint32
+}
+
+// =============================================================================
+// 时序窗口
+// =============================================================================
+
+message TemporalWindowProto {
+    uint64 start_us = 1;  // 微秒时间戳
+    uint64 end_us = 2;    // 0表示无限
+}
+
+// =============================================================================
+// 分布式事务上下文
+// =============================================================================
+
+message DistributedTxnContextProto {
+    uint64 txn_id = 1;
+    uint64 start_ts = 2;
+    uint64 commit_ts = 3;
+    uint32 txn_type = 4;           // TxnType
+    uint32 state = 5;              // DistributedTxnState
+    
+    // 时序窗口
+    TemporalWindowProto temporal_window = 6;
+    
+    // 参与者
+    uint32 coordinator_node = 7;
+    repeated uint32 participant_partitions = 8;
+    map<uint32, uint32> partition_leaders = 9;  // partition_id -> node_id
+    
+    // 读写集（简化传输）
+    repeated CedarKeyProto read_set = 10;
+    repeated CedarKeyProto write_set = 11;
+    
+    // 统计
+    uint64 execution_time_ms = 12;
+    uint32 retry_count = 13;
+}
+
+// =============================================================================
+// 2PC 相关消息
+// =============================================================================
+
+message PrepareRequest {
+    uint64 txn_id = 1;
+    uint32 partition_id = 2;
+    DistributedTxnContextProto context = 3;
+    bytes wal_record = 4;  // 预写日志记录
+}
+
+message PrepareResponse {
+    bool prepared = 1;
+    string reason = 2;
+    uint64 prepared_ts = 3;
+    GrpcStatus status = 4;
+}
+
+message CommitRequest {
+    uint64 txn_id = 1;
+    uint32 partition_id = 2;
+    uint64 commit_ts = 3;
+}
+
+message CommitResponse {
+    bool committed = 1;
+    GrpcStatus status = 2;
+}
+
+message AbortRequest {
+    uint64 txn_id = 1;
+    uint32 partition_id = 2;
+    string reason = 3;
+}
+
+message AbortResponse {
+    bool aborted = 1;
+    GrpcStatus status = 2;
+}
+
+// =============================================================================
+// TW-CD 验证请求
+// =============================================================================
+
+message ValidateRequest {
+    uint64 txn_id = 1;
+    uint32 partition_id = 2;
+    
+    // 读集（带时序窗口）
+    message ReadSetItem {
+        CedarKeyProto key = 1;
+        TemporalWindowProto window = 2;
+        uint64 read_version = 3;
+    }
+    repeated ReadSetItem read_set = 3;
+    
+    // 计划提交时间戳
+    uint64 commit_ts = 4;
+}
+
+message ValidateResponse {
+    bool valid = 1;
+    uint32 validation_result = 2;  // ValidationResult
+    repeated CedarKeyProto conflict_keys = 3;
+    GrpcStatus status = 4;
+}
+
+// =============================================================================
+// 版本链查询
+// =============================================================================
+
+message GetVersionRequest {
+    CedarKeyProto key = 1;
+    uint64 version = 2;
+}
+
+message GetVersionResponse {
+    bool found = 1;
+    uint64 txn_id = 2;
+    uint64 commit_ts = 3;
+    uint64 version = 4;
+    bool visible = 5;
+    GrpcStatus status = 6;
+}
+
+message GetLatestVersionRequest {
+    CedarKeyProto key = 1;
+}
+
+message GetLatestVersionResponse {
+    bool found = 1;
+    uint64 txn_id = 2;
+    uint64 commit_ts = 3;
+    uint64 version = 4;
+    bool visible = 5;
+    GrpcStatus status = 6;
+}
+
+// =============================================================================
+// 心跳和健康检查
+// =============================================================================
+
+message HeartbeatRequest {
+    uint32 node_id = 1;
+    uint64 timestamp = 2;
+    map<uint32, PartitionLoadStatsProto> partition_stats = 3;
+}
+
+message HeartbeatResponse {
+    bool healthy = 1;
+    repeated uint32 known_nodes = 2;  // 集群中已知的其他节点
+    GrpcStatus status = 3;
+}
+
+message PartitionLoadStatsProto {
+    uint32 partition_id = 1;
+    uint64 data_size_bytes = 2;
+    uint64 txn_count_1min = 3;
+    uint64 conflict_count_1min = 4;
+    double avg_latency_ms = 5;
+    double p99_latency_ms = 6;
+}
+
+message HealthCheckRequest {
+    uint32 node_id = 1;
+}
+
+message HealthCheckResponse {
+    bool healthy = 1;
+    string version = 2;
+    uint64 uptime_seconds = 3;
+    repeated uint32 partitions = 4;  // 本节点负责的分区
+    GrpcStatus status = 5;
+}
+
+// =============================================================================
+// 分区管理
+// =============================================================================
+
+message GetPartitionInfoRequest {
+    uint32 partition_id = 1;
+}
+
+message GetPartitionInfoResponse {
+    uint32 partition_id = 1;
+    uint32 primary_node = 2;
+    repeated uint32 replica_nodes = 3;
+    uint64 vertex_count = 4;
+    uint64 edge_count = 5;
+    GrpcStatus status = 6;
+}
+
+message ReportPartitionStatsRequest {
+    uint32 node_id = 1;
+    PartitionLoadStatsProto stats = 2;
+}
+
+message ReportPartitionStatsResponse {
+    bool accepted = 1;
+    GrpcStatus status = 2;
+}
+
+// =============================================================================
+// DTx 主服务
+// =============================================================================
+
+service CedarDTxService {
+    // ========== 2PC 协调 ==========
+    
+    // Phase 1: 准备阶段
+    rpc Prepare(PrepareRequest) returns (PrepareResponse);
+    
+    // Phase 2: 提交阶段
+    rpc Commit(CommitRequest) returns (CommitResponse);
+    
+    // 回滚
+    rpc Abort(AbortRequest) returns (AbortResponse);
+    
+    // ========== TW-CD 验证 ==========
+    
+    // 验证读集（O(1)快速验证）
+    rpc Validate(ValidateRequest) returns (ValidateResponse);
+    
+    // ========== 版本链查询 (DVC-Val) ==========
+    
+    // 获取特定版本
+    rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
+    
+    // 获取最新版本（O(1)）
+    rpc GetLatestVersion(GetLatestVersionRequest) returns (GetLatestVersionResponse);
+    
+    // ========== 心跳和健康检查 ==========
+    
+    // 定期心跳
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+    
+    // 健康检查
+    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+    
+    // ========== 分区管理 ==========
+    
+    // 获取分区信息
+    rpc GetPartitionInfo(GetPartitionInfoRequest) returns (GetPartitionInfoResponse);
+    
+    // 上报分区统计
+    rpc ReportPartitionStats(ReportPartitionStatsRequest) returns (ReportPartitionStatsResponse);
+}
+
+// =============================================================================
+// 协调者服务（用于跨节点协调）
+// =============================================================================
+
+service CedarDTxCoordinatorService {
+    // 启动分布式事务
+    rpc BeginTransaction(BeginTxnRequest) returns (BeginTxnResponse);
+    
+    // 获取事务状态
+    rpc GetTransactionStatus(GetTxnStatusRequest) returns (GetTxnStatusResponse);
+    
+    // 协调跨分片验证
+    rpc CoordinateValidation(CoordinateValidationRequest) returns (CoordinateValidationResponse);
+}
+
+message BeginTxnRequest {
+    DistributedTxnContextProto context = 1;
+}
+
+message BeginTxnResponse {
+    uint64 txn_id = 1;
+    bool accepted = 2;
+    GrpcStatus status = 3;
+}
+
+message GetTxnStatusRequest {
+    uint64 txn_id = 1;
+}
+
+message GetTxnStatusResponse {
+    uint64 txn_id = 1;
+    uint32 state = 2;  // DistributedTxnState
+    GrpcStatus status = 3;
+}
+
+message CoordinateValidationRequest {
+    uint64 txn_id = 1;
+    repeated uint32 participant_partitions = 2;
+    bytes validation_data = 3;
+}
+
+message CoordinateValidationResponse {
+    bool all_valid = 1;
+    map<uint32, bool> partition_results = 2;  // partition_id -> valid
+    GrpcStatus status = 3;
+}

@@ -1,0 +1,419 @@
+// Copyright 2025 The Cedar Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// =============================================================================
+// gRPC Connection Pool Implementation
+// =============================================================================
+
+#include "cedar/dtx/grpc_connection_pool.h"
+
+#include <iostream>
+#include <chrono>
+#include <grpcpp/grpcpp.h>
+
+namespace cedar {
+namespace dtx {
+
+// =============================================================================
+// PooledChannel Implementation
+// =============================================================================
+
+PooledChannel::PooledChannel(const std::string& address, 
+                              std::shared_ptr<grpc::Channel> channel)
+    : address_(address), 
+      channel_(channel),
+      create_time_(std::chrono::steady_clock::now()),
+      use_count_(0) {}
+
+PooledChannel::~PooledChannel() = default;
+
+bool PooledChannel::IsHealthy() const {
+  if (!channel_) return false;
+  
+  // 检查连接状态
+  auto state = channel_->GetState(false);
+  return state == GRPC_CHANNEL_READY || state == GRPC_CHANNEL_IDLE;
+}
+
+// =============================================================================
+// GrpcConnectionPool Implementation
+// =============================================================================
+
+GrpcConnectionPool::GrpcConnectionPool(const Config& config) 
+    : config_(config),
+      in_use_count_(0),
+      total_acquisitions_(0),
+      total_releases_(0),
+      total_wait_time_us_(0),
+      shutdown_(false) {}
+
+GrpcConnectionPool::GrpcConnectionPool() 
+    : GrpcConnectionPool(Config()) {}
+
+GrpcConnectionPool::~GrpcConnectionPool() {
+  Shutdown();
+}
+
+Status GrpcConnectionPool::Initialize(const std::vector<std::string>& endpoints) {
+  std::cout << "[ConnectionPool] Initializing with " << endpoints.size() 
+            << " endpoints..." << std::endl;
+  
+  endpoints_ = endpoints;
+  
+  // 为每个端点创建最小连接数
+  for (const auto& endpoint : endpoints_) {
+    std::cout << "  Creating connections for: " << endpoint << std::endl;
+    
+    for (size_t i = 0; i < config_.min_connections_per_endpoint; ++i) {
+      auto conn = CreateConnection(endpoint);
+      if (conn) {
+        available_connections_.push(conn);
+        endpoint_connections_[endpoint].push_back(conn);
+      }
+    }
+  }
+  
+  std::cout << "[ConnectionPool] Created " << available_connections_.size() 
+            << " initial connections" << std::endl;
+  
+  // 启动后台线程
+  if (config_.health_check_interval.count() > 0) {
+    health_check_thread_ = std::thread(&GrpcConnectionPool::HealthCheckLoop, this);
+  }
+  
+  cleanup_thread_ = std::thread(&GrpcConnectionPool::IdleCleanupLoop, this);
+  
+  // 预热连接
+  if (config_.enable_connection_warmup) {
+    return WarmupConnections();
+  }
+  
+  return Status::OK();
+}
+
+std::shared_ptr<PooledChannel> GrpcConnectionPool::Acquire() {
+  auto start = std::chrono::steady_clock::now();
+  
+  std::unique_lock<std::mutex> lock(mutex_);
+  
+  // 等待可用连接
+  cv_.wait(lock, [this] {
+    return shutdown_ || !available_connections_.empty();
+  });
+  
+  if (shutdown_) {
+    return nullptr;
+  }
+  
+  // 获取连接
+  auto channel = available_connections_.front();
+  available_connections_.pop();
+  in_use_count_++;
+  
+  // 检查健康状态
+  if (!CheckHealth(channel)) {
+    // 连接不健康，创建新连接
+    lock.unlock();
+    channel = CreateConnection(channel->GetAddress());
+    lock.lock();
+    
+    if (!channel) {
+      in_use_count_--;
+      return nullptr;
+    }
+  }
+  
+  channel->IncrementUseCount();
+  
+  // 统计
+  total_acquisitions_++;
+  auto wait_time = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - start).count();
+  total_wait_time_us_ += wait_time;
+  
+  return channel;
+}
+
+std::shared_ptr<PooledChannel> GrpcConnectionPool::AcquireForEndpoint(
+    const std::string& endpoint) {
+  
+  std::unique_lock<std::mutex> lock(mutex_);
+  
+  // 查找该端点的连接
+  auto it = endpoint_connections_.find(endpoint);
+  if (it != endpoint_connections_.end()) {
+    for (auto& conn : it->second) {
+      // 检查是否在可用队列中
+      // 简化实现：直接返回第一个健康连接
+      if (CheckHealth(conn)) {
+        in_use_count_++;
+        conn->IncrementUseCount();
+        total_acquisitions_++;
+        return conn;
+      }
+    }
+  }
+  
+  lock.unlock();
+  
+  // 创建新连接
+  auto conn = CreateConnection(endpoint);
+  if (conn) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    in_use_count_++;
+    endpoint_connections_[endpoint].push_back(conn);
+    total_acquisitions_++;
+  }
+  
+  return conn;
+}
+
+void GrpcConnectionPool::Release(std::shared_ptr<PooledChannel> channel) {
+  if (!channel) return;
+  
+  std::lock_guard<std::mutex> lock(mutex_);
+  
+  available_connections_.push(channel);
+  in_use_count_--;
+  total_releases_++;
+  
+  cv_.notify_one();
+}
+
+Status GrpcConnectionPool::WarmupConnections() {
+  std::cout << "[ConnectionPool] Warming up connections..." << std::endl;
+  
+  // 对每个端点执行一次简单调用以建立连接
+  for (const auto& endpoint : endpoints_) {
+    auto conn = AcquireForEndpoint(endpoint);
+    if (conn) {
+      // 这里可以执行一个简单的健康检查 RPC
+      // 简化实现：只检查连接状态
+      Release(conn);
+    }
+  }
+  
+  std::cout << "[ConnectionPool] Warmup completed" << std::endl;
+  return Status::OK();
+}
+
+GrpcConnectionPool::Stats GrpcConnectionPool::GetStats() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  
+  Stats stats;
+  stats.total_connections = available_connections_.size() + in_use_count_.load();
+  stats.available_connections = available_connections_.size();
+  stats.in_use_connections = in_use_count_.load();
+  stats.total_acquisitions = total_acquisitions_.load();
+  stats.total_releases = total_releases_.load();
+  
+  // 计算平均等待时间
+  if (total_acquisitions_.load() > 0) {
+    stats.avg_wait_time_us = (double)total_wait_time_us_.load() / total_acquisitions_.load();
+  } else {
+    stats.avg_wait_time_us = 0.0;
+  }
+  
+  // 计算不健康连接数
+  stats.unhealthy_connections = 0;
+  auto temp_queue = available_connections_;
+  while (!temp_queue.empty()) {
+    auto conn = temp_queue.front();
+    temp_queue.pop();
+    if (!conn->IsHealthy()) {
+      stats.unhealthy_connections++;
+    }
+  }
+  
+  return stats;
+}
+
+void GrpcConnectionPool::Shutdown() {
+  std::cout << "[ConnectionPool] Shutting down..." << std::endl;
+  
+  shutdown_ = true;
+  cv_.notify_all();
+  
+  if (health_check_thread_.joinable()) {
+    health_check_thread_.join();
+  }
+  
+  if (cleanup_thread_.joinable()) {
+    cleanup_thread_.join();
+  }
+  
+  // 清空连接池
+  std::lock_guard<std::mutex> lock(mutex_);
+  while (!available_connections_.empty()) {
+    available_connections_.pop();
+  }
+  endpoint_connections_.clear();
+  
+  std::cout << "[ConnectionPool] Shutdown completed" << std::endl;
+}
+
+void GrpcConnectionPool::HealthCheckLoop() {
+  while (!shutdown_) {
+    std::this_thread::sleep_for(config_.health_check_interval);
+    
+    if (shutdown_) break;
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    // 检查所有连接的健康状态
+    auto temp_queue = available_connections_;
+    std::queue<std::shared_ptr<PooledChannel>> healthy_queue;
+    
+    while (!temp_queue.empty()) {
+      auto conn = temp_queue.front();
+      temp_queue.pop();
+      
+      if (CheckHealth(conn)) {
+        healthy_queue.push(conn);
+      } else {
+        // 不健康的连接会被丢弃，后续会创建新连接
+        std::cout << "[ConnectionPool] Removing unhealthy connection to " 
+                  << conn->GetAddress() << std::endl;
+      }
+    }
+    
+    available_connections_ = std::move(healthy_queue);
+  }
+}
+
+void GrpcConnectionPool::IdleCleanupLoop() {
+  while (!shutdown_) {
+    std::this_thread::sleep_for(std::chrono::seconds(60));
+    
+    if (shutdown_) break;
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    auto now = std::chrono::steady_clock::now();
+    std::queue<std::shared_ptr<PooledChannel>> keep_queue;
+    size_t removed = 0;
+    
+    // 清理空闲时间过长的连接，但保留最小连接数
+    while (!available_connections_.empty() && 
+           keep_queue.size() < config_.min_connections_per_endpoint * endpoints_.size()) {
+      auto conn = available_connections_.front();
+      available_connections_.pop();
+      
+      auto idle_time = std::chrono::duration_cast<std::chrono::seconds>(
+          now - conn->GetCreateTime()).count();
+      
+      if (idle_time < config_.max_idle_time.count() || 
+          keep_queue.size() < config_.min_connections_per_endpoint) {
+        keep_queue.push(conn);
+      } else {
+        removed++;
+      }
+    }
+    
+    available_connections_ = std::move(keep_queue);
+    
+    if (removed > 0) {
+      std::cout << "[ConnectionPool] Cleaned up " << removed 
+                << " idle connections" << std::endl;
+    }
+  }
+}
+
+std::shared_ptr<PooledChannel> GrpcConnectionPool::CreateConnection(
+    const std::string& endpoint) {
+  
+  // 创建 gRPC 通道选项
+  grpc::ChannelArguments args;
+  args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 10000);      // 10s keepalive
+  args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 5000);    // 5s timeout
+  args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
+  args.SetInt(GRPC_ARG_MAX_RECONNECT_BACKOFF_MS, 5000);
+  
+  // 创建通道
+  auto channel = grpc::CreateCustomChannel(
+      endpoint, 
+      grpc::InsecureChannelCredentials(),
+      args);
+  
+  // 等待连接就绪（非阻塞检查）
+  auto state = channel->GetState(true);
+  
+  return std::make_shared<PooledChannel>(endpoint, channel);
+}
+
+bool GrpcConnectionPool::CheckHealth(const std::shared_ptr<PooledChannel>& channel) {
+  if (!channel) return false;
+  return channel->IsHealthy();
+}
+
+// =============================================================================
+// ConnectionPoolManager Implementation
+// =============================================================================
+
+ConnectionPoolManager& ConnectionPoolManager::Instance() {
+  static ConnectionPoolManager instance;
+  return instance;
+}
+
+std::shared_ptr<GrpcConnectionPool> ConnectionPoolManager::GetPool(
+    const std::string& pool_name) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  
+  auto it = pools_.find(pool_name);
+  if (it != pools_.end()) {
+    return it->second;
+  }
+  
+  // 创建新连接池
+  auto pool = std::make_shared<GrpcConnectionPool>();
+  pools_[pool_name] = pool;
+  return pool;
+}
+
+void ConnectionPoolManager::DestroyPool(const std::string& pool_name) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  
+  auto it = pools_.find(pool_name);
+  if (it != pools_.end()) {
+    it->second->Shutdown();
+    pools_.erase(it);
+  }
+}
+
+void ConnectionPoolManager::DestroyAllPools() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  
+  for (auto& [name, pool] : pools_) {
+    pool->Shutdown();
+  }
+  pools_.clear();
+}
+
+// =============================================================================
+// ScopedConnection Implementation
+// =============================================================================
+
+ScopedConnection::ScopedConnection(GrpcConnectionPool& pool) 
+    : pool_(pool) {
+  channel_ = pool_.Acquire();
+}
+
+ScopedConnection::~ScopedConnection() {
+  if (channel_) {
+    pool_.Release(channel_);
+  }
+}
+
+}  // namespace dtx
+}  // namespace cedar

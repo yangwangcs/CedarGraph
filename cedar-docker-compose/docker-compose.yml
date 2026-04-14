@@ -1,0 +1,241 @@
+# CedarGraph - 一键部署配置
+# 支持自动服务发现和节点注册
+#
+# 快速开始:
+#   git clone https://github.com/cedargraph/cedar-docker-compose.git
+#   cd cedar-docker-compose
+#   docker-compose up -d
+#
+# 查看状态:
+#   docker-compose ps
+#
+# 连接集群:
+#   ./scripts/cedar-cli.sh -e "SHOW HOSTS"
+
+version: '3.8'
+
+x-cedar-base: &cedar-base
+  image: cedargraph/cedar:${CEDAR_VERSION:-latest}
+  restart: unless-stopped
+  networks:
+    - cedar-net
+
+services:
+  # ============================================================================
+  # Meta Service - 元数据服务 (3节点HA)
+  # ============================================================================
+  metad0:
+    <<: *cedar-base
+    container_name: cedar-metad-0
+    hostname: metad0
+    environment:
+      - NODE_ROLE=metad
+      - NODE_ID=0
+      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/meta
+    volumes:
+      - ./data/meta0:/data/meta
+      - ./logs/meta0:/logs
+    ports:
+      - "9559:9559"
+    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+    healthcheck:
+      test: ["CMD-SHELL", "cedar-admin --host=localhost --port=9559 status 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  metad1:
+    <<: *cedar-base
+    container_name: cedar-metad-1
+    hostname: metad1
+    environment:
+      - NODE_ROLE=metad
+      - NODE_ID=1
+      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/meta
+    volumes:
+      - ./data/meta1:/data/meta
+      - ./logs/meta1:/logs
+    depends_on:
+      metad0:
+        condition: service_healthy
+    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+    healthcheck:
+      test: ["CMD-SHELL", "cedar-admin --host=localhost --port=9559 status 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  metad2:
+    <<: *cedar-base
+    container_name: cedar-metad-2
+    hostname: metad2
+    environment:
+      - NODE_ROLE=metad
+      - NODE_ID=2
+      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/meta
+    volumes:
+      - ./data/meta2:/data/meta
+      - ./logs/meta2:/logs
+    depends_on:
+      metad0:
+        condition: service_healthy
+    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+    healthcheck:
+      test: ["CMD-SHELL", "cedar-admin --host=localhost --port=9559 status 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================================
+  # Storage Service - 存储服务
+  # ============================================================================
+  storaged0:
+    <<: *cedar-base
+    container_name: cedar-storaged-0
+    hostname: storaged0
+    environment:
+      - NODE_ROLE=storaged
+      - NODE_ID=0
+      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/storage
+    volumes:
+      - ./data/storage0:/data/storage
+      - ./logs/storage0:/logs
+    ports:
+      - "9779:9779"
+    depends_on:
+      metad0:
+        condition: service_healthy
+      metad1:
+        condition: service_healthy
+      metad2:
+        condition: service_healthy
+    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    healthcheck:
+      test: ["CMD-SHELL", "cedar-admin --host=localhost --port=9779 status 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  storaged1:
+    <<: *cedar-base
+    container_name: cedar-storaged-1
+    hostname: storaged1
+    environment:
+      - NODE_ROLE=storaged
+      - NODE_ID=1
+      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/storage
+    volumes:
+      - ./data/storage1:/data/storage
+      - ./logs/storage1:/logs
+    depends_on:
+      storaged0:
+        condition: service_healthy
+    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    healthcheck:
+      test: ["CMD-SHELL", "cedar-admin --host=localhost --port=9779 status 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  storaged2:
+    <<: *cedar-base
+    container_name: cedar-storaged-2
+    hostname: storaged2
+    environment:
+      - NODE_ROLE=storaged
+      - NODE_ID=2
+      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/storage
+    volumes:
+      - ./data/storage2:/data/storage
+      - ./logs/storage2:/logs
+    depends_on:
+      storaged0:
+        condition: service_healthy
+    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    healthcheck:
+      test: ["CMD-SHELL", "cedar-admin --host=localhost --port=9779 status 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================================
+  # Graph Service - 查询服务 (带自动发现)
+  # ============================================================================
+  graphd:
+    <<: *cedar-base
+    container_name: cedar-graphd
+    hostname: graphd
+    environment:
+      - NODE_ROLE=graphd
+      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - AUTO_DISCOVERY=true
+      - QUERY_PORT=9669
+      - HTTP_PORT=19669
+    volumes:
+      - ./logs/graphd:/logs
+      - /var/run/docker.sock:/var/run/docker.sock  # 用于 Docker 发现
+    ports:
+      - "9669:9669"     # 查询端口
+      - "19669:19669"   # HTTP 端口
+    depends_on:
+      storaged0:
+        condition: service_healthy
+      storaged1:
+        condition: service_healthy
+      storaged2:
+        condition: service_healthy
+    command: ["graphd-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "cedar-admin --host=localhost --port=9669 status 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================================
+  # Console - 命令行客户端 (内置)
+  # ============================================================================
+  console:
+    <<: *cedar-base
+    container_name: cedar-console
+    environment:
+      - NODE_ROLE=console
+    command: ["sleep", "infinity"]
+    depends_on:
+      graphd:
+        condition: service_healthy
+
+  # ============================================================================
+  # Studio - Web 可视化界面 (可选)
+  # ============================================================================
+  studio:
+    image: cedargraph/studio:${CEDAR_VERSION:-latest}
+    container_name: cedar-studio
+    environment:
+      - CEDAR_GRAPHD_HOST=graphd
+      - CEDAR_GRAPHD_PORT=9669
+    ports:
+      - "7001:7001"
+    networks:
+      - cedar-net
+    depends_on:
+      graphd:
+        condition: service_healthy
+    profiles:
+      - studio
+
+networks:
+  cedar-net:
+    driver: bridge

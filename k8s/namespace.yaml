@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cedargraph
+  labels:
+    name: cedargraph
+    app.kubernetes.io/name: cedargraph
+    app.kubernetes.io/component: infrastructure

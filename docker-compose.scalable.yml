@@ -1,0 +1,352 @@
+# CedarGraph Scalable Docker Compose
+# 可扩展的 Docker Compose 配置 - 支持 3/5/7 节点
+#
+# Usage:
+#   NODE_COUNT=3 docker-compose -f docker-compose.scalable.yml up -d
+#   NODE_COUNT=5 docker-compose -f docker-compose.scalable.yml up -d
+#   NODE_COUNT=7 docker-compose -f docker-compose.scalable.yml up -d
+
+version: '3.8'
+
+x-storaged-base: &storaged-base
+  build: .
+  image: cedargraph:latest
+  environment:
+    - NODE_TYPE=storaged
+    - AUTO_RECOVERY=true
+    - HEALTH_CHECK_INTERVAL=30
+    - IO_THREADS=4
+    - WORKER_THREADS=8
+    - WAIT_FOR_METAD=true
+  volumes:
+    - type: volume
+      source: storaged-data
+      target: /var/lib/cedar/storage
+    - type: bind
+      source: ./logs/storaged-${NODE_INDEX}
+      target: /var/log/cedar
+  networks:
+    - cedar-cluster
+  restart: unless-stopped
+
+services:
+  # ============================================================================
+  # MetaD Cluster (固定3节点用于HA)
+  # ============================================================================
+  metad1:
+    build: .
+    image: cedargraph:latest
+    container_name: cedar-metad1
+    hostname: metad1
+    environment:
+      - NODE_TYPE=metad
+      - NODE_ID=1
+      - BIND_ADDRESS=0.0.0.0:6000
+      - DATA_DIR=/var/lib/cedar/metad
+      - CLUSTER_ID=1
+      - INITIAL_CLUSTER=metad1=http://metad1:6000,metad2=http://metad2:6001,metad3=http://metad3:6002
+    volumes:
+      - metad1_data:/var/lib/cedar/metad
+      - ./logs/metad1:/var/log/cedar
+    ports:
+      - "6000:6000"
+    networks:
+      - cedar-cluster
+
+  metad2:
+    build: .
+    image: cedargraph:latest
+    container_name: cedar-metad2
+    hostname: metad2
+    environment:
+      - NODE_TYPE=metad
+      - NODE_ID=2
+      - BIND_ADDRESS=0.0.0.0:6001
+      - DATA_DIR=/var/lib/cedar/metad
+      - CLUSTER_ID=1
+      - INITIAL_CLUSTER=metad1=http://metad1:6000,metad2=http://metad2:6001,metad3=http://metad3:6002
+    volumes:
+      - metad2_data:/var/lib/cedar/metad
+      - ./logs/metad2:/var/log/cedar
+    ports:
+      - "6001:6001"
+    networks:
+      - cedar-cluster
+    depends_on:
+      - metad1
+
+  metad3:
+    build: .
+    image: cedargraph:latest
+    container_name: cedar-metad3
+    hostname: metad3
+    environment:
+      - NODE_TYPE=metad
+      - NODE_ID=3
+      - BIND_ADDRESS=0.0.0.0:6002
+      - DATA_DIR=/var/lib/cedar/metad
+      - CLUSTER_ID=1
+      - INITIAL_CLUSTER=metad1=http://metad1:6000,metad2=http://metad2:6001,metad3=http://metad3:6002
+    volumes:
+      - metad3_data:/var/lib/cedar/metad
+      - ./logs/metad3:/var/log/cedar
+    ports:
+      - "6002:6002"
+    networks:
+      - cedar-cluster
+    depends_on:
+      - metad1
+
+  # ============================================================================
+  # StorageD Nodes (动态扩展)
+  # ============================================================================
+  storaged1:
+    <<: *storaged-base
+    container_name: cedar-storaged1
+    hostname: storaged1
+    environment:
+      - NODE_TYPE=storaged
+      - NODE_ID=1
+      - BIND_ADDRESS=0.0.0.0:7000
+      - DATA_DIR=/var/lib/cedar/storage
+      - METAD_ENDPOINTS=1:metad1:6000,2:metad2:6001,3:metad3:6002
+      - PEER_ADDRESSES=storaged2:7001,storaged3:7002,storaged4:7003,storaged5:7004,storaged6:7005,storaged7:7006
+      - AUTO_RECOVERY=true
+      - HEALTH_CHECK_INTERVAL=30
+      - IO_THREADS=4
+      - WORKER_THREADS=8
+      - WAIT_FOR_METAD=true
+    volumes:
+      - storaged1_data:/var/lib/cedar/storage
+      - ./logs/storaged1:/var/log/cedar
+    ports:
+      - "7000:7000"
+    depends_on:
+      - metad1
+      - metad2
+      - metad3
+
+  storaged2:
+    <<: *storaged-base
+    container_name: cedar-storaged2
+    hostname: storaged2
+    environment:
+      - NODE_TYPE=storaged
+      - NODE_ID=2
+      - BIND_ADDRESS=0.0.0.0:7001
+      - DATA_DIR=/var/lib/cedar/storage
+      - METAD_ENDPOINTS=1:metad1:6000,2:metad2:6001,3:metad3:6002
+      - PEER_ADDRESSES=storaged1:7000,storaged3:7002,storaged4:7003,storaged5:7004,storaged6:7005,storaged7:7006
+      - AUTO_RECOVERY=true
+      - HEALTH_CHECK_INTERVAL=30
+      - IO_THREADS=4
+      - WORKER_THREADS=8
+      - WAIT_FOR_METAD=true
+    volumes:
+      - storaged2_data:/var/lib/cedar/storage
+      - ./logs/storaged2:/var/log/cedar
+    ports:
+      - "7001:7001"
+    depends_on:
+      - storaged1
+
+  storaged3:
+    <<: *storaged-base
+    container_name: cedar-storaged3
+    hostname: storaged3
+    environment:
+      - NODE_TYPE=storaged
+      - NODE_ID=3
+      - BIND_ADDRESS=0.0.0.0:7002
+      - DATA_DIR=/var/lib/cedar/storage
+      - METAD_ENDPOINTS=1:metad1:6000,2:metad2:6001,3:metad3:6002
+      - PEER_ADDRESSES=storaged1:7000,storaged2:7001,storaged4:7003,storaged5:7004,storaged6:7005,storaged7:7006
+      - AUTO_RECOVERY=true
+      - HEALTH_CHECK_INTERVAL=30
+      - IO_THREADS=4
+      - WORKER_THREADS=8
+      - WAIT_FOR_METAD=true
+    volumes:
+      - storaged3_data:/var/lib/cedar/storage
+      - ./logs/storaged3:/var/log/cedar
+    ports:
+      - "7002:7002"
+    depends_on:
+      - storaged1
+
+  storaged4:
+    <<: *storaged-base
+    container_name: cedar-storaged4
+    hostname: storaged4
+    environment:
+      - NODE_TYPE=storaged
+      - NODE_ID=4
+      - BIND_ADDRESS=0.0.0.0:7003
+      - DATA_DIR=/var/lib/cedar/storage
+      - METAD_ENDPOINTS=1:metad1:6000,2:metad2:6001,3:metad3:6002
+      - PEER_ADDRESSES=storaged1:7000,storaged2:7001,storaged3:7002,storaged5:7004,storaged6:7005,storaged7:7006
+      - AUTO_RECOVERY=true
+      - HEALTH_CHECK_INTERVAL=30
+      - IO_THREADS=4
+      - WORKER_THREADS=8
+      - WAIT_FOR_METAD=true
+    volumes:
+      - storaged4_data:/var/lib/cedar/storage
+      - ./logs/storaged4:/var/log/cedar
+    ports:
+      - "7003:7003"
+    profiles:
+      - "5nodes"
+      - "7nodes"
+    depends_on:
+      - storaged1
+
+  storaged5:
+    <<: *storaged-base
+    container_name: cedar-storaged5
+    hostname: storaged5
+    environment:
+      - NODE_TYPE=storaged
+      - NODE_ID=5
+      - BIND_ADDRESS=0.0.0.0:7004
+      - DATA_DIR=/var/lib/cedar/storage
+      - METAD_ENDPOINTS=1:metad1:6000,2:metad2:6001,3:metad3:6002
+      - PEER_ADDRESSES=storaged1:7000,storaged2:7001,storaged3:7002,storaged4:7003,storaged6:7005,storaged7:7006
+      - AUTO_RECOVERY=true
+      - HEALTH_CHECK_INTERVAL=30
+      - IO_THREADS=4
+      - WORKER_THREADS=8
+      - WAIT_FOR_METAD=true
+    volumes:
+      - storaged5_data:/var/lib/cedar/storage
+      - ./logs/storaged5:/var/log/cedar
+    ports:
+      - "7004:7004"
+    profiles:
+      - "5nodes"
+      - "7nodes"
+    depends_on:
+      - storaged1
+
+  storaged6:
+    <<: *storaged-base
+    container_name: cedar-storaged6
+    hostname: storaged6
+    environment:
+      - NODE_TYPE=storaged
+      - NODE_ID=6
+      - BIND_ADDRESS=0.0.0.0:7005
+      - DATA_DIR=/var/lib/cedar/storage
+      - METAD_ENDPOINTS=1:metad1:6000,2:metad2:6001,3:metad3:6002
+      - PEER_ADDRESSES=storaged1:7000,storaged2:7001,storaged3:7002,storaged4:7003,storaged5:7004,storaged7:7006
+      - AUTO_RECOVERY=true
+      - HEALTH_CHECK_INTERVAL=30
+      - IO_THREADS=4
+      - WORKER_THREADS=8
+      - WAIT_FOR_METAD=true
+    volumes:
+      - storaged6_data:/var/lib/cedar/storage
+      - ./logs/storaged6:/var/log/cedar
+    ports:
+      - "7005:7005"
+    profiles:
+      - "7nodes"
+    depends_on:
+      - storaged1
+
+  storaged7:
+    <<: *storaged-base
+    container_name: cedar-storaged7
+    hostname: storaged7
+    environment:
+      - NODE_TYPE=storaged
+      - NODE_ID=7
+      - BIND_ADDRESS=0.0.0.0:7006
+      - DATA_DIR=/var/lib/cedar/storage
+      - METAD_ENDPOINTS=1:metad1:6000,2:metad2:6001,3:metad3:6002
+      - PEER_ADDRESSES=storaged1:7000,storaged2:7001,storaged3:7002,storaged4:7003,storaged5:7004,storaged6:7005
+      - AUTO_RECOVERY=true
+      - HEALTH_CHECK_INTERVAL=30
+      - IO_THREADS=4
+      - WORKER_THREADS=8
+      - WAIT_FOR_METAD=true
+    volumes:
+      - storaged7_data:/var/lib/cedar/storage
+      - ./logs/storaged7:/var/log/cedar
+    ports:
+      - "7006:7006"
+    profiles:
+      - "7nodes"
+    depends_on:
+      - storaged1
+
+  # ============================================================================
+  # Load Generator for Performance Testing
+  # ============================================================================
+  loadgen:
+    build: .
+    image: cedargraph:latest
+    container_name: cedar-loadgen
+    environment:
+      - NODE_TYPE=loadgen
+      - STORAGE_ENDPOINTS=storaged1:7000,storaged2:7001,storaged3:7002
+    volumes:
+      - ./test_results:/test_results
+    networks:
+      - cedar-cluster
+    profiles:
+      - "loadgen"
+    command: ["sleep", "infinity"]
+
+  # ============================================================================
+  # Monitoring
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cedar-prometheus
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9090:9090"
+    networks:
+      - cedar-cluster
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cedar-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=cedargraph
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - cedar-cluster
+    depends_on:
+      - prometheus
+
+volumes:
+  metad1_data:
+  metad2_data:
+  metad3_data:
+  storaged1_data:
+  storaged2_data:
+  storaged3_data:
+  storaged4_data:
+  storaged5_data:
+  storaged6_data:
+  storaged7_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  cedar-cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16

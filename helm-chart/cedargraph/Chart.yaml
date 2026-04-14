@@ -1,0 +1,17 @@
+apiVersion: v2
+name: cedargraph
+description: CedarGraph - Distributed Graph Database Helm Chart
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - graph-database
+  - distributed
+  - cedargraph
+home: https://cedargraph.io
+sources:
+  - https://github.com/cedargraph/cedar
+maintainers:
+  - name: CedarGraph Team
+    email: support@cedargraph.io
+icon: https://cedargraph.io/logo.png

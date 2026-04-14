@@ -1,0 +1,249 @@
+syntax = "proto3";
+
+package cedar.storage;
+
+// StorageD - 分布式存储节点服务
+
+// ============================================================================
+// 基础类型
+// ============================================================================
+
+message CedarKey {
+    uint64 entity_id = 1;
+    uint64 timestamp = 2;
+    uint64 target_id = 3;
+    uint32 column_id = 4;
+    uint32 sequence = 5;
+    uint32 type_flags = 6;
+    uint32 partition_id = 7;
+}
+
+message Descriptor {
+    bytes data = 1;  // 序列化的 Descriptor
+}
+
+message Timestamp {
+    uint64 value = 1;
+}
+
+// ============================================================================
+// Put 请求/响应
+// ============================================================================
+
+message PutRequest {
+    CedarKey key = 1;
+    Descriptor descriptor = 2;
+    Timestamp txn_version = 3;
+    uint64 txn_id = 4;  // 分布式事务ID
+}
+
+message PutResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+// ============================================================================
+// Get 请求/响应
+// ============================================================================
+
+message GetRequest {
+    CedarKey key = 1;
+}
+
+message GetResponse {
+    bool success = 1;
+    string error_msg = 2;
+    Descriptor descriptor = 3;
+    bool found = 4;
+}
+
+// ============================================================================
+// Delete 请求/响应
+// ============================================================================
+
+message DeleteRequest {
+    CedarKey key = 1;
+    Timestamp txn_version = 2;
+    uint64 txn_id = 3;
+}
+
+message DeleteResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+// ============================================================================
+// Scan 请求/响应
+// ============================================================================
+
+message ScanRequest {
+    uint64 entity_id = 1;
+    uint64 start_time = 2;
+    uint64 end_time = 3;
+    uint32 partition_id = 4;  // 用于分区验证
+}
+
+message ScanResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated TimestampedDescriptor items = 3;
+}
+
+message TimestampedDescriptor {
+    uint64 timestamp = 1;
+    Descriptor descriptor = 2;
+}
+
+// ============================================================================
+// 批量操作
+// ============================================================================
+
+message BatchPutRequest {
+    message Item {
+        CedarKey key = 1;
+        Descriptor descriptor = 2;
+    }
+    repeated Item items = 1;
+    Timestamp txn_version = 2;
+    uint64 txn_id = 3;
+}
+
+message BatchPutResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated bool item_success = 3;  // 每个条目的成功状态
+}
+
+message BatchGetRequest {
+    repeated CedarKey keys = 1;
+}
+
+message BatchGetResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated Descriptor descriptors = 3;  // 与请求顺序一致，未找到为空
+    repeated bool found = 4;
+}
+
+// ============================================================================
+// 分布式事务支持 (2PC)
+// ============================================================================
+
+// Prepare 阶段
+message PrepareRequest {
+    uint64 txn_id = 1;
+    repeated CedarKey read_set = 2;
+    repeated CedarKey write_set = 3;
+    uint64 commit_ts = 4;
+}
+
+message PrepareResponse {
+    bool prepared = 1;  // true = Prepared, false = Abort
+    string error_msg = 2;
+    uint64 prepared_ts = 3;
+}
+
+// Commit 阶段
+message CommitRequest {
+    uint64 txn_id = 1;
+    uint64 commit_ts = 2;
+}
+
+message CommitResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+// Abort 阶段
+message AbortRequest {
+    uint64 txn_id = 1;
+}
+
+message AbortResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+// ============================================================================
+// 分区管理
+// ============================================================================
+
+message PartitionInfo {
+    uint32 partition_id = 1;
+    uint64 data_size = 2;
+    uint64 key_count = 3;
+    uint64 qps = 4;
+    bool is_leader = 5;
+    string raft_role = 6;  // LEADER, FOLLOWER, CANDIDATE
+}
+
+message GetPartitionInfoRequest {
+    uint32 partition_id = 1;
+}
+
+message GetPartitionInfoResponse {
+    bool success = 1;
+    string error_msg = 2;
+    PartitionInfo info = 3;
+}
+
+// ============================================================================
+// 心跳/健康检查
+// ============================================================================
+
+message HeartbeatRequest {
+    uint32 node_id = 1;
+    repeated PartitionInfo partitions = 2;
+    double cpu_usage = 3;
+    double memory_usage = 4;
+}
+
+message HeartbeatResponse {
+    bool success = 1;
+    string error_msg = 2;
+    // 可以返回来自 MetaD 的指令
+    bool should_transfer_leaders = 3;
+    repeated uint32 transfer_partitions = 4;
+}
+
+// ============================================================================
+// StorageD 服务
+// ============================================================================
+
+service StorageService {
+    // 基础读写
+    rpc Put(PutRequest) returns (PutResponse);
+    rpc Get(GetRequest) returns (GetResponse);
+    rpc Delete(DeleteRequest) returns (DeleteResponse);
+    rpc Scan(ScanRequest) returns (ScanResponse);
+    
+    // 批量操作
+    rpc BatchPut(BatchPutRequest) returns (BatchPutResponse);
+    rpc BatchGet(BatchGetRequest) returns (BatchGetResponse);
+    
+    // 2PC 分布式事务
+    rpc Prepare(PrepareRequest) returns (PrepareResponse);
+    rpc Commit(CommitRequest) returns (CommitResponse);
+    rpc Abort(AbortRequest) returns (AbortResponse);
+    
+    // 分区管理
+    rpc GetPartitionInfo(GetPartitionInfoRequest) returns (GetPartitionInfoResponse);
+    
+    // 数据持久化
+    rpc Flush(FlushRequest) returns (FlushResponse);
+    
+    // 心跳（流式，StorageD 定期上报）
+    rpc Heartbeat(stream HeartbeatRequest) returns (stream HeartbeatResponse);
+}
+
+// Flush 请求/响应
+message FlushRequest {
+    uint32 partition_id = 1;
+    bool wait = 2;  // 是否等待 flush 完成
+}
+
+message FlushResponse {
+    bool success = 1;
+    string error_msg = 2;
+    uint64 flushed_size = 3;  // 刷新的数据大小
+}

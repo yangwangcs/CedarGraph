@@ -1,0 +1,79 @@
+# CedarGraph 分区配置
+# 支持双模式分区策略：StaticHash 和 MTHStream
+
+partition:
+  # 分区策略类型
+  # 可选值: hash, range, graph_aware, dual_mode
+  strategy_type: "dual_mode"
+  
+  # 总分区数 (1-65535)
+  num_partitions: 32768
+  
+  # ============================================
+  # 双模式分区策略配置 (当 strategy_type = dual_mode 时有效)
+  # ============================================
+  dual_mode:
+    # 默认模式: static_hash, mth_stream, auto
+    default_mode: "static_hash"
+    
+    # 自动模式切换阈值 (当 default_mode = auto 时有效)
+    auto_switch:
+      # 时态查询阈值：当时态查询超过此数量时，考虑切换到 MTH 模式
+      temporal_query_threshold: 100
+      
+      # 局部性比例阈值：当局部性查询比例超过此值时，切换到 MTH 模式
+      locality_ratio_threshold: 0.7
+    
+    # ============================================
+    # MTH (Multi-granularity Temporal Hash) 配置
+    # ============================================
+    mth_config:
+      # Sketch 容量 (每分区事件数)
+      sketch_capacity: 1000000
+      
+      # MTH 算法参数
+      alpha: 1.0        # 边界顶点权重
+      beta: 1.0         # 复制因子权重  
+      gamma: 0.0        # 负载均衡权重
+      eta: 0.0          # 迁移成本权重
+      
+      # 时态参数
+      temporal_alpha: 0.01    # 时态衰减系数
+      
+      # Count-Min Sketch 参数
+      sketch_depth: 3         # Sketch 深度 (哈希函数数量)
+      sketch_width: 64        # Sketch 宽度 (每个哈希表的桶数)
+      
+      # 快速路径阈值 (0.0-1.0)
+      # 当置信度分数超过此阈值时，使用快速路径
+      fast_path_threshold: 0.6
+      
+      # 负载松弛度 (0.0-1.0)
+      # 允许分区负载超过平均值的百分比
+      load_relaxation: 0.0
+      
+      # 衰减配置
+      decay_interval: 0       # 衰减间隔（事件数），0 表示禁用
+      decay_factor: 0.95      # 衰减因子
+
+# ============================================
+# 使用示例
+# ============================================
+#
+# 1. 纯 StaticHash 模式 (默认):
+#    strategy_type: "dual_mode"
+#    dual_mode:
+#      default_mode: "static_hash"
+#
+# 2. 纯 MTHStream 模式:
+#    strategy_type: "dual_mode"
+#    dual_mode:
+#      default_mode: "mth_stream"
+#
+# 3. 自动切换模式:
+#    strategy_type: "dual_mode"
+#    dual_mode:
+#      default_mode: "auto"
+#      auto_switch:
+#        temporal_query_threshold: 100
+#        locality_ratio_threshold: 0.7

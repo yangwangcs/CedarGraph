@@ -1,0 +1,531 @@
+// Copyright 2025 The Cedar Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "cedar/dtx/storage_service_impl.h"
+#include "cedar/dtx/monitoring.h"
+
+#include <cstring>
+#include <iostream>
+
+namespace cedar {
+namespace dtx {
+
+// =============================================================================
+// StorageServiceImpl Implementation
+// =============================================================================
+
+StorageServiceImpl::StorageServiceImpl(StoragePartitionManager* partition_manager)
+    : partition_manager_(partition_manager) {}
+
+StorageServiceImpl::~StorageServiceImpl() = default;
+
+// Helper: Convert proto CedarKey to native CedarKey
+CedarKey StorageServiceImpl::ProtoToCedarKey(const cedar::storage::CedarKey& proto_key) {
+  // CedarKey constructor: entity_id, entity_type, column_id, timestamp, sequence, target_id, flags, part_id
+  return CedarKey(
+      proto_key.entity_id(),
+      static_cast<EntityType>(proto_key.type_flags()),  // entity_type from type_flags
+      static_cast<uint16_t>(proto_key.column_id()),
+      Timestamp(proto_key.timestamp()),
+      static_cast<uint16_t>(proto_key.sequence()),
+      proto_key.target_id(),
+      0,  // flags
+      static_cast<PartitionID>(proto_key.partition_id()));
+}
+
+// Helper: Convert native CedarKey to proto CedarKey
+cedar::storage::CedarKey StorageServiceImpl::CedarKeyToProto(const CedarKey& key) {
+  cedar::storage::CedarKey proto;
+  proto.set_entity_id(key.entity_id());
+  proto.set_timestamp(key.timestamp().value());
+  proto.set_target_id(key.target_id());
+  proto.set_column_id(key.column_id());
+  proto.set_sequence(key.sequence());
+  proto.set_type_flags(key.flags());
+  proto.set_partition_id(key.part_id());
+  return proto;
+}
+
+// Helper: Convert proto Descriptor to native Descriptor
+// Supports both 8-byte raw Descriptor values and 4-byte InlineInt payloads.
+// For 4-byte payloads, the column_id from the key is injected.
+Descriptor StorageServiceImpl::ProtoToDescriptor(const cedar::storage::Descriptor& proto_desc,
+                                                  uint16_t column_id) {
+  const std::string& data = proto_desc.data();
+  if (data.size() >= sizeof(uint64_t)) {
+    uint64_t raw_value;
+    std::memcpy(&raw_value, data.data(), sizeof(uint64_t));
+    return Descriptor(raw_value);
+  }
+  if (data.size() >= sizeof(int32_t)) {
+    int32_t value;
+    std::memcpy(&value, data.data(), sizeof(int32_t));
+    return Descriptor(EntryKind::InlineInt, column_id,
+                      static_cast<uint32_t>(value), sizeof(int32_t));
+  }
+  return Descriptor();  // Return empty descriptor if no data
+}
+
+// Helper: Convert native Descriptor to proto Descriptor
+// Serializes the payload in a format compatible with ProtoToDescriptor.
+cedar::storage::Descriptor StorageServiceImpl::DescriptorToProto(const Descriptor& desc) {
+  cedar::storage::Descriptor proto;
+  if (desc.GetKind() == EntryKind::InlineInt) {
+    auto val = desc.AsInlineInt();
+    if (val.has_value()) {
+      int32_t value = val.value();
+      proto.set_data(reinterpret_cast<const char*>(&value), sizeof(value));
+    }
+  } else if (desc.GetKind() == EntryKind::InlineShortStr) {
+    proto.set_data(desc.AsInlineShortStr());
+  } else if (desc.GetKind() == EntryKind::InlineFloat) {
+    auto val = desc.AsInlineFloat();
+    if (val.has_value()) {
+      union { float f; uint32_t i; } u;
+      u.f = val.value();
+      proto.set_data(reinterpret_cast<const char*>(&u.i), sizeof(u.i));
+    }
+  } else {
+    // Fallback: send raw 8-byte descriptor for other kinds
+    uint64_t raw_value = desc.AsRaw();
+    proto.set_data(reinterpret_cast<const char*>(&raw_value), sizeof(raw_value));
+  }
+  return proto;
+}
+
+// =============================================================================
+// Basic Operations
+// =============================================================================
+
+grpc::Status StorageServiceImpl::Put(grpc::ServerContext* context,
+                                      const cedar::storage::PutRequest* request,
+                                      cedar::storage::PutResponse* response) {
+  (void)context;
+  
+  PartitionID pid = static_cast<PartitionID>(request->key().partition_id());
+  auto* partition = partition_manager_->GetPartition(pid);
+  
+  if (!partition) {
+    response->set_success(false);
+    response->set_error_msg("Partition not found: " + std::to_string(pid));
+    return grpc::Status(grpc::StatusCode::NOT_FOUND, "Partition not found");
+  }
+  
+  // Convert proto key to CedarKey
+  CedarKey key = ProtoToCedarKey(request->key());
+  
+  // Convert descriptor (inject column_id from key for InlineInt compatibility)
+  Descriptor desc = ProtoToDescriptor(request->descriptor_(), key.column_id());
+  
+  // Convert timestamp and txn_id
+  Timestamp txn_version(request->txn_version().value());
+  TxnID txn_id = request->txn_id();
+  
+  // Execute put
+  auto status = partition->Put(key, desc, txn_version, txn_id);
+  
+  if (status.ok()) {
+    response->set_success(true);
+    return grpc::Status::OK;
+  } else {
+    response->set_success(false);
+    response->set_error_msg(status.ToString());
+    return grpc::Status(grpc::StatusCode::INTERNAL, status.ToString());
+  }
+}
+
+grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
+                                      const cedar::storage::GetRequest* request,
+                                      cedar::storage::GetResponse* response) {
+  (void)context;
+  
+  PartitionID pid = static_cast<PartitionID>(request->key().partition_id());
+  auto* partition = partition_manager_->GetPartition(pid);
+  
+  if (!partition) {
+    response->set_success(false);
+    response->set_found(false);
+    response->set_error_msg("Partition not found: " + std::to_string(pid));
+    return grpc::Status(grpc::StatusCode::NOT_FOUND, "Partition not found");
+  }
+  
+  // Convert proto key to CedarKey
+  CedarKey key = ProtoToCedarKey(request->key());
+  
+  // For Get, we use max timestamp to get latest value
+  // TODO: Support reading at specific timestamp
+  Timestamp read_time = Timestamp::Max();
+  
+  // Execute get
+  auto result = partition->Get(key, read_time);
+  
+  if (result.ok()) {
+    response->set_success(true);
+    response->set_found(true);
+    *response->mutable_descriptor_() = DescriptorToProto(result.value());
+    return grpc::Status::OK;
+  } else if (result.status().IsNotFound()) {
+    response->set_success(true);
+    response->set_found(false);
+    return grpc::Status::OK;
+  } else {
+    response->set_success(false);
+    response->set_found(false);
+    response->set_error_msg(result.status().ToString());
+    return grpc::Status(grpc::StatusCode::INTERNAL, result.status().ToString());
+  }
+}
+
+grpc::Status StorageServiceImpl::Delete(grpc::ServerContext* context,
+                                         const cedar::storage::DeleteRequest* request,
+                                         cedar::storage::DeleteResponse* response) {
+  (void)context;
+  
+  PartitionID pid = static_cast<PartitionID>(request->key().partition_id());
+  auto* partition = partition_manager_->GetPartition(pid);
+  
+  if (!partition) {
+    response->set_success(false);
+    response->set_error_msg("Partition not found: " + std::to_string(pid));
+    return grpc::Status(grpc::StatusCode::NOT_FOUND, "Partition not found");
+  }
+  
+  // Convert proto key to CedarKey
+  CedarKey key = ProtoToCedarKey(request->key());
+  
+  // Convert timestamp and txn_id
+  Timestamp txn_version(request->txn_version().value());
+  TxnID txn_id = request->txn_id();
+  
+  // Execute delete by writing an empty descriptor (tombstone)
+  Descriptor empty_desc;
+  auto status = partition->Put(key, empty_desc, txn_version, txn_id);
+  
+  if (status.ok()) {
+    response->set_success(true);
+    return grpc::Status::OK;
+  } else {
+    response->set_success(false);
+    response->set_error_msg(status.ToString());
+    return grpc::Status(grpc::StatusCode::INTERNAL, status.ToString());
+  }
+}
+
+grpc::Status StorageServiceImpl::Scan(grpc::ServerContext* context,
+                                       const cedar::storage::ScanRequest* request,
+                                       cedar::storage::ScanResponse* response) {
+  (void)context;
+  (void)request;
+  
+  // TODO: Implement scan operation using CedarGraphStorage iterator
+  response->set_success(false);
+  response->set_error_msg("Scan not fully implemented");
+  return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "Scan not fully implemented");
+}
+
+// =============================================================================
+// Batch Operations
+// =============================================================================
+
+grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
+                                           const cedar::storage::BatchPutRequest* request,
+                                           cedar::storage::BatchPutResponse* response) {
+  (void)context;
+  
+  Timestamp txn_version(request->txn_version().value());
+  TxnID txn_id = request->txn_id();
+  
+  bool all_success = true;
+  
+  for (const auto& item : request->items()) {
+    PartitionID pid = static_cast<PartitionID>(item.key().partition_id());
+    auto* partition = partition_manager_->GetPartition(pid);
+    
+    if (!partition) {
+      response->add_item_success(false);
+      all_success = false;
+      continue;
+    }
+    
+    CedarKey key = ProtoToCedarKey(item.key());
+    Descriptor desc = ProtoToDescriptor(item.descriptor_(), key.column_id());
+    
+    auto status = partition->Put(key, desc, txn_version, txn_id);
+    response->add_item_success(status.ok());
+    if (!status.ok()) {
+      all_success = false;
+    }
+  }
+  
+  response->set_success(all_success);
+  if (!all_success) {
+    response->set_error_msg("Some items failed to write");
+  }
+  
+  return grpc::Status::OK;
+}
+
+grpc::Status StorageServiceImpl::BatchGet(grpc::ServerContext* context,
+                                           const cedar::storage::BatchGetRequest* request,
+                                           cedar::storage::BatchGetResponse* response) {
+  (void)context;
+  
+  // For BatchGet, we use max timestamp to get latest values
+  Timestamp read_time = Timestamp::Max();
+  
+  for (const auto& proto_key : request->keys()) {
+    PartitionID pid = static_cast<PartitionID>(proto_key.partition_id());
+    auto* partition = partition_manager_->GetPartition(pid);
+    
+    if (!partition) {
+      response->add_descriptors();
+      response->add_found(false);
+      continue;
+    }
+    
+    CedarKey key = ProtoToCedarKey(proto_key);
+    auto result = partition->Get(key, read_time);
+    
+    if (result.ok()) {
+      *response->add_descriptors() = DescriptorToProto(result.value());
+      response->add_found(true);
+    } else {
+      response->add_descriptors();
+      response->add_found(false);
+    }
+  }
+  
+  response->set_success(true);
+  return grpc::Status::OK;
+}
+
+// =============================================================================
+// 2PC Distributed Transaction Support
+// =============================================================================
+
+grpc::Status StorageServiceImpl::Prepare(grpc::ServerContext* context,
+                                          const cedar::storage::PrepareRequest* request,
+                                          cedar::storage::PrepareResponse* response) {
+  (void)context;
+  
+  TxnID txn_id = request->txn_id();
+  Timestamp commit_ts(request->commit_ts());
+  
+  // Convert read/write sets
+  std::vector<CedarKey> read_set;
+  std::vector<CedarKey> write_set;
+  
+  for (const auto& proto_key : request->read_set()) {
+    read_set.push_back(ProtoToCedarKey(proto_key));
+  }
+  
+  for (const auto& proto_key : request->write_set()) {
+    write_set.push_back(ProtoToCedarKey(proto_key));
+  }
+  
+  // For simplicity, we prepare on partition 0 (should use proper routing based on keys)
+  // In production, this should route to the correct partition based on key hash
+  PartitionID pid = 0;
+  if (!write_set.empty()) {
+    pid = write_set[0].part_id();
+  } else if (!read_set.empty()) {
+    pid = read_set[0].part_id();
+  }
+  
+  auto* partition = partition_manager_->GetPartition(pid);
+  
+  if (!partition) {
+    response->set_prepared(false);
+    response->set_error_msg("Partition not found: " + std::to_string(pid));
+    return grpc::Status(grpc::StatusCode::NOT_FOUND, "Partition not found");
+  }
+  
+  auto status = partition->Prepare(txn_id, read_set, write_set, commit_ts);
+  
+  if (status.ok()) {
+    response->set_prepared(true);
+    response->set_prepared_ts(commit_ts.value());
+    return grpc::Status::OK;
+  } else {
+    response->set_prepared(false);
+    response->set_error_msg(status.ToString());
+    return grpc::Status::OK;  // Still return OK, but prepared=false
+  }
+}
+
+grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
+                                         const cedar::storage::CommitRequest* request,
+                                         cedar::storage::CommitResponse* response) {
+  (void)context;
+  
+  try {
+    TxnID txn_id = request->txn_id();
+    Timestamp commit_ts(request->commit_ts());
+    
+    // For simplicity, we commit on all partitions that might have the transaction
+    // In production, should track which partitions participated in the transaction
+    bool any_success = false;
+    std::string last_error;
+    
+    auto partitions = partition_manager_->GetAllPartitions();
+    for (PartitionID pid : partitions) {
+      auto* partition = partition_manager_->GetPartition(pid);
+      if (partition) {
+        auto status = partition->Commit(txn_id, commit_ts);
+        if (status.ok()) {
+          any_success = true;
+        } else {
+          last_error = status.ToString();
+        }
+      }
+    }
+    
+    if (any_success) {
+      response->set_success(true);
+      return grpc::Status::OK;
+    } else {
+      response->set_success(false);
+      response->set_error_msg(last_error.empty() ? "No partitions found" : last_error);
+      return grpc::Status(grpc::StatusCode::INTERNAL, last_error);
+    }
+  } catch (const std::exception& e) {
+    std::cerr << "[StorageServiceImpl::Commit] Exception: " << e.what() << std::endl;
+    response->set_success(false);
+    response->set_error_msg(std::string("Exception: ") + e.what());
+    return grpc::Status(grpc::StatusCode::INTERNAL, e.what());
+  } catch (...) {
+    std::cerr << "[StorageServiceImpl::Commit] Unknown exception" << std::endl;
+    response->set_success(false);
+    response->set_error_msg("Unknown exception");
+    return grpc::Status(grpc::StatusCode::INTERNAL, "Unknown exception");
+  }
+}
+
+grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
+                                        const cedar::storage::AbortRequest* request,
+                                        cedar::storage::AbortResponse* response) {
+  (void)context;
+  
+  TxnID txn_id = request->txn_id();
+  
+  // Abort on all partitions
+  bool any_success = false;
+  std::string last_error;
+  
+  auto partitions = partition_manager_->GetAllPartitions();
+  for (PartitionID pid : partitions) {
+    auto* partition = partition_manager_->GetPartition(pid);
+    if (partition) {
+      auto status = partition->Abort(txn_id);
+      if (status.ok()) {
+        any_success = true;
+      } else {
+        last_error = status.ToString();
+      }
+    }
+  }
+  
+  if (any_success) {
+    response->set_success(true);
+    return grpc::Status::OK;
+  } else {
+    response->set_success(false);
+    response->set_error_msg(last_error.empty() ? "No partitions found" : last_error);
+    return grpc::Status(grpc::StatusCode::INTERNAL, last_error);
+  }
+}
+
+// =============================================================================
+// Partition Management
+// =============================================================================
+
+grpc::Status StorageServiceImpl::GetPartitionInfo(grpc::ServerContext* context,
+                                                   const cedar::storage::GetPartitionInfoRequest* request,
+                                                   cedar::storage::GetPartitionInfoResponse* response) {
+  (void)context;
+  
+  PartitionID pid = static_cast<PartitionID>(request->partition_id());
+  auto* partition = partition_manager_->GetPartition(pid);
+  
+  if (!partition) {
+    response->set_success(false);
+    response->set_error_msg("Partition not found: " + std::to_string(pid));
+    return grpc::Status(grpc::StatusCode::NOT_FOUND, "Partition not found");
+  }
+  
+  auto stats = partition->GetStats();
+  
+  auto* info = response->mutable_info();
+  info->set_partition_id(pid);
+  info->set_key_count(stats.num_keys);
+  info->set_data_size(stats.disk_usage_bytes);
+  info->set_qps(0);  // TODO: Track QPS
+  info->set_is_leader(true);  // TODO: Integrate with Raft
+  info->set_raft_role("LEADER");
+  
+  response->set_success(true);
+  return grpc::Status::OK;
+}
+
+// =============================================================================
+// Data Persistence
+// =============================================================================
+
+grpc::Status StorageServiceImpl::Flush(grpc::ServerContext* context,
+                                        const cedar::storage::FlushRequest* request,
+                                        cedar::storage::FlushResponse* response) {
+  (void)context;
+  
+  auto status = partition_manager_->FlushAll();
+  
+  if (status.ok()) {
+    response->set_success(true);
+    response->set_flushed_size(0);  // TODO: Track flushed size
+    return grpc::Status::OK;
+  } else {
+    response->set_success(false);
+    response->set_error_msg(status.ToString());
+    return grpc::Status(grpc::StatusCode::INTERNAL, status.ToString());
+  }
+}
+
+// =============================================================================
+// Heartbeat (Bidirectional Streaming)
+// =============================================================================
+
+grpc::Status StorageServiceImpl::Heartbeat(grpc::ServerContext* context,
+                                            grpc::ServerReaderWriter<cedar::storage::HeartbeatResponse,
+                                                                     cedar::storage::HeartbeatRequest>* stream) {
+  (void)context;
+  
+  cedar::storage::HeartbeatRequest request;
+  
+  // Process incoming heartbeat requests and send responses
+  while (stream->Read(&request)) {
+    cedar::storage::HeartbeatResponse response;
+    response.set_success(true);
+    
+    // Process any commands from the request
+    // For now, just acknowledge
+    
+    if (!stream->Write(response)) {
+      break;
+    }
+  }
+  
+  return grpc::Status::OK;
+}
+
+}  // namespace dtx
+}  // namespace cedar

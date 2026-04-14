@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-graphd
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: graphd
+spec:
+  replicas: {{ .Values.graphd.replicas }}
+  selector:
+    matchLabels:
+      {{- include "cedargraph.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: graphd
+  template:
+    metadata:
+      labels:
+        {{- include "cedargraph.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: graphd
+    spec:
+      initContainers:
+        - name: wait-for-metad
+          image: busybox:latest
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z {{ include "cedargraph.fullname" . }}-metad-0.{{ include "cedargraph.fullname" . }}-metad {{ .Values.metad.service.port }}; do
+                echo "Waiting for metad..."
+                sleep 2
+              done
+      containers:
+        - name: graphd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: NODE_ROLE
+              value: "graphd"
+            - name: META_SERVERS
+              value: "{{ include "cedargraph.metad.endpoints" . }}"
+            - name: QUERY_PORT
+              value: "{{ .Values.graphd.service.ports.query }}"
+            - name: HTTP_PORT
+              value: "{{ .Values.graphd.service.ports.http }}"
+          ports:
+            - name: query
+              containerPort: {{ .Values.graphd.service.ports.query }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.graphd.service.ports.http }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.graphd.resources | nindent 12 }}
+          livenessProbe:
+            tcpSocket:
+              port: query
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: query
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-graphd
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.graphd.service.type }}
+  ports:
+    - name: query
+      port: {{ .Values.graphd.service.ports.query }}
+      targetPort: query
+      protocol: TCP
+    - name: http
+      port: {{ .Values.graphd.service.ports.http }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "cedargraph.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: graphd
+
+---
+{{- if .Values.global.studio.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-studio
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: studio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "cedargraph.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: studio
+  template:
+    metadata:
+      labels:
+        {{- include "cedargraph.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: studio
+    spec:
+      containers:
+        - name: studio
+          image: {{ .Values.global.studio.image }}
+          ports:
+            - containerPort: 7001
+          env:
+            - name: CEDAR_GRAPHD_HOST
+              value: {{ include "cedargraph.fullname" . }}-graphd
+            - name: CEDAR_GRAPHD_PORT
+              value: "{{ .Values.graphd.service.ports.query }}"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-studio
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7001
+      targetPort: 7001
+  selector:
+    {{- include "cedargraph.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: studio
+{{- end }}

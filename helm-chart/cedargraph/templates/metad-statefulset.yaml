@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-metad
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metad
+spec:
+  serviceName: {{ include "cedargraph.fullname" . }}-metad
+  replicas: {{ .Values.metad.replicas }}
+  selector:
+    matchLabels:
+      {{- include "cedargraph.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metad
+  template:
+    metadata:
+      labels:
+        {{- include "cedargraph.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: metad
+    spec:
+      containers:
+        - name: metad
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: NODE_ROLE
+              value: "metad"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_ID
+              value: "$(POD_NAME)"
+            - name: META_PEERS
+              value: "{{ include "cedargraph.metad.endpoints" . }}"
+            - name: BIND_ADDRESS
+              value: "0.0.0.0:{{ .Values.metad.service.port }}"
+            - name: DATA_DIR
+              value: "/data/meta"
+          ports:
+            - name: metad
+              containerPort: {{ .Values.metad.service.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.metad.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data/meta
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "cedar-admin --host=localhost --port={{ .Values.metad.service.port }} status"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "cedar-admin --host=localhost --port={{ .Values.metad.service.port }} status"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: {{ .Values.global.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.metad.persistence.size }}

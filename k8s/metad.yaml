@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: metad
+  namespace: cedargraph
+  labels:
+    app: metad
+    app.kubernetes.io/name: metad
+    app.kubernetes.io/component: metadata
+spec:
+  serviceName: metad
+  replicas: 3
+  selector:
+    matchLabels:
+      app: metad
+  template:
+    metadata:
+      labels:
+        app: metad
+        app.kubernetes.io/name: metad
+        app.kubernetes.io/component: metadata
+    spec:
+      containers:
+      - name: metad
+        image: cedargraph:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/local/bin/metad_server"]
+        args:
+        - "--config=/etc/cedar/metad.conf"
+        env:
+        - name: NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: BIND_ADDRESS
+          value: "0.0.0.0:6000"
+        - name: DATA_DIR
+          value: "/var/lib/cedar/metad"
+        - name: CLUSTER_ID
+          value: "1"
+        - name: INITIAL_CLUSTER
+          value: "metad-0=http://metad-0.metad:6000,metad-1=http://metad-1.metad:6001,metad-2=http://metad-2.metad:6002"
+        ports:
+        - name: grpc
+          containerPort: 6000
+          protocol: TCP
+        livenessProbe:
+          tcpSocket:
+            port: 6000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          tcpSocket:
+            port: 6000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/cedar/metad
+        - name: config
+          mountPath: /etc/cedar
+      volumes:
+      - name: config
+        configMap:
+          name: metad-config
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metad
+  namespace: cedargraph
+  labels:
+    app: metad
+spec:
+  selector:
+    app: metad
+  ports:
+  - name: grpc
+    port: 6000
+    targetPort: 6000
+  clusterIP: None
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metad-config
+  namespace: cedargraph
+data:
+  metad.conf: |
+    cluster_id=1
+    election_timeout=1000
+    heartbeat_interval=100

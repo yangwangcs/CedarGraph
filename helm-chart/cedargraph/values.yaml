@@ -1,0 +1,113 @@
+# CedarGraph Helm Chart 默认配置
+
+# 镜像配置
+image:
+  repository: cedargraph/cedar
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+# 全局配置
+global:
+  # 集群名称
+  clusterName: "cedar-cluster"
+  
+  # 存储类
+  storageClass: "standard"
+  
+  # 是否启用监控
+  monitoring:
+    enabled: true
+    prometheusPort: 9090
+  
+  # 是否启用 Studio
+  studio:
+    enabled: false
+    image: cedargraph/studio:latest
+
+# MetaD 配置 (固定3节点HA)
+metad:
+  replicas: 3
+  
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "2000m"
+  
+  persistence:
+    enabled: true
+    size: 10Gi
+    accessMode: ReadWriteOnce
+  
+  service:
+    type: ClusterIP
+    port: 9559
+
+# StorageD 配置
+storaged:
+  replicas: 3
+  
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "4000m"
+  
+  persistence:
+    enabled: true
+    size: 100Gi
+    accessMode: ReadWriteOnce
+  
+  service:
+    type: ClusterIP
+    port: 9779
+
+# GraphD 配置
+graphd:
+  replicas: 1
+  
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "2000m"
+  
+  service:
+    type: ClusterIP
+    ports:
+      query: 9669
+      http: 19669
+
+# 控制台配置
+console:
+  enabled: true
+
+# 节点亲和性
+affinity:
+  enabled: false
+  # 例如: 将不同节点分布在不同可用区
+  # podAntiAffinity:
+  #   preferredDuringSchedulingIgnoredDuringExecution:
+  #     - weight: 100
+  #       podAffinityTerm:
+  #         labelSelector:
+  #           matchExpressions:
+  #             - key: app.kubernetes.io/component
+  #               operator: In
+  #               values:
+  #                 - storaged
+  #         topologyKey: kubernetes.io/hostname
+
+# 容忍配置
+tolerations: []
+# 例如:
+# - key: "dedicated"
+#   operator: "Equal"
+#   value: "cedargraph"
+#   effect: "NoSchedule"

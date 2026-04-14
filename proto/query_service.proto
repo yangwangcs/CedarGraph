@@ -1,0 +1,429 @@
+syntax = "proto3";
+
+package cedar.query;
+
+// cedar-queryd - 分布式查询层服务
+
+// ============================================================================
+// 基础类型
+// ============================================================================
+
+message Value {
+    oneof value_type {
+        bool bool_val = 1;
+        int64 int_val = 2;
+        double float_val = 3;
+        string string_val = 4;
+        bytes bytes_val = 5;
+        ListValue list_val = 6;
+        MapValue map_val = 7;
+        NullValue null_val = 8;
+    }
+}
+
+message NullValue {
+    // 表示 NULL
+}
+
+message ListValue {
+    repeated Value items = 1;
+}
+
+message MapValue {
+    map<string, Value> items = 1;
+}
+
+// 查询参数
+message QueryParameters {
+    map<string, Value> params = 1;
+}
+
+// ============================================================================
+// 查询请求/响应
+// ============================================================================
+
+message ExecuteQueryRequest {
+    // Cypher 查询语句
+    string query = 1;
+    
+    // 查询参数 (可选)
+    QueryParameters parameters = 2;
+    
+    // 客户端会话 ID (用于会话粘性)
+    string session_id = 3;
+    
+    // 一致性级别
+    ConsistencyLevel consistency = 4;
+    
+    // 查询超时 (毫秒)
+    uint32 timeout_ms = 5;
+    
+    // 是否返回执行计划 (EXPLAIN)
+    bool explain_only = 6;
+}
+
+enum ConsistencyLevel {
+    // 读己之所写 - 保证读到最新写入的数据
+    READ_YOUR_WRITES = 0;
+    // 最终一致性 - 可能读到稍旧的数据，延迟更低
+    EVENTUAL = 1;
+    // 强一致性 - 读所有副本确认
+    STRONG = 2;
+}
+
+message ExecuteQueryResponse {
+    bool success = 1;
+    string error_msg = 2;
+    
+    // 查询结果
+    ResultSet result_set = 3;
+    
+    // 执行统计
+    ExecutionStats stats = 4;
+    
+    // 执行计划 (如果 explain_only = true)
+    string execution_plan = 5;
+    
+    // 查询 ID (用于追踪)
+    string query_id = 6;
+}
+
+message ResultSet {
+    // 列名
+    repeated string columns = 1;
+    
+    // 数据行
+    repeated Row rows = 2;
+    
+    // 总行数 (可能为估计值)
+    uint64 total_rows = 3;
+}
+
+message Row {
+    repeated Value values = 1;
+}
+
+message ExecutionStats {
+    // 执行时间 (微秒)
+    uint64 execution_time_us = 1;
+    
+    // 扫描的行数
+    uint64 rows_scanned = 2;
+    
+    // 返回的行数
+    uint64 rows_returned = 3;
+    
+    // 访问的存储节点数
+    uint32 storage_nodes_accessed = 4;
+    
+    // 是否使用了缓存计划
+    bool plan_from_cache = 5;
+    
+    // 网络往返次数
+    uint32 network_roundtrips = 6;
+}
+
+// ============================================================================
+// 流式查询 (用于大结果集)
+// ============================================================================
+
+message StreamQueryRequest {
+    string query = 1;
+    QueryParameters parameters = 2;
+    
+    // 批次大小
+    uint32 batch_size = 3;
+    
+    // 游标 ID (用于续传)
+    string cursor_id = 4;
+}
+
+message StreamQueryResponse {
+    bool success = 1;
+    string error_msg = 2;
+    
+    // 结果批次
+    ResultSet batch = 3;
+    
+    // 是否还有更多数据
+    bool has_more = 4;
+    
+    // 游标 ID
+    string cursor_id = 5;
+    
+    // 进度 (0-100)
+    uint32 progress_percent = 6;
+}
+
+// ============================================================================
+// 图遍历查询 (针对 CedarKey 优化)
+// ============================================================================
+
+message TraverseRequest {
+    // 起始节点 ID
+    uint64 start_node_id = 1;
+    
+    // 遍历方向
+    enum Direction {
+        OUTGOING = 0;
+        INCOMING = 1;
+        BOTH = 2;
+    }
+    Direction direction = 2;
+    
+    // 边类型过滤 (空表示所有类型)
+    repeated uint32 edge_types = 3;
+    
+    // 遍历深度
+    uint32 max_depth = 4;
+    
+    // 每层最大扩展数 (防止爆炸)
+    uint32 max_branch = 5;
+    
+    // 时序约束 (可选)
+    uint64 as_of_timestamp = 6;
+    
+    // 返回属性
+    bool return_properties = 7;
+    
+    // 过滤条件 (Cypher 表达式子集)
+    string filter_expr = 8;
+}
+
+message TraverseResponse {
+    bool success = 1;
+    string error_msg = 2;
+    
+    // 路径结果
+    repeated Path paths = 3;
+    
+    // 访问的节点数
+    uint32 nodes_visited = 4;
+}
+
+message Path {
+    // 路径中的节点
+    repeated NodeInfo nodes = 1;
+    
+    // 路径中的边
+    repeated EdgeInfo edges = 2;
+    
+    // 路径长度
+    uint32 length = 3;
+}
+
+message NodeInfo {
+    uint64 id = 1;
+    uint32 label = 2;
+    map<string, Value> properties = 3;
+}
+
+message EdgeInfo {
+    uint64 id = 1;
+    uint32 type = 2;
+    uint64 src_id = 3;
+    uint64 dst_id = 4;
+    map<string, Value> properties = 5;
+}
+
+// ============================================================================
+// 时序查询 (利用 CedarKey 的降序时间戳)
+// ============================================================================
+
+message TemporalQueryRequest {
+    // 实体 ID
+    uint64 entity_id = 1;
+    
+    // 实体类型
+    enum EntityType {
+        NODE = 0;
+        EDGE_OUT = 1;
+        EDGE_IN = 2;
+    }
+    EntityType entity_type = 2;
+    
+    // 时序查询类型
+    enum QueryType {
+        // 获取特定时间点的版本
+        AS_OF = 0;
+        // 获取版本历史
+        VERSION_HISTORY = 1;
+        // 获取时间范围内的变化
+        CHANGES_IN_RANGE = 2;
+        // 获取最新版本
+        LATEST = 3;
+    }
+    QueryType query_type = 3;
+    
+    // 时间点 (用于 AS_OF)
+    uint64 timestamp = 4;
+    
+    // 时间范围 (用于 CHANGES_IN_RANGE)
+    uint64 start_time = 5;
+    uint64 end_time = 6;
+    
+    // 最大返回版本数
+    uint32 max_versions = 7;
+}
+
+message TemporalQueryResponse {
+    bool success = 1;
+    string error_msg = 2;
+    
+    // 版本结果 (按时间降序)
+    repeated VersionedEntity versions = 3;
+}
+
+message VersionedEntity {
+    uint64 timestamp = 1;
+    uint64 version_number = 2;
+    bool is_deleted = 3;
+    map<string, Value> properties = 4;
+}
+
+// ============================================================================
+// 批量操作
+// ============================================================================
+
+message BatchQueryRequest {
+    message QueryItem {
+        string query_id = 1;
+        string query = 2;
+        QueryParameters parameters = 3;
+    }
+    repeated QueryItem queries = 1;
+    
+    // 是否并行执行
+    bool parallel = 2;
+    
+    // 全局超时
+    uint32 timeout_ms = 3;
+}
+
+message BatchQueryResponse {
+    bool success = 1;
+    string error_msg = 2;
+    
+    message QueryResult {
+        string query_id = 1;
+        bool success = 2;
+        string error_msg = 3;
+        ResultSet result_set = 4;
+        ExecutionStats stats = 5;
+    }
+    repeated QueryResult results = 3;
+}
+
+// ============================================================================
+// Schema 查询
+// ============================================================================
+
+message GetSchemaRequest {
+    // 空表示获取所有 schema
+    repeated string labels = 1;
+}
+
+message GetSchemaResponse {
+    bool success = 1;
+    string error_msg = 2;
+    
+    message LabelSchema {
+        string name = 1;
+        repeated PropertyDef properties = 2;
+        repeated string indexes = 3;
+    }
+    
+    message PropertyDef {
+        string name = 1;
+        string type = 2;  // STRING, INT, FLOAT, BOOL, etc.
+        bool nullable = 3;
+        bool indexed = 4;
+    }
+    
+    repeated LabelSchema labels = 3;
+}
+
+// ============================================================================
+// 健康检查与统计
+// ============================================================================
+
+message HealthRequest {
+    // 是否详细检查
+    bool detailed = 1;
+}
+
+message HealthResponse {
+    bool healthy = 1;
+    string status = 2;
+    
+    // 各组件状态
+    bool parser_healthy = 3;
+    bool planner_healthy = 4;
+    bool executor_healthy = 5;
+    bool storage_client_healthy = 6;
+    bool meta_client_healthy = 7;
+    
+    // 负载信息
+    double cpu_usage = 8;
+    double memory_usage = 9;
+    uint32 active_queries = 10;
+    uint32 queued_queries = 11;
+}
+
+message QueryStatsRequest {
+    // 空表示获取所有统计
+}
+
+message QueryStatsResponse {
+    // 查询计数
+    uint64 total_queries = 1;
+    uint64 failed_queries = 2;
+    uint64 cached_plans = 3;
+    
+    // 延迟统计 (微秒)
+    uint64 avg_latency_us = 4;
+    uint64 p99_latency_us = 5;
+    
+    // 吞吐量
+    double queries_per_second = 6;
+    
+    // 慢查询
+    repeated SlowQueryInfo slow_queries = 7;
+}
+
+message SlowQueryInfo {
+    string query_id = 1;
+    string query_text = 2;
+    uint64 execution_time_us = 3;
+    uint64 timestamp = 4;
+}
+
+// ============================================================================
+// 查询服务
+// ============================================================================
+
+service QueryService {
+    // 执行 Cypher 查询
+    rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);
+    
+    // 流式查询 (用于大结果集)
+    rpc StreamQuery(StreamQueryRequest) returns (stream StreamQueryResponse);
+    
+    // 图遍历 (针对 CedarKey 优化的快速遍历)
+    rpc Traverse(TraverseRequest) returns (TraverseResponse);
+    
+    // 时序查询 (利用 CedarKey 降序时间戳)
+    rpc TemporalQuery(TemporalQueryRequest) returns (TemporalQueryResponse);
+    
+    // 批量查询
+    rpc BatchQuery(BatchQueryRequest) returns (BatchQueryResponse);
+    
+    // 获取 Schema 信息
+    rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
+    
+    // 健康检查
+    rpc Health(HealthRequest) returns (HealthResponse);
+    
+    // 查询统计
+    rpc GetStats(QueryStatsRequest) returns (QueryStatsResponse);
+}
