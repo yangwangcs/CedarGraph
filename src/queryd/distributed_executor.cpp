@@ -378,11 +378,8 @@ DistributedExecutor::DistributedExecutor(
   router_ = std::make_unique<PartitionRouter>(meta_client_);
   parallel_executor_ = std::make_unique<ParallelExecutor>(worker_count);
   result_merger_ = std::make_unique<ResultMerger>();
-  {
-    queryd::GraphSchema schema;
-    if (meta_client_ && meta_client_->GetSchema(&schema).ok()) {
-      validator_ = std::make_unique<cypher::QueryValidator>(&schema);
-    }
+  if (meta_client_ && meta_client_->GetSchema(&schema_).ok()) {
+    validator_ = std::make_unique<cypher::QueryValidator>(&schema_);
   }
 }
 
@@ -644,7 +641,16 @@ std::vector<SubQueryTask> DistributedExecutor::SplitQuery(
   for (const auto& partition : state.partitions) {
     SubQueryTask task;
     task.partition_id = partition.partition_id;
-    task.storage_node = partition.leader_address;
+    Status s = router_->GetStorageNode(task.partition_id, &task.storage_node);
+    if (!s.ok()) {
+      tasks.clear();
+      return tasks;
+    }
+    s = router_->CheckIsLeader(task.partition_id, task.storage_node);
+    if (!s.ok()) {
+      tasks.clear();
+      return tasks;
+    }
     task.sub_query = query;  // Same query for all partitions
     task.parameters = parameters;
     task.sequence = seq++;

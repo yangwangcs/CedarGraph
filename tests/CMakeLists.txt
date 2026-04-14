@@ -169,3 +169,8 @@ add_executable(test_partition_router_leader_only test_partition_router_leader_on
 target_link_directories(test_partition_router_leader_only PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_partition_router_leader_only ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_partition_router_leader_only)
+
+add_executable(test_cypher_validator test_cypher_validator.cc)
+target_link_directories(test_cypher_validator PRIVATE /opt/homebrew/lib)
+target_link_libraries(test_cypher_validator ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_cypher_validator)

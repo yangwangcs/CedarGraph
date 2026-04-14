@@ -31,14 +31,26 @@ bool QueryValidator::ValidateQueryStatement(const QueryStatement& stmt) {
 }
 
 bool QueryValidator::ValidateMatchClause(const MatchClause& clause) {
+  std::vector<std::string> pushed_vars;
   for (const auto& pattern : clause.patterns) {
     for (const auto& elem : pattern.elements) {
       if (std::holds_alternative<NodePattern>(elem)) {
-        if (!ValidateNodePattern(std::get<NodePattern>(elem))) return false;
+        const auto& node = std::get<NodePattern>(elem);
+        if (!ValidateNodePattern(node)) return false;
+        if (!node.variable.empty()) {
+          pushed_vars.push_back(node.variable);
+        }
       } else if (std::holds_alternative<RelationshipPattern>(elem)) {
-        if (!ValidateRelationshipPattern(std::get<RelationshipPattern>(elem))) return false;
+        const auto& rel = std::get<RelationshipPattern>(elem);
+        if (!ValidateRelationshipPattern(rel)) return false;
+        if (!rel.variable.empty()) {
+          pushed_vars.push_back(rel.variable);
+        }
       }
     }
+  }
+  for (const auto& var : pushed_vars) {
+    PopScope(var);
   }
   return true;
 }
