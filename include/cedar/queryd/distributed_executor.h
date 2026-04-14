@@ -32,6 +32,9 @@ namespace queryd {
 class QueryStorageClient;
 class QueryMetaClient;
 }
+
+#include "cedar/queryd/meta_client.h"
+
 class LsmEngine;
 
 namespace queryd {
@@ -257,6 +260,7 @@ class DistributedExecutor {
   std::unique_ptr<ParallelExecutor> parallel_executor_;
   std::unique_ptr<ResultMerger> result_merger_;
   std::unique_ptr<cypher::QueryValidator> validator_;
+  GraphSchema schema_;
   
   // Analyze query to determine if it's single-partition
   bool IsSinglePartitionQuery(
