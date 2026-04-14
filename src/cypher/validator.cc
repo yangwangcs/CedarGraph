@@ -18,39 +18,43 @@ QueryValidator::QueryValidator(const queryd::GraphSchema* schema)
 }
 
 bool QueryValidator::ValidateQueryStatement(const QueryStatement& stmt) {
+  std::vector<std::string> all_pushed_vars;
   for (const auto& clause : stmt.clauses) {
+    std::vector<std::string> pushed_vars;
     if (auto* match = dynamic_cast<const MatchClause*>(clause.get())) {
-      if (!ValidateMatchClause(*match)) return false;
+      if (!ValidateMatchClause(*match, &pushed_vars)) return false;
     } else if (auto* where = dynamic_cast<const WhereClause*>(clause.get())) {
       if (!ValidateWhereClause(*where)) return false;
     } else if (auto* ret = dynamic_cast<const ReturnClause*>(clause.get())) {
       if (!ValidateReturnClause(*ret)) return false;
     }
+    all_pushed_vars.insert(all_pushed_vars.end(),
+                           pushed_vars.begin(), pushed_vars.end());
+  }
+  for (const auto& var : all_pushed_vars) {
+    PopScope(var);
   }
   return true;
 }
 
-bool QueryValidator::ValidateMatchClause(const MatchClause& clause) {
-  std::vector<std::string> pushed_vars;
+bool QueryValidator::ValidateMatchClause(const MatchClause& clause,
+                                           std::vector<std::string>* pushed_vars) {
   for (const auto& pattern : clause.patterns) {
     for (const auto& elem : pattern.elements) {
       if (std::holds_alternative<NodePattern>(elem)) {
         const auto& node = std::get<NodePattern>(elem);
         if (!ValidateNodePattern(node)) return false;
         if (!node.variable.empty()) {
-          pushed_vars.push_back(node.variable);
+          if (pushed_vars) pushed_vars->push_back(node.variable);
         }
       } else if (std::holds_alternative<RelationshipPattern>(elem)) {
         const auto& rel = std::get<RelationshipPattern>(elem);
         if (!ValidateRelationshipPattern(rel)) return false;
         if (!rel.variable.empty()) {
-          pushed_vars.push_back(rel.variable);
+          if (pushed_vars) pushed_vars->push_back(rel.variable);
         }
       }
     }
-  }
-  for (const auto& var : pushed_vars) {
-    PopScope(var);
   }
   return true;
 }

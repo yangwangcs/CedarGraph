@@ -94,21 +94,6 @@ struct LogicalExpr : Expression {
   }
 };
 
-// 逻辑表达式
-struct AndExpr : Expression {
-  std::shared_ptr<Expression> left;
-  std::shared_ptr<Expression> right;
-  AndExpr(std::shared_ptr<Expression> l, std::shared_ptr<Expression> r)
-      : Expression(ExprType::AND), left(std::move(l)), right(std::move(r)) {}
-};
-
-struct OrExpr : Expression {
-  std::shared_ptr<Expression> left;
-  std::shared_ptr<Expression> right;
-  OrExpr(std::shared_ptr<Expression> l, std::shared_ptr<Expression> r)
-      : Expression(ExprType::OR), left(std::move(l)), right(std::move(r)) {}
-};
-
 struct NotExpr : Expression {
   std::shared_ptr<Expression> operand;
   explicit NotExpr(std::shared_ptr<Expression> op)

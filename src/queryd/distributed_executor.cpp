@@ -503,6 +503,13 @@ Status DistributedExecutor::TemporalQuery(
   // Get partition for entity
   uint32_t partition_id = router_->GetPartitionId(entity_id);
   
+  // Leader check
+  std::string leader_address;
+  Status rs = router_->GetStorageNode(partition_id, &leader_address);
+  if (!rs.ok()) return rs;
+  rs = router_->CheckIsLeader(partition_id, leader_address);
+  if (!rs.ok()) return rs;
+  
   // Get storage node client
   auto node_client = storage_client_->GetNodeClient(partition_id);
   if (!node_client) {
@@ -538,6 +545,13 @@ Status DistributedExecutor::GetEntityAtTime(
   
   // Get partition for entity
   uint32_t partition_id = router_->GetPartitionId(entity_id);
+  
+  // Leader check
+  std::string leader_address;
+  Status rs = router_->GetStorageNode(partition_id, &leader_address);
+  if (!rs.ok()) return rs;
+  rs = router_->CheckIsLeader(partition_id, leader_address);
+  if (!rs.ok()) return rs;
   
   // Scan entity versions around the timestamp
   // Since CedarKey stores timestamps in descending order,
@@ -589,6 +603,13 @@ Status DistributedExecutor::ExecuteSinglePartition(
     uint32_t partition_id,
     DistributedExecutionContext* ctx,
     cypher::ResultSet* result) {
+  
+  // Leader check
+  std::string leader_address;
+  Status rs = router_->GetStorageNode(partition_id, &leader_address);
+  if (!rs.ok()) return rs;
+  rs = router_->CheckIsLeader(partition_id, leader_address);
+  if (!rs.ok()) return rs;
   
   // Send query to specific storage node
   // Storage nodes have embedded query capabilities
@@ -665,6 +686,16 @@ Status DistributedExecutor::TraverseOptimized(
     const std::vector<uint16_t>& edge_types,
     uint32_t max_depth,
     std::vector<std::unique_ptr<cypher::Path>>* paths) {
+  
+  // Determine partition for start node
+  uint32_t partition_id = router_->GetPartitionId(start_node_id);
+  
+  // Leader check
+  std::string leader_address;
+  Status rs = router_->GetStorageNode(partition_id, &leader_address);
+  if (!rs.ok()) return rs;
+  rs = router_->CheckIsLeader(partition_id, leader_address);
+  if (!rs.ok()) return rs;
   
   // Optimized traversal using CedarKey's physical clustering
   // Since edges are stored with entity_id prefix, we can do efficient scans

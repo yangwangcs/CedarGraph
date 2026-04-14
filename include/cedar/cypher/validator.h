@@ -41,7 +41,8 @@ class QueryValidator {
   std::unordered_map<std::string, std::vector<std::string>> scope_;
 
   bool ValidateQueryStatement(const QueryStatement& stmt);
-  bool ValidateMatchClause(const MatchClause& clause);
+  bool ValidateMatchClause(const MatchClause& clause,
+                           std::vector<std::string>* pushed_vars);
   bool ValidateWhereClause(const WhereClause& clause);
   bool ValidateReturnClause(const ReturnClause& clause);
   bool ValidateExpression(const Expression& expr);
