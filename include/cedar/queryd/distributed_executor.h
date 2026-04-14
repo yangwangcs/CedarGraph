@@ -81,29 +81,22 @@ class PartitionRouter {
   explicit PartitionRouter(QueryMetaClient* meta_client);
   ~PartitionRouter();
 
-  // Calculate partition ID from entity ID
   uint32_t GetPartitionId(uint64_t entity_id) const;
-  
-  // Get storage node address for partition
   Status GetStorageNode(uint32_t partition_id, std::string* address);
-  
-  // Get all partitions for a range scan
+  Status GetPartitionInfo(uint32_t partition_id, PartitionInfo* info);
+  Status CheckIsLeader(uint32_t partition_id, const std::string& address);
   std::vector<uint32_t> GetPartitionsForRange(uint64_t start_id, uint64_t end_id);
-  
-  // Route entity IDs to partitions
   std::unordered_map<uint32_t, std::vector<uint64_t>> RouteEntities(
       const std::vector<uint64_t>& entity_ids);
+  void SetRequireLeaderOnly(bool require) { require_leader_only_ = require; }
 
  private:
   QueryMetaClient* meta_client_;
   mutable std::shared_mutex mutex_;
-  
-  // Cache: partition_id -> storage node address
   std::unordered_map<uint32_t, std::string> partition_cache_;
-  
-  // Total partition count
+  std::unordered_map<uint32_t, PartitionInfo> partition_info_cache_;
   uint32_t partition_count_ = 0;
-  
+  bool require_leader_only_ = true;
   void RefreshPartitionCache();
 };
 

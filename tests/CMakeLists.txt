@@ -164,3 +164,8 @@ gtest_discover_tests(test_partition_storage_integration)
 add_executable(test_partition_metadata_service cluster/test_partition_metadata_service.cc)
 target_link_libraries(test_partition_metadata_service ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_partition_metadata_service)
+
+add_executable(test_partition_router_leader_only test_partition_router_leader_only.cc)
+target_link_directories(test_partition_router_leader_only PRIVATE /opt/homebrew/lib)
+target_link_libraries(test_partition_router_leader_only ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_partition_router_leader_only)

@@ -87,14 +87,46 @@ void PartitionRouter::RefreshPartitionCache() {
   if (!s.ok()) {
     return;
   }
-  
   std::unique_lock<std::shared_mutex> lock(mutex_);
   partition_count_ = state.partition_count;
   partition_cache_.clear();
-  
+  partition_info_cache_.clear();
   for (const auto& partition : state.partitions) {
     partition_cache_[partition.partition_id] = partition.leader_address;
+    partition_info_cache_[partition.partition_id] = partition;
   }
+}
+
+Status PartitionRouter::GetPartitionInfo(uint32_t partition_id, PartitionInfo* info) {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  auto it = partition_info_cache_.find(partition_id);
+  if (it != partition_info_cache_.end()) {
+    *info = it->second;
+    return Status::OK();
+  }
+  lock.unlock();
+  RefreshPartitionCache();
+  lock.lock();
+  it = partition_info_cache_.find(partition_id);
+  if (it != partition_info_cache_.end()) {
+    *info = it->second;
+    return Status::OK();
+  }
+  return Status::NotFound("Partition not found: " + std::to_string(partition_id));
+}
+
+Status PartitionRouter::CheckIsLeader(uint32_t partition_id, const std::string& address) {
+  if (!require_leader_only_) {
+    return Status::OK();
+  }
+  PartitionInfo info;
+  Status s = GetPartitionInfo(partition_id, &info);
+  if (!s.ok()) return s;
+  if (info.leader_address != address) {
+    return Status::NotLeader("Address " + address + " is not the leader for partition " +
+                             std::to_string(partition_id));
+  }
+  return Status::OK();
 }
 
 // ============================================================================

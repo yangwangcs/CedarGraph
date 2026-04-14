@@ -101,19 +101,19 @@ class QueryMetaClient {
   };
 
   explicit QueryMetaClient(const Options& options);
-  ~QueryMetaClient();
+  virtual ~QueryMetaClient();
 
   // Initialize and connect to meta service
   Status Init();
 
   // Get current schema
-  Status GetSchema(GraphSchema* schema);
+  virtual Status GetSchema(GraphSchema* schema);
   
   // Refresh schema from meta service
   Status RefreshSchema();
   
   // Get cluster state (partition routing)
-  Status GetClusterState(ClusterState* state);
+  virtual Status GetClusterState(ClusterState* state);
   
   // Refresh cluster state
   Status RefreshClusterState();
