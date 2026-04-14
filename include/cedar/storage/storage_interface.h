@@ -22,7 +22,7 @@ class CedarGraphStorage;
 
 namespace storage {
 
-struct PropertyPredicate {
+struct PropertyPredicateItem {
   std::string property_name;
   enum Op { EQ, NE, LT, LE, GT, GE, IN } op;
   cypher::Value value;
@@ -53,29 +53,29 @@ class StorageInterface {
   explicit StorageInterface(CedarGraphStorage* storage);
   ~StorageInterface();
 
-  Status InsertVertex(const Vertex& vertex, Timestamp txn_version);
-  Status GetVertex(uint64_t vertex_id, Timestamp as_of_time,
-                   Descriptor* descriptor, bool* found);
-  Status ScanVertices(uint64_t vertex_id, Timestamp start_time, Timestamp end_time,
-                      const std::vector<PropertyPredicate>& predicates,
-                      std::vector<std::pair<Timestamp, Descriptor>>* results);
+  Status InsertVertex(const Vertex& vertex, cedar::Timestamp txn_version);
+  Status GetVertex(uint64_t vertex_id, cedar::Timestamp as_of_time,
+                   cedar::Descriptor* descriptor, bool* found);
+  Status ScanVertices(uint64_t vertex_id, cedar::Timestamp start_time, cedar::Timestamp end_time,
+                      const std::vector<PropertyPredicateItem>& predicates,
+                      std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>>* results);
 
-  Status InsertEdge(const Edge& edge, Timestamp txn_version);
+  Status InsertEdge(const Edge& edge, cedar::Timestamp txn_version);
   Status GetEdge(uint64_t src_id, uint64_t dst_id, const std::string& type,
-                 Timestamp as_of_time, Descriptor* descriptor, bool* found);
+                 cedar::Timestamp as_of_time, cedar::Descriptor* descriptor, bool* found);
   Status ScanOutEdges(uint64_t node_id, uint16_t edge_type,
-                      Timestamp start_time, Timestamp end_time,
-                      const std::vector<PropertyPredicate>& predicates,
-                      std::vector<std::pair<Timestamp, Descriptor>>* results);
+                      cedar::Timestamp start_time, cedar::Timestamp end_time,
+                      const std::vector<PropertyPredicateItem>& predicates,
+                      std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>>* results);
   Status ScanInEdges(uint64_t node_id, uint16_t edge_type,
-                     Timestamp start_time, Timestamp end_time,
-                     const std::vector<PropertyPredicate>& predicates,
-                     std::vector<std::pair<Timestamp, Descriptor>>* results);
+                     cedar::Timestamp start_time, cedar::Timestamp end_time,
+                     const std::vector<PropertyPredicateItem>& predicates,
+                     std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>>* results);
 
  private:
   CedarGraphStorage* storage_;
   std::string SerializeProperties(const std::map<std::string, cypher::Value>& props);
-  bool EvaluatePredicate(const PropertyPredicate& pred,
+  bool EvaluatePredicate(const PropertyPredicateItem& pred,
                          const std::map<std::string, cypher::Value>& props);
 };
 

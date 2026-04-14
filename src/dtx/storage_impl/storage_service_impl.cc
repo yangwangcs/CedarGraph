@@ -234,6 +234,26 @@ grpc::Status StorageServiceImpl::Scan(grpc::ServerContext* context,
   return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "Scan not fully implemented");
 }
 
+grpc::Status StorageServiceImpl::ScanNodeV2(grpc::ServerContext* context,
+                                             const cedar::storage::ScanNodeRequestV2* request,
+                                             cedar::storage::ScanResponse* response) {
+  (void)context;
+  (void)request;
+  response->set_success(false);
+  response->set_error_msg("ScanNodeV2 not implemented in this service");
+  return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "ScanNodeV2 not implemented");
+}
+
+grpc::Status StorageServiceImpl::ScanEdgeV2(grpc::ServerContext* context,
+                                             const cedar::storage::ScanEdgeRequestV2* request,
+                                             cedar::storage::ScanResponse* response) {
+  (void)context;
+  (void)request;
+  response->set_success(false);
+  response->set_error_msg("ScanEdgeV2 not implemented in this service");
+  return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "ScanEdgeV2 not implemented");
+}
+
 // =============================================================================
 // Batch Operations
 // =============================================================================

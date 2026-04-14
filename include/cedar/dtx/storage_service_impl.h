@@ -206,6 +206,14 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status Scan(grpc::ServerContext* context,
                     const cedar::storage::ScanRequest* request,
                     cedar::storage::ScanResponse* response) override;
+  
+  grpc::Status ScanNodeV2(grpc::ServerContext* context,
+                          const cedar::storage::ScanNodeRequestV2* request,
+                          cedar::storage::ScanResponse* response) override;
+  
+  grpc::Status ScanEdgeV2(grpc::ServerContext* context,
+                          const cedar::storage::ScanEdgeRequestV2* request,
+                          cedar::storage::ScanResponse* response) override;
 
   // Batch operations
   grpc::Status BatchPut(grpc::ServerContext* context,

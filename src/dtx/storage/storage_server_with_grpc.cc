@@ -33,6 +33,7 @@
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
 #include "cedar/dtx/storage_service_impl.h"
+#include "cedar/storage/storage_interface.h"
 
 // gRPC generated headers
 #include "storage_service.pb.h"
@@ -119,7 +120,12 @@ cedar::CedarKey ConvertProtoKey(const cedar::storage::CedarKey& proto_key) {
 class StorageServiceImpl final : public cedar::storage::StorageService::Service {
  public:
   StorageServiceImpl(StoragePartitionManager* partition_manager) 
-      : partition_manager_(partition_manager) {}
+      : partition_manager_(partition_manager) {
+    if (partition_manager_) {
+      storage_interface_ = std::make_unique<cedar::storage::StorageInterface>(
+          partition_manager_->GetSharedStorage());
+    }
+  }
 
   // Put operation
   grpc::Status Put(grpc::ServerContext* context,
@@ -171,8 +177,46 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     (void)context;
     
     cedar::CedarKey key = ConvertProtoKey(request->key());
-    PartitionID pid = key.part_id();
+    cedar::EntityType entity_type = key.entity_type();
+    cedar::Timestamp read_time(key.timestamp());
     
+    // Delegate graph semantic lookups to StorageInterface
+    if (entity_type == cedar::EntityType::Vertex) {
+      cedar::Descriptor desc;
+      bool found = false;
+      Status s = storage_interface_->GetVertex(key.entity_id(), read_time, &desc, &found);
+      if (!s.ok()) {
+        response->set_success(false);
+        response->set_error_msg(s.ToString());
+        return grpc::Status::OK;
+      }
+      response->set_success(true);
+      response->set_found(found);
+      if (found) {
+        response->mutable_descriptor_()->set_data(SerializeDescriptor(desc));
+      }
+      return grpc::Status::OK;
+    }
+    
+    if (entity_type == cedar::EntityType::EdgeOut) {
+      cedar::Descriptor desc;
+      bool found = false;
+      Status s = storage_interface_->GetEdge(key.entity_id(), key.target_id(), "", read_time, &desc, &found);
+      if (!s.ok()) {
+        response->set_success(false);
+        response->set_error_msg(s.ToString());
+        return grpc::Status::OK;
+      }
+      response->set_success(true);
+      response->set_found(found);
+      if (found) {
+        response->mutable_descriptor_()->set_data(SerializeDescriptor(desc));
+      }
+      return grpc::Status::OK;
+    }
+    
+    // Fallback to partition-level KV get for other entity types
+    PartitionID pid = key.part_id();
     PartitionStorage* partition = partition_manager_->GetPartition(pid);
     if (!partition) {
       response->set_success(false);
@@ -181,9 +225,6 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       return grpc::Status::OK;
     }
     
-    cedar::Timestamp read_time(key.timestamp());
-    
-    // Execute get
     auto result = partition->Get(key, read_time);
     
     if (result.ok()) {
@@ -235,10 +276,102 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                     const cedar::storage::ScanRequest* request,
                     cedar::storage::ScanResponse* response) override {
     (void)context;
-    (void)request;
     
-    // Note: Full scan not implemented in this version
-    // Would need to iterate through all partitions
+    std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
+    std::vector<cedar::storage::PropertyPredicateItem> predicates;
+    Status s = storage_interface_->ScanVertices(
+        request->entity_id(),
+        cedar::Timestamp(request->start_time()),
+        cedar::Timestamp(request->end_time()),
+        predicates,
+        &results);
+    
+    if (!s.ok()) {
+      response->set_success(false);
+      response->set_error_msg(s.ToString());
+      return grpc::Status::OK;
+    }
+    
+    for (const auto& [ts, desc] : results) {
+      auto* item = response->add_items();
+      item->set_timestamp(ts.value());
+      item->mutable_descriptor_()->set_data(SerializeDescriptor(desc));
+    }
+    
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+  
+  grpc::Status ScanNodeV2(grpc::ServerContext* context,
+                          const cedar::storage::ScanNodeRequestV2* request,
+                          cedar::storage::ScanResponse* response) override {
+    (void)context;
+    
+    std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
+    std::vector<cedar::storage::PropertyPredicateItem> predicates;
+    // TODO: convert request predicates to PropertyPredicate
+    Status s = storage_interface_->ScanVertices(
+        request->node_id(),
+        cedar::Timestamp(request->start_time()),
+        cedar::Timestamp(request->end_time()),
+        predicates,
+        &results);
+    
+    if (!s.ok()) {
+      response->set_success(false);
+      response->set_error_msg(s.ToString());
+      return grpc::Status::OK;
+    }
+    
+    for (const auto& [ts, desc] : results) {
+      auto* item = response->add_items();
+      item->set_timestamp(ts.value());
+      item->mutable_descriptor_()->set_data(SerializeDescriptor(desc));
+    }
+    
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+  
+  grpc::Status ScanEdgeV2(grpc::ServerContext* context,
+                          const cedar::storage::ScanEdgeRequestV2* request,
+                          cedar::storage::ScanResponse* response) override {
+    (void)context;
+    
+    std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
+    std::vector<cedar::storage::PropertyPredicateItem> predicates;
+    // TODO: convert request predicates to PropertyPredicate
+    Status s;
+    if (request->direction() == cedar::storage::Direction::OUTGOING ||
+        request->direction() == cedar::storage::Direction::BOTH) {
+      s = storage_interface_->ScanOutEdges(
+          request->node_id(),
+          static_cast<uint16_t>(request->edge_type()),
+          cedar::Timestamp(request->start_time()),
+          cedar::Timestamp(request->end_time()),
+          predicates,
+          &results);
+    } else {
+      s = storage_interface_->ScanInEdges(
+          request->node_id(),
+          static_cast<uint16_t>(request->edge_type()),
+          cedar::Timestamp(request->start_time()),
+          cedar::Timestamp(request->end_time()),
+          predicates,
+          &results);
+    }
+    
+    if (!s.ok()) {
+      response->set_success(false);
+      response->set_error_msg(s.ToString());
+      return grpc::Status::OK;
+    }
+    
+    for (const auto& [ts, desc] : results) {
+      auto* item = response->add_items();
+      item->set_timestamp(ts.value());
+      item->mutable_descriptor_()->set_data(SerializeDescriptor(desc));
+    }
     
     response->set_success(true);
     return grpc::Status::OK;
@@ -592,6 +725,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
 
  private:
   StoragePartitionManager* partition_manager_;
+  std::unique_ptr<cedar::storage::StorageInterface> storage_interface_;
   
   // Track which partitions are involved in each transaction
   mutable std::shared_mutex txn_mutex_;
