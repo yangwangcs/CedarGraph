@@ -137,6 +137,10 @@ add_executable(test_partition_raft cluster/test_partition_raft.cc)
 target_link_libraries(test_partition_raft ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_partition_raft)
 
+add_executable(test_raft_propose_batch cluster/test_raft_propose_batch.cc)
+target_link_libraries(test_raft_propose_batch ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_raft_propose_batch)
+
 # Cluster test tool
 add_executable(cluster_test_tool ../tools/cluster_test_tool.cc)
 target_link_libraries(cluster_test_tool cedar cedar_graph ${GTEST_MAIN_TARGET} pthread)

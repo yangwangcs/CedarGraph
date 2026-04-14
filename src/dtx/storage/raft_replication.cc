@@ -450,6 +450,24 @@ Status StorageRaftGroup::Propose(const StorageLogEntry& entry) {
   return Status::OK();
 }
 
+Status StorageRaftGroup::ProposeBatch(const std::vector<StorageLogEntry>& entries) {
+  if (entries.empty()) {
+    return Status::OK();
+  }
+  if (state_.load() != ReplicaState::kLeader) {
+    return Status::NotLeader("Not leader");
+  }
+
+  StorageLogEntry batch_entry;
+  batch_entry.type = StorageLogEntry::Type::kBatch;
+  batch_entry.batch_data.reserve(entries.size());
+  for (const auto& e : entries) {
+    batch_entry.batch_data.push_back({e.key, e.descriptor.value_or(Descriptor())});
+  }
+
+  return Propose(batch_entry);
+}
+
 Status StorageRaftGroup::WaitForApplied(uint64_t index, 
                                         std::chrono::milliseconds timeout) {
   std::unique_lock<std::mutex> lock(commit_cv_mutex_);
