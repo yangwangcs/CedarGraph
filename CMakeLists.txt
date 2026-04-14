@@ -140,6 +140,7 @@ set(CEDAR_STORAGE_SOURCES
     src/storage/storage_health_monitor.cc
     src/storage/failover_manager.cc
     src/storage/consistent_hash_ring.cc
+    src/storage/storage_interface.cc
 )
 
 # Update sources (event to CedarKey conversion)
