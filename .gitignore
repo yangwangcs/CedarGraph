@@ -46,3 +46,4 @@ tmp/
 temp/
 *.tmp
 .superpowers/
+.worktrees/
