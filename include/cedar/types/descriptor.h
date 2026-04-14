@@ -139,6 +139,18 @@ class Descriptor {
     value_ = (value_ & ~0x0300000000000000ULL) | ((static_cast<uint64_t>(compression) & 0x03ULL) << 56);
   }
 
+  // Schema version support (reserved bits 58-63 = 6 bits, values 0-63)
+  static constexpr uint8_t kMaxSchemaVersion = 63;
+
+  uint8_t GetSchemaVersion() const {
+    return static_cast<uint8_t>((value_ >> 58) & 0x3F);
+  }
+
+  void SetSchemaVersion(uint8_t version) {
+    value_ = (value_ & ~0xFC00000000000000ULL) |
+             ((static_cast<uint64_t>(version) & 0x3FULL) << 58);
+  }
+
   // 公共访问方法
   EntryKind kind() const { return GetKind(); }
   uint32_t payload() const { return GetPayload(); }

@@ -34,6 +34,7 @@ endmacro()
 # Core tests
 add_cedar_test(test_cedar_key)
 add_cedar_test(test_descriptor)
+add_cedar_test(test_descriptor_schema_version)
 add_cedar_test(test_cedar_graph_storage)
 add_cedar_test(test_cedar_update)
 add_cedar_test(test_cedar_update_validation)
