@@ -26,6 +26,7 @@
 #include <memory>
 #include <unordered_map>
 #include <shared_mutex>
+#include <cstring>
 
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/storage/cedar_options.h"
@@ -60,6 +61,111 @@ void SignalHandler(int signal) {
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+std::string SerializeCypherValue(const cedar::cypher::Value& value) {
+  std::string result;
+  char type_tag = 0;
+  switch (value.Type()) {
+    case cedar::cypher::ValueType::kBool:
+      type_tag = 1;
+      result.append(&type_tag, 1);
+      result.append(value.GetBool() ? "\x01" : "\x00", 1);
+      break;
+    case cedar::cypher::ValueType::kInt:
+      type_tag = 2;
+      result.append(&type_tag, 1);
+      {
+        int64_t v = value.GetInt();
+        result.append(reinterpret_cast<const char*>(&v), sizeof(v));
+      }
+      break;
+    case cedar::cypher::ValueType::kFloat:
+      type_tag = 3;
+      result.append(&type_tag, 1);
+      {
+        double v = value.GetFloat();
+        result.append(reinterpret_cast<const char*>(&v), sizeof(v));
+      }
+      break;
+    case cedar::cypher::ValueType::kString:
+      type_tag = 4;
+      result.append(&type_tag, 1);
+      {
+        const std::string& s = value.GetString();
+        uint32_t len = static_cast<uint32_t>(s.size());
+        result.append(reinterpret_cast<const char*>(&len), sizeof(len));
+        result.append(s);
+      }
+      break;
+    default:
+      type_tag = 0;
+      result.append(&type_tag, 1);
+      break;
+  }
+  return result;
+}
+
+ cedar::cypher::Value DeserializeCypherValue(const std::string& data) {
+  if (data.empty()) return cedar::cypher::Value();
+  char type_tag = data[0];
+  switch (type_tag) {
+    case 1:
+      if (data.size() >= 2) {
+        return cedar::cypher::Value(data[1] != 0);
+      }
+      break;
+    case 2:
+      if (data.size() >= 1 + sizeof(int64_t)) {
+        int64_t v;
+        memcpy(&v, data.data() + 1, sizeof(v));
+        return cedar::cypher::Value(v);
+      }
+      break;
+    case 3:
+      if (data.size() >= 1 + sizeof(double)) {
+        double v;
+        memcpy(&v, data.data() + 1, sizeof(v));
+        return cedar::cypher::Value(v);
+      }
+      break;
+    case 4:
+      if (data.size() >= 1 + sizeof(uint32_t)) {
+        uint32_t len;
+        memcpy(&len, data.data() + 1, sizeof(len));
+        if (data.size() >= 1 + sizeof(uint32_t) + len) {
+          return cedar::cypher::Value(std::string(data.data() + 1 + sizeof(uint32_t), len));
+        }
+      }
+      break;
+  }
+  return cedar::cypher::Value();
+}
+
+std::vector<cedar::storage::PropertyPredicateItem> ConvertPredicates(
+    const google::protobuf::RepeatedPtrField<cedar::storage::ScanPredicate>& proto_preds) {
+  std::vector<cedar::storage::PropertyPredicateItem> result;
+  for (const auto& p : proto_preds) {
+    if (p.has_property()) {
+      cedar::storage::PropertyPredicateItem item;
+      item.property_name = p.property().property_name();
+      switch (p.property().op()) {
+        case cedar::storage::EQ: item.op = cedar::storage::PropertyPredicateItem::EQ; break;
+        case cedar::storage::NE: item.op = cedar::storage::PropertyPredicateItem::NE; break;
+        case cedar::storage::LT: item.op = cedar::storage::PropertyPredicateItem::LT; break;
+        case cedar::storage::LE: item.op = cedar::storage::PropertyPredicateItem::LE; break;
+        case cedar::storage::GT: item.op = cedar::storage::PropertyPredicateItem::GT; break;
+        case cedar::storage::GE: item.op = cedar::storage::PropertyPredicateItem::GE; break;
+        case cedar::storage::IN: item.op = cedar::storage::PropertyPredicateItem::IN; break;
+        default: item.op = cedar::storage::PropertyPredicateItem::EQ; break;
+      }
+      if (!p.property().serialized_value().empty()) {
+        item.value = DeserializeCypherValue(p.property().serialized_value());
+      }
+      result.push_back(std::move(item));
+    }
+  }
+  return result;
+}
 
 // Serialize cedar::Descriptor to bytes
 std::string SerializeDescriptor(const cedar::Descriptor& desc) {
@@ -262,8 +368,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     }
     
     std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
-    std::vector<cedar::storage::PropertyPredicateItem> predicates;
-    // TODO: convert request predicates to PropertyPredicate
+    auto predicates = ConvertPredicates(request->predicates());
     Status s = storage_interface_->ScanVertices(
         request->node_id(),
         cedar::Timestamp(request->start_time()),
@@ -299,8 +404,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     }
     
     std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
-    std::vector<cedar::storage::PropertyPredicateItem> predicates;
-    // TODO: convert request predicates to PropertyPredicate
+    auto predicates = ConvertPredicates(request->predicates());
     
     if (request->direction() == cedar::storage::Direction::OUTGOING ||
         request->direction() == cedar::storage::Direction::BOTH) {

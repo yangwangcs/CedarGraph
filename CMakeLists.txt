@@ -478,7 +478,7 @@ target_link_libraries(metad cedar cedar_graph gRPC::grpc++ pthread)
 add_executable(storaged_legacy
     src/dtx/storage/storage_server_with_grpc.cc
 )
-target_link_libraries(storaged_legacy cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+target_link_libraries(storaged_legacy cedar cedar_graph cedar_cypher ${LZ4_LIBRARIES} gRPC::grpc++)
 
 # StorageD - Standalone Storage Service (Nebula-style)
 add_executable(storaged
