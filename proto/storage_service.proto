@@ -26,6 +26,12 @@ message Timestamp {
     uint64 value = 1;
 }
 
+enum Direction {
+    OUTGOING = 0;
+    INCOMING = 1;
+    BOTH = 2;
+}
+
 // ============================================================================
 // Put 请求/响应
 // ============================================================================
@@ -207,6 +213,59 @@ message HeartbeatResponse {
 }
 
 // ============================================================================
+// Predicate Pushdown (Filter Pushdown)
+// ============================================================================
+
+enum PredicateOp {
+    EQ = 0;
+    NE = 1;
+    LT = 2;
+    LE = 3;
+    GT = 4;
+    GE = 5;
+    IN = 6;
+}
+
+message PropertyPredicate {
+    string property_name = 1;
+    PredicateOp op = 2;
+    bytes serialized_value = 3;  // serialized cypher::Value
+}
+
+message ScanPredicate {
+    oneof predicate {
+        PropertyPredicate property = 1;
+        // Future: composite AND/OR predicates
+    }
+}
+
+message ScanRequestV2 {
+    uint64 entity_id = 1;
+    uint64 start_time = 2;
+    uint64 end_time = 3;
+    uint32 partition_id = 4;
+    repeated ScanPredicate predicates = 5;  // AND semantics
+}
+
+message ScanNodeRequestV2 {
+    uint64 node_id = 1;
+    uint64 start_time = 2;
+    uint64 end_time = 3;
+    uint32 partition_id = 4;
+    repeated ScanPredicate predicates = 5;
+}
+
+message ScanEdgeRequestV2 {
+    uint64 node_id = 1;        // start node for traversal
+    uint32 edge_type = 2;
+    Direction direction = 3;
+    uint64 start_time = 4;
+    uint64 end_time = 5;
+    uint32 partition_id = 6;
+    repeated ScanPredicate predicates = 7;
+}
+
+// ============================================================================
 // StorageD 服务
 // ============================================================================
 
@@ -216,6 +275,10 @@ service StorageService {
     rpc Get(GetRequest) returns (GetResponse);
     rpc Delete(DeleteRequest) returns (DeleteResponse);
     rpc Scan(ScanRequest) returns (ScanResponse);
+    
+    // Predicate pushdown scans
+    rpc ScanNodeV2(ScanNodeRequestV2) returns (ScanResponse);
+    rpc ScanEdgeV2(ScanEdgeRequestV2) returns (ScanResponse);
     
     // 批量操作
     rpc BatchPut(BatchPutRequest) returns (BatchPutResponse);
