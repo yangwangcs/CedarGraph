@@ -174,3 +174,8 @@ add_executable(test_cypher_validator test_cypher_validator.cc)
 target_link_directories(test_cypher_validator PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_cypher_validator ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_cypher_validator)
+
+# Storage Interface Tests
+add_executable(test_storage_interface test_storage_interface.cc)
+target_link_libraries(test_storage_interface ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_interface)

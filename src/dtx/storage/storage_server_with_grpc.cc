@@ -177,46 +177,8 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     (void)context;
     
     cedar::CedarKey key = ConvertProtoKey(request->key());
-    cedar::EntityType entity_type = key.entity_type();
-    cedar::Timestamp read_time(key.timestamp());
-    
-    // Delegate graph semantic lookups to StorageInterface
-    if (entity_type == cedar::EntityType::Vertex) {
-      cedar::Descriptor desc;
-      bool found = false;
-      Status s = storage_interface_->GetVertex(key.entity_id(), read_time, &desc, &found);
-      if (!s.ok()) {
-        response->set_success(false);
-        response->set_error_msg(s.ToString());
-        return grpc::Status::OK;
-      }
-      response->set_success(true);
-      response->set_found(found);
-      if (found) {
-        response->mutable_descriptor_()->set_data(SerializeDescriptor(desc));
-      }
-      return grpc::Status::OK;
-    }
-    
-    if (entity_type == cedar::EntityType::EdgeOut) {
-      cedar::Descriptor desc;
-      bool found = false;
-      Status s = storage_interface_->GetEdge(key.entity_id(), key.target_id(), "", read_time, &desc, &found);
-      if (!s.ok()) {
-        response->set_success(false);
-        response->set_error_msg(s.ToString());
-        return grpc::Status::OK;
-      }
-      response->set_success(true);
-      response->set_found(found);
-      if (found) {
-        response->mutable_descriptor_()->set_data(SerializeDescriptor(desc));
-      }
-      return grpc::Status::OK;
-    }
-    
-    // Fallback to partition-level KV get for other entity types
     PartitionID pid = key.part_id();
+    
     PartitionStorage* partition = partition_manager_->GetPartition(pid);
     if (!partition) {
       response->set_success(false);
@@ -225,6 +187,9 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       return grpc::Status::OK;
     }
     
+    cedar::Timestamp read_time(key.timestamp());
+    
+    // Execute get through PartitionStorage to preserve partition isolation
     auto result = partition->Get(key, read_time);
     
     if (result.ok()) {
@@ -276,27 +241,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                     const cedar::storage::ScanRequest* request,
                     cedar::storage::ScanResponse* response) override {
     (void)context;
+    (void)request;
     
-    std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
-    std::vector<cedar::storage::PropertyPredicateItem> predicates;
-    Status s = storage_interface_->ScanVertices(
-        request->entity_id(),
-        cedar::Timestamp(request->start_time()),
-        cedar::Timestamp(request->end_time()),
-        predicates,
-        &results);
-    
-    if (!s.ok()) {
-      response->set_success(false);
-      response->set_error_msg(s.ToString());
-      return grpc::Status::OK;
-    }
-    
-    for (const auto& [ts, desc] : results) {
-      auto* item = response->add_items();
-      item->set_timestamp(ts.value());
-      item->mutable_descriptor_()->set_data(SerializeDescriptor(desc));
-    }
+    // Note: Full scan not implemented in this version
+    // Would need to iterate through all partitions
     
     response->set_success(true);
     return grpc::Status::OK;
@@ -306,6 +254,12 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                           const cedar::storage::ScanNodeRequestV2* request,
                           cedar::storage::ScanResponse* response) override {
     (void)context;
+    
+    if (!storage_interface_) {
+      response->set_success(false);
+      response->set_error_msg("Storage interface not initialized");
+      return grpc::Status::OK;
+    }
     
     std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
     std::vector<cedar::storage::PropertyPredicateItem> predicates;
@@ -338,33 +292,46 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                           cedar::storage::ScanResponse* response) override {
     (void)context;
     
+    if (!storage_interface_) {
+      response->set_success(false);
+      response->set_error_msg("Storage interface not initialized");
+      return grpc::Status::OK;
+    }
+    
     std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
     std::vector<cedar::storage::PropertyPredicateItem> predicates;
     // TODO: convert request predicates to PropertyPredicate
-    Status s;
+    
     if (request->direction() == cedar::storage::Direction::OUTGOING ||
         request->direction() == cedar::storage::Direction::BOTH) {
-      s = storage_interface_->ScanOutEdges(
+      Status s = storage_interface_->ScanOutEdges(
           request->node_id(),
           static_cast<uint16_t>(request->edge_type()),
           cedar::Timestamp(request->start_time()),
           cedar::Timestamp(request->end_time()),
           predicates,
           &results);
-    } else {
-      s = storage_interface_->ScanInEdges(
-          request->node_id(),
-          static_cast<uint16_t>(request->edge_type()),
-          cedar::Timestamp(request->start_time()),
-          cedar::Timestamp(request->end_time()),
-          predicates,
-          &results);
+      if (!s.ok()) {
+        response->set_success(false);
+        response->set_error_msg(s.ToString());
+        return grpc::Status::OK;
+      }
     }
     
-    if (!s.ok()) {
-      response->set_success(false);
-      response->set_error_msg(s.ToString());
-      return grpc::Status::OK;
+    if (request->direction() == cedar::storage::Direction::INCOMING ||
+        request->direction() == cedar::storage::Direction::BOTH) {
+      Status s = storage_interface_->ScanInEdges(
+          request->node_id(),
+          static_cast<uint16_t>(request->edge_type()),
+          cedar::Timestamp(request->start_time()),
+          cedar::Timestamp(request->end_time()),
+          predicates,
+          &results);
+      if (!s.ok()) {
+        response->set_success(false);
+        response->set_error_msg(s.ToString());
+        return grpc::Status::OK;
+      }
     }
     
     for (const auto& [ts, desc] : results) {
