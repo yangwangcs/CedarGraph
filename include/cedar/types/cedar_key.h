@@ -237,12 +237,12 @@ class alignas(8) CedarKey {
           uint16_t part_id = 0)
       : entity_id_(cedar_htobe64(entity_id)),  // 统一字节序转换
         timestamp_be_(timestamp.EncodeForStorage()),
-        target_id_(target_id),
-        column_id_(column_id),
-        sequence_(sequence),
+        target_id_(cedar_htobe64(target_id)),
+        column_id_(cedar_htobe16(column_id)),
+        sequence_(cedar_htobe16(sequence)),
         entity_type_(static_cast<uint8_t>(entity_type)),
         flags_(flags),
-        part_id_(part_id) {}
+        part_id_(cedar_htobe16(part_id)) {}
   
   // ==================== 工厂方法 ====================
   

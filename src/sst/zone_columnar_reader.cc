@@ -238,14 +238,11 @@ std::vector<std::pair<CedarKey, Descriptor>> ZoneColumnarSstReader::GetRange(
       CedarKey key = ReconstructKeyFromBlock(*block, row);
       
       if (key.entity_id() != entity_id) continue;
-      // Entity type 检查: 如果查询指定了特定类型且 SST 不是混合类型
-      if (static_cast<uint8_t>(entity_type) != 0 && header_.entity_type != 0 &&
+      // Entity type 检查: 如果查询指定了特定类型，始终过滤
+      if (static_cast<uint8_t>(entity_type) != 0 &&
           static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
-      // Column ID 检查: 如果 SST 是跨列存储 (UINT16_MAX)，跳过 column_id 检查
-      // 否则检查 key 的 column_id 是否匹配
-      if (header_.column_id != UINT16_MAX && 
-          column_id != UINT16_MAX && 
-          key.column_id() != column_id) continue;
+      // Column ID 检查: 如果查询指定了特定 column_id，始终过滤（即使 SST 是跨列存储）
+      if (column_id != UINT16_MAX && key.column_id() != column_id) continue;
       if (key.timestamp().value() < start.value() || key.timestamp().value() > end.value()) continue;
       
       auto desc = GetValueByRow(*block, row);
@@ -366,11 +363,26 @@ CedarKey ZoneColumnarSstReader::ReconstructKeyFromBlock(
         block.data.data() + block.zone_offsets[2] + row_idx * 8);
   }
   
-  // Default values for other fields (can be enhanced)
+  // Parse metadata from zone 3 (raw 8 bytes per row)
   uint16_t column_id = static_cast<uint16_t>(header_.column_id);
   uint8_t entity_type = header_.entity_type != 0 ? header_.entity_type : 0;
   uint16_t sequence = 0;
   uint8_t flags = 0;
+  uint16_t part_id = 0;
+  
+  size_t meta_offset = block.zone_offsets[3] + row_idx * 8;
+  if (block.zone_sizes[3] >= (row_idx + 1) * 8) {
+    column_id = *reinterpret_cast<const uint16_t*>(
+        block.data.data() + meta_offset);
+    sequence = *reinterpret_cast<const uint16_t*>(
+        block.data.data() + meta_offset + 2);
+    entity_type = *reinterpret_cast<const uint8_t*>(
+        block.data.data() + meta_offset + 4);
+    flags = *reinterpret_cast<const uint8_t*>(
+        block.data.data() + meta_offset + 5);
+    part_id = *reinterpret_cast<const uint16_t*>(
+        block.data.data() + meta_offset + 6);
+  }
   
   return CedarKey(entity_id, 
                   static_cast<EntityType>(entity_type),
@@ -378,7 +390,8 @@ CedarKey ZoneColumnarSstReader::ReconstructKeyFromBlock(
                   Timestamp(timestamp_val),
                   sequence,
                   target_id,
-                  flags);
+                  flags,
+                  part_id);
 }
 
 std::optional<Descriptor> ZoneColumnarSstReader::GetValueByRow(

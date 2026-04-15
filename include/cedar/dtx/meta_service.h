@@ -33,11 +33,7 @@
 #include "cedar/core/status.h"
 #include "cedar/dtx/types.h"
 #include "cedar/dtx/raft/raft_interface.h"
-
-// braft integration (optional)
-#ifdef CEDAR_WITH_BRAFT
 #include "cedar/dtx/raft/braft_node.h"
-#endif
 
 // Forward declaration for braft integration
 struct RaftCommand;
@@ -360,7 +356,7 @@ private:
     
     MetaServiceConfig config_;
     
-    std::unique_ptr<raft::RaftNode> raft_node_;
+    std::unique_ptr<BRaftNode> raft_node_;
     MetadataStateMachine state_machine_;
     
     // 回调列表

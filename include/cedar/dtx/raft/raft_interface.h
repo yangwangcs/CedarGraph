@@ -191,47 +191,6 @@ public:
         std::function<std::unique_ptr<RaftNode>()> factory);
 };
 
-// =============================================================================
-// 简化版 Raft 实现（基于内存，用于测试）
-// =============================================================================
-
-/**
- * @brief 内存版 Raft（用于单元测试，不保证真正的共识）
- */
-class MemoryRaftNode : public RaftNode {
-public:
-    Status Initialize(const RaftConfig& config, StateMachine* state_machine) override;
-    Status Shutdown() override;
-    StatusOr<LogIndex> Propose(const std::string& data) override;
-    bool IsLeader() const override;
-    NodeID GetLeader() const override;
-    RaftState GetState() const override;
-    LogTerm GetTerm() const override;
-    Status AddNode(NodeID node_id, const std::string& address) override;
-    Status RemoveNode(NodeID node_id) override;
-    std::vector<std::pair<NodeID, std::string>> GetMembers() const override;
-    Status TriggerSnapshot() override;
-    void RegisterStateCallback(
-        std::function<void(RaftState, RaftState)> callback) override;
-    void RegisterLeaderCallback(
-        std::function<void(NodeID, NodeID)> callback) override;
-
-private:
-    RaftConfig config_;
-    StateMachine* state_machine_{nullptr};
-    
-    std::atomic<bool> is_leader_{true};
-    std::atomic<NodeID> leader_id_{0};
-    std::atomic<LogTerm> current_term_{1};
-    std::atomic<LogIndex> next_index_{1};
-    
-    mutable std::mutex mutex_;
-    std::vector<std::pair<NodeID, std::string>> members_;
-    
-    std::vector<std::function<void(RaftState, RaftState)>> state_callbacks_;
-    std::vector<std::function<void(NodeID, NodeID)>> leader_callbacks_;
-};
-
 } // namespace raft
 } // namespace dtx
 } // namespace cedar

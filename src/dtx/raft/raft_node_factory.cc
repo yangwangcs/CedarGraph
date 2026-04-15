@@ -175,12 +175,7 @@ std::unique_ptr<RaftNode> CreateRaftNode(const RaftConfig& config,
     }
 #endif
     
-    case RaftNodeType::kMemory: {
-      // Create memory-only node (for testing)
-      node = std::make_unique<MemoryRaftNode>();
-      node->Initialize(config, nullptr);
-      break;
-    }
+
     
     default: {
       break;

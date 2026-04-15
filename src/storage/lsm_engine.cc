@@ -373,7 +373,13 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     }
   }
   
-  // 3. Query SST files
+  // 3. Query Accumulated Buffer (for accumulated flush mode)
+  auto accumulated = QueryAccumulatedBuffer(entity_id, entity_type, column_id, timestamp);
+  if (accumulated.has_value()) {
+    return accumulated->second;
+  }
+  
+  // 4. Query SST files
   // 收集所有匹配的条目
   std::vector<std::pair<CedarKey, Descriptor>> all_entries;
   
@@ -527,7 +533,13 @@ std::optional<std::pair<CedarKey, Descriptor>> LsmEngine::GetRecordAtTime(
     }
   }
   
-  // 3. Query SST files via Size-Tiered Compaction Engine
+  // 3. Query Accumulated Buffer (for accumulated flush mode)
+  auto accumulated = QueryAccumulatedBuffer(entity_id, entity_type, column_id, timestamp);
+  if (accumulated.has_value()) {
+    return accumulated;
+  }
+  
+  // 4. Query SST files via Size-Tiered Compaction Engine
   // SST files store complete CedarKey with all metadata
   if (compaction_engine_) {
     auto files = compaction_engine_->GetFilesForEntity(
@@ -1114,11 +1126,25 @@ void LsmEngine::TraverseTemporalChain(uint64_t entity_id,
 }
 
 Status LsmEngine::ForceFlush() {
-  std::unique_lock<std::shared_mutex> lock(mutex_);
+  // 等待任何后台 Flush 完成
+  while (true) {
+    {
+      std::unique_lock<std::mutex> flush_lock(flush_completion_mutex_);
+      flush_completion_cv_.wait(flush_lock, [this]() {
+        return active_flush_count_.load() == 0;
+      });
+    }
 
-  if (imm_) {
-    return Status::IOError("LsmEngine", "flush already in progress");
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    if (!imm_) {
+      break;  // 安全，没有后台 flush 在进行
+    }
+    // 后台线程可能刚设置 imm_ 但还没增加计数器，释放锁再等待一轮
+    lock.unlock();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
+
+  std::unique_lock<std::shared_mutex> lock(mutex_);
 
   if (mem_->IsEmpty()) {
     return Status::OK();
@@ -1225,6 +1251,34 @@ void LsmEngine::DisableAccumulatedFlush() {
 size_t LsmEngine::GetAccumulatedSize() const {
   std::lock_guard<std::mutex> lock(accumulated_mutex_);
   return accumulated_bytes_;
+}
+
+std::optional<std::pair<CedarKey, Descriptor>> LsmEngine::QueryAccumulatedBuffer(
+    uint64_t entity_id,
+    EntityType entity_type,
+    uint16_t column_id,
+    Timestamp timestamp) const {
+  if (accumulated_entries_.empty()) {
+    return std::nullopt;
+  }
+  
+  std::lock_guard<std::mutex> lock(accumulated_mutex_);
+  
+  std::optional<std::pair<CedarKey, Descriptor>> best_match;
+  for (const auto& [key, descriptor] : accumulated_entries_) {
+    if (key.entity_id() != entity_id) continue;
+    if (key.entity_type() != entity_type) continue;
+    if (key.column_id() != column_id) continue;
+    if (key.timestamp().value() > timestamp.value()) continue;
+    
+    // Keep the latest version (largest timestamp <= query timestamp)
+    if (!best_match.has_value() ||
+        key.timestamp().value() > best_match->first.timestamp().value()) {
+      best_match = std::make_pair(key, descriptor);
+    }
+  }
+  
+  return best_match;
 }
 
 Status LsmEngine::FlushAccumulated() {
@@ -1707,6 +1761,11 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
         auto range_results = reader->GetRange(vertex_id, edge_direction, col_id,
                                              Timestamp(0), snapshot_ts);
         for (const auto& [key, descriptor] : range_results) {
+          // Cross-column SST files may contain mixed entity types;
+          // filter to ensure we only process edges in the requested direction.
+          if (key.entity_type() != edge_direction) {
+            continue;
+          }
           all_entries.push_back({key.target_id(), key.timestamp(),
                                 descriptor, col_id, key});
         }
@@ -2290,6 +2349,12 @@ std::vector<SSTFileMeta*> LsmEngine::GetCandidateFiles(uint64_t entity_id,
 
 void LsmEngine::AutoCompactionThread() {
   while (auto_compaction_enabled_.load()) {
+    // 如果后台合并被禁用，跳过执行但保持线程运行
+    if (!options_.size_tiered_config.enable_background_compaction) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      continue;
+    }
+
     if (compaction_engine_ && compaction_engine_->NeedsCompaction()) {
       // 尝试获取下一个 Compaction 任务
       auto task = compaction_engine_->PickNextCompaction();

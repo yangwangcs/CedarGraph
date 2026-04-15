@@ -17,7 +17,7 @@
 #include <vector>
 #include <string>
 
-#include "cedar/sst/zone_columnar_builder.h"
+#include "cedar/sst/sst_builder_factory.h"
 #include "cedar/sst/zone_columnar_reader.h"
 #include "cedar/core/env.h"
 #include "cedar/types/cedar_key.h"
@@ -54,14 +54,14 @@ class CompactionMergerV2Test : public ::testing::Test {
     if (!s.ok()) return "";
     std::unique_ptr<WritableFile> file_ptr(file);
     
-    ZoneColumnarSstBuilder::Options options;
-    ZoneColumnarSstBuilder builder(options, file_ptr.get());
+    SstBuilderOptions options;
+    auto builder = SstBuilderFactory::Create(file_ptr.get(), test_dir_, options);
     
     for (const auto& [key, desc] : data) {
-      builder.Add(key, desc);
+      builder->Add(key, desc);
     }
     
-    if (!builder.Finish().ok()) return "";
+    if (!builder->Finish().ok()) return "";
     return path;
   }
 

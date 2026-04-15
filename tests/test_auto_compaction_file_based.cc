@@ -33,6 +33,7 @@ class AutoCompactionFileBasedTest : public ::testing::Test {
     CedarOptions options;
     options.create_if_missing = true;
     options.enable_skeleton_cache = false;
+    options.enable_accumulated_flush = false;  // 每个 ForceFlush 立即写 SST
     
     // ========== 方案 A 配置：基于文件数量触发 ==========
     options.size_tiered_config.l0_max_size = 64 * 1024 * 1024;     // 64MB（大小阈值，不常用）
@@ -180,8 +181,9 @@ TEST_F(AutoCompactionFileBasedTest, CompareWithAndWithoutCompaction) {
   CedarOptions no_compact_options;
   no_compact_options.create_if_missing = true;
   no_compact_options.enable_skeleton_cache = false;
+  no_compact_options.enable_accumulated_flush = false;  // 每个 ForceFlush 立即写 SST
   no_compact_options.size_tiered_config.l0_max_files = 1000;  // 很高的阈值
-  no_compact_options.size_tiered_config.enable_background_compaction = true;
+  no_compact_options.size_tiered_config.enable_background_compaction = false;  // 完全禁用后台合并
   
   engine_ = std::make_unique<LsmEngine>(test_dir_, no_compact_options, cedar::Env::Default());
   engine_->Open();

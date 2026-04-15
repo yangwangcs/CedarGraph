@@ -294,23 +294,16 @@ class ZoneColumnarSstBuilderV2 {
     block.zone2_data.resize(buffer_.target_ids.size() * 8);
     memcpy(&block.zone2_data[0], buffer_.target_ids.data(), block.zone2_data.size());
     
-    // Zone 3: Metadata
-    std::vector<KeyMetadataZoneEncoder::MetadataEntry> metadata;
-    metadata.reserve(buffer_.Size());
+    // Zone 3: Metadata (raw 8 bytes per row for simplicity and correctness)
+    // Layout: column_id(2) + sequence(2) + entity_type(1) + flags(1) + part_id(2)
+    block.zone3_data.reserve(buffer_.Size() * 8);
     for (size_t i = 0; i < buffer_.Size(); i++) {
-      KeyMetadataZoneEncoder::MetadataEntry entry;
-      entry.column_id = buffer_.column_ids[i];
-      entry.sequence = buffer_.sequences[i];
-      entry.entity_type = buffer_.entity_types[i];
-      entry.flags = buffer_.flags[i];
-      entry.part_id = buffer_.part_ids[i];
-      metadata.push_back(entry);
+      block.zone3_data.append(reinterpret_cast<const char*>(&buffer_.column_ids[i]), 2);
+      block.zone3_data.append(reinterpret_cast<const char*>(&buffer_.sequences[i]), 2);
+      block.zone3_data.push_back(buffer_.entity_types[i]);
+      block.zone3_data.push_back(buffer_.flags[i]);
+      block.zone3_data.append(reinterpret_cast<const char*>(&buffer_.part_ids[i]), 2);
     }
-    auto meta_result = KeyMetadataZoneEncoder::EncodeWithResult(metadata);
-    // 序列化 metadata（简化版）
-    block.zone3_data = meta_result.column_rle + meta_result.sequence_rle + 
-                       meta_result.type_bitmap + meta_result.flags_bitmap + 
-                       meta_result.part_rle;
     
     // Zone 4: Values（Descriptor 是 64-bit 值，直接存储）
     std::string value_data;

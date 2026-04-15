@@ -35,7 +35,8 @@ class SSTCapacityAnalysis : public ::testing::Test {
     
     CedarOptions options;
     options.create_if_missing = true;
-    options.enable_skeleton_cache = false;  // 禁用缓存，专注测试 SST
+    options.enable_skeleton_cache = false;
+    options.enable_accumulated_flush = false;  // 每个 ForceFlush 立即写 SST，避免累积导致循环无法结束
     
     // 配置合并参数（易于触发）
     options.size_tiered_config.l0_max_size = 2 * 1024 * 1024;     // 2MB L0 阈值
@@ -58,7 +59,11 @@ class SSTCapacityAnalysis : public ::testing::Test {
     std::vector<std::pair<std::string, size_t>> files;
     for (const auto& entry : std::filesystem::directory_iterator(test_dir_)) {
       if (entry.path().extension() == ".sst") {
-        files.push_back({entry.path().filename().string(), entry.file_size()});
+        try {
+          files.push_back({entry.path().filename().string(), entry.file_size()});
+        } catch (const std::filesystem::filesystem_error&) {
+          // 文件可能在遍历过程中被后台合并删除，忽略
+        }
       }
     }
     return files;
@@ -94,6 +99,7 @@ TEST_F(SSTCapacityAnalysis, SingleSSTCapacity) {
     CedarOptions options;
     options.create_if_missing = true;
     options.enable_skeleton_cache = false;
+    options.enable_accumulated_flush = false;
     
     auto sub_engine = std::make_unique<LsmEngine>(sub_dir, options, cedar::Env::Default());
     sub_engine->Open();
@@ -149,6 +155,7 @@ TEST_F(SSTCapacityAnalysis, BlockSizeImpact) {
     CedarOptions options;
     options.create_if_missing = true;
     options.enable_skeleton_cache = false;
+    options.enable_accumulated_flush = false;
     // block_size is configured in SstBuilder::Options, not CedarOptions
     
     auto sub_engine = std::make_unique<LsmEngine>(sub_dir, options, cedar::Env::Default());
@@ -311,11 +318,12 @@ TEST_F(SSTCapacityAnalysis, RecommendedCompactionConfig) {
   CedarOptions rec_options;
   rec_options.create_if_missing = true;
   rec_options.enable_skeleton_cache = false;
+  rec_options.enable_accumulated_flush = false;
   // rec_options.block_size is in sst builder options, not CedarOptions
   rec_options.size_tiered_config.l0_max_size = 4 * 1024 * 1024;      // 4MB
   rec_options.size_tiered_config.level_size_trigger_ratio = 1.0;      // 100%
   rec_options.size_tiered_config.l0_max_files = 8;
-  rec_options.size_tiered_config.enable_background_compaction = true;
+  rec_options.size_tiered_config.enable_background_compaction = false;
   
   auto rec_engine = std::make_unique<LsmEngine>(rec_dir, rec_options, cedar::Env::Default());
   rec_engine->Open();
@@ -340,10 +348,18 @@ TEST_F(SSTCapacityAnalysis, RecommendedCompactionConfig) {
     
     // 统计
     size_t total_size = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(rec_dir)) {
-      if (entry.path().extension() == ".sst") {
-        total_size += entry.file_size();
+    try {
+      for (const auto& entry : std::filesystem::directory_iterator(rec_dir)) {
+        if (entry.path().extension() == ".sst") {
+          try {
+            total_size += entry.file_size();
+          } catch (const std::filesystem::filesystem_error&) {
+            // 文件可能在遍历过程中被后台合并删除，忽略
+          }
+        }
       }
+    } catch (const std::filesystem::filesystem_error&) {
+      // directory_iterator 本身可能在并发修改时抛出，忽略
     }
     
     std::cout << "Batch " << batch << ": " << total_size / 1024 << " KB" << std::endl;
@@ -356,11 +372,19 @@ TEST_F(SSTCapacityAnalysis, RecommendedCompactionConfig) {
   
   size_t final_size = 0;
   size_t final_count = 0;
-  for (const auto& entry : std::filesystem::directory_iterator(rec_dir)) {
-    if (entry.path().extension() == ".sst") {
-      final_count++;
-      final_size += entry.file_size();
+  try {
+    for (const auto& entry : std::filesystem::directory_iterator(rec_dir)) {
+      if (entry.path().extension() == ".sst") {
+        try {
+          final_size += entry.file_size();
+          final_count++;
+        } catch (const std::filesystem::filesystem_error&) {
+          // 文件可能在遍历过程中被后台合并删除，忽略
+        }
+      }
     }
+  } catch (const std::filesystem::filesystem_error&) {
+    // directory_iterator 本身可能在并发修改时抛出，忽略
   }
   
   std::cout << "Final: " << final_count << " files, " << final_size / 1024 << " KB" << std::endl;

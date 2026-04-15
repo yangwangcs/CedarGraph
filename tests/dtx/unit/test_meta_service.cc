@@ -25,7 +25,8 @@ protected:
 
 TEST_F(MetaServiceTest, InitializeShutdown) {
     EXPECT_TRUE(meta_service_.IsLeader());
-    EXPECT_EQ(meta_service_.GetLeader(), 1);
+    // With BRaftNode, leader ID is derived from listen address port in current implementation
+    EXPECT_NE(meta_service_.GetLeader(), kInvalidNodeID);
 }
 
 TEST_F(MetaServiceTest, CreateAndGetSpace) {

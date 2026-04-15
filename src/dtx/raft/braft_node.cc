@@ -14,8 +14,6 @@
 
 #include "cedar/dtx/raft/braft_node.h"
 
-#ifdef CEDAR_WITH_BRAFT
-
 #include <braft/util.h>
 #include <braft/storage.h>
 #include <brpc/channel.h>
@@ -417,5 +415,3 @@ void BRaftNode::SetLeaderChangeCallback(
 
 }  // namespace dtx
 }  // namespace cedar
-
-#endif  // CEDAR_WITH_BRAFT

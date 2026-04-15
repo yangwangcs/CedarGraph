@@ -599,6 +599,11 @@ class LsmEngine {
   
   // 累积统计
   size_t accumulated_bytes_ = 0;
+  
+  // 查询累积缓冲区中匹配条件的最新记录
+  std::optional<std::pair<CedarKey, Descriptor>> QueryAccumulatedBuffer(
+      uint64_t entity_id, EntityType entity_type, uint16_t column_id,
+      Timestamp timestamp) const;
 
   // ============================================================================
   // BULK IMPORT OPTIMIZATIONS

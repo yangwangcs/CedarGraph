@@ -92,15 +92,49 @@ else()
     include_directories(${gRPC_INCLUDE_DIRS})
 endif()
 
-# Optional: Find braft for production Raft consensus
-find_package(braft QUIET)
-if(braft_FOUND)
-    message(STATUS "braft found, enabling production Raft consensus")
-    add_definitions(-DCEDAR_WITH_BRAFT)
-    include_directories(${BRAFT_INCLUDE_DIRS})
+# =============================================================================
+# Required: braft for production Raft consensus
+# =============================================================================
+# Two options:
+#   1. System-installed braft (default)
+#   2. Vendored brpc+braft from third_party/ (set -DCEDAR_VENDOR_BRAFT=ON)
+# =============================================================================
+option(CEDAR_VENDOR_BRAFT "Use vendored brpc+braft from third_party/" OFF)
+
+if(CEDAR_VENDOR_BRAFT)
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/brpc/CMakeLists.txt
+       AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/braft/CMakeLists.txt)
+        message(STATUS "Using vendored brpc + braft from third_party/")
+        
+        # Build brpc first (braft depends on it)
+        set(WITH_GLOG OFF CACHE BOOL "" FORCE)
+        set(DOWNLOAD_GTEST OFF CACHE BOOL "" FORCE)
+        set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+        add_subdirectory(third_party/brpc EXCLUDE_FROM_ALL)
+        
+        # Point braft to our brpc
+        set(brpc_DIR ${CMAKE_BINARY_DIR}/third_party/brpc CACHE PATH "" FORCE)
+        
+        # Build braft
+        set(BRAFT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+        set(BRAFT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        add_subdirectory(third_party/braft EXCLUDE_FROM_ALL)
+        
+        set(braft_FOUND TRUE)
+    else()
+        message(FATAL_ERROR 
+            "CEDAR_VENDOR_BRAFT is ON but third_party/brpc or third_party/braft not found.\n"
+            "Please run: ./scripts/setup_braft.sh")
+    endif()
 else()
-    message(STATUS "braft not found, using MemoryRaft (development only)")
+    find_package(braft REQUIRED)
+    include_directories(${BRAFT_INCLUDE_DIRS})
 endif()
+
+message(STATUS "braft enabled for production Raft consensus")
+add_definitions(-DCEDAR_WITH_BRAFT)
 
 # Core library sources
 set(CEDAR_CORE_SOURCES
@@ -187,7 +221,6 @@ set(CEDAR_DTX_SOURCES
     src/dtx/meta/meta_service.cc
     src/dtx/meta/meta_service_impl.cc
     src/dtx/meta/meta_types.cc
-    src/dtx/raft/memory_raft.cc
     src/dtx/raft/embedded_raft.cc
     src/dtx/raft/embedded_raft_storage.cc
     src/dtx/raft/grpc_transport.cc
@@ -322,8 +355,16 @@ target_link_libraries(cedar ${LZ4_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL:
 target_include_directories(cedar PUBLIC ${LZ4_INCLUDE_DIRS})
 target_link_directories(cedar PUBLIC ${LZ4_LIBRARY_DIRS})
 
-# Link braft if available
-if(braft_FOUND)
+# Link braft (required)
+if(CEDAR_VENDOR_BRAFT)
+    if(TARGET braft-static)
+        target_link_libraries(cedar braft-static)
+    elseif(TARGET braft)
+        target_link_libraries(cedar braft)
+    else()
+        message(FATAL_ERROR "Vendored braft target not found (expected braft-static or braft)")
+    endif()
+else()
     target_link_libraries(cedar ${BRAFT_LIBRARIES})
     target_include_directories(cedar PUBLIC ${BRAFT_INCLUDE_DIRS})
 endif()

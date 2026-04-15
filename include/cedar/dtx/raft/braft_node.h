@@ -38,11 +38,9 @@
 #include "cedar/core/status.h"
 #include "cedar/dtx/types.h"
 
-// braft headers (conditionally included)
-#ifdef CEDAR_WITH_BRAFT
+// braft headers
 #include <braft/raft.h>
 #include <braft/storage.h>
-#endif
 
 namespace cedar {
 namespace dtx {
@@ -75,7 +73,6 @@ struct RaftCommand {
 // braft State Machine for MetaD
 // =============================================================================
 
-#ifdef CEDAR_WITH_BRAFT
 class MetaRaftStateMachine : public braft::StateMachine {
  public:
   explicit MetaRaftStateMachine(MetaService* meta_service);
@@ -104,10 +101,6 @@ class MetaRaftStateMachine : public braft::StateMachine {
   MetaService* meta_service_;
   std::atomic<int64_t> last_term_{0};
 };
-#else
-// Stub implementation when braft is not available
-class MetaRaftStateMachine;
-#endif
 
 // =============================================================================
 // braft Node Wrapper

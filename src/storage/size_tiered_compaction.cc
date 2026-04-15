@@ -643,6 +643,10 @@ Status SizeTieredCompactionEngine::ExecuteCompaction(const CompactionTask& task)
 }
 
 void SizeTieredCompactionEngine::ScheduleCompaction() {
+  if (!config_.enable_background_compaction) {
+    return;  // 后台合并已禁用，不排队任务
+  }
+  
   std::lock_guard<std::mutex> lock(queue_mutex_);
   
   auto task = PickNextCompaction();

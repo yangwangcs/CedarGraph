@@ -321,23 +321,25 @@ Status CedarGraphStorage::Put(const WriteOptions& options,
   std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
   
   // ============================================================================
-  // Partition Router Mode (REQUIRED)
+  // Partition Router Mode (REQUIRED for distributed, optional for single-node)
   // ============================================================================
-  if (!rep_->partition_router_) {
+  uint16_t part_id = 0;
+  if (rep_->partition_router_) {
+    // Route to appropriate partition leader
+    auto route_result = rep_->partition_router_->RouteWrite(entity_id);
+    if (!route_result.ok()) {
+      return route_result.status();
+    }
+    part_id = route_result.ValueOrDie().partition_id;
+  } else if (rep_->is_distributed) {
     return Status::InvalidArgument("CedarGraphStorage", 
         "PartitionRouter not initialized. Call InitializePartitionRouter() first.");
+  } else {
+    // Single-node mode without partition router: compute local partition
+    part_id = ComputePartition(entity_id);
   }
-  
-  // Route to appropriate partition leader
-  auto route_result = rep_->partition_router_->RouteWrite(entity_id);
-  if (!route_result.ok()) {
-    return route_result.status();
-  }
-  
-  auto target = route_result.ValueOrDie();
   
   // 构造 Key with partition ID
-  uint16_t part_id = target.partition_id;
   uint8_t flags = PackCreateFlags(true);
   CedarKey key = CedarKey::Vertex(entity_id, VertexColumnId(descriptor.GetColumnId()), 
                                   Timestamp(tx_time), 0, part_id, 0, flags);
@@ -373,23 +375,25 @@ Status CedarGraphStorage::Delete(const WriteOptions& options,
   std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
   
   // ============================================================================
-  // Partition Router Mode (REQUIRED)
+  // Partition Router Mode (REQUIRED for distributed, optional for single-node)
   // ============================================================================
-  if (!rep_->partition_router_) {
+  uint16_t part_id = 0;
+  if (rep_->partition_router_) {
+    // Route to appropriate partition leader (delete must go to leader)
+    auto route_result = rep_->partition_router_->RouteWrite(entity_id);
+    if (!route_result.ok()) {
+      return route_result.status();
+    }
+    part_id = route_result.ValueOrDie().partition_id;
+  } else if (rep_->is_distributed) {
     return Status::InvalidArgument("CedarGraphStorage::Delete",
         "PartitionRouter not initialized. Call InitializePartitionRouter() first.");
+  } else {
+    // Single-node mode without partition router: compute local partition
+    part_id = ComputePartition(entity_id);
   }
-  
-  // Route to appropriate partition leader (delete must go to leader)
-  auto route_result = rep_->partition_router_->RouteWrite(entity_id);
-  if (!route_result.ok()) {
-    return route_result.status();
-  }
-  
-  auto target = route_result.ValueOrDie();
   
   // 构造 Tombstone Key with partition ID
-  uint16_t part_id = target.partition_id;
   uint8_t flags = PackDeleteFlags(true);
   
   CedarKey key = CedarKey::Vertex(entity_id, 0_vcol, Timestamp(tx_time), 
@@ -427,6 +431,15 @@ std::optional<Descriptor> CedarGraphStorage::Get(uint64_t entity_id, uint64_t tx
     if (result.has_value()) {
       return result;
     }
+    // Get() returns std::nullopt for both "no data" and "tombstone".
+    // If a tombstone exists at this column, we must stop searching to avoid
+    // returning stale data from a different column.
+    if (!rep_->is_distributed && rep_->engine) {
+      auto record = rep_->engine->GetRecordAtTime(entity_id, EntityType::Vertex, col, Timestamp(tx_time));
+      if (record.has_value() && record->second.IsTombstone()) {
+        return std::nullopt;
+      }
+    }
   }
   return std::nullopt;
 }
@@ -437,33 +450,33 @@ std::optional<Descriptor> CedarGraphStorage::Get(uint64_t entity_id,
                                                 Timestamp timestamp) {
   std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
   
-  // ============================================================================
-  // Partition Router Mode (REQUIRED)
-  // ============================================================================
-  if (!rep_->partition_router_) {
-    return std::nullopt;
-  }
-  
-  // Route read to appropriate partition (may use follower for read)
-  auto route_result = rep_->partition_router_->RouteRead(entity_id, false);
-  if (!route_result.ok()) {
-    return std::nullopt;
-  }
-  
-  auto target = route_result.ValueOrDie();
-  
-  // 构造 Key with partition ID
-  uint16_t part_id = target.partition_id;
-  uint8_t flags = PackCreateFlags(true);
-  
-  // Store entity type info in the extension field for distributed lookup
-  uint64_t extension = (static_cast<uint64_t>(entity_type) << 16) | column_id;
-  
-  CedarKey key = CedarKey::Vertex(entity_id, column_id, timestamp, 
-                                  0, part_id, extension, flags);
-  
   // Use DTX client if in distributed mode
   if (rep_->is_distributed && rep_->dtx_client && rep_->is_connected) {
+    // ============================================================================
+    // Partition Router Mode (REQUIRED for distributed reads)
+    // ============================================================================
+    if (!rep_->partition_router_) {
+      return std::nullopt;
+    }
+    
+    // Route read to appropriate partition (may use follower for read)
+    auto route_result = rep_->partition_router_->RouteRead(entity_id, false);
+    if (!route_result.ok()) {
+      return std::nullopt;
+    }
+    
+    auto target = route_result.ValueOrDie();
+    
+    // 构造 Key with partition ID
+    uint16_t part_id = target.partition_id;
+    uint8_t flags = PackCreateFlags(true);
+    
+    // Store entity type info in the extension field for distributed lookup
+    uint64_t extension = (static_cast<uint64_t>(entity_type) << 16) | column_id;
+    
+    CedarKey key = CedarKey::Vertex(entity_id, column_id, timestamp, 
+                                    0, part_id, extension, flags);
+    
     auto result = rep_->dtx_client->Get(key, timestamp);
     if (result.ok()) {
       auto desc = result.ValueOrDie();
