@@ -38,6 +38,7 @@
 #include "cedar/dtx/production_config.h"
 
 namespace cedar {
+class TransactionStateManager;
 namespace dtx {
 
 // Forward declarations
@@ -152,6 +153,9 @@ class Optimized2PCEngine {
   // Initialize with storage clients for each partition
   Status Initialize(const std::vector<std::shared_ptr<StorageClient>>& clients);
   
+  // Set state manager for transaction persistence
+  void SetStateManager(TransactionStateManager* state_manager) { state_manager_ = state_manager; }
+  
   // Shutdown
   void Shutdown();
   
@@ -247,6 +251,9 @@ class Optimized2PCEngine {
   // State
   std::atomic<bool> running_{false};
   std::atomic<bool> shutdown_{false};
+  
+  // Transaction state manager for persistence
+  TransactionStateManager* state_manager_ = nullptr;
   
   // Statistics
   AtomicStats stats_;

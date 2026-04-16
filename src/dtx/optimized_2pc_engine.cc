@@ -14,6 +14,7 @@
 
 #include "cedar/dtx/optimized_2pc_engine.h"
 #include "cedar/dtx/storage_service_impl.h"
+#include "cedar/dtx/transaction_state.h"
 
 #include <algorithm>
 #include <chrono>
@@ -239,17 +240,32 @@ Status Optimized2PCEngine::ExecuteSequential2PC(
   
   auto participants = GetParticipants(ctx->write_set);
   
-  // Phase 1: Prepare (sequential)
+  // Phase 1: Prepare (sequential RPC)
   ctx->state.store(TransactionContext::State::kPreparing);
   
   for (auto& client : participants) {
-    // In real implementation, call Prepare RPC
-    // For now, simulate success
-    ctx->prepare_acks++;
+    // Real Prepare RPC call
+    auto result = client->Prepare(
+        ctx->txn_id,
+        ctx->read_set,
+        ctx->write_set,
+        ctx->commit_ts);
+    
+    if (result.ok() && result.ValueOrDie()) {
+      ctx->prepare_acks.fetch_add(1);
+    } else {
+      ctx->prepare_nacks.fetch_add(1);
+    }
   }
   
-  if (ctx->prepare_acks != static_cast<int>(participants.size())) {
+  if (ctx->prepare_acks.load() < static_cast<int>(participants.size())) {
     ctx->state.store(TransactionContext::State::kAborting);
+    
+    // Abort participants that prepared
+    for (auto& client : participants) {
+      client->Abort(ctx->txn_id);
+    }
+    
     stats_.aborted_transactions++;
     return Status::IOError("Prepare phase failed");
   }
@@ -257,15 +273,19 @@ Status Optimized2PCEngine::ExecuteSequential2PC(
   ctx->state.store(TransactionContext::State::kPrepared);
   ctx->prepare_complete_time = std::chrono::steady_clock::now();
   
-  // Phase 2: Commit (sequential)
+  // Phase 2: Commit (sequential RPC)
   ctx->state.store(TransactionContext::State::kCommitting);
   
   for (auto& client : participants) {
-    // In real implementation, call Commit RPC
-    ctx->commit_acks++;
+    // Real Commit RPC call
+    auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
+    
+    if (status.ok()) {
+      ctx->commit_acks.fetch_add(1);
+    }
   }
   
-  if (ctx->commit_acks == static_cast<int>(participants.size())) {
+  if (ctx->commit_acks.load() == static_cast<int>(participants.size())) {
     ctx->state.store(TransactionContext::State::kCommitted);
     stats_.committed_transactions++;
     
@@ -287,15 +307,26 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   
   auto participants = GetParticipants(ctx->write_set);
   
-  // Phase 1: Prepare (parallel)
+  // Phase 1: Prepare (parallel RPC)
   ctx->state.store(TransactionContext::State::kPreparing);
   
   std::vector<std::future<bool>> prepare_futures;
   for (auto& client : participants) {
     prepare_futures.push_back(std::async(std::launch::async, [&client, &ctx]() {
-      // Simulate Prepare RPC
-      std::this_thread::sleep_for(std::chrono::microseconds(100));
-      return true;
+      // Real Prepare RPC call
+      auto result = client->Prepare(
+          ctx->txn_id,
+          ctx->read_set,
+          ctx->write_set,
+          ctx->commit_ts);
+      
+      if (result.ok() && result.ValueOrDie()) {
+        ctx->prepare_acks.fetch_add(1);
+        return true;
+      } else {
+        ctx->prepare_nacks.fetch_add(1);
+        return false;
+      }
     }));
   }
   
@@ -304,6 +335,14 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   
   if (!all_prepared) {
     ctx->state.store(TransactionContext::State::kAborting);
+    
+    // Send Abort to participants that prepared successfully
+    for (auto& client : participants) {
+      std::thread([&client, &ctx]() {
+        client->Abort(ctx->txn_id);
+      }).detach();
+    }
+    
     stats_.aborted_transactions++;
     return Status::IOError("Prepare phase failed or timed out");
   }
@@ -311,15 +350,25 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   ctx->state.store(TransactionContext::State::kPrepared);
   ctx->prepare_complete_time = std::chrono::steady_clock::now();
   
-  // Phase 2: Commit (parallel)
+  if (state_manager_) {
+    state_manager_->UpdateState(ctx->txn_id, TxnState::kPrepared);
+  }
+  
+  // Phase 2: Commit (parallel RPC)
   ctx->state.store(TransactionContext::State::kCommitting);
   
   std::vector<std::future<bool>> commit_futures;
   for (auto& client : participants) {
     commit_futures.push_back(std::async(std::launch::async, [&client, &ctx]() {
-      // Simulate Commit RPC
-      std::this_thread::sleep_for(std::chrono::microseconds(50));
-      return true;
+      // Real Commit RPC call
+      auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
+      
+      if (status.ok()) {
+        ctx->commit_acks.fetch_add(1);
+        return true;
+      } else {
+        return false;
+      }
     }));
   }
   
@@ -327,6 +376,9 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   
   if (all_committed) {
     ctx->state.store(TransactionContext::State::kCommitted);
+    if (state_manager_) {
+      state_manager_->UpdateState(ctx->txn_id, TxnState::kCommitted);
+    }
     stats_.committed_transactions++;
     stats_.total_transactions++;
     
@@ -412,51 +464,90 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
     
     // Process batch in parallel
     if (!batch.empty()) {
-      // Phase 1: Prepare all in parallel
-      std::vector<std::future<bool>> prepare_results;
       for (auto& ctx : batch) {
-        ctx->state.store(TransactionContext::State::kPreparing);
-        prepare_results.push_back(std::async(std::launch::async, [&ctx]() {
-          std::this_thread::sleep_for(std::chrono::microseconds(100));
-          ctx->prepare_acks.store(1);
-          return true;
-        }));
-      }
-      
-      for (auto& f : prepare_results) {
-        f.get();  // Wait for all
-      }
-      
-      // Mark all as prepared
-      for (auto& ctx : batch) {
-        ctx->state.store(TransactionContext::State::kPrepared);
-      }
-      
-      // Phase 2: Commit all in parallel
-      std::vector<std::future<bool>> commit_results;
-      for (auto& ctx : batch) {
-        ctx->state.store(TransactionContext::State::kCommitting);
-        commit_results.push_back(std::async(std::launch::async, [&ctx]() {
-          std::this_thread::sleep_for(std::chrono::microseconds(50));
-          ctx->commit_acks.store(1);
-          return true;
-        }));
-      }
-      
-      for (auto& f : commit_results) {
-        f.get();  // Wait for all
-      }
-      
-      // Mark all as committed
-      for (auto& ctx : batch) {
-        ctx->state.store(TransactionContext::State::kCommitted);
-        stats_.committed_transactions++;
-        stats_.total_transactions++;
+        auto participants = GetParticipants(ctx->read_set);
+        auto write_participants = GetParticipants(ctx->write_set);
+        participants.insert(participants.end(), write_participants.begin(), write_participants.end());
+        // deduplicate
+        std::sort(participants.begin(), participants.end());
+        participants.erase(std::unique(participants.begin(), participants.end()), participants.end());
         
-        auto end_time = std::chrono::steady_clock::now();
-        auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - ctx->start_time).count();
-        stats_.RecordLatency(latency_us);
+        if (participants.empty()) {
+          ctx->state.store(TransactionContext::State::kAborted);
+          continue;
+        }
+        
+        // Phase 1: Prepare all in parallel
+        ctx->state.store(TransactionContext::State::kPreparing);
+        std::vector<std::future<bool>> prepare_results;
+        for (auto& client : participants) {
+          prepare_results.push_back(std::async(std::launch::async, [&client, &ctx]() {
+            auto result = client->Prepare(ctx->txn_id, ctx->read_set, ctx->write_set, ctx->commit_ts);
+            if (result.ok() && result.ValueOrDie()) {
+              ctx->prepare_acks.fetch_add(1);
+              return true;
+            } else {
+              ctx->prepare_nacks.fetch_add(1);
+              return false;
+            }
+          }));
+        }
+        
+        for (auto& f : prepare_results) {
+          f.get();
+        }
+        
+        bool all_prepared = (ctx->prepare_acks.load() == static_cast<int>(participants.size()));
+        if (!all_prepared) {
+          ctx->state.store(TransactionContext::State::kAborting);
+          for (auto& client : participants) {
+            client->Abort(ctx->txn_id);
+          }
+          ctx->state.store(TransactionContext::State::kAborted);
+          stats_.aborted_transactions++;
+          continue;
+        }
+        
+        ctx->state.store(TransactionContext::State::kPrepared);
+        if (state_manager_) {
+          state_manager_->UpdateState(ctx->txn_id, TxnState::kPrepared);
+        }
+        
+        // Phase 2: Commit all in parallel
+        ctx->state.store(TransactionContext::State::kCommitting);
+        std::vector<std::future<bool>> commit_results;
+        for (auto& client : participants) {
+          commit_results.push_back(std::async(std::launch::async, [&client, &ctx]() {
+            auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
+            if (status.ok()) {
+              ctx->commit_acks.fetch_add(1);
+              return true;
+            }
+            return false;
+          }));
+        }
+        
+        for (auto& f : commit_results) {
+          f.get();
+        }
+        
+        bool all_committed = (ctx->commit_acks.load() == static_cast<int>(participants.size()));
+        if (all_committed) {
+          ctx->state.store(TransactionContext::State::kCommitted);
+          if (state_manager_) {
+            state_manager_->UpdateState(ctx->txn_id, TxnState::kCommitted);
+          }
+          stats_.committed_transactions++;
+          stats_.total_transactions++;
+          
+          auto end_time = std::chrono::steady_clock::now();
+          auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+              end_time - ctx->start_time).count();
+          stats_.RecordLatency(latency_us);
+        } else {
+          ctx->state.store(TransactionContext::State::kAborted);
+          stats_.aborted_transactions++;
+        }
       }
     }
   }
