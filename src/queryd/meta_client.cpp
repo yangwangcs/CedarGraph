@@ -79,20 +79,18 @@ Status QueryMetaClient::Init() {
       options_.meta_service_address,
       grpc::InsecureChannelCredentials());
   
+  meta_stub_ = cedar::meta::MetaService::NewStub(channel_);
+  
   // Wait for connection (gRPC API compatibility: skip WaitForConnected)
   (void)options_.rpc_timeout;
-  // auto deadline = steady_clock::now() + options_.rpc_timeout;
-  // if (!channel_->WaitForConnected(deadline)) {
-  //   return Status::IOError("Failed to connect to meta service");
-  // }
   
   // Initial fetch
-  Status s = FetchSchemaFromMeta();
+  Status s = FetchSchemaFromMeta(&cached_schema_);
   if (!s.ok()) {
     return s;
   }
   
-  s = FetchClusterStateFromMeta();
+  s = FetchClusterStateFromMeta(&cached_cluster_state_);
   if (!s.ok()) {
     return s;
   }
@@ -110,11 +108,11 @@ Status QueryMetaClient::GetSchema(GraphSchema* schema) {
     *schema = cached_schema_;
     return Status::OK();
   }
-  return FetchSchemaFromMeta();
+  return FetchSchemaFromMeta(schema);
 }
 
 Status QueryMetaClient::RefreshSchema() {
-  return FetchSchemaFromMeta();
+  return FetchSchemaFromMeta(&cached_schema_);
 }
 
 Status QueryMetaClient::GetClusterState(ClusterState* state) {
@@ -123,11 +121,11 @@ Status QueryMetaClient::GetClusterState(ClusterState* state) {
     *state = cached_cluster_state_;
     return Status::OK();
   }
-  return FetchClusterStateFromMeta();
+  return FetchClusterStateFromMeta(state);
 }
 
 Status QueryMetaClient::RefreshClusterState() {
-  return FetchClusterStateFromMeta();
+  return FetchClusterStateFromMeta(&cached_cluster_state_);
 }
 
 Status QueryMetaClient::GetPartitionForEntity(uint64_t entity_id, 
@@ -180,16 +178,57 @@ Status QueryMetaClient::WatchClusterChanges(
 }
 
 Status QueryMetaClient::RegisterQueryD(const std::string& listen_address) {
-  (void)listen_address;
-  // TODO: Implement with correct proto types when meta service API stabilizes
+  if (!channel_) {
+    return Status::IOError("Channel not initialized");
+  }
+
+  auto stub = cedar::meta::MetaService::NewStub(channel_);
+  grpc::ClientContext context;
+  cedar::meta::RegisterQueryDRequest request;
+  cedar::meta::RegisterQueryDResponse response;
+
+  request.set_node_id(static_cast<uint32_t>(std::hash<std::string>{}(listen_address) & 0x7FFFFFFF));
+  request.set_listen_address(listen_address);
+  request.set_region("default");
+
+  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+  grpc::Status status = stub->RegisterQueryD(&context, request, &response);
+
+  if (!status.ok()) {
+    return Status::IOError("RegisterQueryD failed: " + status.error_message());
+  }
+  if (!response.success()) {
+    return Status::IOError("RegisterQueryD rejected: " + response.error_msg());
+  }
   return Status::OK();
 }
 
-Status QueryMetaClient::Heartbeat(uint32_t active_queries, 
-                             uint32_t queued_queries) {
-  (void)active_queries;
-  (void)queued_queries;
-  // TODO: Implement with correct proto types when meta service API stabilizes
+Status QueryMetaClient::Heartbeat(uint32_t active_queries,
+                                  uint32_t queued_queries) {
+  if (!channel_) {
+    return Status::IOError("Channel not initialized");
+  }
+
+  auto stub = cedar::meta::MetaService::NewStub(channel_);
+  grpc::ClientContext context;
+  cedar::meta::QueryDHeartbeatRequest request;
+  cedar::meta::QueryDHeartbeatResponse response;
+
+  request.set_node_id(static_cast<uint32_t>(std::hash<std::string>{}(options_.meta_service_address) & 0x7FFFFFFF));
+  request.set_active_queries(active_queries);
+  request.set_queued_queries(queued_queries);
+  request.set_cpu_usage_percent(0.0);
+  request.set_memory_usage_percent(0.0);
+
+  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+  grpc::Status status = stub->QueryDHeartbeat(&context, request, &response);
+
+  if (!status.ok()) {
+    return Status::IOError("QueryDHeartbeat failed: " + status.error_message());
+  }
+  if (!response.success()) {
+    return Status::IOError("QueryDHeartbeat rejected: " + response.error_msg());
+  }
   return Status::OK();
 }
 
@@ -206,75 +245,140 @@ const ClusterState* QueryMetaClient::GetCachedClusterState() const {
 void QueryMetaClient::RefreshLoop() {
   while (running_) {
     std::this_thread::sleep_for(options_.refresh_interval);
-    
+
     if (!running_) break;
-    
-    FetchSchemaFromMeta();
-    FetchClusterStateFromMeta();
+
+    FetchSchemaFromMeta(&cached_schema_);
+    FetchClusterStateFromMeta(&cached_cluster_state_);
   }
 }
 
-Status QueryMetaClient::FetchSchemaFromMeta() {
-  // TODO: Use actual gRPC call
-  // For now, return cached schema
-  
-  // Simulated schema
-  GraphSchema schema;
-  
-  // Add sample node labels
-  LabelSchema person;
-  person.name = "Person";
-  person.is_node = true;
-  person.properties.push_back({"id", "STRING", false, true, ""});
-  person.properties.push_back({"name", "STRING", false, false, ""});
-  person.properties.push_back({"age", "INT", true, false, "0"});
-  schema.node_labels["Person"] = std::move(person);
-  
-  LabelSchema company;
-  company.name = "Company";
-  company.is_node = true;
-  company.properties.push_back({"id", "STRING", false, true, ""});
-  company.properties.push_back({"name", "STRING", false, false, ""});
-  schema.node_labels["Company"] = std::move(company);
-  
-  // Add sample edge types
-  LabelSchema works_for;
-  works_for.name = "WORKS_FOR";
-  works_for.is_node = false;
-  works_for.properties.push_back({"since", "STRING", true, false, ""});
-  schema.edge_types["WORKS_FOR"] = std::move(works_for);
-  
-  {
-    std::unique_lock<std::shared_mutex> lock(schema_mutex_);
-    cached_schema_ = std::move(schema);
+Status QueryMetaClient::FetchSchemaFromMeta(GraphSchema* schema) {
+  if (!channel_) {
+    return Status::IOError("Channel not initialized");
   }
-  
+
+  auto stub = cedar::meta::MetaService::NewStub(channel_);
+  grpc::ClientContext context;
+  cedar::meta::GetSchemaRequest request;
+  cedar::meta::GetSchemaResponse response;
+
+  request.set_space_name("default");
+  context.set_deadline(std::chrono::system_clock::now() + options_.rpc_timeout);
+
+  grpc::Status status = stub->GetSchema(&context, request, &response);
+  if (!status.ok()) {
+    return Status::IOError("GetSchema failed: " + status.error_message());
+  }
+  if (!response.success()) {
+    return Status::IOError("GetSchema rejected: " + response.error_msg());
+  }
+
+  schema->Clear();
+  for (const auto& kv : response.schema().node_labels()) {
+    LabelSchema ls;
+    ls.name = kv.second.name();
+    ls.is_node = kv.second.is_node();
+    for (const auto& prop : kv.second.properties()) {
+      ls.properties.push_back({
+          prop.name(),
+          prop.type(),
+          prop.nullable(),
+          prop.indexed(),
+          prop.default_value()});
+    }
+    for (const auto& idx : kv.second.indexes()) {
+      ls.indexes.push_back(idx);
+    }
+    schema->node_labels[kv.first] = std::move(ls);
+  }
+
+  for (const auto& kv : response.schema().edge_types()) {
+    LabelSchema ls;
+    ls.name = kv.second.name();
+    ls.is_node = kv.second.is_node();
+    for (const auto& prop : kv.second.properties()) {
+      ls.properties.push_back({
+          prop.name(),
+          prop.type(),
+          prop.nullable(),
+          prop.indexed(),
+          prop.default_value()});
+    }
+    for (const auto& idx : kv.second.indexes()) {
+      ls.indexes.push_back(idx);
+    }
+    schema->edge_types[kv.first] = std::move(ls);
+  }
+
   return Status::OK();
 }
 
-Status QueryMetaClient::FetchClusterStateFromMeta() {
-  // TODO: Use actual gRPC call
-  
-  // Simulated cluster state
-  ClusterState state;
-  state.version = 1;
-  state.partition_count = 4;
-  
-  for (uint32_t i = 0; i < state.partition_count; ++i) {
+Status QueryMetaClient::FetchClusterStateFromMeta(ClusterState* state) {
+  if (!channel_) {
+    return Status::IOError("Channel not initialized");
+  }
+
+  auto stub = cedar::meta::MetaService::NewStub(channel_);
+  grpc::ClientContext context;
+  cedar::meta::GetSpacePartitionMapRequest request;
+  cedar::meta::GetSpacePartitionMapResponse response;
+
+  request.set_space_name("default");
+  context.set_deadline(std::chrono::system_clock::now() + options_.rpc_timeout);
+
+  grpc::Status status = stub->GetSpacePartitionMap(&context, request, &response);
+  if (!status.ok()) {
+    return Status::IOError("GetSpacePartitionMap failed: " + status.error_message());
+  }
+  if (!response.success()) {
+    return Status::IOError("GetSpacePartitionMap rejected: " + response.error_msg());
+  }
+
+  state->Clear();
+
+  // Build node address lookup from alive nodes
+  cedar::meta::GetAliveNodesRequest alive_req;
+  cedar::meta::GetAliveNodesResponse alive_resp;
+  grpc::ClientContext alive_ctx;
+  alive_ctx.set_deadline(std::chrono::system_clock::now() + options_.rpc_timeout);
+  grpc::Status alive_status = stub->GetAliveNodes(&alive_ctx, alive_req, &alive_resp);
+
+  std::unordered_map<uint32_t, std::string> node_addresses;
+  if (alive_status.ok() && alive_resp.success()) {
+    for (const auto& node : alive_resp.nodes()) {
+      node_addresses[node.node_id()] = node.address();
+    }
+  }
+
+  for (const auto& kv : response.partition_map().assignments()) {
+    const auto& assign = kv.second;
     PartitionInfo info;
-    info.partition_id = i;
-    info.leader_address = "127.0.0.1:" + std::to_string(9779 + i);
-    info.data_size = 1024 * 1024 * 100;  // 100MB
-    info.key_count = 10000;
+    info.partition_id = assign.partition_id();
+    auto it = node_addresses.find(assign.leader_node());
+    if (it != node_addresses.end()) {
+      info.leader_address = it->second;
+    } else {
+      info.leader_address = "127.0.0.1:" + std::to_string(9779 + assign.leader_node() % 3);
+    }
     info.is_healthy = true;
-    state.partitions.push_back(std::move(info));
+    for (uint32_t follower : assign.follower_nodes()) {
+      auto fit = node_addresses.find(follower);
+      if (fit != node_addresses.end()) {
+        info.follower_addresses.push_back(fit->second);
+      }
+    }
+    state->partitions.push_back(std::move(info));
   }
-  
-  {
-    std::unique_lock<std::shared_mutex> lock(cluster_mutex_);
-    cached_cluster_state_ = std::move(state);
+
+  for (const auto& node : alive_resp.nodes()) {
+    StorageNode sn;
+    sn.node_id = node.node_id();
+    sn.address = node.address();
+    sn.is_healthy = node.state() == "ONLINE";
+    state->nodes.push_back(sn);
   }
-  
+
   return Status::OK();
 }
 

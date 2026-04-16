@@ -37,6 +37,7 @@ set(PROTO_FILES
     ${CMAKE_SOURCE_DIR}/proto/query_service.proto
     ${CMAKE_SOURCE_DIR}/proto/migration_service.proto
     ${CMAKE_SOURCE_DIR}/proto/storage_service.proto
+    ${CMAKE_SOURCE_DIR}/proto/dtx_protocol.proto
 )
 
 add_custom_command(
@@ -52,6 +53,8 @@ add_custom_command(
            ${PROTO_OUT_DIR}/meta_service.grpc.pb.cc ${PROTO_OUT_DIR}/meta_service.grpc.pb.h
            ${PROTO_OUT_DIR}/migration_service.pb.cc ${PROTO_OUT_DIR}/migration_service.pb.h
            ${PROTO_OUT_DIR}/migration_service.grpc.pb.cc ${PROTO_OUT_DIR}/migration_service.grpc.pb.h
+           ${PROTO_OUT_DIR}/dtx_protocol.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.pb.h
+           ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.h
     COMMAND protobuf::protoc
     ARGS --grpc_out=${PROTO_OUT_DIR}
          --cpp_out=${PROTO_OUT_DIR}
@@ -75,6 +78,8 @@ add_custom_target(generate_proto ALL
             ${PROTO_OUT_DIR}/query_service.grpc.pb.cc ${PROTO_OUT_DIR}/query_service.grpc.pb.h
             ${PROTO_OUT_DIR}/migration_service.pb.cc ${PROTO_OUT_DIR}/migration_service.pb.h
             ${PROTO_OUT_DIR}/migration_service.grpc.pb.cc ${PROTO_OUT_DIR}/migration_service.grpc.pb.h
+            ${PROTO_OUT_DIR}/dtx_protocol.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.pb.h
+            ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.h
 )
 
 # Find required packages
@@ -221,18 +226,16 @@ set(CEDAR_DTX_SOURCES
     src/dtx/meta/meta_service.cc
     src/dtx/meta/meta_service_impl.cc
     src/dtx/meta/meta_types.cc
-    src/dtx/raft/embedded_raft.cc
-    src/dtx/raft/embedded_raft_storage.cc
     src/dtx/raft/grpc_transport.cc
     src/dtx/raft/grpc_tls.cc
     src/dtx/raft/braft_node.cc
     src/dtx/raft/raft_node_factory.cc
-    src/dtx/raft/embedded_raft_impl.cc
     src/dtx/metad/admin_service.cc
     src/dtx/load_balancer.cc
     src/dtx/coordinator_integration.cc
     src/dtx/storage/storage_service_stub.cc
     src/dtx/storage/raft_replication.cc
+    src/dtx/storage/raft_rpc_client.cc
     src/dtx/storage/multi_raft_optimization.cc
 
     src/dtx/storage/failover_manager.cc
@@ -250,6 +253,8 @@ set(CEDAR_DTX_SOURCES
     src/dtx/storage_impl/storage_service_ext.cc
     src/dtx/storage_impl/partition_index.cc
     src/dtx/grpc/rpc_client.cc
+    src/dtx/dtx_rpc_client.cc
+    src/dtx/dtx_rpc_client_storage_adapter.cc
     src/dtx/transaction_state.cc
     src/dtx/transaction_timeout_manager.cc
     src/dtx/transaction_recovery_manager.cc
@@ -349,6 +354,8 @@ add_library(cedar STATIC
     ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc
     ${PROTO_OUT_DIR}/migration_service.pb.cc
     ${PROTO_OUT_DIR}/migration_service.grpc.pb.cc
+    ${PROTO_OUT_DIR}/dtx_protocol.pb.cc
+    ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc
 )
 
 target_link_libraries(cedar ${LZ4_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf gRPC::grpc++)
@@ -364,6 +371,13 @@ if(CEDAR_VENDOR_BRAFT)
     else()
         message(FATAL_ERROR "Vendored braft target not found (expected braft-static or braft)")
     endif()
+    # Add braft and brpc include directories from vendored third_party
+    target_include_directories(cedar PUBLIC 
+        ${CMAKE_SOURCE_DIR}/third_party/braft/include
+        ${CMAKE_BINARY_DIR}/third_party/braft/src
+        ${CMAKE_SOURCE_DIR}/third_party/brpc/src
+        ${CMAKE_BINARY_DIR}/third_party/brpc/src
+    )
 else()
     target_link_libraries(cedar ${BRAFT_LIBRARIES})
     target_include_directories(cedar PUBLIC ${BRAFT_INCLUDE_DIRS})
@@ -395,6 +409,7 @@ set(CEDAR_CYPHER_SOURCES
     src/cypher/parser.cc
     src/cypher/parser_temporal.cc
     src/cypher/execution_plan.cc
+    src/cypher/expression_evaluator.cc
     src/cypher/value.cc
     src/cypher/temporal_dialect.cc
     src/cypher/operators/temporal_operators.cc
@@ -408,6 +423,8 @@ target_link_libraries(cedar_cypher cedar cedar_graph)
 set(QUERYD_PROTO_SOURCES
     ${PROTO_OUT_DIR}/query_service.pb.cc
     ${PROTO_OUT_DIR}/query_service.grpc.pb.cc
+    ${PROTO_OUT_DIR}/meta_service.pb.cc
+    ${PROTO_OUT_DIR}/meta_service.grpc.pb.cc
 )
 
 # Queryd library (简化版)
@@ -530,6 +547,44 @@ add_executable(storaged
     ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc
 )
 target_link_libraries(storaged cedar cedar_graph gRPC::grpc++ pthread)
+
+if(APPLE)
+    target_link_options(storaged PRIVATE
+        "-Wl,-U,__Z13GetStackTracePPvii"
+        "-Wl,-U,_ProfilerStart"
+        "-Wl,-U,_ProfilerStop"
+        "-Wl,-U,_mallctl"
+        "-Wl,-U,_malloc_stats_print"
+    )
+    target_link_options(graphd PRIVATE
+        "-Wl,-U,__Z13GetStackTracePPvii"
+        "-Wl,-U,_ProfilerStart"
+        "-Wl,-U,_ProfilerStop"
+        "-Wl,-U,_mallctl"
+        "-Wl,-U,_malloc_stats_print"
+    )
+    target_link_options(cedar-queryd PRIVATE
+        "-Wl,-U,__Z13GetStackTracePPvii"
+        "-Wl,-U,_ProfilerStart"
+        "-Wl,-U,_ProfilerStop"
+        "-Wl,-U,_mallctl"
+        "-Wl,-U,_malloc_stats_print"
+    )
+    target_link_options(metad_server PRIVATE
+        "-Wl,-U,__Z13GetStackTracePPvii"
+        "-Wl,-U,_ProfilerStart"
+        "-Wl,-U,_ProfilerStop"
+        "-Wl,-U,_mallctl"
+        "-Wl,-U,_malloc_stats_print"
+    )
+    target_link_options(storaged_legacy PRIVATE
+        "-Wl,-U,__Z13GetStackTracePPvii"
+        "-Wl,-U,_ProfilerStart"
+        "-Wl,-U,_ProfilerStop"
+        "-Wl,-U,_mallctl"
+        "-Wl,-U,_malloc_stats_print"
+    )
+endif()
 
 # Queryd client example
 add_executable(queryd_client_example

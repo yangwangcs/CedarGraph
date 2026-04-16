@@ -495,5 +495,13 @@ void MetaServiceClient::WatchPartitionMap(const std::string& space_name,
     // TODO: implement watch
 }
 
+std::string MetadataService::SerializeState() const {
+    return state_machine_.Serialize();
+}
+
+bool MetadataService::DeserializeState(const std::string& data) {
+    return state_machine_.Deserialize(data).ok();
+}
+
 } // namespace dtx
 } // namespace cedar

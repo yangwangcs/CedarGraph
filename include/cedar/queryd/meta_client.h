@@ -16,6 +16,7 @@
 
 #include "cedar/core/status.h"
 #include "cedar/types/cedar_types.h"
+#include "meta_service.grpc.pb.h"
 
 namespace grpc {
 class Channel;
@@ -50,6 +51,11 @@ struct GraphSchema {
   // Get schema for label
   const LabelSchema* GetNodeLabel(const std::string& name) const;
   const LabelSchema* GetEdgeType(const std::string& name) const;
+  
+  void Clear() {
+    node_labels.clear();
+    edge_types.clear();
+  }
 };
 
 // ============================================================================
@@ -71,6 +77,16 @@ struct PartitionInfo {
 };
 
 // ============================================================================
+// Storage Node
+// ============================================================================
+
+struct StorageNode {
+  uint32_t node_id = 0;
+  std::string address;
+  bool is_healthy = true;
+};
+
+// ============================================================================
 // Cluster State
 // ============================================================================
 
@@ -78,12 +94,20 @@ struct ClusterState {
   uint32_t version = 0;  // Cluster topology version
   uint32_t partition_count = 0;
   std::vector<PartitionInfo> partitions;
+  std::vector<StorageNode> nodes;
   
   // Quick lookup: partition_id -> info
   const PartitionInfo* GetPartition(uint32_t partition_id) const;
   
   // Calculate partition ID for entity
   uint32_t GetPartitionForEntity(uint64_t entity_id) const;
+  
+  void Clear() {
+    version = 0;
+    partition_count = 0;
+    partitions.clear();
+    nodes.clear();
+  }
 };
 
 // ============================================================================
@@ -156,9 +180,12 @@ class QueryMetaClient {
   std::atomic<bool> running_{false};
   std::thread refresh_thread_;
   
+  // gRPC stub
+  std::unique_ptr<cedar::meta::MetaService::Stub> meta_stub_;
+  
   void RefreshLoop();
-  Status FetchSchemaFromMeta();
-  Status FetchClusterStateFromMeta();
+  Status FetchSchemaFromMeta(GraphSchema* schema);
+  Status FetchClusterStateFromMeta(ClusterState* state);
 };
 
 // ============================================================================
