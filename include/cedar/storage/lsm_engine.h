@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -324,6 +325,9 @@ class LsmEngine {
  private:
   // 初始化 WAL
   Status InitWAL();
+
+  // Replay all WAL files from the given starting sequence.
+  Status ReplayWAL(uint64_t start_sequence);
   // Background compaction worker
   void BackgroundCompaction();
 
@@ -385,6 +389,7 @@ class LsmEngine {
 
   // Background thread
   std::atomic<bool> shutdown_;
+  std::atomic<bool> disable_auto_flush_{false};
   std::thread* bg_thread_;
   std::atomic<bool> compaction_scheduled_;
 
@@ -643,6 +648,7 @@ class LsmEngine {
   std::atomic<int> active_flush_count_{0};
   std::mutex flush_completion_mutex_;
   std::condition_variable flush_completion_cv_;
+  std::future<void> flush_future_;
   
   // 迁移现有的 SST 文件到新的 Compaction 引擎
   void MigrateExistingSstFiles();

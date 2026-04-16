@@ -130,6 +130,7 @@ Status LsmEngine::Close() {
   if (!opened_) return Status::OK();
 
   shutdown_ = true;
+  disable_auto_flush_ = true;
 
   // 关闭自动 Compaction 线程
   auto_compaction_enabled_.store(false);
@@ -1196,6 +1197,10 @@ Status LsmEngine::ForceFlush() {
 }
 
 void LsmEngine::MaybeScheduleFlush() {
+  if (shutdown_.load() || disable_auto_flush_.load()) {
+    return;
+  }
+  
   // 尝试获取锁检查是否可以 Flush
   std::unique_lock<std::shared_mutex> lock(mutex_, std::try_to_lock);
   if (!lock.owns_lock()) {
@@ -1386,6 +1391,7 @@ Status LsmEngine::FlushAccumulated() {
     std::lock_guard<std::shared_mutex> level_lock(mutex_);
     levels_[0].push_back(meta);
   }
+  BuildColumnFileIndex();
   
   // 注册到 Compaction Engine
   if (compaction_engine_) {
@@ -1483,6 +1489,7 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::pair<CedarKey, Descriptor>>
     std::lock_guard<std::shared_mutex> lock(mutex_);
     levels_[0].push_back(meta);
   }
+  BuildColumnFileIndex();
   
   // 注册到 Compaction Engine
   if (compaction_engine_) {
@@ -2011,10 +2018,8 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
   {
     std::lock_guard<std::shared_mutex> lock(mutex_);
     levels_[0].push_back(meta);
-    
-    std::unique_lock<std::shared_mutex> index_lock(column_index_mutex_);
-    column_file_index_[column_id].push_back(&levels_[0].back());
   }
+  BuildColumnFileIndex();
   
   if (compaction_engine_) {
     ZoneSstMeta zone_meta;
@@ -2142,6 +2147,7 @@ Status LsmEngine::DoCompaction(int level, const std::vector<SSTFileMeta>& inputs
     }
     levels_[output_level].push_back(new_meta);
   }
+  BuildColumnFileIndex();
   
   // 删除旧文件
   for (const auto& input : inputs) {
