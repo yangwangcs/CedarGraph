@@ -10,6 +10,7 @@
 #include <memory>
 #include <functional>
 #include <optional>
+#include <mutex>
 
 #include "cedar/types/descriptor.h"
 #include "cedar/types/cedar_key.h"
@@ -157,6 +158,7 @@ class LockFreeVSL {
   std::atomic<int> max_height_;
   std::atomic<size_t> size_;
   std::atomic<uint32_t> rnd_;
+  mutable std::mutex mutex_;
 };
 
 }  // namespace cedar

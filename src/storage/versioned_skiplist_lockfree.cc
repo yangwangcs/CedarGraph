@@ -99,6 +99,7 @@ LockFreeVSL::~LockFreeVSL() {
 
 // 单线程 Insert
 bool LockFreeVSL::Insert(const CedarKey& key, const Descriptor& value, Timestamp txn_version) {
+  std::lock_guard<std::mutex> lock(mutex_);
   int height = RandomHeight();
   LFNode* new_node = new LFNode(key, value, height, txn_version);
   
@@ -272,6 +273,7 @@ LFNode* LockFreeVSL::FindLatestVersion(uint64_t entity_id,
 std::optional<Descriptor> LockFreeVSL::GetAtTime(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id, 
     Timestamp timestamp) const {
+  std::lock_guard<std::mutex> lock(mutex_);
   LFNode* node = FindLatestVersion(entity_id, entity_type, column_id);
   
   if (node == nullptr) {
@@ -294,6 +296,7 @@ std::optional<Descriptor> LockFreeVSL::GetAtTime(
 std::optional<Descriptor> LockFreeVSL::GetAtTime(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id,
     uint64_t target_id, Timestamp timestamp) const {
+  std::lock_guard<std::mutex> lock(mutex_);
   LFNode* node = FindLatestVersion(entity_id, entity_type, column_id, target_id);
   
   if (node == nullptr) {
@@ -314,6 +317,7 @@ std::optional<Descriptor> LockFreeVSL::GetAtTime(
 
 std::optional<Descriptor> LockFreeVSL::GetLatest(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
   LFNode* node = FindLatestVersion(entity_id, entity_type, column_id);
   if (node != nullptr) {
     return node->descriptor();
@@ -325,6 +329,7 @@ std::optional<Descriptor> LockFreeVSL::GetLatest(
 std::optional<Descriptor> LockFreeVSL::GetLatest(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id,
     uint64_t target_id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
   LFNode* node = FindLatestVersion(entity_id, entity_type, column_id, target_id);
   if (node != nullptr) {
     return node->descriptor();
@@ -335,6 +340,7 @@ std::optional<Descriptor> LockFreeVSL::GetLatest(
 std::vector<LockFreeVSL::VersionInfo> LockFreeVSL::ScanRange(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id,
     Timestamp start, Timestamp end) const {
+  std::lock_guard<std::mutex> lock(mutex_);
   std::vector<VersionInfo> results;
   
   // 找到所有不同的 target_id，对每个 target 获取其版本链
