@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.14)
 project(cedar VERSION 0.1.0 LANGUAGES CXX)
 
+# macOS: work around undefined symbols from vendored brpc (profiler/jemalloc stubs)
+if(APPLE)
+    add_link_options(
+        "-Wl,-U,__Z13GetStackTracePPvii"
+        "-Wl,-U,_ProfilerStart"
+        "-Wl,-U,_ProfilerStop"
+        "-Wl,-U,_mallctl"
+        "-Wl,-U,_malloc_stats_print"
+    )
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -547,44 +558,6 @@ add_executable(storaged
     ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc
 )
 target_link_libraries(storaged cedar cedar_graph gRPC::grpc++ pthread)
-
-if(APPLE)
-    target_link_options(storaged PRIVATE
-        "-Wl,-U,__Z13GetStackTracePPvii"
-        "-Wl,-U,_ProfilerStart"
-        "-Wl,-U,_ProfilerStop"
-        "-Wl,-U,_mallctl"
-        "-Wl,-U,_malloc_stats_print"
-    )
-    target_link_options(graphd PRIVATE
-        "-Wl,-U,__Z13GetStackTracePPvii"
-        "-Wl,-U,_ProfilerStart"
-        "-Wl,-U,_ProfilerStop"
-        "-Wl,-U,_mallctl"
-        "-Wl,-U,_malloc_stats_print"
-    )
-    target_link_options(cedar-queryd PRIVATE
-        "-Wl,-U,__Z13GetStackTracePPvii"
-        "-Wl,-U,_ProfilerStart"
-        "-Wl,-U,_ProfilerStop"
-        "-Wl,-U,_mallctl"
-        "-Wl,-U,_malloc_stats_print"
-    )
-    target_link_options(metad_server PRIVATE
-        "-Wl,-U,__Z13GetStackTracePPvii"
-        "-Wl,-U,_ProfilerStart"
-        "-Wl,-U,_ProfilerStop"
-        "-Wl,-U,_mallctl"
-        "-Wl,-U,_malloc_stats_print"
-    )
-    target_link_options(storaged_legacy PRIVATE
-        "-Wl,-U,__Z13GetStackTracePPvii"
-        "-Wl,-U,_ProfilerStart"
-        "-Wl,-U,_ProfilerStop"
-        "-Wl,-U,_mallctl"
-        "-Wl,-U,_malloc_stats_print"
-    )
-endif()
 
 # Queryd client example
 add_executable(queryd_client_example

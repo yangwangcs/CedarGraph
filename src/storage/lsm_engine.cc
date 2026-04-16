@@ -12,6 +12,7 @@
 
 #include <filesystem>
 #include <thread>
+#include <future>
 #include <chrono>
 #include <iostream>
 #include <unordered_set>
@@ -90,6 +91,12 @@ Status LsmEngine::Open() {
   // Initialize WAL and TransactionManager
   s = InitWAL();
   CEDAR_RETURN_IF_ERROR(s);
+  
+  // Recover any unflushed data from WAL
+  auto replay_status = ReplayWAL(1);
+  if (!replay_status.ok()) {
+    return replay_status;
+  }
   
   // ========== Initialize Size-Tiered Compaction Engine ==========
   // 从 options 中读取配置或使用默认配置
@@ -176,16 +183,19 @@ Status LsmEngine::Put(const CedarKey& key, const Descriptor& descriptor, Timesta
     return Status::InvalidArgument("LsmEngine", "not opened");
   }
 
-  mem_->Put(key, descriptor, txn_version);
-  
-  if (!disable_column_tracking_) {
-    TrackColumnId(key.entity_id(), key.column_id());
-  }
-  
-  // 自动 Flush 检查：当 memtable 达到阈值时触发
-  if (mem_->ApproximateMemoryUsage() >= options_.memtable_threshold) {
-    // 异步触发 Flush，不阻塞写入
-    MaybeScheduleFlush();
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    mem_->Put(key, descriptor, txn_version);
+    
+    if (!disable_column_tracking_) {
+      TrackColumnId(key.entity_id(), key.column_id());
+    }
+    
+    // 自动 Flush 检查：当 memtable 达到阈值时触发
+    if (mem_->ApproximateMemoryUsage() >= options_.memtable_threshold) {
+      lock.unlock();
+      MaybeScheduleFlush();
+    }
   }
   
   return Status::OK();
@@ -204,8 +214,17 @@ Status LsmEngine::Delete(const CedarKey& key, Timestamp txn_version) {
   if (!opened_) {
     return Status::InvalidArgument("LsmEngine", "not opened");
   }
-  // VSLMemTable doesn't have Delete, use Tombstone descriptor
-  Put(key, Descriptor(), txn_version);
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    mem_->Put(key, Descriptor(), txn_version);
+    if (!disable_column_tracking_) {
+      TrackColumnId(key.entity_id(), key.column_id());
+    }
+    if (mem_->ApproximateMemoryUsage() >= options_.memtable_threshold) {
+      lock.unlock();
+      MaybeScheduleFlush();
+    }
+  }
   return Status::OK();
 }
 
@@ -222,6 +241,8 @@ std::optional<Descriptor> LsmEngine::Get(const CedarKey& key) {
   if (!opened_) {
     return std::nullopt;
   }
+
+  std::shared_lock<std::shared_mutex> lock(mutex_);
 
   // 1. Query MemTable (hot data)
   Descriptor desc;
@@ -284,6 +305,8 @@ std::vector<MemTableEntry> LsmEngine::GetAll(uint64_t entity_id,
   if (!opened_) {
     return results;
   }
+
+  std::shared_lock<std::shared_mutex> lock(mutex_);
 
   // 1. Query MemTable (hot data)
   auto mem_results = mem_->GetAll(entity_id, entity_type, column_id);
@@ -359,6 +382,8 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     return std::nullopt;
   }
 
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+
   // 1. Query MemTable (hot data)
   auto desc = mem_->GetAtTime(entity_id, entity_type, column_id, timestamp);
   if (desc.has_value()) {
@@ -422,49 +447,35 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
   
   // 从本地 levels_ 获取文件列表（当 compaction_engine_ 不可用时）
   if (all_entries.empty()) {
-    std::cout << "[GetAtTime] Querying levels_, levels_.size=" << levels_.size() << std::endl;
     std::shared_lock<std::shared_mutex> lock(mutex_);
     for (const auto& level : levels_) {
-      std::cout << "[GetAtTime] Checking level with " << level.size() << " files" << std::endl;
       for (const auto& meta : level) {
-        std::cout << "[GetAtTime] Checking file " << meta.file_number << ".sst, column=" << meta.column_id 
-                  << ", type=" << (int)meta.entity_type << ", range=[" << meta.min_entity_id << ", " << meta.max_entity_id << "]" << std::endl;
         // 支持跨列存储的文件
         bool column_match = (meta.column_id == column_id) || (meta.column_id == UINT16_MAX);
         bool type_match = (meta.entity_type == static_cast<uint8_t>(entity_type)) || 
                          (meta.entity_type == 0);
-        
-        std::cout << "[GetAtTime] File " << meta.file_number << ".sst: column_match=" << column_match 
-                  << ", type_match=" << type_match << std::endl;
         
         if (!column_match || !type_match) {
           continue;
         }
         
         // 范围检查
-        bool range_match = (entity_id >= meta.min_entity_id && entity_id <= meta.max_entity_id);
-        std::cout << "[GetAtTime] File " << meta.file_number << ".sst: range_match=" << range_match 
-                  << " (entity=" << entity_id << ", range=[" << meta.min_entity_id << ", " << meta.max_entity_id << "])" << std::endl;
         if (entity_id < meta.min_entity_id || entity_id > meta.max_entity_id) {
           continue;
         }
         
         // 构建文件路径
         std::string filepath = SstFilePath(meta.file_number);
-        std::cout << "[GetAtTime] Opening file: " << filepath << std::endl;
         
         // 使用 SstReader 查询
         SstReader reader(filepath);
         Status open_status = reader.Open();
         if (!open_status.ok()) {
-          std::cout << "[GetAtTime] Failed to open file: " << open_status.ToString() << std::endl;
           continue;
         }
-        std::cout << "[GetAtTime] File opened, querying GetRange..." << std::endl;
         
         auto range_results = reader.GetRange(entity_id, entity_type, column_id,
                                              Timestamp(0), Timestamp(UINT64_MAX));
-        std::cout << "[GetAtTime] GetRange returned " << range_results.size() << " results" << std::endl;
         all_entries.insert(all_entries.end(), range_results.begin(), range_results.end());
       }
     }
@@ -675,6 +686,8 @@ std::vector<MemTableEntry> LsmEngine::GetRangeLimit(uint64_t entity_id,
     return {};
   }
 
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+
   // OPTIMIZATION: 追踪查询模式（用于识别热数据）
   TrackQueryPattern(entity_id, entity_type, column_id);
   
@@ -715,7 +728,20 @@ std::vector<MemTableEntry> LsmEngine::GetRangeLimit(uint64_t entity_id,
     }
   }
   
-  // 3. Query SST files via Size-Tiered Compaction Engine
+  // 3. Query Accumulated Buffer (for accumulated flush mode)
+  if (result.size() < max_results && !accumulated_entries_.empty()) {
+    std::lock_guard<std::mutex> lock(accumulated_mutex_);
+    for (const auto& [key, descriptor] : accumulated_entries_) {
+      if (result.size() >= max_results) break;
+      if (key.entity_id() != entity_id) continue;
+      if (static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
+      if (key.column_id() != column_id) continue;
+      if (key.timestamp().value() < start.value() || key.timestamp().value() > end.value()) continue;
+      result.emplace_back(key.timestamp(), descriptor, std::nullopt, Timestamp(0));
+    }
+  }
+
+  // 4. Query SST files via Size-Tiered Compaction Engine
   if (result.size() < max_results && compaction_engine_) {
     auto files = compaction_engine_->GetFilesForEntity(
         entity_id, column_id, static_cast<uint8_t>(entity_type));
@@ -1189,11 +1215,11 @@ void LsmEngine::MaybeScheduleFlush() {
   VSLMemTable* imm = imm_.get();
   lock.unlock();
   
-  // 在后台执行 Flush（不阻塞写入线程）
-  // 注意：这里使用简单的线程，生产环境建议使用线程池
+  // 使用 std::async 替代 detach()，旧 future 在覆盖时自动 join，
+  // 避免 detached thread 堆积导致 macOS 线程资源耗尽。
   active_flush_count_.fetch_add(1);
   try {
-    std::thread([this, imm]() {
+    flush_future_ = std::async(std::launch::async, [this, imm]() {
       Status s = FlushMemTable(imm);
       if (!s.ok()) {
         // TODO: 添加错误日志记录
@@ -1210,9 +1236,10 @@ void LsmEngine::MaybeScheduleFlush() {
       // 减少活动 Flush 计数并通知等待者
       active_flush_count_.fetch_sub(1);
       flush_completion_cv_.notify_all();
-    }).detach();
-  } catch (const std::system_error& e) {
+    });
+  } catch (...) {
     // 线程创建失败（如资源耗尽），回退到同步 Flush
+    std::cerr << "[MaybeScheduleFlush] Caught unknown exception, falling back to sync flush" << std::endl;
     Status s = FlushMemTable(imm);
     {
       std::unique_lock<std::shared_mutex> cleanup_lock(mutex_);
@@ -1541,6 +1568,54 @@ Status LsmEngine::InitWAL() {
     }
   }
   
+  return Status::OK();
+}
+
+Status LsmEngine::ReplayWAL(uint64_t start_sequence) {
+  if (!options_.enable_wal) {
+    return Status::OK();
+  }
+
+  std::string wal_dir = db_path_ + "/wal";
+  std::vector<std::string> wal_files;
+  Status s = env_->GetChildren(wal_dir, &wal_files);
+  if (!s.ok()) {
+    // WAL dir may not exist yet, which is fine.
+    return Status::OK();
+  }
+
+  std::vector<uint64_t> file_numbers;
+  for (const auto& f : wal_files) {
+    uint64_t num = 0;
+    if (sscanf(f.c_str(), "%lu.wal", &num) == 1) {
+      if (num >= start_sequence) {
+        file_numbers.push_back(num);
+      }
+    }
+  }
+  std::sort(file_numbers.begin(), file_numbers.end());
+
+  for (uint64_t file_num : file_numbers) {
+    std::string path = wal_dir + "/" + std::to_string(file_num) + ".wal";
+    WalReader reader(path, env_);
+    s = reader.Open();
+    if (!s.ok()) {
+      return s;
+    }
+
+    WalBatch batch;
+    uint64_t sequence = 0;
+    while (reader.ReadNextRecord(&batch, &sequence).ok()) {
+      for (const auto& op : batch.ops()) {
+        if (op.type == WalRecordType::kPut) {
+          mem_->Put(op.key, op.descriptor, op.txn_version);
+        } else if (op.type == WalRecordType::kDelete) {
+          mem_->Put(op.key, Descriptor(), op.txn_version);
+        }
+      }
+    }
+  }
+
   return Status::OK();
 }
 
