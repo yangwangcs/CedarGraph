@@ -28,6 +28,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <string>
 #include <thread>
@@ -38,6 +39,7 @@
 #include "cedar/dtx/types.h"
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
+#include "raft_rpc_client.h"
 
 namespace cedar {
 namespace dtx {
@@ -263,6 +265,7 @@ class StorageRaftGroup {
   // Timers
   std::chrono::steady_clock::time_point last_election_reset_;
   std::chrono::steady_clock::time_point last_heartbeat_sent_;
+  std::chrono::milliseconds election_timeout_{1000};
   
   // Threads
   std::unique_ptr<std::thread> raft_thread_;
@@ -270,10 +273,18 @@ class StorageRaftGroup {
   // Callbacks
   ApplyCallback apply_callback_;
   StateChangeCallback state_change_callback_;
-  
+
   // Condition variable for commit notification
   std::mutex commit_cv_mutex_;
   std::condition_variable commit_cv_;
+
+  // RPC client for peer communication
+  std::unique_ptr<RaftRpcClient> rpc_client_;
+
+  // Voting state
+  std::atomic<int> votes_received_{0};
+  std::set<NodeID> voters_;  // Track who voted for us
+  std::mutex vote_mutex_;  // Mutex for voting operations
   
   // Private methods
   void RaftLoop();
@@ -288,8 +299,14 @@ class StorageRaftGroup {
   
   // Leader methods
   void SendHeartbeats();
-  void SendAppendEntries(NodeID peer);
+  void ReplicateLogToPeer(NodeID peer_id);
+  void HandleAppendEntriesResponse(NodeID peer_id, const AppendEntriesResponse& resp);
   void AdvanceCommitIndex();
+
+  // Voting
+  void SendVoteRequest(NodeID target);
+  void SendVoteRequests();
+  void HandleVoteResponse(NodeID peer_id, const VoteResponse& resp);
   
   // Apply committed entries
   void ApplyEntries();

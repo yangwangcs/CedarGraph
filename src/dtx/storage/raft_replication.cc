@@ -24,6 +24,8 @@
 #include <fstream>
 #include <random>
 
+#include "raft_service.grpc.pb.h"
+
 namespace cedar {
 namespace dtx {
 namespace storage {
@@ -151,13 +153,31 @@ Status StorageRaftGroup::Initialize() {
   // Create directories
   std::filesystem::create_directories(config_.data_dir);
   std::filesystem::create_directories(snapshot_dir_);
-  
-  // Load persistent state
-  auto status = LoadState();
+
+  // Initialize RPC client for peer communication
+  RaftRpcClient::Options rpc_options;
+  rpc_options.rpc_timeout_ms = config_.election_timeout_ms;
+  rpc_client_ = std::make_unique<RaftRpcClient>(rpc_options);
+
+  // Build peer address map
+  std::unordered_map<NodeID, std::string> peer_addresses;
+  for (const auto& peer : config_.initial_peers) {
+    if (peer.node_id != config_.partition_id) {  // Don't add self
+      peer_addresses[peer.node_id] = peer.address;
+    }
+  }
+
+  auto status = rpc_client_->Initialize(peer_addresses);
   if (!status.ok()) {
     return status;
   }
-  
+
+  // Load persistent state
+  status = LoadState();
+  if (!status.ok()) {
+    return status;
+  }
+
   // Initialize follower progress
   for (const auto& peer : config_.initial_peers) {
     if (peer.node_id != config_.partition_id) {  // Don't track self
@@ -167,7 +187,7 @@ Status StorageRaftGroup::Initialize() {
       progress_.emplace(peer.node_id, progress);
     }
   }
-  
+
   return Status::OK();
 }
 
@@ -195,20 +215,13 @@ void StorageRaftGroup::Shutdown() {
 }
 
 void StorageRaftGroup::RaftLoop() {
-  // Randomize election timeout
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_int_distribution<> dis(
-      config_.election_timeout_ms,
-      config_.election_timeout_ms + config_.election_timeout_ms / 2);
-  
   while (running_.load()) {
     auto now = std::chrono::steady_clock::now();
     auto state = state_.load();
-    
+
     if (state == ReplicaState::kLeader) {
       // Leader: send heartbeats
-      if (now - last_heartbeat_sent_ >= 
+      if (now - last_heartbeat_sent_ >=
           std::chrono::milliseconds(config_.heartbeat_interval_ms)) {
         SendHeartbeats();
         last_heartbeat_sent_ = now;
@@ -216,8 +229,7 @@ void StorageRaftGroup::RaftLoop() {
       AdvanceCommitIndex();
     } else {
       // Follower/Candidate: check election timeout
-      auto timeout = std::chrono::milliseconds(dis(gen));
-      if (now - last_election_reset_ >= timeout) {
+      if (now - last_election_reset_ >= election_timeout_) {
         if (state == ReplicaState::kFollower) {
           BecomeCandidate();
         } else {
@@ -226,10 +238,10 @@ void StorageRaftGroup::RaftLoop() {
         }
       }
     }
-    
+
     // Apply committed entries
     ApplyEntries();
-    
+
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
 }
@@ -243,6 +255,14 @@ void StorageRaftGroup::BecomeFollower(uint64_t term) {
     state_change_callback_(old_state, ReplicaState::kFollower);
   }
   
+  // Randomize election timeout once per role transition
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<> dis(
+      config_.election_timeout_ms,
+      config_.election_timeout_ms + config_.election_timeout_ms / 2);
+  election_timeout_ = std::chrono::milliseconds(dis(gen));
+  
   last_election_reset_ = std::chrono::steady_clock::now();
   PersistState();
 }
@@ -251,35 +271,47 @@ void StorageRaftGroup::BecomeCandidate() {
   auto old_state = state_.exchange(ReplicaState::kCandidate);
   current_term_.fetch_add(1);
   voted_for_ = config_.partition_id;  // Vote for self
-  
+  votes_received_.store(1);           // Count self vote
+  voters_.clear();
+  voters_.insert(config_.partition_id);
+
   if (state_change_callback_) {
     state_change_callback_(old_state, ReplicaState::kCandidate);
   }
-  
+
+  // Randomize election timeout once per role transition
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<> dis(
+      config_.election_timeout_ms,
+      config_.election_timeout_ms + config_.election_timeout_ms / 2);
+  election_timeout_ = std::chrono::milliseconds(dis(gen));
+
   last_election_reset_ = std::chrono::steady_clock::now();
   PersistState();
-  
-  // TODO: send vote requests to peers
+
+  // Send vote requests to all peers
+  SendVoteRequests();
 }
 
 void StorageRaftGroup::BecomeLeader() {
   auto old_state = state_.exchange(ReplicaState::kLeader);
-  
-  // Reset progress for each follower
+
+  // Reset progress for each follower and initialize next_index
   std::unique_lock<std::shared_mutex> lock(progress_mutex_);
   for (auto& [node_id, progress] : progress_) {
     progress.next_index = GetLastLogIndex() + 1;
     progress.match_index = 0;
   }
   lock.unlock();
-  
+
   if (state_change_callback_) {
     state_change_callback_(old_state, ReplicaState::kLeader);
   }
-  
+
   last_heartbeat_sent_ = std::chrono::steady_clock::now();
-  
-  // Send immediate heartbeat
+
+  // Send initial heartbeat immediately
   SendHeartbeats();
 }
 
@@ -537,6 +569,8 @@ Status StorageRaftGroup::AppendLog(const std::vector<StorageLogEntry>& entries) 
   }
   
   file.flush();
+  // fsync to ensure durability
+  sync();
   return file.good() ? Status::OK() : Status::IOError("Failed to append log");
 }
 
@@ -561,10 +595,203 @@ bool StorageRaftGroup::IsLogUpToDate(uint64_t last_index, uint64_t last_term) co
 }
 
 void StorageRaftGroup::SendHeartbeats() {
-  // TODO: Implement actual RPC to peers
+  if (!rpc_client_) {
+    return;
+  }
+
+  uint64_t term = current_term_.load();
+  uint64_t commit_index = commit_index_.load();
+  uint64_t last_log_index = GetLastLogIndex();
+
   std::shared_lock<std::shared_mutex> lock(progress_mutex_);
-  for (auto& [node_id, progress] : progress_) {
+  for (const auto& [node_id, progress] : progress_) {
+    // Send heartbeat via RPC (async, don't wait)
+    std::thread([this, node_id, term, commit_index]() {
+      auto resp = rpc_client_->Heartbeat(
+          node_id, term, config_.partition_id, commit_index);
+      if (resp.ok()) {
+        // Update last heartbeat time
+        std::unique_lock<std::shared_mutex> lock(progress_mutex_);
+        auto it = progress_.find(node_id);
+        if (it != progress_.end()) {
+          it->second.last_heartbeat = std::chrono::steady_clock::now();
+        }
+      }
+    }).detach();
+  }
+}
+
+void StorageRaftGroup::ReplicateLogToPeer(NodeID peer_id) {
+  if (state_.load() != ReplicaState::kLeader) {
+    return;
+  }
+
+  if (!rpc_client_) {
+    return;
+  }
+
+  ReplicaProgress* progress = nullptr;
+  {
+    std::shared_lock<std::shared_mutex> lock(progress_mutex_);
+    auto it = progress_.find(peer_id);
+    if (it == progress_.end()) {
+      return;
+    }
+    progress = &it->second;
+  }
+
+  // Get entries to send
+  std::vector<StorageLogEntry> entries_to_send;
+  uint64_t prev_log_index = 0;
+  uint64_t prev_log_term = 0;
+
+  {
+    std::shared_lock<std::shared_mutex> lock(log_mutex_);
+    prev_log_index = progress->next_index > 0 ? progress->next_index - 1 : 0;
+
+    if (prev_log_index > 0 && prev_log_index < log_.size()) {
+      prev_log_term = log_[prev_log_index].term;
+    }
+
+    for (uint64_t i = progress->next_index; i < log_.size(); ++i) {
+      entries_to_send.push_back(log_[i]);
+      if (entries_to_send.size() >= config_.max_log_entries_per_append) {
+        break;
+      }
+    }
+  }
+
+  if (entries_to_send.empty()) {
+    return;  // Nothing to replicate
+  }
+
+  // Convert to proto format
+  std::vector<cedar::raft::internal::LogEntry> proto_entries;
+  for (const auto& entry : entries_to_send) {
+    cedar::raft::internal::LogEntry proto_entry;
+    proto_entry.set_term(entry.term);
+    proto_entry.set_index(entry.index);
+    proto_entry.set_command(entry.Serialize());
+    proto_entries.push_back(std::move(proto_entry));
+  }
+
+  // Send AppendEntries RPC
+  std::thread([this, peer_id, prev_log_index, prev_log_term, proto_entries = std::move(proto_entries)]() mutable {
+    auto resp = rpc_client_->AppendEntries(
+        peer_id,
+        current_term_.load(),
+        config_.partition_id,
+        prev_log_index,
+        prev_log_term,
+        commit_index_.load(),
+        proto_entries);
+
+    if (resp.ok()) {
+      // Convert RaftRpcClient::AppendEntriesResponse to local type
+      AppendEntriesResponse local_resp;
+      local_resp.term = resp.ValueOrDie().term;
+      local_resp.success = resp.ValueOrDie().success;
+      local_resp.match_index = resp.ValueOrDie().match_index;
+      HandleAppendEntriesResponse(peer_id, local_resp);
+    }
+  }).detach();
+}
+
+void StorageRaftGroup::HandleAppendEntriesResponse(NodeID peer_id,
+                                                  const AppendEntriesResponse& resp) {
+  // Check for term update
+  if (resp.term > current_term_.load()) {
+    BecomeFollower(resp.term);
+    return;
+  }
+
+  if (state_.load() != ReplicaState::kLeader) {
+    return;
+  }
+
+  std::unique_lock<std::shared_mutex> lock(progress_mutex_);
+  auto it = progress_.find(peer_id);
+  if (it == progress_.end()) {
+    return;
+  }
+
+  auto& progress = it->second;
+
+  if (resp.success) {
+    // Update match_index and next_index
+    uint64_t new_match_index = resp.match_index > 0 ? resp.match_index :
+        progress.next_index + resp.match_index;
+    progress.match_index = std::max(progress.match_index, new_match_index);
+    progress.next_index = progress.match_index + 1;
     progress.last_heartbeat = std::chrono::steady_clock::now();
+    progress.is_healthy = true;
+
+    // Unlock before advancing commit
+    lock.unlock();
+    AdvanceCommitIndex();
+  } else {
+    // Decrement next_index and retry
+    if (progress.next_index > 1) {
+      progress.next_index--;
+    }
+    progress.is_healthy = false;
+  }
+}
+
+void StorageRaftGroup::SendVoteRequests() {
+  if (!rpc_client_) {
+    return;
+  }
+
+  uint64_t term = current_term_.load();
+  uint64_t last_log_index = GetLastLogIndex();
+  uint64_t last_log_term = GetLastLogTerm();
+
+  std::shared_lock<std::shared_mutex> lock(progress_mutex_);
+  for (const auto& [node_id, _] : progress_) {
+    std::thread([this, node_id, term, last_log_index, last_log_term]() {
+      auto resp = rpc_client_->RequestVote(
+          node_id, term, config_.partition_id, last_log_index, last_log_term);
+
+      if (resp.ok()) {
+        // Convert RaftRpcClient::VoteResponse to local type
+        VoteResponse local_resp;
+        local_resp.term = resp.ValueOrDie().term;
+        local_resp.vote_granted = resp.ValueOrDie().vote_granted;
+        HandleVoteResponse(node_id, local_resp);
+      }
+    }).detach();
+  }
+}
+
+void StorageRaftGroup::HandleVoteResponse(NodeID peer_id, const VoteResponse& resp) {
+  // Check for term update
+  if (resp.term > current_term_.load()) {
+    BecomeFollower(resp.term);
+    return;
+  }
+
+  if (state_.load() != ReplicaState::kCandidate) {
+    return;
+  }
+
+  if (resp.term != current_term_.load()) {
+    return;  // Response from previous term
+  }
+
+  if (resp.vote_granted) {
+    std::lock_guard<std::mutex> lock(vote_mutex_);
+    if (voters_.insert(peer_id).second) {
+      votes_received_.fetch_add(1);
+
+      // Check if we have quorum
+      size_t total_nodes = config_.initial_peers.size();
+      size_t quorum = total_nodes / 2 + 1;
+
+      if (votes_received_.load() >= quorum) {
+        BecomeLeader();
+      }
+    }
   }
 }
 
