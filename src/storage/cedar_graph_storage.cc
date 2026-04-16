@@ -578,11 +578,15 @@ std::optional<Descriptor> CedarGraphStorage::GetEdge(uint64_t src_id,
     return std::nullopt;
   }
   
-  // 构建出边 Key 查询
-  CedarKey edge_key = CedarKey::EdgeOut(src_id, dst_id, edge_type, timestamp);
+  auto all_entries = rep_->engine->GetAll(src_id, EntityType::EdgeOut, edge_type);
+  for (const auto& entry : all_entries) {
+    if (entry.dst_id.has_value() && entry.dst_id.value() == dst_id &&
+        entry.timestamp.value() == timestamp.value()) {
+      return entry.descriptor;
+    }
+  }
   
-  // 通过 LsmEngine 查询
-  return rep_->engine->GetAtTime(src_id, EntityType::EdgeOut, edge_type, timestamp);
+  return std::nullopt;
 }
 
 std::vector<std::tuple<uint64_t, Timestamp, Descriptor>> CedarGraphStorage::ScanEdges(
@@ -923,8 +927,6 @@ Status CedarGraphStorage::PutBinary(uint64_t entity_id, uint16_t col_id,
 }
 
 std::vector<uint8_t> CedarGraphStorage::GetBinary(uint64_t entity_id, uint16_t col_id) {
-  std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
-  
   auto str_opt = GetString(entity_id, col_id);
   if (!str_opt) {
     return {};
@@ -1083,26 +1085,10 @@ std::optional<Descriptor> CedarGraphStorage::GetStaticEdge(uint64_t src_id,
     return std::nullopt;
   }
   
-  // 构造完整的 Edge Key 直接查询
-  // PutStaticEdge 使用: CedarKey::EdgeOut(src_id, dst_id, edge_type, Timestamp::Static())
-  // 我们需要查询相同的 key
-  CedarKey key = CedarKey::EdgeOut(src_id, dst_id, edge_type, Timestamp::Static());
-  
-  // 使用底层引擎直接查询
-  // 由于 LsmEngine 没有直接根据 key 查询的接口，我们使用 GetAtTime
-  // 并验证返回结果的 dst_id 匹配
-  auto result = rep_->engine->GetAtTime(src_id, EntityType::EdgeOut, edge_type, Timestamp::Static());
-  
-  if (result.has_value() && result->GetColumnId() == property_id) {
-    return result;
-  }
-  
-  // 如果上面的方法没有找到，尝试扫描所有版本
-  // 获取所有 EdgeOut 记录，过滤匹配 dst_id 和 property_id 的
-  auto all_entries = rep_->engine->GetAll(src_id, EntityType::EdgeOut, edge_type);
+  uint16_t static_edge_type = edge_type | key_flags::kIsStaticColumn;
+  auto all_entries = rep_->engine->GetAll(src_id, EntityType::EdgeOut, static_edge_type);
   
   for (const auto& entry : all_entries) {
-    // 检查时间戳是否为 Static (静态属性标记)
     if (entry.timestamp.value() == Timestamp::Static().value() &&
         entry.descriptor.GetColumnId() == property_id) {
       return entry.descriptor;
