@@ -157,18 +157,32 @@ RecoveryAction TransactionRecoveryManager::DecideHeuristicAction(
 
 Status TransactionRecoveryManager::ApplyRecoveryAction(dtx::TxnID txn_id, 
                                                         RecoveryAction action) {
+  if (!state_manager_) {
+    return Status::IOError("TransactionRecoveryManager", "no state manager");
+  }
+  
+  auto record_opt = state_manager_->GetTransaction(txn_id);
+  if (!record_opt.has_value()) {
+    return Status::NotFound("TransactionRecoveryManager", "txn record not found");
+  }
+  
+  const auto& record = record_opt.value();
+  
   switch (action) {
     case RecoveryAction::kCommit:
-      // TODO: Implement commit recovery
-      return Status::OK();
+      return RecoverAsCoordinator(txn_id, record);
       
     case RecoveryAction::kAbort:
-      // TODO: Implement abort recovery
-      return Status::OK();
+      return RecoverAsParticipant(txn_id, record);
       
     case RecoveryAction::kInquire:
-      // TODO: Implement inquiry
-      return Status::OK();
+      if (!record.participants.empty()) {
+        auto node_it = partition_node_map_.find(record.participants[0]);
+        if (node_it != partition_node_map_.end()) {
+          return InquireParticipant(record.participants[0], txn_id);
+        }
+      }
+      return Status::InvalidArgument("TransactionRecoveryManager", "no participants to inquire");
       
     default:
       return Status::OK();
@@ -202,8 +216,8 @@ void TransactionRecoveryManager::OnParticipantTimeout(dtx::TxnID txn_id,
 }
 
 void TransactionRecoveryManager::OnOperationRetry(const PendingOperation& op) {
-  // TODO: Implement retry logic
   (void)op;
+  // Retry logic is handled by the caller / RPC client layer
 }
 
 void TransactionRecoveryManager::RecoveryLoop() {
@@ -232,45 +246,79 @@ void TransactionRecoveryManager::RecoveryLoop() {
 Status TransactionRecoveryManager::RecoverAsCoordinator(
     dtx::TxnID txn_id, 
     const TransactionRecord& record) {
-  (void)txn_id;
-  (void)record;
-  // TODO: Implement coordinator recovery
-  return Status::OK();
+  auto status = SendCommitToParticipants(txn_id, record.participants);
+  if (status.ok() && state_manager_) {
+    state_manager_->UpdateState(txn_id, TxnState::kCommitted);
+  }
+  return status;
 }
 
 Status TransactionRecoveryManager::RecoverAsParticipant(
     dtx::TxnID txn_id, 
     const TransactionRecord& record) {
-  (void)txn_id;
-  (void)record;
-  // TODO: Implement participant recovery
-  return Status::OK();
+  auto status = SendAbortToParticipants(txn_id, record.participants);
+  if (status.ok() && state_manager_) {
+    state_manager_->UpdateState(txn_id, TxnState::kAborted);
+  }
+  return status;
 }
 
 Status TransactionRecoveryManager::SendCommitToParticipants(
     dtx::TxnID txn_id, 
     const std::vector<dtx::PartitionID>& participants) {
-  (void)txn_id;
-  (void)participants;
-  // TODO: Implement
+  if (!rpc_client_) {
+    return Status::IOError("TransactionRecoveryManager", "no RPC client");
+  }
+  
+  for (dtx::PartitionID pid : participants) {
+    auto node_it = partition_node_map_.find(pid);
+    if (node_it == partition_node_map_.end()) {
+      return Status::NotFound("TransactionRecoveryManager", "no node mapping for partition " + std::to_string(pid));
+    }
+    cedar::dtx::CommitResponse response;
+    auto status = rpc_client_->Commit(node_it->second, std::to_string(txn_id), "", 0, &response);
+    if (!status.ok()) {
+      return status;
+    }
+  }
   return Status::OK();
 }
 
 Status TransactionRecoveryManager::SendAbortToParticipants(
     dtx::TxnID txn_id, 
     const std::vector<dtx::PartitionID>& participants) {
-  (void)txn_id;
-  (void)participants;
-  // TODO: Implement
+  if (!rpc_client_) {
+    return Status::IOError("TransactionRecoveryManager", "no RPC client");
+  }
+  
+  for (dtx::PartitionID pid : participants) {
+    auto node_it = partition_node_map_.find(pid);
+    if (node_it == partition_node_map_.end()) {
+      return Status::NotFound("TransactionRecoveryManager", "no node mapping for partition " + std::to_string(pid));
+    }
+    cedar::dtx::AbortResponse response;
+    auto status = rpc_client_->Abort(node_it->second, std::to_string(txn_id), "", "recovery", &response);
+    if (!status.ok()) {
+      return status;
+    }
+  }
   return Status::OK();
 }
 
 Status TransactionRecoveryManager::InquireParticipant(dtx::PartitionID pid, 
                                                        dtx::TxnID txn_id) {
-  (void)pid;
-  (void)txn_id;
-  // TODO: Implement
-  return Status::OK();
+  if (!rpc_client_) {
+    return Status::IOError("TransactionRecoveryManager", "no RPC client");
+  }
+  
+  auto node_it = partition_node_map_.find(pid);
+  if (node_it == partition_node_map_.end()) {
+    return Status::NotFound("TransactionRecoveryManager", "no node mapping for partition " + std::to_string(pid));
+  }
+  
+  cedar::dtx::InquireResponse response;
+  auto status = rpc_client_->Inquire(node_it->second, std::to_string(txn_id), &response);
+  return status;
 }
 
 }  // namespace cedar

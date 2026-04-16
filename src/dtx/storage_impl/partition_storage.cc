@@ -246,10 +246,9 @@ std::vector<TxnID> PartitionStorage::GetPreparedTransactions() const {
 }
 
 Status PartitionStorage::WriteTxnWAL(uint64_t txn_id, const std::string& operation) {
-  // Simplified WAL - in production, use dedicated WAL per partition
-  // or shared WAL with partition_id prefix
-  std::string wal_path = "/tmp/cedar_wal/partition_" + std::to_string(partition_id_) + "_wal.txt";
-  std::filesystem::create_directories("/tmp/cedar_wal");
+  std::string wal_dir = manager_ ? manager_->GetDataRoot() + "/wal" : "/tmp/cedar_wal";
+  std::string wal_path = wal_dir + "/partition_" + std::to_string(partition_id_) + "_wal.txt";
+  std::filesystem::create_directories(wal_dir);
   std::ofstream wal(wal_path, std::ios::app);
   if (wal.is_open()) {
     auto now = std::chrono::system_clock::now();

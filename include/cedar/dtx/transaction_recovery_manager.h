@@ -27,6 +27,7 @@
 #include "cedar/core/status.h"
 #include "cedar/dtx/transaction_state.h"
 #include "cedar/dtx/transaction_timeout_manager.h"
+#include "cedar/dtx/dtx_rpc_client.h"
 
 namespace cedar {
 
@@ -56,6 +57,10 @@ class TransactionRecoveryManager : public TimeoutCallback {
   // Initialize with dependencies
   Status Initialize(TransactionStateManager* state_manager);
   void Shutdown();
+  
+  // Set RPC client and partition routing for recovery
+  void SetRpcClient(std::shared_ptr<dtx::DTXRpcClient> rpc_client);
+  void SetPartitionNodeMap(const std::unordered_map<dtx::PartitionID, dtx::NodeID>& mapping);
   
   // Start recovery for a transaction
   RecoveryResult StartRecovery(dtx::TxnID txn_id);
@@ -90,6 +95,8 @@ class TransactionRecoveryManager : public TimeoutCallback {
   void RecoveryLoop();
   
   TransactionStateManager* state_manager_ = nullptr;
+  std::shared_ptr<dtx::DTXRpcClient> rpc_client_;
+  std::unordered_map<dtx::PartitionID, dtx::NodeID> partition_node_map_;
   
   std::atomic<bool> running_{false};
   std::thread recovery_thread_;

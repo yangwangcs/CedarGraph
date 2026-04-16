@@ -40,7 +40,9 @@
 #include "cedar/core/status.h"
 #include "cedar/types/descriptor.h"
 #include "cedar/storage/cedar_graph_storage.h"
+#include "cedar/storage/storage_interface.h"
 #include "cedar/dtx/types.h"
+#include "cedar/dtx/transaction_state.h"
 
 // gRPC includes
 #include <grpcpp/grpcpp.h>
@@ -168,6 +170,8 @@ class StoragePartitionManager {
   
   // Statistics
   size_t GetTotalDiskUsage() const;
+  
+  std::string GetDataRoot() const { return config_.data_root; }
 
  private:
   PartitionConfig config_;
@@ -237,6 +241,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                      const cedar::storage::AbortRequest* request,
                      cedar::storage::AbortResponse* response) override;
 
+  grpc::Status Inquire(grpc::ServerContext* context,
+                       const cedar::storage::InquireRequest* request,
+                       cedar::storage::InquireResponse* response) override;
+
   // Partition management
   grpc::Status GetPartitionInfo(grpc::ServerContext* context,
                                 const cedar::storage::GetPartitionInfoRequest* request,
@@ -259,6 +267,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   Descriptor ProtoToDescriptor(const cedar::storage::Descriptor& proto_desc,
                                 uint16_t column_id = 0);
   cedar::storage::Descriptor DescriptorToProto(const Descriptor& desc);
+
+  std::unique_ptr<cedar::storage::StorageInterface> storage_interface_;
+  std::vector<cedar::storage::PropertyPredicateItem> ConvertPredicates(
+      const google::protobuf::RepeatedPtrField<cedar::storage::ScanPredicate>& proto_preds);
 
   StoragePartitionManager* partition_manager_;
 };
@@ -306,6 +318,7 @@ class StorageClient {
                          const std::vector<CedarKey>& writes, Timestamp commit_ts);
   Status Commit(TxnID txn_id, Timestamp commit_ts);
   Status Abort(TxnID txn_id);
+  Status Inquire(TxnID txn_id, ParticipantState::State* state);
 
   // Health check
   bool IsConnected() const;
