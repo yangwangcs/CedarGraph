@@ -273,6 +273,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       const google::protobuf::RepeatedPtrField<cedar::storage::ScanPredicate>& proto_preds);
 
   StoragePartitionManager* partition_manager_;
+  
+  // Track which partitions are involved in each transaction
+  mutable std::mutex txn_partitions_mutex_;
+  std::unordered_map<TxnID, std::set<PartitionID>> txn_partitions_;
 };
 
 // =============================================================================

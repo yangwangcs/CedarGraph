@@ -119,11 +119,17 @@ Status PartitionStorage::Prepare(TxnID txn_id, const std::vector<CedarKey>& read
   
   std::unique_lock<std::shared_mutex> lock(txn_mutex_);
   
-  // OCC validation: check if reads are still valid
-  for (const auto& key : reads) {
-    auto result = Get(key, commit_ts);
-    if (!result.ok() && !result.status().IsNotFound()) {
-      return result.status();
+  // Basic OCC: check write-write conflicts with other prepared transactions
+  for (const auto& [other_txn_id, other_state] : prepared_txns_) {
+    if (other_txn_id == txn_id) continue;
+    for (const auto& key : writes) {
+      for (const auto& other_key : other_state.write_set) {
+        if (key.entity_id() == other_key.entity_id() &&
+            key.column_id() == other_key.column_id() &&
+            key.entity_type() == other_key.entity_type()) {
+          return Status::IOError("Write conflict detected");
+        }
+      }
     }
   }
   
@@ -154,8 +160,12 @@ Status PartitionStorage::Commit(TxnID txn_id, Timestamp commit_ts) {
   PreparedTxnState& state = it->second;
   state.status = DistributedTxnState::kCommitting;
   
+  // Copy write set before unlocking to avoid iterator invalidation
+  std::vector<CedarKey> write_set_copy = state.write_set;
+  state.status = DistributedTxnState::kCommitting;
+  
   // Apply all buffered writes
-  for (const auto& key : state.write_set) {
+  for (const auto& key : write_set_copy) {
     // Create a descriptor for the write
     Descriptor desc = Descriptor(static_cast<uint64_t>(commit_ts));
     

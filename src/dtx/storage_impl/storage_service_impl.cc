@@ -26,7 +26,12 @@ namespace dtx {
 // =============================================================================
 
 StorageServiceImpl::StorageServiceImpl(StoragePartitionManager* partition_manager)
-    : partition_manager_(partition_manager) {}
+    : partition_manager_(partition_manager) {
+  if (partition_manager_) {
+    storage_interface_ = std::make_unique<cedar::storage::StorageInterface>(
+        partition_manager_->GetSharedStorage());
+  }
+}
 
 StorageServiceImpl::~StorageServiceImpl() = default;
 
@@ -55,6 +60,90 @@ cedar::storage::CedarKey StorageServiceImpl::CedarKeyToProto(const CedarKey& key
   proto.set_type_flags(key.flags());
   proto.set_partition_id(key.part_id());
   return proto;
+}
+
+namespace {
+
+cedar::cypher::Value DeserializeCypherValue(const std::string& data) {
+  if (data.empty()) return cedar::cypher::Value();
+  char type_tag = data[0];
+  switch (type_tag) {
+    case 1:
+      if (data.size() >= 2) {
+        return cedar::cypher::Value(data[1] != 0);
+      }
+      break;
+    case 2:
+      if (data.size() >= 1 + sizeof(int64_t)) {
+        int64_t v;
+        memcpy(&v, data.data() + 1, sizeof(v));
+        return cedar::cypher::Value(v);
+      }
+      break;
+    case 3:
+      if (data.size() >= 1 + sizeof(double)) {
+        double v;
+        memcpy(&v, data.data() + 1, sizeof(v));
+        return cedar::cypher::Value(v);
+      }
+      break;
+    case 4:
+      if (data.size() >= 1 + sizeof(uint32_t)) {
+        uint32_t len;
+        memcpy(&len, data.data() + 1, sizeof(len));
+        if (data.size() >= 1 + sizeof(uint32_t) + len) {
+          return cedar::cypher::Value(
+              std::string(data.data() + 1 + sizeof(uint32_t), len));
+        }
+      }
+      break;
+  }
+  return cedar::cypher::Value();
+}
+
+std::string SerializeDescriptorSimple(const cedar::Descriptor& desc) {
+  std::string data;
+  if (desc.GetKind() == cedar::EntryKind::InlineInt) {
+    auto val = desc.AsInlineInt();
+    if (val.has_value()) {
+      int32_t value = val.value();
+      data.assign(reinterpret_cast<const char*>(&value), sizeof(value));
+    }
+  } else if (desc.GetKind() == cedar::EntryKind::InlineShortStr) {
+    data = desc.AsInlineShortStr();
+  } else {
+    uint64_t raw = desc.AsRaw();
+    data.assign(reinterpret_cast<const char*>(&raw), sizeof(raw));
+  }
+  return data;
+}
+
+}  // namespace
+
+std::vector<cedar::storage::PropertyPredicateItem> StorageServiceImpl::ConvertPredicates(
+    const google::protobuf::RepeatedPtrField<cedar::storage::ScanPredicate>& proto_preds) {
+  std::vector<cedar::storage::PropertyPredicateItem> result;
+  for (const auto& p : proto_preds) {
+    if (p.has_property()) {
+      cedar::storage::PropertyPredicateItem item;
+      item.property_name = p.property().property_name();
+      switch (p.property().op()) {
+        case cedar::storage::EQ: item.op = cedar::storage::PropertyPredicateItem::EQ; break;
+        case cedar::storage::NE: item.op = cedar::storage::PropertyPredicateItem::NE; break;
+        case cedar::storage::LT: item.op = cedar::storage::PropertyPredicateItem::LT; break;
+        case cedar::storage::LE: item.op = cedar::storage::PropertyPredicateItem::LE; break;
+        case cedar::storage::GT: item.op = cedar::storage::PropertyPredicateItem::GT; break;
+        case cedar::storage::GE: item.op = cedar::storage::PropertyPredicateItem::GE; break;
+        case cedar::storage::IN: item.op = cedar::storage::PropertyPredicateItem::IN; break;
+        default: item.op = cedar::storage::PropertyPredicateItem::EQ; break;
+      }
+      if (!p.property().serialized_value().empty()) {
+        item.value = DeserializeCypherValue(p.property().serialized_value());
+      }
+      result.push_back(std::move(item));
+    }
+  }
+  return result;
 }
 
 // Helper: Convert proto Descriptor to native Descriptor
@@ -238,20 +327,92 @@ grpc::Status StorageServiceImpl::ScanNodeV2(grpc::ServerContext* context,
                                              const cedar::storage::ScanNodeRequestV2* request,
                                              cedar::storage::ScanResponse* response) {
   (void)context;
-  (void)request;
-  response->set_success(false);
-  response->set_error_msg("ScanNodeV2 not implemented in this service");
-  return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "ScanNodeV2 not implemented");
+
+  if (!storage_interface_) {
+    response->set_success(false);
+    response->set_error_msg("Storage interface not initialized");
+    return grpc::Status::OK;
+  }
+
+  std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
+  auto predicates = ConvertPredicates(request->predicates());
+  Status s = storage_interface_->ScanVertices(
+      request->node_id(),
+      cedar::Timestamp(request->start_time()),
+      cedar::Timestamp(request->end_time()),
+      predicates,
+      &results);
+
+  if (!s.ok()) {
+    response->set_success(false);
+    response->set_error_msg(s.ToString());
+    return grpc::Status::OK;
+  }
+
+  for (const auto& [ts, desc] : results) {
+    auto* item = response->add_items();
+    item->set_timestamp(ts.value());
+    item->mutable_descriptor_()->set_data(SerializeDescriptorSimple(desc));
+  }
+
+  response->set_success(true);
+  return grpc::Status::OK;
 }
 
 grpc::Status StorageServiceImpl::ScanEdgeV2(grpc::ServerContext* context,
                                              const cedar::storage::ScanEdgeRequestV2* request,
                                              cedar::storage::ScanResponse* response) {
   (void)context;
-  (void)request;
-  response->set_success(false);
-  response->set_error_msg("ScanEdgeV2 not implemented in this service");
-  return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "ScanEdgeV2 not implemented");
+
+  if (!storage_interface_) {
+    response->set_success(false);
+    response->set_error_msg("Storage interface not initialized");
+    return grpc::Status::OK;
+  }
+
+  std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
+  auto predicates = ConvertPredicates(request->predicates());
+
+  if (request->direction() == cedar::storage::Direction::OUTGOING ||
+      request->direction() == cedar::storage::Direction::BOTH) {
+    Status s = storage_interface_->ScanOutEdges(
+        request->node_id(),
+        static_cast<uint16_t>(request->edge_type()),
+        cedar::Timestamp(request->start_time()),
+        cedar::Timestamp(request->end_time()),
+        predicates,
+        &results);
+    if (!s.ok()) {
+      response->set_success(false);
+      response->set_error_msg(s.ToString());
+      return grpc::Status::OK;
+    }
+  }
+
+  if (request->direction() == cedar::storage::Direction::INCOMING ||
+      request->direction() == cedar::storage::Direction::BOTH) {
+    Status s = storage_interface_->ScanInEdges(
+        request->node_id(),
+        static_cast<uint16_t>(request->edge_type()),
+        cedar::Timestamp(request->start_time()),
+        cedar::Timestamp(request->end_time()),
+        predicates,
+        &results);
+    if (!s.ok()) {
+      response->set_success(false);
+      response->set_error_msg(s.ToString());
+      return grpc::Status::OK;
+    }
+  }
+
+  for (const auto& [ts, desc] : results) {
+    auto* item = response->add_items();
+    item->set_timestamp(ts.value());
+    item->mutable_descriptor_()->set_data(SerializeDescriptorSimple(desc));
+  }
+
+  response->set_success(true);
+  return grpc::Status::OK;
 }
 
 // =============================================================================
@@ -354,33 +515,50 @@ grpc::Status StorageServiceImpl::Prepare(grpc::ServerContext* context,
     write_set.push_back(ProtoToCedarKey(proto_key));
   }
   
-  // For simplicity, we prepare on partition 0 (should use proper routing based on keys)
-  // In production, this should route to the correct partition based on key hash
-  PartitionID pid = 0;
-  if (!write_set.empty()) {
-    pid = write_set[0].part_id();
-  } else if (!read_set.empty()) {
-    pid = read_set[0].part_id();
+  // Collect all involved partitions from read_set and write_set
+  std::set<PartitionID> involved_partitions;
+  for (const auto& key : write_set) {
+    involved_partitions.insert(key.part_id());
+  }
+  for (const auto& key : read_set) {
+    involved_partitions.insert(key.part_id());
   }
   
-  auto* partition = partition_manager_->GetPartition(pid);
-  
-  if (!partition) {
+  if (involved_partitions.empty()) {
     response->set_prepared(false);
-    response->set_error_msg("Partition not found: " + std::to_string(pid));
-    return grpc::Status(grpc::StatusCode::NOT_FOUND, "Partition not found");
+    response->set_error_msg("No partitions involved");
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "No partitions involved");
   }
   
-  auto status = partition->Prepare(txn_id, read_set, write_set, commit_ts);
+  bool all_prepared = true;
+  std::string last_error;
+  for (PartitionID pid : involved_partitions) {
+    auto* partition = partition_manager_->GetPartition(pid);
+    if (!partition) {
+      all_prepared = false;
+      last_error = "Partition not found: " + std::to_string(pid);
+      break;
+    }
+    auto status = partition->Prepare(txn_id, read_set, write_set, commit_ts);
+    if (!status.ok()) {
+      all_prepared = false;
+      last_error = status.ToString();
+      break;
+    }
+  }
   
-  if (status.ok()) {
+  if (all_prepared) {
+    {
+      std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+      txn_partitions_[txn_id] = std::move(involved_partitions);
+    }
     response->set_prepared(true);
     response->set_prepared_ts(commit_ts.value());
     return grpc::Status::OK;
   } else {
     response->set_prepared(false);
-    response->set_error_msg(status.ToString());
-    return grpc::Status::OK;  // Still return OK, but prepared=false
+    response->set_error_msg(last_error);
+    return grpc::Status::OK;
   }
 }
 
@@ -393,13 +571,25 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
     TxnID txn_id = request->txn_id();
     Timestamp commit_ts(request->commit_ts());
     
-    // For simplicity, we commit on all partitions that might have the transaction
-    // In production, should track which partitions participated in the transaction
     bool any_success = false;
     std::string last_error;
     
-    auto partitions = partition_manager_->GetAllPartitions();
-    for (PartitionID pid : partitions) {
+    std::set<PartitionID> involved_partitions;
+    {
+      std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+      auto it = txn_partitions_.find(txn_id);
+      if (it != txn_partitions_.end()) {
+        involved_partitions = it->second;
+      }
+    }
+    
+    if (involved_partitions.empty()) {
+      // Fallback to all partitions if mapping missing
+      involved_partitions.insert(partition_manager_->GetAllPartitions().begin(),
+                                 partition_manager_->GetAllPartitions().end());
+    }
+    
+    for (PartitionID pid : involved_partitions) {
       auto* partition = partition_manager_->GetPartition(pid);
       if (partition) {
         auto status = partition->Commit(txn_id, commit_ts);
@@ -439,12 +629,24 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
   
   TxnID txn_id = request->txn_id();
   
-  // Abort on all partitions
   bool any_success = false;
   std::string last_error;
   
-  auto partitions = partition_manager_->GetAllPartitions();
-  for (PartitionID pid : partitions) {
+  std::set<PartitionID> involved_partitions;
+  {
+    std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+    auto it = txn_partitions_.find(txn_id);
+    if (it != txn_partitions_.end()) {
+      involved_partitions = it->second;
+    }
+  }
+  
+  if (involved_partitions.empty()) {
+    involved_partitions.insert(partition_manager_->GetAllPartitions().begin(),
+                               partition_manager_->GetAllPartitions().end());
+  }
+  
+  for (PartitionID pid : involved_partitions) {
     auto* partition = partition_manager_->GetPartition(pid);
     if (partition) {
       auto status = partition->Abort(txn_id);
@@ -464,6 +666,35 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
     response->set_error_msg(last_error.empty() ? "No partitions found" : last_error);
     return grpc::Status(grpc::StatusCode::INTERNAL, last_error);
   }
+}
+
+grpc::Status StorageServiceImpl::Inquire(grpc::ServerContext* context,
+                                          const cedar::storage::InquireRequest* request,
+                                          cedar::storage::InquireResponse* response) {
+  (void)context;
+
+  TxnID txn_id = request->txn_id();
+
+  // Check all partitions for the transaction state
+  auto partitions = partition_manager_->GetAllPartitions();
+  for (PartitionID pid : partitions) {
+    auto* partition = partition_manager_->GetPartition(pid);
+    if (!partition) continue;
+
+    // Check prepared transactions
+    auto prepared = partition->GetPreparedTransactions();
+    for (TxnID prepared_txn_id : prepared) {
+      if (prepared_txn_id == txn_id) {
+        response->set_state("PREPARED");
+        return grpc::Status::OK;
+      }
+    }
+  }
+
+  // If not found in prepared list, return UNKNOWN
+  // (A production implementation would also check committed/aborted WAL)
+  response->set_state("UNKNOWN");
+  return grpc::Status::OK;
 }
 
 // =============================================================================
