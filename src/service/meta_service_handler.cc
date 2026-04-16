@@ -335,6 +335,108 @@ grpc::Status MetaServiceHandler::WatchPartitionMap(grpc::ServerContext* context,
   return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "Watch not implemented");
 }
 
+grpc::Status MetaServiceHandler::RegisterQueryD(grpc::ServerContext* context,
+                                                const cedar::meta::RegisterQueryDRequest* request,
+                                                cedar::meta::RegisterQueryDResponse* response) {
+  (void)context;
+  std::lock_guard<std::mutex> lock(nodes_mutex_);
+
+  cedar::meta::NodeInfo info;
+  info.set_node_id(request->node_id());
+  info.set_address(request->listen_address());
+  info.set_state("ONLINE");
+  info.set_last_heartbeat_unix(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+
+  // Store as a queryd node in the heartbeat map
+  HeartbeatRecord record;
+  record.last_status.set_node_id(request->node_id());
+  record.last_status.set_cpu_usage_percent(0.0);
+  record.last_status.set_memory_usage_percent(0.0);
+  record.last_update = std::chrono::steady_clock::now();
+  record.is_online = true;
+  node_heartbeats_[request->node_id()] = std::move(record);
+
+  response->set_success(true);
+  return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceHandler::QueryDHeartbeat(grpc::ServerContext* context,
+                                                 const cedar::meta::QueryDHeartbeatRequest* request,
+                                                 cedar::meta::QueryDHeartbeatResponse* response) {
+  (void)context;
+  std::lock_guard<std::mutex> lock(nodes_mutex_);
+
+  auto it = node_heartbeats_.find(request->node_id());
+  if (it != node_heartbeats_.end()) {
+    it->second.last_status.set_node_id(request->node_id());
+    it->second.last_status.set_cpu_usage_percent(request->cpu_usage_percent());
+    it->second.last_status.set_memory_usage_percent(request->memory_usage_percent());
+    it->second.last_update = std::chrono::steady_clock::now();
+    it->second.is_online = true;
+  }
+
+  response->set_success(true);
+  return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceHandler::GetSchema(grpc::ServerContext* context,
+                                           const cedar::meta::GetSchemaRequest* request,
+                                           cedar::meta::GetSchemaResponse* response) {
+  (void)context;
+  std::shared_lock<std::shared_mutex> lock(schema_mutex_);
+
+  auto it = schema_cache_.find(request->space_name());
+  if (it != schema_cache_.end()) {
+    response->mutable_schema()->CopyFrom(it->second);
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+
+  // If no schema exists yet, return a default bootstrap schema
+  cedar::meta::GraphSchema default_schema;
+
+  cedar::meta::LabelSchema* person = (*default_schema.mutable_node_labels())["Person"].New();
+  person->set_name("Person");
+  person->set_is_node(true);
+  auto* p = person->add_properties();
+  p->set_name("id");
+  p->set_type("STRING");
+  p->set_nullable(false);
+  p->set_indexed(true);
+  auto* p2 = person->add_properties();
+  p2->set_name("name");
+  p2->set_type("STRING");
+  (*default_schema.mutable_node_labels())["Person"] = *person;
+
+  cedar::meta::LabelSchema* company = (*default_schema.mutable_node_labels())["Company"].New();
+  company->set_name("Company");
+  company->set_is_node(true);
+  auto* c1 = company->add_properties();
+  c1->set_name("id");
+  c1->set_type("STRING");
+  c1->set_nullable(false);
+  c1->set_indexed(true);
+  auto* c2 = company->add_properties();
+  c2->set_name("name");
+  c2->set_type("STRING");
+  (*default_schema.mutable_node_labels())["Company"] = *company;
+
+  cedar::meta::LabelSchema* works_for = (*default_schema.mutable_edge_types())["WORKS_FOR"].New();
+  works_for->set_name("WORKS_FOR");
+  works_for->set_is_node(false);
+  auto* e1 = works_for->add_properties();
+  e1->set_name("since");
+  e1->set_type("STRING");
+  (*default_schema.mutable_edge_types())["WORKS_FOR"] = *works_for;
+
+  schema_cache_[request->space_name()] = default_schema;
+  response->mutable_schema()->CopyFrom(default_schema);
+  response->set_success(true);
+  return grpc::Status::OK;
+}
+
 // ========== 私有方法 ==========
 
 void MetaServiceHandler::HeartbeatCheckLoop() {
