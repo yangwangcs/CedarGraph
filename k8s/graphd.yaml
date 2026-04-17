@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graphd
+  namespace: cedargraph
+  labels:
+    app: graphd
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: graphd
+  template:
+    metadata:
+      labels:
+        app: graphd
+    spec:
+      containers:
+      - name: graphd
+        image: cedargraph/cedar:latest
+        command: ["/bin/graphd"]
+        args: ["--meta_server=metad:9559", "--port=9669"]
+        ports:
+        - containerPort: 9669
+          name: query
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          tcpSocket:
+            port: 9669
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 9669
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: graphd
+  namespace: cedargraph
+spec:
+  selector:
+    app: graphd
+  ports:
+  - port: 9669
+    targetPort: 9669
+    name: query
+  type: ClusterIP

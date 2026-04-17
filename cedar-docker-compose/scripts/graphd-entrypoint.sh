@@ -157,21 +157,8 @@ main() {
             --http_port="$HTTP_PORT" \
             "$@"
     else
-        # 占位：保持容器运行
-        log "GraphD binary not found, running in demo mode"
-        
-        # 创建一个简单的 TCP 监听
-        log "Listening on port $QUERY_PORT..."
-        
-        # 使用 nc 或自定义脚本保持服务运行
-        while true; do
-            # 简单的健康检查响应
-            if command -v nc &> /dev/null; then
-                echo -e "HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\nGraphD: OK" | nc -l -p "$QUERY_PORT" -q 1 || true
-            else
-                sleep 60
-            fi
-        done
+        log "ERROR: GraphD binary not found at $GRAPHD_BIN"
+        exit 1
     fi
 }
 

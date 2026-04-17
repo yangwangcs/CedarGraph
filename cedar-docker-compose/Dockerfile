@@ -75,9 +75,10 @@ ENV NODE_ROLE=""
 ENV DATA_DIR="/data"
 ENV LOG_DIR="/logs"
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD cedar-admin --host=localhost --port=${QUERY_PORT:-9669} status || exit 1
+# Health checks should be configured at runtime (Kubernetes/Docker Compose)
+# per role since the same image is used for metad, graphd, and storaged.
+# HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+#     CMD cedar-admin --host=localhost --port=${QUERY_PORT:-9669} status || exit 1
 
 # 暴露端口
 EXPOSE 9559 9669 9779 19669
