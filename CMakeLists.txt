@@ -893,10 +893,10 @@ endif()
 # =============================================================================
 file(GLOB GCN_SOURCES src/gcn/*.cc)
 add_library(cedar_gcn ${GCN_SOURCES})
-target_link_libraries(cedar_gcn cedar ${BRAFT_LIBRARIES} brpc-static)
+target_link_libraries(cedar_gcn cedar)
 
 add_executable(graphcomputenode tools/graphcomputenode.cc)
-target_link_libraries(graphcomputenode cedar_gcn cedar cedar_graph gRPC::grpc++ pthread)
+target_link_libraries(graphcomputenode cedar_gcn cedar cedar_graph ${BRAFT_LIBRARIES} brpc-static gRPC::grpc++ pthread)
 
 message(STATUS "")
 message(STATUS "=== CedarGraph Build Configuration ===")

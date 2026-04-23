@@ -188,3 +188,8 @@ gtest_discover_tests(test_storage_interface)
 add_executable(test_storage_interface_predicate test_storage_interface_predicate.cc)
 target_link_libraries(test_storage_interface_predicate ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_storage_interface_predicate)
+
+# GCN tests
+add_executable(test_tmv_edge gcn/test_tmv_edge.cc)
+target_link_libraries(test_tmv_edge cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_tmv_edge)
