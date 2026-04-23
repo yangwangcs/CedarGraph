@@ -212,6 +212,7 @@ gtest_discover_tests(test_tmv_engine)
 
 add_executable(test_gcn_service gcn/test_gcn_service.cc)
 target_link_libraries(test_gcn_service cedar_gcn ${GTEST_MAIN_TARGET})
+target_link_directories(test_gcn_service PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_gcn_service)
 
 add_executable(test_query_dispatcher gcn/test_query_dispatcher.cc)
@@ -257,3 +258,8 @@ add_executable(test_cypher_gcn_routing gcn/test_cypher_gcn_routing.cc)
 target_link_libraries(test_cypher_gcn_routing cedar_cypher cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_cypher_gcn_routing PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_cypher_gcn_routing)
+
+add_executable(test_end_to_end gcn/test_end_to_end.cc)
+target_link_libraries(test_end_to_end cedar_gcn ${GTEST_MAIN_TARGET})
+target_link_directories(test_end_to_end PRIVATE /opt/homebrew/lib)
+gtest_discover_tests(test_end_to_end)

@@ -22,9 +22,11 @@
 #include <condition_variable>
 #include <functional>
 #include <grpcpp/grpcpp.h>
+#include <memory>
 #include <mutex>
 #include <queue>
 
+#include "cedar/gcn/query_dispatcher.h"
 #include "gcn_service.grpc.pb.h"
 
 namespace cedar {
@@ -33,6 +35,9 @@ namespace gcn {
 class GcnServiceImpl final : public GcnService::Service {
  public:
   explicit GcnServiceImpl(
+      std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback = nullptr);
+  explicit GcnServiceImpl(
+      TMVEngine* engine,
       std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback = nullptr);
   ~GcnServiceImpl() override;
 
@@ -65,6 +70,7 @@ class GcnServiceImpl final : public GcnService::Service {
 
  private:
   std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback_;
+  std::unique_ptr<QueryDispatcher> dispatcher_;
   std::queue<CDCEvent> pending_events_;
   std::mutex queue_mutex_;
   std::condition_variable queue_cv_;

@@ -27,6 +27,12 @@ GcnServiceImpl::GcnServiceImpl(
     std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback)
     : on_event_callback_(std::move(on_event_callback)) {}
 
+GcnServiceImpl::GcnServiceImpl(
+    TMVEngine* engine,
+    std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback)
+    : on_event_callback_(std::move(on_event_callback)),
+      dispatcher_(std::make_unique<QueryDispatcher>(engine)) {}
+
 GcnServiceImpl::~GcnServiceImpl() {
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -44,8 +50,11 @@ void GcnServiceImpl::EnqueueEvent(const CDCEvent& event) {
 }
 
 grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* /*context*/,
-                                      const TraversalRequest* /*request*/,
+                                      const TraversalRequest* request,
                                       TraversalResponse* response) {
+  if (dispatcher_) {
+    return dispatcher_->DispatchTraversal(*request, response);
+  }
   // Stub: return default response fields
   response->Clear();
   return grpc::Status::OK;
