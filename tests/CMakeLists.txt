@@ -197,3 +197,7 @@ gtest_discover_tests(test_tmv_edge)
 add_executable(test_tmv_chunk gcn/test_tmv_chunk.cc)
 target_link_libraries(test_tmv_chunk cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_tmv_chunk)
+
+add_executable(test_numa_arena gcn/test_numa_arena.cc)
+target_link_libraries(test_numa_arena cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_numa_arena)
