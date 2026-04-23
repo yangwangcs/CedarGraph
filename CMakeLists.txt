@@ -892,7 +892,10 @@ endif()
 # GCN (Graph Compute Node)
 # =============================================================================
 file(GLOB GCN_SOURCES src/gcn/*.cc)
-add_library(cedar_gcn ${GCN_SOURCES})
+add_library(cedar_gcn ${GCN_SOURCES}
+    ${PROTO_OUT_DIR}/gcn_service.pb.cc
+    ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc
+)
 target_link_libraries(cedar_gcn cedar)
 
 add_executable(graphcomputenode tools/graphcomputenode.cc)
