@@ -223,3 +223,8 @@ add_executable(test_coordinator_client gcn/test_coordinator_client.cc)
 target_link_directories(test_coordinator_client PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_coordinator_client cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_coordinator_client)
+
+add_executable(test_scatter_gather_router gcn/test_scatter_gather_router.cc)
+target_link_directories(test_scatter_gather_router PRIVATE /opt/homebrew/lib)
+target_link_libraries(test_scatter_gather_router cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_scatter_gather_router)
