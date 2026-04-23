@@ -173,6 +173,7 @@ set(CEDAR_STORAGE_SOURCES
     src/storage/cedar_config.cc
     src/storage/sst_reader_cache.cc
     src/storage/block_cache.cc
+    src/storage/compaction_merger.cc
     src/storage/compaction_merger_v2.cc
     src/storage/vsl_memtable.cc
     src/storage/versioned_skiplist_lockfree.cc
@@ -320,6 +321,8 @@ set(CEDAR_SST_SOURCES
     src/sst/zone_encoder.cc
     src/sst/blob_file.cc
     src/sst/sst_builder_factory.cc
+    src/sst/zone_columnar_builder.cc
+    src/sst/zone_columnar_format.cc
     src/sst/zone_columnar_reader.cc
 )
 

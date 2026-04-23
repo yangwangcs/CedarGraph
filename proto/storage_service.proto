@@ -295,6 +295,10 @@ service StorageService {
     // 数据持久化
     rpc Flush(FlushRequest) returns (FlushResponse);
     
+    // GCN compute-optimized APIs
+    rpc GetRangeForCompute(GetRangeForComputeRequest) returns (GetRangeForComputeResponse);
+    rpc GetCommittedVersion(GetCommittedVersionRequest) returns (GetCommittedVersionResponse);
+
     // 心跳（流式，StorageD 定期上报）
     rpc Heartbeat(stream HeartbeatRequest) returns (stream HeartbeatResponse);
 }
@@ -309,4 +313,36 @@ message FlushResponse {
     bool success = 1;
     string error_msg = 2;
     uint64 flushed_size = 3;  // 刷新的数据大小
+}
+
+// ============================================================================
+// GCN Compute-Optimized APIs
+// ============================================================================
+
+message GetRangeForComputeRequest {
+    uint64 entity_id = 1;
+    uint32 edge_type = 2;
+    uint64 snapshot_ts = 3;
+    uint32 direction = 4; // 0=out, 1=in
+    uint64 required_version = 5;
+}
+
+message ComputeEdge {
+    uint64 target_id = 1;
+    uint64 valid_from = 2;
+    uint64 valid_to = 3;
+    uint32 edge_type = 4;
+}
+
+message GetRangeForComputeResponse {
+    repeated ComputeEdge edges = 1;
+    uint64 served_version = 2;
+    bool truncated = 3;
+}
+
+message GetCommittedVersionRequest {}
+
+message GetCommittedVersionResponse {
+    uint64 committed_version = 1;
+    uint64 watermark = 2;
 }

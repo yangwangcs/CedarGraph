@@ -248,3 +248,7 @@ add_executable(test_gcn_event_stream gcn/test_gcn_event_stream.cc)
 target_link_libraries(test_gcn_event_stream cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_gcn_event_stream PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_gcn_event_stream)
+
+add_executable(test_storage_extensions gcn/test_storage_extensions.cc)
+target_link_libraries(test_storage_extensions ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_extensions)

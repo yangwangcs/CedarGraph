@@ -241,9 +241,14 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                      const cedar::storage::AbortRequest* request,
                      cedar::storage::AbortResponse* response) override;
 
-  grpc::Status Inquire(grpc::ServerContext* context,
-                       const cedar::storage::InquireRequest* request,
-                       cedar::storage::InquireResponse* response) override;
+  // GCN compute-optimized APIs
+  grpc::Status GetRangeForCompute(grpc::ServerContext* context,
+                                  const cedar::storage::GetRangeForComputeRequest* request,
+                                  cedar::storage::GetRangeForComputeResponse* response) override;
+
+  grpc::Status GetCommittedVersion(grpc::ServerContext* context,
+                                   const cedar::storage::GetCommittedVersionRequest* request,
+                                   cedar::storage::GetCommittedVersionResponse* response) override;
 
   // Partition management
   grpc::Status GetPartitionInfo(grpc::ServerContext* context,

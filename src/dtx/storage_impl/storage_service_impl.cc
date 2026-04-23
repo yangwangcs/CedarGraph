@@ -14,6 +14,7 @@
 
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/dtx/monitoring.h"
+#include "cedar/storage/lsm_engine.h"
 
 #include <cstring>
 #include <iostream>
@@ -668,32 +669,67 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
   }
 }
 
-grpc::Status StorageServiceImpl::Inquire(grpc::ServerContext* context,
-                                          const cedar::storage::InquireRequest* request,
-                                          cedar::storage::InquireResponse* response) {
+// =============================================================================
+// GCN Compute-Optimized APIs
+// =============================================================================
+
+grpc::Status StorageServiceImpl::GetRangeForCompute(
+    grpc::ServerContext* context,
+    const cedar::storage::GetRangeForComputeRequest* request,
+    cedar::storage::GetRangeForComputeResponse* response) {
   (void)context;
 
-  TxnID txn_id = request->txn_id();
-
-  // Check all partitions for the transaction state
-  auto partitions = partition_manager_->GetAllPartitions();
-  for (PartitionID pid : partitions) {
-    auto* partition = partition_manager_->GetPartition(pid);
-    if (!partition) continue;
-
-    // Check prepared transactions
-    auto prepared = partition->GetPreparedTransactions();
-    for (TxnID prepared_txn_id : prepared) {
-      if (prepared_txn_id == txn_id) {
-        response->set_state("PREPARED");
-        return grpc::Status::OK;
-      }
-    }
+  auto* storage = partition_manager_->GetSharedStorage();
+  if (!storage) {
+    return grpc::Status(grpc::StatusCode::INTERNAL, "Storage not available");
   }
 
-  // If not found in prepared list, return UNKNOWN
-  // (A production implementation would also check committed/aborted WAL)
-  response->set_state("UNKNOWN");
+  auto* lsm_engine = storage->GetLsmEngine();
+  if (!lsm_engine) {
+    return grpc::Status(grpc::StatusCode::INTERNAL, "LSM engine not available");
+  }
+
+  cedar::EntityType direction = (request->direction() == 0)
+      ? cedar::EntityType::EdgeOut : cedar::EntityType::EdgeIn;
+
+  auto results = lsm_engine->ScanEdgesWithFolding(
+      request->entity_id(),
+      direction,
+      static_cast<uint16_t>(request->edge_type()),
+      cedar::Timestamp(request->snapshot_ts()));
+
+  constexpr size_t kMaxResults = 10000;
+  bool truncated = false;
+  if (results.size() > kMaxResults) {
+    truncated = true;
+    results.resize(kMaxResults);
+  }
+
+  for (const auto& entry : results) {
+    auto* edge = response->add_edges();
+    edge->set_target_id(entry.target_id);
+    edge->set_valid_from(entry.timestamp.value());
+    edge->set_valid_to(0);  // Still valid
+    edge->set_edge_type(entry.edge_type);
+  }
+
+  response->set_served_version(0);  // Stub: no easy accessor for committed version
+  response->set_truncated(truncated);
+
+  return grpc::Status::OK;
+}
+
+grpc::Status StorageServiceImpl::GetCommittedVersion(
+    grpc::ServerContext* context,
+    const cedar::storage::GetCommittedVersionRequest* request,
+    cedar::storage::GetCommittedVersionResponse* response) {
+  (void)context;
+  (void)request;
+
+  // Stub: no easy accessor for committed version yet
+  response->set_committed_version(0);
+  response->set_watermark(0);
+
   return grpc::Status::OK;
 }
 
