@@ -193,3 +193,7 @@ gtest_discover_tests(test_storage_interface_predicate)
 add_executable(test_tmv_edge gcn/test_tmv_edge.cc)
 target_link_libraries(test_tmv_edge cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_tmv_edge)
+
+add_executable(test_tmv_chunk gcn/test_tmv_chunk.cc)
+target_link_libraries(test_tmv_chunk cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_tmv_chunk)
