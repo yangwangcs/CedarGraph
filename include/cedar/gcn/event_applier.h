@@ -14,7 +14,7 @@ enum class CDCEventOp : uint8_t {
   kDelete = 1,
 };
 
-struct CDCEvent {
+struct GraphCDCEvent {
   uint64_t commit_version;
   uint64_t entity_id;
   uint64_t target_id;
@@ -33,21 +33,21 @@ class EventApplier {
   EventApplier& operator=(const EventApplier&) = delete;
 
   // Apply events that are already in commit_version order.
-  void ApplyOrdered(const CDCEvent& event);
+  void ApplyOrdered(const GraphCDCEvent& event);
 
   // Apply events that may arrive out of order.  Buffers events until
   // commit_version == applied_version_ + 1, then applies them and
   // drains the reorder buffer for any contiguous next versions.
-  void ApplyUnordered(const CDCEvent& event);
+  void ApplyUnordered(const GraphCDCEvent& event);
 
   uint64_t applied_version() const { return applied_version_; }
 
  private:
   TMVEngine* tmv_engine_;
   uint64_t applied_version_ = 0;
-  std::map<uint64_t, CDCEvent> reorder_buffer_;
+  std::map<uint64_t, GraphCDCEvent> reorder_buffer_;
 
-  void ApplyInternal(const CDCEvent& event);
+  void ApplyInternal(const GraphCDCEvent& event);
   void DrainBuffer();
 };
 

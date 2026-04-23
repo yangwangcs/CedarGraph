@@ -7,12 +7,12 @@ namespace gcn {
 
 EventApplier::EventApplier(TMVEngine* engine) : tmv_engine_(engine) {}
 
-void EventApplier::ApplyOrdered(const CDCEvent& event) {
+void EventApplier::ApplyOrdered(const GraphCDCEvent& event) {
   ApplyInternal(event);
   applied_version_ = event.commit_version;
 }
 
-void EventApplier::ApplyUnordered(const CDCEvent& event) {
+void EventApplier::ApplyUnordered(const GraphCDCEvent& event) {
   if (event.commit_version == applied_version_ + 1) {
     ApplyInternal(event);
     applied_version_ = event.commit_version;
@@ -22,7 +22,7 @@ void EventApplier::ApplyUnordered(const CDCEvent& event) {
   }
 }
 
-void EventApplier::ApplyInternal(const CDCEvent& event) {
+void EventApplier::ApplyInternal(const GraphCDCEvent& event) {
   TMVEdge edge;
   edge.target_id = event.target_id;
   edge.attr_offset = 0;

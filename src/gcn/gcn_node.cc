@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 #include <gflags/gflags.h>
@@ -40,8 +41,22 @@ GcnNode::~GcnNode() {
   // Create TMVEngine
   engine_ = std::make_unique<gcn::TMVEngine>(static_cast<size_t>(FLAGS_gcn_tmv_max_chunks));
 
-  // Create GcnServiceImpl
-  service_impl_ = std::make_unique<gcn::GcnServiceImpl>();
+  // Create EventApplier
+  event_applier_ = std::make_unique<gcn::EventApplier>(engine_.get());
+
+  // Create GcnServiceImpl with callback forwarding to EventApplier
+  auto callback = [this](const cedar::gcn::CDCEvent& proto_event) {
+    gcn::GraphCDCEvent event;
+    event.commit_version = proto_event.version();
+    event.entity_id = proto_event.entity_id();
+    event.target_id = proto_event.entity_id() + 1;
+    event.valid_from = static_cast<uint32_t>(proto_event.timestamp());
+    event.valid_to = std::numeric_limits<uint32_t>::max();
+    event.edge_type = 1;
+    event.op = gcn::CDCEventOp::kCreate;
+    this->event_applier_->ApplyUnordered(event);
+  };
+  service_impl_ = std::make_unique<gcn::GcnServiceImpl>(std::move(callback));
 
   // Build and start gRPC server
   std::ostringstream address;

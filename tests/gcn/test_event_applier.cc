@@ -11,12 +11,12 @@ TEST(EventApplierTest, ApplyOrderedEvents) {
   TMVEngine engine(16);
   EventApplier applier(&engine);
 
-  CDCEvent e1{1, 100, 200, 1000, std::numeric_limits<uint32_t>::max(), 1,
-              CDCEventOp::kCreate};
-  CDCEvent e2{2, 100, 300, 2000, std::numeric_limits<uint32_t>::max(), 1,
-              CDCEventOp::kCreate};
-  CDCEvent e3{3, 100, 400, 3000, std::numeric_limits<uint32_t>::max(), 1,
-              CDCEventOp::kCreate};
+  GraphCDCEvent e1{1, 100, 200, 1000, std::numeric_limits<uint32_t>::max(), 1,
+                   CDCEventOp::kCreate};
+  GraphCDCEvent e2{2, 100, 300, 2000, std::numeric_limits<uint32_t>::max(), 1,
+                   CDCEventOp::kCreate};
+  GraphCDCEvent e3{3, 100, 400, 3000, std::numeric_limits<uint32_t>::max(), 1,
+                   CDCEventOp::kCreate};
 
   applier.ApplyOrdered(e1);
   applier.ApplyOrdered(e2);
@@ -35,12 +35,12 @@ TEST(EventApplierTest, ReorderUnorderedEvents) {
   TMVEngine engine(16);
   EventApplier applier(&engine);
 
-  CDCEvent e1{1, 100, 200, 1000, std::numeric_limits<uint32_t>::max(), 1,
-              CDCEventOp::kCreate};
-  CDCEvent e2{2, 100, 300, 2000, std::numeric_limits<uint32_t>::max(), 1,
-              CDCEventOp::kCreate};
-  CDCEvent e3{3, 100, 400, 3000, std::numeric_limits<uint32_t>::max(), 1,
-              CDCEventOp::kCreate};
+  GraphCDCEvent e1{1, 100, 200, 1000, std::numeric_limits<uint32_t>::max(), 1,
+                   CDCEventOp::kCreate};
+  GraphCDCEvent e2{2, 100, 300, 2000, std::numeric_limits<uint32_t>::max(), 1,
+                   CDCEventOp::kCreate};
+  GraphCDCEvent e3{3, 100, 400, 3000, std::numeric_limits<uint32_t>::max(), 1,
+                   CDCEventOp::kCreate};
 
   // Apply out of order: 3, 1, 2
   applier.ApplyUnordered(e3);

@@ -19,7 +19,12 @@
 #ifndef CEDAR_GCN_GCN_SERVICE_H_
 #define CEDAR_GCN_GCN_SERVICE_H_
 
+#include <condition_variable>
+#include <functional>
 #include <grpcpp/grpcpp.h>
+#include <mutex>
+#include <queue>
+
 #include "gcn_service.grpc.pb.h"
 
 namespace cedar {
@@ -27,12 +32,16 @@ namespace gcn {
 
 class GcnServiceImpl final : public GcnService::Service {
  public:
-  GcnServiceImpl();
+  explicit GcnServiceImpl(
+      std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback = nullptr);
   ~GcnServiceImpl() override;
 
   // Disable copy
   GcnServiceImpl(const GcnServiceImpl&) = delete;
   GcnServiceImpl& operator=(const GcnServiceImpl&) = delete;
+
+  // Enqueue a CDC event to be streamed to connected clients.
+  void EnqueueEvent(const CDCEvent& event);
 
   // Graph traversal from a root entity
   grpc::Status Traverse(grpc::ServerContext* context,
@@ -53,6 +62,13 @@ class GcnServiceImpl final : public GcnService::Service {
   grpc::Status OnEventStream(
       grpc::ServerContext* context,
       grpc::ServerReaderWriter<CDCEvent, Ack>* stream) override;
+
+ private:
+  std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback_;
+  std::queue<CDCEvent> pending_events_;
+  std::mutex queue_mutex_;
+  std::condition_variable queue_cv_;
+  bool stream_closed_ = false;
 };
 
 }  // namespace gcn

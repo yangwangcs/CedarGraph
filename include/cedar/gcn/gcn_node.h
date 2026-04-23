@@ -22,6 +22,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include "cedar/core/status.h"
+#include "cedar/gcn/event_applier.h"
 #include "cedar/gcn/gcn_service.h"
 #include "cedar/gcn/tmv_engine.h"
 
@@ -55,6 +56,7 @@ class GcnNode {
   void CdcListenerLoop();
 
   std::unique_ptr<gcn::TMVEngine> engine_;
+  std::unique_ptr<gcn::EventApplier> event_applier_;
   std::unique_ptr<gcn::GcnServiceImpl> service_impl_;
   std::unique_ptr<grpc::Server> grpc_server_;
 

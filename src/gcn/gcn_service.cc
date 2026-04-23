@@ -18,11 +18,30 @@
 
 #include "cedar/gcn/gcn_service.h"
 
+#include <chrono>
+
 namespace cedar {
 namespace gcn {
 
-GcnServiceImpl::GcnServiceImpl() = default;
-GcnServiceImpl::~GcnServiceImpl() = default;
+GcnServiceImpl::GcnServiceImpl(
+    std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback)
+    : on_event_callback_(std::move(on_event_callback)) {}
+
+GcnServiceImpl::~GcnServiceImpl() {
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    stream_closed_ = true;
+  }
+  queue_cv_.notify_all();
+}
+
+void GcnServiceImpl::EnqueueEvent(const CDCEvent& event) {
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    pending_events_.push(event);
+  }
+  queue_cv_.notify_one();
+}
 
 grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* /*context*/,
                                       const TraversalRequest* /*request*/,
@@ -50,8 +69,38 @@ grpc::Status GcnServiceImpl::OnCacheInvalidate(grpc::ServerContext* /*context*/,
 
 grpc::Status GcnServiceImpl::OnEventStream(
     grpc::ServerContext* /*context*/,
-    grpc::ServerReaderWriter<CDCEvent, Ack>* /*stream*/) {
-  // Stub: close stream immediately
+    grpc::ServerReaderWriter<CDCEvent, Ack>* stream) {
+  while (true) {
+    CDCEvent event;
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex_);
+      bool has_event = queue_cv_.wait_for(
+          lock, std::chrono::milliseconds(100),
+          [this] { return !pending_events_.empty() || stream_closed_; });
+      if (!has_event && pending_events_.empty()) {
+        break;
+      }
+      if (pending_events_.empty()) {
+        continue;
+      }
+      event = pending_events_.front();
+      pending_events_.pop();
+    }
+
+    if (on_event_callback_) {
+      on_event_callback_(event);
+    }
+
+    if (!stream->Write(event)) {
+      break;
+    }
+
+    Ack ack;
+    if (!stream->Read(&ack)) {
+      break;
+    }
+  }
+
   return grpc::Status::OK;
 }
 
