@@ -1,5 +1,6 @@
 #include "cedar/gcn/tmv_engine.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace cedar {
@@ -190,27 +191,71 @@ void TMVEngine::AppendToEntry(TMVVertexEntry* entry,
 std::vector<TMVEdge> TMVEngine::ScanAtTime(uint64_t entity_id,
                                            Direction dir,
                                            uint64_t query_time) {
-  std::vector<TMVEdge> result;
+  std::vector<TMVEdge> candidates;
 
   TMVVertexEntry* entry = index_.Find(entity_id);
   if (!entry) {
-    return result;
+    return candidates;
   }
 
   TMVChunk* head = (dir == Direction::kOut)
                        ? entry->out_chunk_head.load(std::memory_order_relaxed)
                        : entry->in_chunk_head.load(std::memory_order_relaxed);
 
+  // Step 1 & 2: Chunk skip + linear scan, collect edges where valid_from <= query_time
   TMVChunk* chunk = head;
   while (chunk) {
+    uint32_t min_from = chunk->min_valid_from.load(std::memory_order_relaxed);
+    uint32_t max_to = chunk->max_valid_to.load(std::memory_order_relaxed);
+
+    // Chunk-level filter: skip if chunk cannot contain any valid edge
+    if (min_from > query_time || max_to < query_time) {
+      chunk = chunk->next;
+      continue;
+    }
+
     uint32_t count = chunk->event_count.load(std::memory_order_acquire);
     for (uint32_t i = 0; i < count; ++i) {
       const TMVEdge& edge = chunk->edges[i];
-      if (edge.valid_from <= query_time && query_time < edge.valid_to) {
-        result.push_back(edge);
+      if (edge.valid_from <= query_time) {
+        candidates.push_back(edge);
       }
     }
     chunk = chunk->next;
+  }
+
+  // Step 3: Sort by target_id
+  std::sort(candidates.begin(), candidates.end(),
+            [](const TMVEdge& a, const TMVEdge& b) {
+              return a.target_id < b.target_id;
+            });
+
+  // Step 4 & 5: Group by target_id, keep only the one with largest valid_from.
+  // If the kept edge's valid_to != MAX and valid_to <= query_time, discard it.
+  std::vector<TMVEdge> result;
+  result.reserve(candidates.size());
+
+  for (size_t i = 0; i < candidates.size();) {
+    uint64_t target_id = candidates[i].target_id;
+    size_t best_idx = i;
+
+    // Find the edge with largest valid_from for this target_id
+    size_t j = i + 1;
+    while (j < candidates.size() && candidates[j].target_id == target_id) {
+      if (candidates[j].valid_from > candidates[best_idx].valid_from) {
+        best_idx = j;
+      }
+      ++j;
+    }
+
+    const TMVEdge& best = candidates[best_idx];
+    // Discard if deleted (valid_to != MAX and valid_to <= query_time)
+    if (best.valid_to == std::numeric_limits<uint32_t>::max() ||
+        best.valid_to > query_time) {
+      result.push_back(best);
+    }
+
+    i = j;
   }
 
   return result;
