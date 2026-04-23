@@ -1,0 +1,289 @@
+#include "cedar/gcn/tmv_engine.h"
+
+#include <limits>
+
+namespace cedar {
+namespace gcn {
+
+TMVEngine::TMVEngine(size_t max_chunks) : pool_(max_chunks) {}
+
+void TMVEngine::BootstrapVertex(uint64_t entity_id,
+                                Direction dir,
+                                const std::vector<TMVEdge>& edges,
+                                bool reverse) {
+  TMVVertexEntry* entry = index_.FindOrCreate(entity_id);
+
+  std::atomic<TMVChunk*>* head_ptr =
+      (dir == Direction::kOut) ? &entry->out_chunk_head : &entry->in_chunk_head;
+  std::atomic<TMVChunk*>* tail_ptr =
+      (dir == Direction::kOut) ? &entry->out_chunk_tail : &entry->in_chunk_tail;
+  std::atomic<uint64_t>* count_ptr = (dir == Direction::kOut)
+                                         ? &entry->out_edge_count
+                                         : &entry->in_edge_count;
+
+  TMVChunk* first_chunk = nullptr;
+  TMVChunk* prev_chunk = nullptr;
+  size_t edge_idx = 0;
+  size_t total_bootstrapped = 0;
+
+  while (edge_idx < edges.size()) {
+    TMVChunk* chunk = pool_.Alloc();
+    if (!chunk) {
+      break;
+    }
+
+    chunk->next = nullptr;
+    chunk->event_count.store(0, std::memory_order_relaxed);
+    chunk->min_valid_from.store(std::numeric_limits<uint32_t>::max(),
+                                std::memory_order_relaxed);
+    chunk->max_valid_to.store(0, std::memory_order_relaxed);
+    chunk->sealed.store(false, std::memory_order_relaxed);
+
+    uint32_t min_from = std::numeric_limits<uint32_t>::max();
+    uint32_t max_to = 0;
+    size_t count = 0;
+
+    while (edge_idx < edges.size() && count < TMVChunk::kCapacity) {
+      chunk->edges[count] = edges[edge_idx];
+      if (edges[edge_idx].valid_from < min_from) {
+        min_from = edges[edge_idx].valid_from;
+      }
+      if (edges[edge_idx].valid_to > max_to) {
+        max_to = edges[edge_idx].valid_to;
+      }
+      ++count;
+      ++edge_idx;
+    }
+
+    chunk->event_count.store(static_cast<uint32_t>(count),
+                             std::memory_order_relaxed);
+    chunk->min_valid_from.store(min_from, std::memory_order_relaxed);
+    chunk->max_valid_to.store(max_to, std::memory_order_relaxed);
+
+    if (prev_chunk) {
+      prev_chunk->next = chunk;
+    } else {
+      first_chunk = chunk;
+    }
+    prev_chunk = chunk;
+    total_bootstrapped += count;
+  }
+
+  if (first_chunk) {
+    TMVChunk* old_tail = tail_ptr->exchange(prev_chunk, std::memory_order_relaxed);
+    if (old_tail) {
+      old_tail->next = first_chunk;
+    } else {
+      head_ptr->store(first_chunk, std::memory_order_relaxed);
+    }
+
+    count_ptr->fetch_add(total_bootstrapped, std::memory_order_relaxed);
+
+    // Update earliest_chunk_timestamp
+    uint32_t global_min = std::numeric_limits<uint32_t>::max();
+    for (size_t i = 0; i < edges.size(); ++i) {
+      if (edges[i].valid_from < global_min) {
+        global_min = edges[i].valid_from;
+      }
+    }
+    uint32_t expected =
+        entry->earliest_chunk_timestamp.load(std::memory_order_relaxed);
+    while (global_min < expected &&
+           !entry->earliest_chunk_timestamp.compare_exchange_weak(
+               expected, global_min, std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+      // retry
+    }
+  }
+
+  if (reverse && dir == Direction::kOut) {
+    for (const auto& edge : edges) {
+      TMVEdge reverse_edge = edge;
+      reverse_edge.target_id = entity_id;
+      AppendEdge(edge.target_id, Direction::kIn, reverse_edge, false);
+    }
+  }
+}
+
+void TMVEngine::AppendEdge(uint64_t entity_id,
+                           Direction dir,
+                           const TMVEdge& edge,
+                           bool reverse) {
+  TMVVertexEntry* entry = index_.FindOrCreate(entity_id);
+  AppendToEntry(entry, dir, edge);
+
+  if (reverse && dir == Direction::kOut) {
+    TMVEdge reverse_edge = edge;
+    reverse_edge.target_id = entity_id;
+    AppendEdge(edge.target_id, Direction::kIn, reverse_edge, false);
+  }
+}
+
+void TMVEngine::AppendToEntry(TMVVertexEntry* entry,
+                              Direction dir,
+                              const TMVEdge& edge) {
+  std::atomic<TMVChunk*>* head_ptr =
+      (dir == Direction::kOut) ? &entry->out_chunk_head : &entry->in_chunk_head;
+  std::atomic<TMVChunk*>* tail_ptr =
+      (dir == Direction::kOut) ? &entry->out_chunk_tail : &entry->in_chunk_tail;
+  std::atomic<uint64_t>* count_ptr = (dir == Direction::kOut)
+                                         ? &entry->out_edge_count
+                                         : &entry->in_edge_count;
+
+  TMVChunk* tail = tail_ptr->load(std::memory_order_relaxed);
+  if (tail && tail->CanAppend()) {
+    int idx = tail->Append(edge);
+    if (idx >= 0) {
+      count_ptr->fetch_add(1, std::memory_order_relaxed);
+
+      uint32_t expected =
+          entry->earliest_chunk_timestamp.load(std::memory_order_relaxed);
+      while (edge.valid_from < expected &&
+             !entry->earliest_chunk_timestamp.compare_exchange_weak(
+                 expected, edge.valid_from, std::memory_order_relaxed,
+                 std::memory_order_relaxed)) {
+        // retry
+      }
+      return;
+    }
+  }
+
+  // Allocate a new chunk
+  TMVChunk* new_chunk = pool_.Alloc();
+  if (!new_chunk) {
+    return;
+  }
+
+  new_chunk->next = nullptr;
+  new_chunk->event_count.store(0, std::memory_order_relaxed);
+  new_chunk->min_valid_from.store(std::numeric_limits<uint32_t>::max(),
+                                  std::memory_order_relaxed);
+  new_chunk->max_valid_to.store(0, std::memory_order_relaxed);
+  new_chunk->sealed.store(false, std::memory_order_relaxed);
+
+  int idx = new_chunk->Append(edge);
+  if (idx < 0) {
+    pool_.Free(new_chunk);
+    return;
+  }
+
+  // Link the new chunk
+  TMVChunk* old_tail = tail_ptr->exchange(new_chunk, std::memory_order_relaxed);
+  if (old_tail) {
+    old_tail->next = new_chunk;
+  } else {
+    head_ptr->store(new_chunk, std::memory_order_relaxed);
+  }
+
+  count_ptr->fetch_add(1, std::memory_order_relaxed);
+
+  uint32_t expected =
+      entry->earliest_chunk_timestamp.load(std::memory_order_relaxed);
+  while (edge.valid_from < expected &&
+         !entry->earliest_chunk_timestamp.compare_exchange_weak(
+             expected, edge.valid_from, std::memory_order_relaxed,
+             std::memory_order_relaxed)) {
+    // retry
+  }
+}
+
+std::vector<TMVEdge> TMVEngine::ScanAtTime(uint64_t entity_id,
+                                           Direction dir,
+                                           uint64_t query_time) {
+  std::vector<TMVEdge> result;
+
+  TMVVertexEntry* entry = index_.Find(entity_id);
+  if (!entry) {
+    return result;
+  }
+
+  TMVChunk* head = (dir == Direction::kOut)
+                       ? entry->out_chunk_head.load(std::memory_order_relaxed)
+                       : entry->in_chunk_head.load(std::memory_order_relaxed);
+
+  TMVChunk* chunk = head;
+  while (chunk) {
+    uint32_t count = chunk->event_count.load(std::memory_order_acquire);
+    for (uint32_t i = 0; i < count; ++i) {
+      const TMVEdge& edge = chunk->edges[i];
+      if (edge.valid_from <= query_time && query_time < edge.valid_to) {
+        result.push_back(edge);
+      }
+    }
+    chunk = chunk->next;
+  }
+
+  return result;
+}
+
+size_t TMVEngine::DropChunksBelowWatermark(std::atomic<TMVChunk*>* head_ptr,
+                                           std::atomic<TMVChunk*>* tail_ptr,
+                                           uint64_t watermark) {
+  TMVChunk* head = head_ptr->load(std::memory_order_relaxed);
+  if (!head) {
+    return 0;
+  }
+
+  TMVChunk dummy;
+  dummy.next = head;
+
+  TMVChunk* prev = &dummy;
+  TMVChunk* curr = head;
+  TMVChunk* new_tail = nullptr;
+  size_t dropped = 0;
+
+  while (curr) {
+    TMVChunk* next = curr->next;
+    if (curr->max_valid_to.load(std::memory_order_relaxed) < watermark) {
+      prev->next = next;
+      pool_.Free(curr);
+      ++dropped;
+    } else {
+      new_tail = curr;
+      prev = curr;
+    }
+    curr = next;
+  }
+
+  head_ptr->store(dummy.next, std::memory_order_relaxed);
+  tail_ptr->store(new_tail, std::memory_order_relaxed);
+
+  return dropped;
+}
+
+size_t TMVEngine::DropBelowWatermark(uint64_t watermark) {
+  size_t dropped = 0;
+
+  for (uint32_t s = 0; s < TMVIndex::kNumShards; ++s) {
+    TMVIndex::Shard& shard = index_.shards_[s];
+    absl::base_internal::SpinLockHolder holder{shard.lock};
+
+    for (auto& [id, entry] : shard.entries) {
+      dropped +=
+          DropChunksBelowWatermark(&entry.out_chunk_head, &entry.out_chunk_tail,
+                                   watermark);
+      dropped +=
+          DropChunksBelowWatermark(&entry.in_chunk_head, &entry.in_chunk_tail,
+                                   watermark);
+    }
+  }
+
+  return dropped;
+}
+
+size_t TMVEngine::VertexCount() const {
+  size_t count = 0;
+  for (uint32_t s = 0; s < TMVIndex::kNumShards; ++s) {
+    const TMVIndex::Shard& shard = index_.shards_[s];
+    absl::base_internal::SpinLockHolder holder{shard.lock};
+    count += shard.entries.size();
+  }
+  return count;
+}
+
+size_t TMVEngine::ChunkCount() const {
+  return pool_.TotalCount() - pool_.FreeCount();
+}
+
+}  // namespace gcn
+}  // namespace cedar

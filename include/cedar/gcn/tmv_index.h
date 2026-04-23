@@ -20,6 +20,8 @@ class TMVIndex {
     absl::flat_hash_map<uint64_t, TMVVertexEntry> entries;
   };
 
+  friend class TMVEngine;
+
   TMVIndex() = default;
 
   TMVVertexEntry* FindOrCreate(uint64_t entity_id) {
