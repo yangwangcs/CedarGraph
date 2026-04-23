@@ -41,6 +41,9 @@ struct ExecutionContext {
   Timestamp query_timestamp = 0;
   std::pair<Timestamp, Timestamp> time_range{0, Timestamp::Max()};
   
+  // GCN traversal callback - routes edge expansion to GCN when available
+  std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> gcn_traversal_callback;
+  
   void SetVariable(const std::string& name, const Value& val);
   std::optional<Value> GetVariable(const std::string& name) const;
 };

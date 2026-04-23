@@ -103,7 +103,7 @@ ExecutionPlan::ExecutionPlan(std::shared_ptr<PhysicalOperator> root)
     : root_(root) {}
 
 ResultSet ExecutionPlan::Execute(ExecutionContext* ctx) {
-  if (!ctx || !ctx->graph) {
+  if (!ctx || (!ctx->graph && !ctx->gcn_traversal_callback)) {
     ResultSet result;
     result.SetError("Invalid execution context");
     return result;
@@ -273,6 +273,14 @@ bool Expand::Init(ExecutionContext* ctx) {
 
 std::shared_ptr<Record> Expand::Next() {
   while (current_record_) {
+    // If we exhausted all neighbors for the current record, advance to next input
+    if (!neighbors_.empty() && neighbor_index_ >= neighbors_.size()) {
+      current_record_ = children_[0]->Next();
+      neighbors_.clear();
+      neighbor_index_ = 0;
+      continue;
+    }
+    
     // Get the source node from current record
     auto from_val = current_record_->Get(from_variable_);
     if (!from_val || !from_val->IsNode()) {
@@ -284,9 +292,8 @@ std::shared_ptr<Record> Expand::Next() {
     
     uint64_t from_id = from_val->GetNode().id;
     
-    // Get neighbors from storage
-    if (neighbors_.empty() || neighbor_index_ >= neighbors_.size()) {
-      // Fetch neighbors from storage
+    // Get neighbors from storage or GCN callback
+    if (neighbors_.empty()) {
       neighbors_.clear();
       
       uint16_t edge_type = 0;  // Default edge type
@@ -294,7 +301,13 @@ std::shared_ptr<Record> Expand::Next() {
         edge_type = static_cast<uint16_t>(std::stoi(*rel_type_));
       }
       
-      if (context_->graph) {
+      if (context_->gcn_traversal_callback) {
+        auto neighbor_ids = context_->gcn_traversal_callback(
+            from_id, static_cast<uint32_t>(edge_type), context_->query_timestamp.value());
+        for (uint64_t nid : neighbor_ids) {
+          neighbors_.emplace_back(nid, Timestamp(0));
+        }
+      } else if (context_->graph) {
         auto neighbor_list = context_->graph->GetOutNeighbors(
             from_id, edge_type, 0, Timestamp::Max());
         for (const auto& n : neighbor_list) {

@@ -252,3 +252,8 @@ gtest_discover_tests(test_gcn_event_stream)
 add_executable(test_storage_extensions gcn/test_storage_extensions.cc)
 target_link_libraries(test_storage_extensions ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_storage_extensions)
+
+add_executable(test_cypher_gcn_routing gcn/test_cypher_gcn_routing.cc)
+target_link_libraries(test_cypher_gcn_routing cedar_cypher cedar_gcn ${GTEST_MAIN_TARGET})
+target_link_directories(test_cypher_gcn_routing PRIVATE /opt/homebrew/lib)
+gtest_discover_tests(test_cypher_gcn_routing)

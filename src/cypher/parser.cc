@@ -376,7 +376,14 @@ PathPattern CypherParser::ParsePattern() {
         // Type
         SkipWhitespaceAndComments();
         if (MatchSymbol(':')) {
-          std::string type = ParseIdentifier();
+          std::string type;
+          if (!IsAtEnd() && std::isdigit(Peek())) {
+            while (!IsAtEnd() && std::isdigit(Peek())) {
+              type += Advance();
+            }
+          } else {
+            type = ParseIdentifier();
+          }
           if (!type.empty()) {
             rel.types.push_back(type);
           }

@@ -16,7 +16,7 @@ ResultSet CypherEngine::Execute(const std::string& query) {
   // Check cache first
   if (auto cached = GetCachedPlan(query)) {
     ExecutionContext ctx;
-    // ctx.storage = storage_;  // TODO: Add storage to context
+    ctx.gcn_traversal_callback = gcn_traversal_callback_;
     return cached->Execute(&ctx);
   }
   
@@ -33,7 +33,7 @@ ResultSet CypherEngine::Execute(const std::string& query) {
   
   // Execute
   ExecutionContext ctx;
-  // ctx.storage = storage_;  // TODO: Add storage to context
+  ctx.gcn_traversal_callback = gcn_traversal_callback_;
   return GetCachedPlan(query)->Execute(&ctx);
 }
 
@@ -54,6 +54,11 @@ std::string CypherEngine::Explain(const std::string& query) {
     return "Error: " + last_error_;
   }
   return plan->Explain();
+}
+
+void CypherEngine::SetGcnTraversalCallback(
+    std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> callback) {
+  gcn_traversal_callback_ = std::move(callback);
 }
 
 void CypherEngine::ClearCache() {

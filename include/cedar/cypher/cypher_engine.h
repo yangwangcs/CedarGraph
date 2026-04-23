@@ -7,6 +7,8 @@
 #include <string>
 #include <memory>
 #include <map>
+#include <functional>
+#include <vector>
 
 #include "cedar/cypher/value.h"
 #include "cedar/cypher/execution_plan.h"
@@ -55,10 +57,17 @@ class CypherEngine {
   
   // 获取缓存统计
   size_t GetCacheSize() const;
+  
+  // Set GCN traversal callback for routing edge expansions to GCN
+  void SetGcnTraversalCallback(
+      std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> callback);
 
  private:
   CedarGraphStorage* storage_;
   std::string last_error_;
+  
+  // GCN traversal callback
+  std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> gcn_traversal_callback_;
   
   // 查询计划缓存
   std::map<std::string, std::unique_ptr<ExecutionPlan>> plan_cache_;
