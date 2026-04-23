@@ -1,0 +1,43 @@
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <thread>
+
+namespace cedar {
+namespace gcn {
+
+class TMVEngine;
+
+// Background thread that periodically calls TMVEngine::DropBelowWatermark()
+// to free chunks whose max_valid_to is below the current watermark.
+class WatermarkGc {
+ public:
+  explicit WatermarkGc(TMVEngine* engine);
+  ~WatermarkGc();
+
+  // Non-copyable, non-movable
+  WatermarkGc(const WatermarkGc&) = delete;
+  WatermarkGc& operator=(const WatermarkGc&) = delete;
+
+  // Launch the background GC thread.  It wakes every |interval_ms| and
+  // performs a drop pass using the current watermark.
+  void Start(uint64_t interval_ms);
+
+  // Signal the background thread to stop and block until it exits.
+  void Stop();
+
+  // Thread-safe update of the watermark value.
+  void UpdateWatermark(uint64_t watermark);
+
+ private:
+  void RunLoop(uint64_t interval_ms);
+
+  TMVEngine* engine_;
+  std::atomic<bool> stop_flag_;
+  std::atomic<uint64_t> watermark_;
+  std::thread thread_;
+};
+
+}  // namespace gcn
+}  // namespace cedar

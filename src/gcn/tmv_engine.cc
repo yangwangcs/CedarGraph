@@ -269,28 +269,31 @@ size_t TMVEngine::DropChunksBelowWatermark(std::atomic<TMVChunk*>* head_ptr,
     return 0;
   }
 
-  TMVChunk dummy;
-  dummy.next = head;
-
-  TMVChunk* prev = &dummy;
+  TMVChunk* prev = nullptr;
   TMVChunk* curr = head;
+  TMVChunk* new_head = nullptr;
   TMVChunk* new_tail = nullptr;
   size_t dropped = 0;
 
   while (curr) {
     TMVChunk* next = curr->next;
     if (curr->max_valid_to.load(std::memory_order_relaxed) < watermark) {
-      prev->next = next;
+      if (prev) {
+        prev->next = next;
+      }
       pool_.Free(curr);
       ++dropped;
     } else {
+      if (!new_head) {
+        new_head = curr;
+      }
       new_tail = curr;
       prev = curr;
     }
     curr = next;
   }
 
-  head_ptr->store(dummy.next, std::memory_order_relaxed);
+  head_ptr->store(new_head, std::memory_order_relaxed);
   tail_ptr->store(new_tail, std::memory_order_relaxed);
 
   return dropped;

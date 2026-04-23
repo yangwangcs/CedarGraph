@@ -238,3 +238,8 @@ add_executable(test_event_applier gcn/test_event_applier.cc)
 target_link_directories(test_event_applier PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_event_applier cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_event_applier)
+
+add_executable(test_watermark_gc gcn/test_watermark_gc.cc)
+target_link_directories(test_watermark_gc PRIVATE /opt/homebrew/lib)
+target_link_libraries(test_watermark_gc cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_watermark_gc)
