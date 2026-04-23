@@ -49,6 +49,7 @@ set(PROTO_FILES
     ${CMAKE_SOURCE_DIR}/proto/migration_service.proto
     ${CMAKE_SOURCE_DIR}/proto/storage_service.proto
     ${CMAKE_SOURCE_DIR}/proto/dtx_protocol.proto
+    ${CMAKE_SOURCE_DIR}/proto/gcn_service.proto
 )
 
 add_custom_command(
@@ -66,6 +67,8 @@ add_custom_command(
            ${PROTO_OUT_DIR}/migration_service.grpc.pb.cc ${PROTO_OUT_DIR}/migration_service.grpc.pb.h
            ${PROTO_OUT_DIR}/dtx_protocol.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.pb.h
            ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.h
+           ${PROTO_OUT_DIR}/gcn_service.pb.cc ${PROTO_OUT_DIR}/gcn_service.pb.h
+           ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc ${PROTO_OUT_DIR}/gcn_service.grpc.pb.h
     COMMAND protobuf::protoc
     ARGS --grpc_out=${PROTO_OUT_DIR}
          --cpp_out=${PROTO_OUT_DIR}
@@ -91,6 +94,8 @@ add_custom_target(generate_proto ALL
             ${PROTO_OUT_DIR}/migration_service.grpc.pb.cc ${PROTO_OUT_DIR}/migration_service.grpc.pb.h
             ${PROTO_OUT_DIR}/dtx_protocol.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.pb.h
             ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.h
+            ${PROTO_OUT_DIR}/gcn_service.pb.cc ${PROTO_OUT_DIR}/gcn_service.pb.h
+            ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc ${PROTO_OUT_DIR}/gcn_service.grpc.pb.h
 )
 
 # Find required packages
@@ -165,13 +170,12 @@ set(CEDAR_CORE_SOURCES
 # Storage sources
 set(CEDAR_STORAGE_SOURCES
     src/storage/lsm_engine.cc
+    src/storage/cedar_config.cc
     src/storage/sst_reader_cache.cc
     src/storage/block_cache.cc
-    src/storage/compaction_merger.cc
     src/storage/compaction_merger_v2.cc
     src/storage/vsl_memtable.cc
     src/storage/versioned_skiplist_lockfree.cc
-    src/storage/cedar_memtable.cc
     src/storage/query_cache.cc
     src/storage/async_index_builder.cc
     src/storage/cedar_graph_storage.cc
@@ -191,6 +195,11 @@ set(CEDAR_STORAGE_SOURCES
     src/storage/failover_manager.cc
     src/storage/consistent_hash_ring.cc
     src/storage/storage_interface.cc
+)
+
+# Compute layer sources (Epoch-based Block-linked CSR)
+set(CEDAR_COMPUTE_SOURCES
+    src/compute/arena_pool.cc
 )
 
 # Update sources (event to CedarKey conversion)
@@ -251,6 +260,7 @@ set(CEDAR_DTX_SOURCES
 
     src/dtx/storage/failover_manager.cc
     src/dtx/storage/metrics_collector.cc
+    src/dtx/storage/metrics_storage_impl.cc
     src/dtx/storage/partition_migrator.cc
     src/dtx/chaos/chaos_testing.cc
     src/dtx/storage_impl/partition_storage.cc
@@ -308,9 +318,7 @@ set(CEDAR_SST_SOURCES
     src/sst/column_coders.cc
     src/sst/blob_file_manager.cc
     src/sst/zone_encoder.cc
-    src/sst/zone_columnar_format.cc
     src/sst/blob_file.cc
-    src/sst/zone_columnar_builder.cc
     src/sst/sst_builder_factory.cc
     src/sst/zone_columnar_reader.cc
 )
@@ -348,6 +356,7 @@ set(CEDAR_INTEGRATION_SOURCES
 add_library(cedar STATIC 
     ${CEDAR_CORE_SOURCES}
     ${CEDAR_STORAGE_SOURCES}
+    ${CEDAR_COMPUTE_SOURCES}
     ${CEDAR_RAFT_SOURCES}
     ${CEDAR_TRANSACTION_SOURCES}
     ${CEDAR_SST_SOURCES}
@@ -361,6 +370,8 @@ add_library(cedar STATIC
     ${CEDAR_DTX_SOURCES}
     ${CEDAR_PARTITION_SOURCES}
     src/service/partition_migration_service.cc
+    ${PROTO_OUT_DIR}/raft_service.pb.cc
+    ${PROTO_OUT_DIR}/raft_service.grpc.pb.cc
     ${PROTO_OUT_DIR}/storage_service.pb.cc
     ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc
     ${PROTO_OUT_DIR}/migration_service.pb.cc
@@ -485,6 +496,7 @@ add_executable(graphd
     ${PROTO_OUT_DIR}/storage_service.pb.cc
     ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc
 )
+set_target_properties(graphd PROPERTIES OUTPUT_NAME "cedar-graphd")
 target_include_directories(graphd PRIVATE 
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}
@@ -541,6 +553,7 @@ add_executable(metad
     ${PROTO_OUT_DIR}/meta_service.pb.cc
     ${PROTO_OUT_DIR}/meta_service.grpc.pb.cc
 )
+set_target_properties(metad PROPERTIES OUTPUT_NAME "cedar-metad")
 target_link_libraries(metad cedar cedar_graph gRPC::grpc++ pthread)
 
 # Storage server executable (with gRPC service - legacy)
@@ -557,6 +570,7 @@ add_executable(storaged
     ${PROTO_OUT_DIR}/storage_service.pb.cc
     ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc
 )
+set_target_properties(storaged PROPERTIES OUTPUT_NAME "cedar-storaged")
 target_link_libraries(storaged cedar cedar_graph gRPC::grpc++ pthread)
 
 # Queryd client example
@@ -883,5 +897,15 @@ message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "braft: ${braft_FOUND}")
 message(STATUS "LZ4: ${LZ4_LIBRARIES}")
 message(STATUS "gRPC: ${gRPC_FOUND}")
+# =============================================================================
+# Install targets
+# =============================================================================
+install(TARGETS storaged metad graphd
+        RUNTIME DESTINATION bin)
+
+install(FILES scripts/cedar-cli.sh scripts/cedar_health_monitor.sh scripts/cedar_health_check.sh scripts/run_tests.sh
+        DESTINATION bin
+        PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+
 message(STATUS "=======================================")
 

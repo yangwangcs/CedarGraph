@@ -1,0 +1,137 @@
+// Copyright 2025 The Cedar Authors
+//
+// Graph Compute Node (GCN) Service Protocol Definition
+// RPC interface between GCNs and between clients and GCNs.
+
+syntax = "proto3";
+
+package cedar.gcn;
+
+option go_package = "cedarpb/cedargcn";
+option java_package = "com.cedar.gcn.grpc";
+option java_multiple_files = true;
+
+// =============================================================================
+// Base types
+// =============================================================================
+
+message Empty {}
+
+// =============================================================================
+// Traversal
+// =============================================================================
+
+message TraversalRequest {
+    string trace_id = 1;
+    uint64 root_entity_id = 2;
+    uint64 query_time = 3;
+    uint32 max_hops = 4;
+    string edge_type = 5;
+    uint64 required_version = 6;
+
+    // Reserved for future extensions
+    reserved 100 to 199;
+}
+
+message TraversalResponse {
+    bool success = 1;
+    string error_msg = 2;
+    string trace_id = 3;
+    repeated uint64 visited_entity_ids = 4;
+    bytes result_payload = 5;
+
+    // Reserved for future extensions
+    reserved 100 to 199;
+}
+
+// =============================================================================
+// SubQuery
+// =============================================================================
+
+message SubQueryRequest {
+    string trace_id = 1;
+    string parent_gcn_id = 2;
+    uint64 root_entity_id = 3;
+    uint64 current_entity_id = 4;
+    uint64 query_time = 5;
+    uint32 remaining_hops = 6;
+    repeated uint64 visited_path = 7;
+    bytes algorithm_context = 8;
+
+    // Reserved for future extensions
+    reserved 100 to 199;
+}
+
+message SubQueryResponse {
+    bool success = 1;
+    string error_msg = 2;
+    string trace_id = 3;
+    repeated uint64 next_entity_ids = 4;
+    bytes partial_result = 5;
+
+    // Reserved for future extensions
+    reserved 100 to 199;
+}
+
+// =============================================================================
+// Cache Invalidation
+// =============================================================================
+
+message CacheInvalidateNotice {
+    uint64 entity_id = 1;
+    uint64 version = 2;
+
+    // Reserved for future extensions
+    reserved 100 to 199;
+}
+
+// =============================================================================
+// Event Stream (CDC)
+// =============================================================================
+
+message EventStream {
+    string stream_id = 1;
+    repeated string entity_types = 2;
+    uint64 start_timestamp = 3;
+
+    // Reserved for future extensions
+    reserved 100 to 199;
+}
+
+message CDCEvent {
+    string event_id = 1;
+    uint64 entity_id = 2;
+    uint64 version = 3;
+    uint64 timestamp = 4;
+    string event_type = 5;
+    bytes payload = 6;
+
+    // Reserved for future extensions
+    reserved 100 to 199;
+}
+
+message Ack {
+    string event_id = 1;
+    bool accepted = 2;
+
+    // Reserved for future extensions
+    reserved 100 to 199;
+}
+
+// =============================================================================
+// GcnService
+// =============================================================================
+
+service GcnService {
+    // Graph traversal from a root entity
+    rpc Traverse(TraversalRequest) returns (TraversalResponse);
+
+    // Distributed sub-query across GCNs
+    rpc SubQuery(SubQueryRequest) returns (SubQueryResponse);
+
+    // Cache invalidation notice
+    rpc OnCacheInvalidate(CacheInvalidateNotice) returns (Empty);
+
+    // Event stream for change data capture
+    rpc OnEventStream(EventStream) returns (stream CDCEvent);
+}
