@@ -896,10 +896,12 @@ add_library(cedar_gcn ${GCN_SOURCES}
     ${PROTO_OUT_DIR}/gcn_service.pb.cc
     ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc
 )
-target_link_libraries(cedar_gcn cedar)
+target_link_directories(cedar_gcn PRIVATE /opt/homebrew/lib)
+target_link_libraries(cedar_gcn cedar gflags)
 
 add_executable(graphcomputenode tools/graphcomputenode.cc)
-target_link_libraries(graphcomputenode cedar_gcn cedar cedar_graph ${BRAFT_LIBRARIES} brpc-static gRPC::grpc++ pthread)
+target_link_directories(graphcomputenode PRIVATE /opt/homebrew/lib)
+target_link_libraries(graphcomputenode cedar_gcn cedar cedar_graph ${BRAFT_LIBRARIES} brpc-static gRPC::grpc++ gflags pthread)
 
 message(STATUS "")
 message(STATUS "=== CedarGraph Build Configuration ===")
