@@ -39,11 +39,25 @@ namespace cedar {
 struct ShardedWalOptions {
   bool enable = true;
   uint32_t shard_count = 16;
+  uint32_t num_shards = 16;
+  bool bind_by_thread_id = true;
+  size_t max_file_size_per_shard = 16 * 1024 * 1024;
+  uint32_t batch_timeout_us = 100;
+  size_t batch_max_size = 100;
+  bool enable_background_merger = true;
+  uint32_t merge_interval_ms = 100;
 };
 
 struct LockFreeMemTableOptions {
   size_t initial_capacity = 1000000;
   bool enable_async_index = true;
+  double rehash_threshold = 0.75;
+  bool enable_version_chain_index = true;
+  size_t index_build_threshold = 100;
+  uint32_t gc_interval_ms = 1000;
+  size_t gc_batch_size = 1000;
+  bool enable_preallocation = true;
+  size_t preallocation_pool_size = 10000;
 };
 
 // ============================================================================

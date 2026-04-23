@@ -888,6 +888,16 @@ elseif(GRPC_FOUND)
     target_link_libraries(cedar_cluster_benchmark ${GRPC_LIBRARIES})
 endif()
 
+# =============================================================================
+# GCN (Graph Compute Node)
+# =============================================================================
+file(GLOB GCN_SOURCES src/gcn/*.cc)
+add_library(cedar_gcn ${GCN_SOURCES})
+target_link_libraries(cedar_gcn cedar ${BRAFT_LIBRARIES} brpc-static)
+
+add_executable(graphcomputenode tools/graphcomputenode.cc)
+target_link_libraries(graphcomputenode cedar_gcn cedar cedar_graph gRPC::grpc++ pthread)
+
 message(STATUS "")
 message(STATUS "=== CedarGraph Build Configuration ===")
 message(STATUS "Version: ${PROJECT_VERSION}")
