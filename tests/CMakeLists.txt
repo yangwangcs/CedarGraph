@@ -218,3 +218,8 @@ add_executable(test_query_dispatcher gcn/test_query_dispatcher.cc)
 target_link_directories(test_query_dispatcher PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_query_dispatcher cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_query_dispatcher)
+
+add_executable(test_coordinator_client gcn/test_coordinator_client.cc)
+target_link_directories(test_coordinator_client PRIVATE /opt/homebrew/lib)
+target_link_libraries(test_coordinator_client cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_coordinator_client)
