@@ -30,6 +30,7 @@
 
 #include "cedar/core/env.h"
 #include "cedar/storage/entity_lifecycle.h"
+#include "cedar/types/edge_scan_entry.h"
 
 namespace cedar {
 
@@ -178,6 +179,13 @@ class CedarGraphStorage {
       uint16_t edge_type,
       Timestamp start_time,
       Timestamp end_time);
+  
+  /// Scan edges with version folding (optimized for multi-edge vertices)
+  std::vector<EdgeScanEntry> ScanEdgesWithFolding(
+      uint64_t vertex_id,
+      EntityType edge_direction,
+      uint16_t edge_type,
+      Timestamp snapshot_ts);
 
   // Force memtable flush to disk
   Status ForceFlush();

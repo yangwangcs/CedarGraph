@@ -2,8 +2,8 @@
 
 namespace cedar {
 
-// TemporalStorageLayer, AllenPredicateEvaluator, and TemporalAggregator
-// have been removed as part of TMV cleanup (Option B, Step B1).
-// TemporalQueryEngine remains for Step B2 replacement.
+// TemporalStorageLayer, AllenPredicateEvaluator, TemporalAggregator,
+// and TemporalQueryEngine have been removed as part of TMV cleanup.
+// Use TMVEngine (cedar_gcn) for temporal queries.
 
 } // namespace cedar

@@ -23,7 +23,6 @@
 #include "cedar/graph/graph_semantic_layer.h"
 #include "cedar/cypher/cypher_engine.h"
 #include "cedar/cypher/value.h"
-#include "cedar/storage/temporal_storage_layer.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/transaction/occ_transaction.h"
 #include "cedar/types/descriptor.h"
@@ -35,8 +34,12 @@ CedarGraph::CedarGraph(CedarGraphStorage* storage)
     : storage_(storage) {
   if (storage_) {
     semantic_layer_ = std::make_unique<GraphSemanticLayer>(storage_);
-    temporal_engine_ = std::make_unique<TemporalQueryEngine>(storage_);
   }
+}
+
+// Set TMV engine for temporal queries
+void CedarGraph::SetTMVEngine(cedar::gcn::TMVEngine* engine) {
+  tmv_engine_ = engine;
 }
 
 // Destructor
@@ -101,22 +104,10 @@ std::vector<Neighbor> CedarGraph::GetOutNeighborsInTxn(OCCTransaction* txn,
   // 获取事务的读时间戳作为快照点
   Timestamp read_ts = txn->GetReadTimestamp();
   
-  // 查询边数据 - 使用事务快照时间戳
-  // 对于出边，我们需要查询 EdgeOut 类型的数据
-  // 简化实现：查询指定时间戳的版本
-  auto edge_result = storage_->Get(vertex_id, EntityType::EdgeOut, edge_type, read_ts);
-  
-  if (edge_result.has_value()) {
-    Neighbor neighbor;
-    neighbor.id = vertex_id;
-    neighbor.edge_type = edge_type;
-    neighbor.timestamp = read_ts;
-    
-    if (auto int_val = edge_result->AsInlineInt()) {
-      neighbor.value = *int_val;
-    }
-    
-    result.push_back(neighbor);
+  // 使用 ScanEdgesWithFolding 获取所有出边（支持多边）
+  auto edges = storage_->ScanEdgesWithFolding(vertex_id, EntityType::EdgeOut, edge_type, read_ts);
+  for (const auto& e : edges) {
+    result.push_back(Neighbor{e.target_id, e.edge_type, e.timestamp, std::nullopt});
   }
   
   return result;
@@ -368,106 +359,37 @@ bool CedarGraph::IsValidCypher(const std::string& query) {
 
 // ========== Temporal Query Interface ==========
 
-std::vector<Neighbor> CedarGraph::GetOutNeighborsAsOf(uint64_t vertex_id,
-                                                      uint16_t edge_type,
-                                                      Timestamp as_of_time) {
-  return GetOutNeighbors(vertex_id, edge_type, 0, as_of_time);
-}
 
-std::vector<Neighbor> CedarGraph::GetOutNeighborsBetween(uint64_t vertex_id,
-                                                         uint16_t edge_type,
-                                                         Timestamp start_time,
-                                                         Timestamp end_time) {
-  return GetOutNeighbors(vertex_id, edge_type, start_time, end_time);
-}
 
-std::vector<std::pair<Timestamp, Neighbor>> CedarGraph::GetOutNeighborsAllVersions(
-    uint64_t vertex_id, uint16_t edge_type) {
-  std::vector<std::pair<Timestamp, Neighbor>> result;
+// ========== Entity Enumeration ==========
+
+std::vector<uint64_t> CedarGraph::GetAllEntities(
+    uint64_t min_entity_id,
+    uint64_t max_entity_id,
+    uint64_t step) {
+  std::vector<uint64_t> entities;
   
-  auto neighbors = GetOutNeighbors(vertex_id, edge_type, Timestamp(0), Timestamp::Max());
-  for (const auto& neighbor : neighbors) {
-    result.emplace_back(neighbor.timestamp, neighbor);
+  if (step == 0) step = 1;
+  if (min_entity_id > max_entity_id) return entities;
+  
+  size_t estimated_count = (max_entity_id - min_entity_id) / step + 1;
+  entities.reserve(std::min(estimated_count, static_cast<size_t>(1000000)));
+  
+  for (uint64_t entity_id = min_entity_id; entity_id <= max_entity_id; entity_id += step) {
+    entities.push_back(entity_id);
   }
   
-  return result;
+  return entities;
 }
 
-std::optional<Neighbor> CedarGraph::GetOutNeighborsAtVersion(uint64_t vertex_id,
-                                                             uint16_t edge_type,
-                                                             uint64_t version) {
-  (void)version;
-  auto neighbors = GetOutNeighbors(vertex_id, edge_type, Timestamp(0), Timestamp::Max());
-  if (!neighbors.empty()) {
-    return neighbors[0];
+std::vector<std::pair<Timestamp, Descriptor>> CedarGraph::GetTimeSeries(
+    uint64_t entity_id,
+    Timestamp start_time,
+    Timestamp end_time) {
+  if (!storage_) {
+    return {};
   }
-  return std::nullopt;
-}
-
-std::vector<Neighbor> CedarGraph::GetOutNeighborsWithRelation(
-    uint64_t vertex_id,
-    uint16_t edge_type,
-    AllenRelation relation,
-    Timestamp other_start,
-    Timestamp other_end) {
-  (void)relation;
-  (void)other_start;
-  (void)other_end;
-  return GetOutNeighbors(vertex_id, edge_type, 0, Timestamp::Max());
-}
-
-// ========== Temporal Aggregation Interface ==========
-
-double CedarGraph::GetTemporalAverage(uint64_t vertex_id, uint16_t property_id,
-                                     Timestamp start_time, Timestamp end_time) {
-  (void)property_id;
-  auto history = GetVertexHistory(vertex_id, 0, start_time, end_time);
-  if (history.empty()) {
-    return 0.0;
-  }
-  
-  double sum = 0.0;
-  for (const auto& [ts, val] : history) {
-    (void)ts;
-    sum += val;
-  }
-  return sum / history.size();
-}
-
-int64_t CedarGraph::GetTemporalSum(uint64_t vertex_id, uint16_t property_id,
-                                  Timestamp start_time, Timestamp end_time) {
-  (void)property_id;
-  auto history = GetVertexHistory(vertex_id, 0, start_time, end_time);
-  
-  int64_t sum = 0;
-  for (const auto& [ts, val] : history) {
-    (void)ts;
-    sum += val;
-  }
-  return sum;
-}
-
-int64_t CedarGraph::GetTotalDuration(uint64_t vertex_id, uint16_t edge_type,
-                                    Timestamp start_time, Timestamp end_time) {
-  (void)vertex_id;
-  (void)edge_type;
-  return static_cast<int64_t>(end_time.value() - start_time.value());
-}
-
-uint64_t CedarGraph::GetVersionCount(uint64_t vertex_id, uint16_t edge_type) {
-  auto history = GetOutNeighbors(vertex_id, edge_type, 0, Timestamp::Max());
-  return history.size();
-}
-
-// ========== Temporal Index Management ==========
-
-void CedarGraph::BuildTemporalIndex() {
-  // TODO: Implement temporal index building
-}
-
-CedarGraph::TemporalIndexStats CedarGraph::GetTemporalIndexStats() const {
-  TemporalIndexStats stats;
-  return stats;
+  return storage_->Scan(entity_id, start_time, end_time);
 }
 
 // ========== Transaction Interface ==========

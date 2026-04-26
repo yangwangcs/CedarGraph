@@ -17,7 +17,6 @@
 #include "cedar/graph/cedar_graph.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/graph/graph_semantic_layer.h"
-#include "cedar/storage/temporal_storage_layer.h"
 #include "cedar/cypher/value.h"
 
 namespace cedar {
@@ -29,7 +28,22 @@ namespace cedar {
 std::vector<Neighbor> CedarGraph::GetOutNeighborsAsOf(uint64_t vertex_id,
                                                       uint16_t edge_type,
                                                       Timestamp as_of_time) {
-  // 使用传统的GetOutNeighbors，但设置精确的时间范围
+  if (tmv_engine_) {
+    auto edges = tmv_engine_->ScanAtTime(vertex_id, cedar::gcn::Direction::kOut, as_of_time.value());
+    std::vector<Neighbor> result;
+    result.reserve(edges.size());
+    for (const auto& edge : edges) {
+      if (edge_type != 0 && edge.edge_type != edge_type) continue;
+      Neighbor n;
+      n.id = edge.target_id;
+      n.edge_type = edge.edge_type;
+      n.timestamp = Timestamp(edge.valid_from);
+      n.value = std::nullopt;
+      result.push_back(n);
+    }
+    return result;
+  }
+  // Fallback: use traditional GetOutNeighbors with precise time range
   return GetOutNeighbors(vertex_id, edge_type, as_of_time, Timestamp(as_of_time.value() + 1));
 }
 
@@ -178,22 +192,19 @@ uint64_t CedarGraph::GetVersionCount(uint64_t vertex_id, uint16_t edge_type) {
 // ============================================================================
 
 void CedarGraph::BuildTemporalIndex() {
-  if (temporal_engine_) {
-    temporal_engine_->BuildIndex();
+  if (tmv_engine_) {
+    // TMV is already in-memory; no explicit index build needed
+    return;
   }
+  // TODO: Implement temporal index building for non-TMV path
 }
 
 CedarGraph::TemporalIndexStats CedarGraph::GetTemporalIndexStats() const {
   TemporalIndexStats stats{};
-  
-  if (temporal_engine_) {
-    auto engine_stats = temporal_engine_->GetStats();
-    stats.index_entries = engine_stats.index_entries;
-    stats.blocks_pruned = engine_stats.blocks_pruned;
-    stats.blocks_checked = engine_stats.blocks_checked;
-    stats.avg_query_time_ms = engine_stats.avg_query_time_ms;
+  if (tmv_engine_) {
+    stats.index_entries = tmv_engine_->VertexCount();
+    stats.blocks_checked = tmv_engine_->ChunkCount();
   }
-  
   return stats;
 }
 

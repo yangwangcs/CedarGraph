@@ -616,6 +616,18 @@ std::vector<std::tuple<uint64_t, Timestamp, Descriptor>> CedarGraphStorage::Scan
   return results;
 }
 
+std::vector<EdgeScanEntry> CedarGraphStorage::ScanEdgesWithFolding(
+    uint64_t vertex_id,
+    EntityType edge_direction,
+    uint16_t edge_type,
+    Timestamp snapshot_ts) {
+  std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
+  if (!rep_->engine) {
+    return {};
+  }
+  return rep_->engine->ScanEdgesWithFolding(vertex_id, edge_direction, edge_type, snapshot_ts);
+}
+
 Status CedarGraphStorage::ForceFlush() {
   std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
   

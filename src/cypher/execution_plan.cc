@@ -3,7 +3,6 @@
 
 #include "cedar/cypher/execution_plan.h"
 #include "cedar/graph/cedar_graph.h"
-#include "cedar/graph/cedar_graph_db.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include <sstream>
 
@@ -191,8 +190,8 @@ bool NodeScan::Init(ExecutionContext* ctx) {
   uint64_t max_entity_id = 1000;
   
   // Check if graph context provides entity enumeration
-  if (ctx->graph_db) {
-    node_ids_ = ctx->graph_db->GetAllEntities(min_entity_id, max_entity_id, 1);
+  if (ctx->graph) {
+    node_ids_ = ctx->graph->GetAllEntities(min_entity_id, max_entity_id, 1);
   } else {
     // Fallback: simple sequential range
     node_ids_.reserve(max_entity_id - min_entity_id + 1);

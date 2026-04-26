@@ -412,7 +412,6 @@ endif()
 set(CEDAR_GRAPH_SOURCES
     src/graph/cedar_graph.cc
     src/graph/cedar_graph_temporal.cc
-    src/graph/cedar_graph_db.cc
     src/graph/graph_semantic_layer.cc
     src/graph/pushdown_predicate.cc
 )
@@ -426,7 +425,7 @@ set(CEDAR_QUERYD_SOURCES
 )
 
 add_library(cedar_graph STATIC ${CEDAR_GRAPH_SOURCES})
-target_link_libraries(cedar_graph cedar)
+target_link_libraries(cedar_graph cedar cedar_gcn)
 
 # Cypher engine sources
 set(CEDAR_CYPHER_SOURCES

@@ -24,9 +24,12 @@
 #include "cedar/core/status.h"
 #include "cedar/gcn/event_applier.h"
 #include "cedar/gcn/gcn_service.h"
+#include "cedar/gcn/storage_backfill_service.h"
 #include "cedar/gcn/tmv_engine.h"
 
 namespace cedar {
+
+class CedarGraphStorage;
 
 // GcnNode orchestrates the entire Graph Compute Node (GCN) process lifecycle.
 // It owns the TMVEngine, the gRPC service implementation, and all background
@@ -51,6 +54,9 @@ class GcnNode {
   // and releases owned resources.
   cedar::Status Stop();
 
+  // Inject storage for optional backfill on startup
+  void SetStorage(CedarGraphStorage* storage) { storage_ = storage; }
+
  private:
   void GarbageCollectLoop();
   void CdcListenerLoop();
@@ -59,6 +65,8 @@ class GcnNode {
   std::unique_ptr<gcn::EventApplier> event_applier_;
   std::unique_ptr<gcn::GcnServiceImpl> service_impl_;
   std::unique_ptr<grpc::Server> grpc_server_;
+
+  CedarGraphStorage* storage_ = nullptr;
 
   std::atomic<bool> running_{false};
   std::thread gc_thread_;

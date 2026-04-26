@@ -26,6 +26,9 @@ DEFINE_int32(gcn_port, 9780, "GCN service port");
 DEFINE_string(gcn_bind_address, "0.0.0.0", "GCN bind address");
 DEFINE_string(gcn_coordinator, "127.0.0.1:9559", "Coordinator endpoint");
 DEFINE_int64(gcn_tmv_max_chunks, 256, "Maximum TMV chunks per engine");
+DEFINE_bool(gcn_backfill_enabled, false, "Enable storage to TMV backfill on startup");
+DEFINE_uint64(gcn_backfill_start_id, 1, "Start entity ID for backfill");
+DEFINE_uint64(gcn_backfill_end_id, 1000, "End entity ID for backfill");
 
 namespace cedar {
 
@@ -40,6 +43,16 @@ GcnNode::~GcnNode() {
  cedar::Status GcnNode::Initialize() {
   // Create TMVEngine
   engine_ = std::make_unique<gcn::TMVEngine>(static_cast<size_t>(FLAGS_gcn_tmv_max_chunks));
+
+  // Storage backfill (optional)
+  if (FLAGS_gcn_backfill_enabled) {
+    // Note: storage_ should be injected before Initialize() is called
+    if (storage_) {
+      auto backfill_service = std::make_unique<gcn::StorageBackfillService>(engine_.get(), storage_);
+      backfill_service->BackfillRange(FLAGS_gcn_backfill_start_id, FLAGS_gcn_backfill_end_id);
+      // Service can be discarded after backfill; TMV owns the data
+    }
+  }
 
   // Create EventApplier
   event_applier_ = std::make_unique<gcn::EventApplier>(engine_.get());

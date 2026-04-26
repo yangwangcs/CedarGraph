@@ -263,3 +263,8 @@ add_executable(test_end_to_end gcn/test_end_to_end.cc)
 target_link_libraries(test_end_to_end cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_end_to_end PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_end_to_end)
+
+add_executable(test_storage_backfill gcn/test_storage_backfill.cc)
+target_link_libraries(test_storage_backfill cedar_gcn cedar_graph ${GTEST_MAIN_TARGET})
+target_link_directories(test_storage_backfill PRIVATE /opt/homebrew/lib)
+gtest_discover_tests(test_storage_backfill)

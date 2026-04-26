@@ -25,6 +25,7 @@
 
 #include "cedar/types/cedar_key.h"
 #include "cedar/graph/pushdown_predicate.h"
+#include "cedar/gcn/tmv_engine.h"
 
 namespace cedar {
 
@@ -32,7 +33,6 @@ namespace cedar {
 class CedarGraphStorage;
 class OCCTransaction;
 struct TransactionOptions;
-class TemporalQueryEngine;
 
 // Forward declarations for temporal types
 enum class AllenRelation;
@@ -255,6 +255,39 @@ class CedarGraph {
   // Version count
   uint64_t GetVersionCount(uint64_t vertex_id, uint16_t edge_type);
   
+  // ========== TMV Engine Integration ==========
+  
+  // Set TMV engine for temporal queries
+  void SetTMVEngine(cedar::gcn::TMVEngine* engine);
+  
+  // ========== Entity ID Encoding Utilities ==========
+  
+  // Decode composite entity_id to (high_bits, low_bits)
+  static std::pair<uint32_t, uint16_t> DecodeEntityId(uint64_t entity_id) {
+    uint32_t high_bits = static_cast<uint32_t>(entity_id >> 32);
+    uint16_t low_bits = static_cast<uint16_t>(entity_id & 0xFFFF);
+    return {high_bits, low_bits};
+  }
+  
+  // Encode (high_bits, low_bits) to entity_id
+  static uint64_t EncodeEntityId(uint32_t high_bits, uint16_t low_bits) {
+    return (static_cast<uint64_t>(high_bits) << 32) | low_bits;
+  }
+  
+  // ========== Entity Enumeration ==========
+  
+  // Get all entities within a range
+  std::vector<uint64_t> GetAllEntities(
+      uint64_t min_entity_id = 1,
+      uint64_t max_entity_id = 1000,
+      uint64_t step = 1);
+  
+  // Get time series data for a specific entity
+  std::vector<std::pair<Timestamp, Descriptor>> GetTimeSeries(
+      uint64_t entity_id,
+      Timestamp start_time,
+      Timestamp end_time);
+  
   // ========== Temporal Index Management ==========
   
   // Build temporal index
@@ -287,7 +320,7 @@ class CedarGraph {
   CedarGraphStorage* storage_;
   std::unique_ptr<GraphSemanticLayer> semantic_layer_;
   std::unique_ptr<cypher::CypherEngine> cypher_engine_;
-  std::unique_ptr<TemporalQueryEngine> temporal_engine_;
+  cedar::gcn::TMVEngine* tmv_engine_ = nullptr;
 };
 
 }  // namespace cedar

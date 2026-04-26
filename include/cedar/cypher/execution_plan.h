@@ -20,7 +20,10 @@
 namespace cedar {
 
 class CedarGraph;
-class CedarGraphDB;
+
+namespace gcn {
+  class TMVEngine;
+}
 
 namespace cypher {
 
@@ -32,7 +35,6 @@ class PhysicalOperator;
  */
 struct ExecutionContext {
   CedarGraph* graph = nullptr;
-  CedarGraphDB* graph_db = nullptr;  // Alternative to graph for legacy graph DB-backed queries
   std::unordered_map<std::string, Value> variables;
   std::unordered_map<std::string, std::shared_ptr<Record>> variable_records;
   
@@ -43,6 +45,9 @@ struct ExecutionContext {
   
   // GCN traversal callback - routes edge expansion to GCN when available
   std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> gcn_traversal_callback;
+  
+  // TMV engine for temporal queries
+  cedar::gcn::TMVEngine* tmv_engine = nullptr;
   
   void SetVariable(const std::string& name, const Value& val);
   std::optional<Value> GetVariable(const std::string& name) const;
