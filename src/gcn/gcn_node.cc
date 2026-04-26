@@ -23,7 +23,7 @@
 #include <grpcpp/grpcpp.h>
 
 DEFINE_int32(gcn_port, 9780, "GCN service port");
-DEFINE_string(gcn_bind_address, "0.0.0.0", "GCN bind address");
+DEFINE_string(gcn_bind_address, "127.0.0.1", "GCN bind address (local-only for internal GraphD access)");
 DEFINE_string(gcn_coordinator, "127.0.0.1:9559", "Coordinator endpoint");
 DEFINE_int64(gcn_tmv_max_chunks, 256, "Maximum TMV chunks per engine");
 DEFINE_bool(gcn_backfill_enabled, false, "Enable storage to TMV backfill on startup");

@@ -503,7 +503,8 @@ target_include_directories(graphd PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}
 )
-target_link_libraries(graphd cedar cedar_cypher gRPC::grpc++ pthread)
+target_link_directories(graphd PRIVATE /opt/homebrew/lib)
+target_link_libraries(graphd cedar cedar_cypher gRPC::grpc++ gflags pthread)
 
 # Test client for GraphD
 add_executable(test_graphd_client

@@ -17,6 +17,7 @@
 #include "query_service.grpc.pb.h"
 #include "meta_service.grpc.pb.h"
 #include "storage_service.grpc.pb.h"
+#include "gcn_service.grpc.pb.h"
 #include "cedar/cypher/cypher_engine.h"
 #include "query/query_cache.h"
 #include "cedar/dtx/partition.h"
@@ -59,7 +60,8 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service {
   GraphServiceRouter& operator=(const GraphServiceRouter&) = delete;
 
   // 初始化
-  Status Initialize(const std::string& meta_server_addr);
+  Status Initialize(const std::string& meta_server_addr,
+                    const std::string& gcn_server_addr = "");
   
   // 启动后台任务
   Status Start();
@@ -130,6 +132,9 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service {
   std::shared_ptr<cedar::storage::StorageService::Stub> GetStorageStub(
       const std::string& node_addr);
   
+  // 获取 GCN 客户端 stub
+  std::shared_ptr<cedar::gcn::GcnService::Stub> GetGcnStub();
+  
   // 执行单分区查询
   Status ExecutePartitionQuery(const std::string& query,
                                uint32_t partition_id,
@@ -148,6 +153,11 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service {
   std::mutex stubs_mutex_;
   std::unordered_map<std::string, std::shared_ptr<cedar::storage::StorageService::Stub>> 
       storage_stubs_;
+  
+  // GCN 客户端
+  std::mutex gcn_mutex_;
+  std::string gcn_server_addr_;
+  std::shared_ptr<cedar::gcn::GcnService::Stub> gcn_stub_;
   
   // 分区映射缓存
   std::mutex partition_map_mutex_;

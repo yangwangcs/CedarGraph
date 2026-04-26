@@ -15,6 +15,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include "src/service/graph_service_router.h"
+#include "gcn_service.grpc.pb.h"
 
 std::atomic<bool> g_running{true};
 std::unique_ptr<grpc::Server> g_grpc_server;
@@ -43,6 +44,7 @@ struct Config {
   int port = 9669;
   std::string bind_address = "0.0.0.0";
   std::string meta_server = "127.0.0.1:9559";
+  std::string gcn_server = "127.0.0.1:9780";
 };
 
 Config ParseArgs(int argc, char* argv[]) {
@@ -56,12 +58,15 @@ Config ParseArgs(int argc, char* argv[]) {
       config.bind_address = argv[++i];
     } else if ((arg == "--meta" || arg == "-m") && i + 1 < argc) {
       config.meta_server = argv[++i];
+    } else if ((arg == "--gcn" || arg == "-g") && i + 1 < argc) {
+      config.gcn_server = argv[++i];
     } else if (arg == "--help" || arg == "-h") {
       std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
       std::cout << "Options:" << std::endl;
       std::cout << "  -p, --port <port>      Port to listen on (default: 9669)" << std::endl;
       std::cout << "  -b, --bind <addr>      Bind address (default: 0.0.0.0)" << std::endl;
       std::cout << "  -m, --meta <addr>      MetaD server address (default: 127.0.0.1:9559)" << std::endl;
+      std::cout << "  -g, --gcn <addr>       GCN server address (default: 127.0.0.1:9780)" << std::endl;
       std::cout << "  -h, --help             Show this help" << std::endl;
       exit(0);
     }
@@ -79,6 +84,7 @@ int main(int argc, char* argv[]) {
   std::cout << "  Port:      " << config.port << std::endl;
   std::cout << "  Bind:      " << config.bind_address << std::endl;
   std::cout << "  MetaD:     " << config.meta_server << std::endl;
+  std::cout << "  GCN:       " << config.gcn_server << std::endl;
   std::cout << std::endl;
 
   signal(SIGINT, SignalHandler);
@@ -88,7 +94,7 @@ int main(int argc, char* argv[]) {
   auto router = std::make_unique<cedar::service::GraphServiceRouter>();
   
   // Initialize router
-  auto status = router->Initialize(config.meta_server);
+  auto status = router->Initialize(config.meta_server, config.gcn_server);
   if (!status.ok()) {
     std::cerr << "[GraphD] Failed to initialize router: " << status.ToString() << std::endl;
     return 1;

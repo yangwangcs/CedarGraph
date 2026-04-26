@@ -27,7 +27,8 @@ GraphServiceRouter::~GraphServiceRouter() {
   Stop();
 }
 
-Status GraphServiceRouter::Initialize(const std::string& meta_server_addr) {
+Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
+                                         const std::string& gcn_server_addr) {
   // 连接到 MetaD
   auto channel = grpc::CreateChannel(meta_server_addr, grpc::InsecureChannelCredentials());
   meta_stub_ = MetaService::NewStub(channel);
@@ -43,6 +44,15 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr) {
   }
   
   std::cout << "[GraphD] Connected to MetaD at " << meta_server_addr << std::endl;
+  
+  // 连接到 GCN（如果配置了）
+  if (!gcn_server_addr.empty()) {
+    std::lock_guard<std::mutex> lock(gcn_mutex_);
+    gcn_server_addr_ = gcn_server_addr;
+    auto gcn_channel = grpc::CreateChannel(gcn_server_addr, grpc::InsecureChannelCredentials());
+    gcn_stub_ = cedar::gcn::GcnService::NewStub(gcn_channel);
+    std::cout << "[GraphD] Connected to GCN at " << gcn_server_addr << std::endl;
+  }
   
   // 初始加载分区映射
   RefreshPartitionMap();
@@ -182,15 +192,46 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   return grpc::Status::OK;
 }
 
+std::shared_ptr<cedar::gcn::GcnService::Stub> GraphServiceRouter::GetGcnStub() {
+  std::lock_guard<std::mutex> lock(gcn_mutex_);
+  return gcn_stub_;
+}
+
 grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
                                           const TraverseRequest* request,
                                           TraverseResponse* response) {
   (void)context;
   
-  // 计算起始节点的分区
+  // 优先路由到 GCN（本地图计算节点）
+  auto gcn_stub = GetGcnStub();
+  if (gcn_stub) {
+    cedar::gcn::TraversalRequest gcn_request;
+    gcn_request.set_trace_id("graphd-traverse");
+    gcn_request.set_root_entity_id(request->start_node_id());
+    gcn_request.set_query_time(request->as_of_timestamp() > 0 ? request->as_of_timestamp() : UINT64_MAX);
+    gcn_request.set_max_hops(request->max_depth() > 0 ? request->max_depth() : 3);
+    gcn_request.set_edge_type(request->edge_types_size() > 0 ? request->edge_types(0) : 0);
+    gcn_request.set_required_version(0);
+    
+    cedar::gcn::TraversalResponse gcn_response;
+    grpc::ClientContext client_context;
+    auto grpc_status = gcn_stub->Traverse(&client_context, gcn_request, &gcn_response);
+    
+    if (grpc_status.ok() && gcn_response.success()) {
+      response->set_success(true);
+      response->set_nodes_visited(gcn_response.visited_entity_ids_size());
+      for (const auto& entity_id : gcn_response.visited_entity_ids()) {
+        auto* path = response->add_paths();
+        path->add_nodes()->set_id(entity_id);
+      }
+      return grpc::Status::OK;
+    }
+    // GCN 失败时回退到 StorageD
+  }
+  
+  // 回退：路由到 StorageD
   uint32_t partition_id = CalculatePartition(request->start_node_id());
   
-  // 获取分区路由
   auto route_result = GetPartitionRoute(partition_id);
   if (!route_result.ok()) {
     response->set_success(false);
@@ -201,7 +242,6 @@ grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
   
   auto route = route_result.ValueOrDie();
   
-  // 获取 StorageD 客户端
   auto stub = GetStorageStub(route.leader_node);
   if (!stub) {
     response->set_success(false);
@@ -209,27 +249,19 @@ grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
     return grpc::Status::OK;
   }
   
-  // 构建 Scan 请求（使用 StorageD 的 Scan 接口）
   ScanRequest scan_request;
   scan_request.set_entity_id(request->start_node_id());
   
-  // 设置时态约束
   if (request->as_of_timestamp() > 0) {
     scan_request.set_start_time(request->as_of_timestamp());
     scan_request.set_end_time(request->as_of_timestamp());
   } else {
-    // 默认获取最新数据
     scan_request.set_start_time(0);
     scan_request.set_end_time(UINT64_MAX);
   }
   
   scan_request.set_partition_id(partition_id);
   
-  // Note: StorageD ScanRequest doesn't have direction/max_depth fields
-  // These are handled at GraphD level by analyzing the query results
-  (void)request;  // Used for entity_id and timestamp only in this simplified version
-  
-  // 执行查询
   ScanResponse scan_response;
   grpc::ClientContext client_context;
   auto grpc_status = stub->Scan(&client_context, scan_request, &scan_response);
@@ -246,14 +278,11 @@ grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
     return grpc::Status::OK;
   }
   
-  // 转换结果
   response->set_success(true);
   response->set_nodes_visited(scan_response.items_size());
   
   for (const auto& item : scan_response.items()) {
     auto* path = response->add_paths();
-    // 简化：将结果转换为路径
-    // TODO: 构建完整的路径结构
     (void)path;
     (void)item;
   }
