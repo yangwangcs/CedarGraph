@@ -207,15 +207,6 @@ class GraphSemanticLayer {
       const PushdownPredicate& predicate,
       SharedIOContext* shared_io = nullptr);
 
-  // 内部实现：从 SST 文件扫描（带下推、缓存、预读）
-  Status ScanSSTFileWithPushdown(
-      const std::string& file_path,
-      uint64_t entity_id,
-      uint16_t edge_type,
-      const PushdownPredicate& predicate,
-      std::vector<Neighbor>& results,
-      SharedIOContext* shared_io = nullptr);
-
   // 内部实现：预读 Blocks
   void PrefetchBlocks(
       const std::vector<std::pair<std::string, size_t>>& blocks,

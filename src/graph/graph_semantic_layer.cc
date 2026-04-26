@@ -307,24 +307,6 @@ std::vector<Neighbor> GraphSemanticLayer::GetOutNeighborsWithPushdown(
   return results;
 }
 
-Status GraphSemanticLayer::ScanSSTFileWithPushdown(
-    const std::string& file_path,
-    uint64_t entity_id,
-    uint16_t edge_type,
-    const PushdownPredicate& predicate,
-    std::vector<Neighbor>& results,
-    SharedIOContext* shared_io) {
-  
-  (void)file_path;
-  (void)entity_id;
-  (void)edge_type;
-  (void)predicate;
-  (void)results;
-  (void)shared_io;
-  
-  return Status::OK();
-}
-
 std::vector<std::vector<uint64_t>> GraphSemanticLayer::BfsWithPushdown(
     uint64_t start, uint16_t edge_type, size_t max_depth,
     const PushdownPredicate& predicate,
