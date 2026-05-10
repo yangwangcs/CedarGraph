@@ -241,7 +241,6 @@ set(CEDAR_DTX_SOURCES
     src/dtx/raft/raft_node_factory.cc
     src/dtx/load_balancer.cc
     src/dtx/coordinator_integration.cc
-    src/dtx/storage/storage_service_stub.cc
     src/dtx/storage/raft_replication.cc
     src/dtx/storage/raft_rpc_client.cc
     src/dtx/storage/multi_raft_optimization.cc
