@@ -119,6 +119,29 @@ struct SpacePartitionMap {
     static StatusOr<SpacePartitionMap> Deserialize(const std::string& data);
 };
 
+// ============================================================================
+// Schema Types
+// ============================================================================
+
+struct PropertyDef {
+    std::string name;
+    std::string type;
+    bool nullable = true;
+    bool indexed = false;
+
+    std::string Serialize() const;
+    static StatusOr<PropertyDef> Deserialize(const std::string& data);
+};
+
+struct LabelSchema {
+    std::string name;
+    std::vector<PropertyDef> properties;
+    std::vector<std::string> indexes;
+
+    std::string Serialize() const;
+    static StatusOr<LabelSchema> Deserialize(const std::string& data);
+};
+
 // =============================================================================
 // 节点管理
 // =============================================================================
@@ -326,6 +349,13 @@ private:
             const std::string& space_name) const;
         StatusOr<NodeInfo> GetNode(NodeID node_id) const;
         std::vector<NodeInfo> GetAliveNodes(uint64_t timeout_sec) const;
+        std::vector<std::string> ListSpaces() const;
+        std::vector<NodeInfo> GetAllNodes() const;
+        
+        // Schema
+        Status CreateLabelSchema(const std::string& space_name, const LabelSchema& schema);
+        std::vector<LabelSchema> GetSchema(const std::string& space_name,
+                                            const std::vector<std::string>& labels) const;
         
         // Heartbeat / failure detection
         std::vector<NodeID> CheckNodeHeartbeats(uint64_t timeout_sec) const;
@@ -338,8 +368,11 @@ private:
     private:
         mutable std::shared_mutex mutex_;
         
-        // Schema
+        // Spaces
         std::unordered_map<std::string, SpaceDef> spaces_;
+        
+        // Schema: space_name -> label_name -> LabelSchema
+        std::unordered_map<std::string, std::unordered_map<std::string, LabelSchema>> schemas_;
         
         // 分区映射
         std::unordered_map<std::string, SpacePartitionMap> partition_maps_;

@@ -284,6 +284,82 @@ StatusOr<NodeStatus> NodeStatus::Deserialize(const std::string& data) {
     return status;
 }
 
+std::string PropertyDef::Serialize() const {
+    std::string result;
+    AppendString(result, name);
+    AppendString(result, type);
+    result.push_back(nullable ? 1 : 0);
+    result.push_back(indexed ? 1 : 0);
+    return result;
+}
+
+StatusOr<PropertyDef> PropertyDef::Deserialize(const std::string& data) {
+    size_t pos = 0;
+    PropertyDef def;
+    auto name_data = ReadString(data, pos);
+    if (!name_data.ok()) return Status::InvalidArgument("Corrupt PropertyDef name");
+    def.name = name_data.value();
+
+    auto type_data = ReadString(data, pos);
+    if (!type_data.ok()) return Status::InvalidArgument("Corrupt PropertyDef type");
+    def.type = type_data.value();
+
+    if (pos + 2 > data.size()) return Status::InvalidArgument("Corrupt PropertyDef flags");
+    def.nullable = data[pos++] != 0;
+    def.indexed = data[pos++] != 0;
+    return def;
+}
+
+std::string LabelSchema::Serialize() const {
+    std::string result;
+    AppendString(result, name);
+    uint32_t prop_count = static_cast<uint32_t>(properties.size());
+    result.append(reinterpret_cast<const char*>(&prop_count), sizeof(prop_count));
+    for (const auto& prop : properties) {
+        std::string prop_data = prop.Serialize();
+        AppendString(result, prop_data);
+    }
+    uint32_t idx_count = static_cast<uint32_t>(indexes.size());
+    result.append(reinterpret_cast<const char*>(&idx_count), sizeof(idx_count));
+    for (const auto& idx : indexes) {
+        AppendString(result, idx);
+    }
+    return result;
+}
+
+StatusOr<LabelSchema> LabelSchema::Deserialize(const std::string& data) {
+    size_t pos = 0;
+    LabelSchema schema;
+    auto name_data = ReadString(data, pos);
+    if (!name_data.ok()) return Status::InvalidArgument("Corrupt LabelSchema name");
+    schema.name = name_data.value();
+
+    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt LabelSchema prop count");
+    uint32_t prop_count;
+    std::memcpy(&prop_count, &data[pos], sizeof(prop_count));
+    pos += sizeof(uint32_t);
+
+    for (uint32_t i = 0; i < prop_count; ++i) {
+        auto prop_data = ReadString(data, pos);
+        if (!prop_data.ok()) return Status::InvalidArgument("Corrupt LabelSchema property");
+        auto prop = PropertyDef::Deserialize(prop_data.value());
+        if (!prop.ok()) return prop.status();
+        schema.properties.push_back(prop.value());
+    }
+
+    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt LabelSchema idx count");
+    uint32_t idx_count;
+    std::memcpy(&idx_count, &data[pos], sizeof(idx_count));
+    pos += sizeof(uint32_t);
+
+    for (uint32_t i = 0; i < idx_count; ++i) {
+        auto idx_data = ReadString(data, pos);
+        if (!idx_data.ok()) return Status::InvalidArgument("Corrupt LabelSchema index");
+        schema.indexes.push_back(idx_data.value());
+    }
+    return schema;
+}
+
 // MetadataStateMachine implementation
 void MetadataService::MetadataStateMachine::Apply(const raft::LogEntry& entry) {
     // In real implementation, deserialize entry.data and apply the command
@@ -445,6 +521,55 @@ std::vector<NodeInfo> MetadataService::MetadataStateMachine::GetAliveNodes(uint6
     return alive_nodes;
 }
 
+std::vector<std::string> MetadataService::MetadataStateMachine::ListSpaces() const {
+    std::vector<std::string> result;
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    for (const auto& [name, space] : spaces_) {
+        (void)space;
+        result.push_back(name);
+    }
+    return result;
+}
+
+std::vector<NodeInfo> MetadataService::MetadataStateMachine::GetAllNodes() const {
+    std::vector<NodeInfo> result;
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    for (const auto& [id, node] : nodes_) {
+        (void)id;
+        result.push_back(node);
+    }
+    return result;
+}
+
+Status MetadataService::MetadataStateMachine::CreateLabelSchema(
+    const std::string& space_name, const LabelSchema& schema) {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    schemas_[space_name][schema.name] = schema;
+    return Status::OK();
+}
+
+std::vector<LabelSchema> MetadataService::MetadataStateMachine::GetSchema(
+    const std::string& space_name, const std::vector<std::string>& labels) const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::vector<LabelSchema> result;
+    auto space_it = schemas_.find(space_name);
+    if (space_it == schemas_.end()) return result;
+
+    if (labels.empty()) {
+        for (const auto& [_, schema] : space_it->second) {
+            result.push_back(schema);
+        }
+    } else {
+        for (const auto& label : labels) {
+            auto it = space_it->second.find(label);
+            if (it != space_it->second.end()) {
+                result.push_back(it->second);
+            }
+        }
+    }
+    return result;
+}
+
 std::vector<NodeID> MetadataService::MetadataStateMachine::CheckNodeHeartbeats(uint64_t timeout_sec) const {
     std::vector<NodeID> failed_nodes;
     std::shared_lock<std::shared_mutex> lock(mutex_);
@@ -515,6 +640,19 @@ std::string MetadataService::MetadataStateMachine::Serialize() const {
         AppendString(result, map_data);
     }
     
+    // schemas
+    uint32_t schema_space_count = static_cast<uint32_t>(schemas_.size());
+    result.append(reinterpret_cast<const char*>(&schema_space_count), sizeof(schema_space_count));
+    for (const auto& [space_name, label_map] : schemas_) {
+        AppendString(result, space_name);
+        uint32_t label_count = static_cast<uint32_t>(label_map.size());
+        result.append(reinterpret_cast<const char*>(&label_count), sizeof(label_count));
+        for (const auto& [_, schema] : label_map) {
+            std::string schema_data = schema.Serialize();
+            AppendString(result, schema_data);
+        }
+    }
+    
     return result;
 }
 
@@ -524,6 +662,7 @@ Status MetadataService::MetadataStateMachine::Deserialize(const std::string& dat
     nodes_.clear();
     node_statuses_.clear();
     partition_maps_.clear();
+    schemas_.clear();
     
     size_t pos = 0;
     if (data.size() < 8) return Status::InvalidArgument("Snapshot data too short");
@@ -592,6 +731,31 @@ Status MetadataService::MetadataStateMachine::Deserialize(const std::string& dat
         auto map_result = SpacePartitionMap::Deserialize(map_data.value());
         if (!map_result.ok()) return map_result.status();
         partition_maps_[map_result.value().space_name] = map_result.value();
+    }
+    
+    // schemas (optional - may not exist in older snapshots)
+    if (pos + sizeof(uint32_t) <= data.size()) {
+        uint32_t schema_space_count;
+        std::memcpy(&schema_space_count, &data[pos], sizeof(schema_space_count));
+        pos += sizeof(uint32_t);
+        for (uint32_t s = 0; s < schema_space_count; ++s) {
+            auto space_name_data = ReadString(data, pos);
+            if (!space_name_data.ok()) return Status::InvalidArgument("Corrupt schema space name");
+            std::string space_name = space_name_data.value();
+            
+            if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt label count");
+            uint32_t label_count;
+            std::memcpy(&label_count, &data[pos], sizeof(label_count));
+            pos += sizeof(uint32_t);
+            
+            for (uint32_t l = 0; l < label_count; ++l) {
+                auto schema_data = ReadString(data, pos);
+                if (!schema_data.ok()) return Status::InvalidArgument("Corrupt label schema");
+                auto schema_result = LabelSchema::Deserialize(schema_data.value());
+                if (!schema_result.ok()) return schema_result.status();
+                schemas_[space_name][schema_result.value().name] = schema_result.value();
+            }
+        }
     }
     
     return Status::OK();
@@ -663,8 +827,7 @@ StatusOr<SpaceDef> MetadataService::GetSpace(const std::string& space_name) cons
 }
 
 std::vector<std::string> MetadataService::ListSpaces() const {
-    // TODO: implement
-    return {};
+    return state_machine_.ListSpaces();
 }
 
 StatusOr<PartitionAssignment> MetadataService::GetPartitionAssignment(
@@ -729,8 +892,7 @@ std::vector<NodeInfo> MetadataService::GetAliveNodes() const {
 }
 
 std::vector<NodeInfo> MetadataService::GetAllNodes() const {
-    // TODO: implement
-    return {};
+    return state_machine_.GetAllNodes();
 }
 
 bool MetadataService::IsLeader() const {
