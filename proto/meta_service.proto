@@ -173,4 +173,46 @@ service MetaService {
     
     // Watch 接口 - 流式
     rpc WatchPartitionMap(WatchPartitionMapRequest) returns (stream PartitionMapChange);
+
+    // Schema 管理
+    rpc CreateLabelSchema(CreateLabelSchemaRequest) returns (CreateLabelSchemaResponse);
+    rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
+}
+
+// ============================================================================
+// Schema 管理
+// ============================================================================
+
+message PropertyDef {
+    string name = 1;
+    string type = 2;  // STRING, INT, FLOAT, BOOL, etc.
+    bool nullable = 3;
+    bool indexed = 4;
+}
+
+message LabelSchema {
+    string name = 1;
+    repeated PropertyDef properties = 2;
+    repeated string indexes = 3;
+}
+
+message CreateLabelSchemaRequest {
+    string space_name = 1;
+    LabelSchema schema = 2;
+}
+
+message CreateLabelSchemaResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message GetSchemaRequest {
+    string space_name = 1;
+    repeated string labels = 2;  // empty = all labels
+}
+
+message GetSchemaResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated LabelSchema labels = 3;
 }
