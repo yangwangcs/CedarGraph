@@ -10,6 +10,7 @@
 
 #include "cedar/queryd/query_storage_client.h"  // 更新头文件
 #include "cedar/queryd/meta_client.h"
+#include "cedar/storage/adaptive_thread_pool.h"
 #include "cedar/cypher/parser.h"
 #include "cedar/cypher/planner.h"
 
@@ -215,37 +216,53 @@ void ParallelExecutor::ExecuteParallelStreaming(
     QueryStorageClient* storage_client,
     DistributedExecutionContext* ctx,
     std::function<bool(const SubQueryResult&)> result_callback) {
-  
-  std::atomic<size_t> next_result{0};
-  std::mutex callback_mutex;
-  std::condition_variable callback_cv;
-  
-  // Submit tasks with callback
-  for (size_t i = 0; i < tasks.size(); ++i) {
-    auto task = [&, i]() {
-      const auto& t = tasks[i];
+  if (tasks.empty()) return;
+
+  std::atomic<size_t> completed{0};
+  std::mutex error_mutex;
+  Status first_error = Status::OK();
+
+  cedar::AdaptiveConfig pool_config;
+  pool_config.min_threads = 4;
+  pool_config.max_threads = 16;
+  pool_config.initial_threads = 4;
+  cedar::AdaptiveThreadPool<std::function<void()>> pool(pool_config);
+  pool.Start();
+
+  for (const auto& task : tasks) {
+    pool.Submit([&, task]() {
       SubQueryResult r;
-      r.partition_id = t.partition_id;
-      r.sequence = t.sequence;
-      
-      // Execute sub-query
+      r.partition_id = task.partition_id;
+      r.sequence = task.sequence;
+
+      auto node_client = storage_client->GetNodeClient(task.partition_id);
+      if (!node_client) {
+        r.status = Status::IOError("No node client for partition " +
+                                    std::to_string(task.partition_id));
+      } else {
+        r.status = node_client->ExecuteSubQuery(
+            task.sub_query, task.parameters, &r.result);
+      }
+
       ctx->stats.storage_nodes_accessed++;
       ctx->stats.network_roundtrips++;
-      
-      r.status = Status::OK();
-      
-      // Callback with result
+
       bool continue_streaming = result_callback(r);
       if (!continue_streaming) {
-        // Signal cancellation
+        // Client requested stop; no special action needed since we still
+        // wait for all tasks to finish to keep references valid.
       }
-    };
-    
-    {
-      std::lock_guard<std::mutex> lock(task_queue_.mutex);
-      task_queue_.tasks.push(std::move(task));
+      completed.fetch_add(1);
+    });
+  }
+
+  // Wait for all with timeout
+  auto start = std::chrono::steady_clock::now();
+  while (completed.load() < tasks.size()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(300)) {
+      break;  // Timeout
     }
-    task_queue_.cv.notify_one();
   }
 }
 
