@@ -24,6 +24,7 @@
 #include <thread>
 #include <future>
 #include <iostream>
+#include <glog/logging.h>
 
 namespace cedar {
 namespace dtx {
@@ -38,6 +39,9 @@ std::shared_ptr<grpc::ChannelCredentials> CreateClientCredentialsFromEnv() {
 
 DTXRpcClient::DTXRpcClient(const DTXRpcConfig& config)
     : config_(config) {
+  LOG(WARNING) << "DTXRpcClient initialized but DTXService has no server "
+               << "implementation in the current codebase. RPCs will fail "
+               << "with UNIMPLEMENTED unless a custom server is provided.";
   credentials_ = cedar::dtx::CreateClientCredentialsFromEnv();
 }
 

@@ -265,7 +265,6 @@ set(CEDAR_DTX_SOURCES
     src/dtx/grpc/rpc_client.cc
     src/dtx/grpc/meta_service_grpc.cc
     src/dtx/dtx_rpc_client.cc
-    src/dtx/dtx_rpc_client_storage_adapter.cc
     src/dtx/transaction_state.cc
     src/dtx/transaction_timeout_manager.cc
     src/dtx/transaction_recovery_manager.cc
