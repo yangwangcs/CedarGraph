@@ -176,14 +176,20 @@ std::vector<SubQueryResult> ParallelExecutor::ExecuteParallel(
       r.partition_id = t.partition_id;
       r.sequence = t.sequence;
       
-      // Execute sub-query on storage node
-      // In production, this would use storage_client to send RPC
-      // For now, simulate execution
+      auto node_client = storage_client->GetNodeClient(t.partition_id);
+      if (!node_client) {
+          r.status = Status::NotFound("Storage node not found for partition " +
+                                      std::to_string(t.partition_id));
+          promises[i].set_value();
+          completed++;
+          return;
+      }
+
+      Status s = node_client->ExecuteSubQuery(t.sub_query, t.parameters, &r.result);
+      r.status = s;
+
       ctx->stats.storage_nodes_accessed++;
       ctx->stats.network_roundtrips++;
-      
-      // TODO: Implement actual RPC call
-      r.status = Status::OK();
       
       completed++;
       promises[i].set_value();
@@ -618,9 +624,14 @@ Status DistributedExecutor::ExecuteSinglePartition(
     return Status::NotFound("Storage node not found");
   }
   
-  // TODO: Implement RPC to storage node for query execution
+  // Execute query on the single partition
+  Status s = node_client->ExecuteSubQuery(query, parameters, result);
+  if (!s.ok()) {
+      return Status::IOError("Query execution failed on partition " +
+                             std::to_string(partition_id) + ": " + s.ToString());
+  }
+
   ctx->stats.storage_nodes_accessed = 1;
-  
   return Status::OK();
 }
 
