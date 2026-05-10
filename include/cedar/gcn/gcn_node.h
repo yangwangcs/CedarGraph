@@ -26,6 +26,7 @@
 #include "cedar/gcn/gcn_service.h"
 #include "cedar/gcn/storage_backfill_service.h"
 #include "cedar/gcn/tmv_engine.h"
+#include "cedar/gcn/watermark_gc.h"
 
 namespace cedar {
 
@@ -58,7 +59,6 @@ class GcnNode {
   void SetStorage(CedarGraphStorage* storage) { storage_ = storage; }
 
  private:
-  void GarbageCollectLoop();
   void CdcListenerLoop();
 
   std::unique_ptr<gcn::TMVEngine> engine_;
@@ -68,8 +68,9 @@ class GcnNode {
 
   CedarGraphStorage* storage_ = nullptr;
 
+  std::unique_ptr<gcn::WatermarkGc> watermark_gc_;
+
   std::atomic<bool> running_{false};
-  std::thread gc_thread_;
   std::thread cdc_thread_;
 };
 

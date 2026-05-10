@@ -11,7 +11,6 @@
 #include "benchmark_workloads.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/storage/cedar_options.h"
-#include "cedar/raft/partition_router.h"
 
 using namespace cedar;
 using namespace cedar::benchmark;
@@ -70,26 +69,8 @@ CedarGraphStorage* InitializeStorage(const std::string& data_dir) {
     return nullptr;
   }
   
-  // PartitionRouter initialization skipped for local mode benchmarking
-  // raft::PartitionRouterConfig router_config;
-  // router_config.default_replica_count = 3;
-  // router_config.enable_read_from_follower = true;
-  // 
-  // status = storage->InitializePartitionRouter(router_config);
-  // if (!status.ok()) {
-  //   std::cerr << "❌ Failed to initialize router: " << status.ToString() << std::endl;
-  //   delete storage;
-  //   return nullptr;
-  // }
-  // 
-  // // Register local node
-  // status = storage->RegisterPartitionNode("benchmark-node", "127.0.0.1", 9999, "dc1");
-  // if (!status.ok()) {
-  //   std::cerr << "❌ Failed to register node: " << status.ToString() << std::endl;
-  //   delete storage;
-  //   return nullptr;
-  // }
-  
+  // TODO: Reimplement with braft/brpc
+
   std::cout << "✅ Storage initialized\n\n";
   return storage;
 }

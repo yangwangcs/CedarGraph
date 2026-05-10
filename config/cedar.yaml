@@ -1,0 +1,82 @@
+# CedarGraph Cluster Configuration
+# Load with: <service> --config /path/to/cedar.yaml
+# Environment overrides: CEDAR_<SECTION>_<KEY>=value
+
+# =============================================================================
+# MetaD - Metadata Service (Raft-based)
+# =============================================================================
+metad:
+  node_id: 1
+  bind_address: "0.0.0.0"
+  port: 9559
+  data_dir: "/var/lib/cedar/metad"
+  peers:
+    - "1:127.0.0.1:9559"
+    - "2:127.0.0.1:9560"
+    - "3:127.0.0.1:9561"
+  election_timeout_min_ms: 150
+  election_timeout_max_ms: 300
+  heartbeat_interval_ms: 50
+  rpc_timeout_ms: 1000
+
+# =============================================================================
+# StorageD - Storage Service
+# =============================================================================
+storaged:
+  node_id: 0
+  bind_address: "0.0.0.0"
+  port: 9779
+  data_dir: "/var/lib/cedar/storaged"
+  meta_server: "127.0.0.1:9559"
+  heartbeat_interval_sec: 10
+
+# =============================================================================
+# GraphD - Graph Query Router
+# =============================================================================
+graphd:
+  bind_address: "0.0.0.0"
+  port: 9669
+  meta_server: "127.0.0.1:9559"
+  gcn_server: "127.0.0.1:9780"
+
+# =============================================================================
+# QueryD - Distributed Query Layer
+# =============================================================================
+queryd:
+  listen: "0.0.0.0:9669"
+  meta: "127.0.0.1:9559"
+  storage: "127.0.0.1:9779"
+  workers: 16
+  max_concurrent: 1000
+  query_timeout: 300000
+  cache_size: 1000
+  max_message_size: 64
+
+# =============================================================================
+# Cluster-wide Settings
+# =============================================================================
+cluster:
+  name: "cedar-cluster"
+  replication_factor: 3
+  partition_count: 16
+
+# =============================================================================
+# TLS Settings (optional)
+# =============================================================================
+tls:
+  enabled: false
+  ca_cert: "/etc/cedar/certs/ca.crt"
+  server_cert: "/etc/cedar/certs/server.crt"
+  server_key: "/etc/cedar/certs/server.key"
+  client_cert: "/etc/cedar/certs/client.crt"
+  client_key: "/etc/cedar/certs/client.key"
+
+# =============================================================================
+# Logging Settings
+# =============================================================================
+logging:
+  level: "INFO"
+  format: "json"
+  output: "/var/log/cedar"
+  max_size_mb: 100
+  max_files: 10

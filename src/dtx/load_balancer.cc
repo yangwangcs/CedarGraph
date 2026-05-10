@@ -159,7 +159,11 @@ StatusOr<TaskExecutionStatus> PartitionMigrationExecutor::ExecuteTask(const Bala
     
     {
         std::unique_lock<std::shared_mutex> lock(tasks_mutex_);
-        active_tasks_[task.partition_id] = status;
+        if (result.ok()) {
+            active_tasks_.erase(task.partition_id);
+        } else {
+            active_tasks_[task.partition_id] = status;
+        }
     }
     
     return status;
@@ -350,6 +354,7 @@ StatusOr<ClusterLoadReport> LoadBalancer::CollectLoadReport(const std::string& s
 Status LoadBalancer::ExecuteBalancePlan(const BalancePlan& plan) {
     uint64_t moved_data = 0;
     uint32_t running_tasks = 0;
+    uint32_t max_tasks = std::max(1u, config_.max_concurrent_tasks);
     
     for (const auto& task : plan.tasks) {
         // Check if we've exceeded max data move
@@ -358,9 +363,9 @@ Status LoadBalancer::ExecuteBalancePlan(const BalancePlan& plan) {
         }
         
         // Wait if too many concurrent tasks
-        while (running_tasks >= config_.max_concurrent_tasks) {
+        while (running_tasks >= max_tasks) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            // Update running_tasks count
+            running_tasks = static_cast<uint32_t>(executor_.GetAllTaskStatuses().size());
         }
         
         // Execute task
@@ -380,9 +385,12 @@ bool LoadBalancer::IsPeakHours() const {
     
     auto now = std::chrono::system_clock::now();
     auto time_t = std::chrono::system_clock::to_time_t(now);
-    auto tm = std::localtime(&time_t);
+    struct tm tm_buf;
+    if (!localtime_r(&time_t, &tm_buf)) {
+        return false;
+    }
     
-    uint64_t hour = tm->tm_hour;
+    uint64_t hour = tm_buf.tm_hour;
     return hour >= config_.peak_hours_start && hour < config_.peak_hours_end;
 }
 

@@ -24,7 +24,7 @@ uint16_t CedarMemTable::NextSequence() {
 }
 
 void CedarMemTable::Put(CedarKey key, const Descriptor& descriptor, Timestamp txn_version) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::shared_mutex> lock(mutex_);
 
   // 分配序列号
   key.SetSequence(NextSequence());
@@ -110,7 +110,7 @@ void CedarMemTable::UpdateVersionChain(const InternalKey& internal_key,
 std::vector<MemTableEntry> CedarMemTable::GetAll(uint64_t entity_id,
                                                  EntityType entity_type,
                                                  uint16_t column_id) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
 
   InternalKey internal_key(entity_id, entity_type, column_id);
 
@@ -193,31 +193,36 @@ bool CedarMemTable::Get(uint64_t entity_id, uint64_t timestamp,
 }
 
 size_t CedarMemTable::NumEntries() const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   return map_.size();
 }
 
 // ========== MVCC 版本链实现 ==========
 
-TemporalVersionNode* CedarMemTable::GetVersionChainHead(
+std::vector<MemTableEntry> CedarMemTable::GetVersionChainEntries(
     uint64_t entity_id,
     EntityType entity_type,
     uint16_t column_id) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   
+  std::vector<MemTableEntry> result;
   InternalKey internal_key(entity_id, entity_type, column_id);
   auto it = version_chains_.find(internal_key);
   if (it != version_chains_.end()) {
-    return it->second;  // 返回链头 (最新版本)
+    TemporalVersionNode* node = it->second;
+    while (node != nullptr) {
+      result.emplace_back(node->timestamp, node->descriptor, node->txn_version);
+      node = node->older;
+    }
   }
-  return nullptr;
+  return result;
 }
 
 std::vector<MemTableEntry> CedarMemTable::GetVersionChain(
     uint64_t entity_id,
     EntityType entity_type,
     uint16_t column_id) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   
   std::vector<MemTableEntry> result;
   
@@ -242,7 +247,7 @@ void CedarMemTable::TraverseVersionChain(
     EntityType entity_type,
     uint16_t column_id,
     std::function<bool(const MemTableEntry&)> callback) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   
   InternalKey internal_key(entity_id, entity_type, column_id);
   auto it = version_chains_.find(internal_key);
@@ -265,7 +270,7 @@ size_t CedarMemTable::GetVersionChainLength(
     uint64_t entity_id,
     EntityType entity_type,
     uint16_t column_id) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   
   InternalKey internal_key(entity_id, entity_type, column_id);
   auto it = version_chains_.find(internal_key);
@@ -287,7 +292,7 @@ CedarMemTable::VersionChainIterator* CedarMemTable::NewVersionChainIterator(
     uint64_t entity_id,
     EntityType entity_type,
     uint16_t column_id) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   
   InternalKey internal_key(entity_id, entity_type, column_id);
   auto it = version_chains_.find(internal_key);
@@ -302,7 +307,7 @@ CedarMemTable::VersionChainIterator* CedarMemTable::NewVersionChainIterator(
 std::vector<uint16_t> CedarMemTable::GetColumnIds(
     uint64_t entity_id, 
     EntityType entity_type) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   
   std::vector<uint16_t> column_ids;
   
@@ -325,7 +330,7 @@ std::vector<uint16_t> CedarMemTable::GetColumnIds(
 std::vector<CedarMemTable::ColumnSnapshot> CedarMemTable::GetLatestSnapshot(
     uint64_t entity_id, 
     EntityType entity_type) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   
   std::vector<ColumnSnapshot> snapshot;
   
@@ -365,7 +370,7 @@ std::vector<CedarMemTable::ColumnSnapshot> CedarMemTable::GetSnapshotAtTime(
     uint64_t entity_id,
     EntityType entity_type,
     Timestamp timestamp) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   
   std::vector<ColumnSnapshot> snapshot;
   
@@ -409,7 +414,7 @@ std::vector<CedarMemTable::ColumnSnapshot> CedarMemTable::GetSnapshotAtTime(
 std::vector<CedarMemTable::MultiColumnVersion> CedarMemTable::GetAllColumnChains(
     uint64_t entity_id,
     EntityType entity_type) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   
   std::vector<MultiColumnVersion> result;
   
@@ -450,12 +455,12 @@ std::vector<CedarMemTable::MultiColumnVersion> CedarMemTable::GetAllColumnChains
 }
 
 bool CedarMemTable::IsEmpty() const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   return map_.empty();
 }
 
 std::vector<std::pair<CedarKey, Descriptor>> CedarMemTable::GetSortedEntries() const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
 
   std::vector<std::pair<CedarKey, Descriptor>> result;
 
@@ -499,19 +504,19 @@ std::vector<std::pair<CedarKey, Descriptor>> CedarMemTable::GetSortedEntries() c
 // Iterator 实现
 
 CedarMemTable::Iterator::Iterator(const CedarMemTable* memtable)
-    : memtable_(memtable),
-      outer_iter_(memtable->map_.begin()),
+    : snapshot_(memtable->map_),
+      outer_iter_(snapshot_.begin()),
       inner_idx_(0),
       valid_(false) {
-  if (outer_iter_ != memtable->map_.end()) {
+  if (outer_iter_ != snapshot_.end()) {
     valid_ = true;
   }
 }
 
 void CedarMemTable::Iterator::SeekToFirst() {
-  outer_iter_ = memtable_->map_.begin();
+  outer_iter_ = snapshot_.begin();
   inner_idx_ = 0;
-  valid_ = (outer_iter_ != memtable_->map_.end());
+  valid_ = (outer_iter_ != snapshot_.end());
 }
 
 void CedarMemTable::Iterator::Seek(const CedarKey& key) {
@@ -519,8 +524,8 @@ void CedarMemTable::Iterator::Seek(const CedarKey& key) {
   InternalKey internal_key(key.entity_id(), key.entity_type(),
                            key.column_id(), key.target_id());
 
-  outer_iter_ = memtable_->map_.find(internal_key);
-  if (outer_iter_ == memtable_->map_.end()) {
+  outer_iter_ = snapshot_.find(internal_key);
+  if (outer_iter_ == snapshot_.end()) {
     valid_ = false;
     return;
   }
@@ -548,7 +553,7 @@ void CedarMemTable::Iterator::Next() {
     // 移动到下一个 internal_key
     ++outer_iter_;
     inner_idx_ = 0;
-    valid_ = (outer_iter_ != memtable_->map_.end());
+    valid_ = (outer_iter_ != snapshot_.end());
   }
 }
 
@@ -577,71 +582,75 @@ Descriptor CedarMemTable::Iterator::Descriptor() const {
   return outer_iter_->second[inner_idx_].descriptor;
 }
 
-const MemTableEntry* CedarMemTable::Iterator::Entry() const {
-  if (!valid_) return nullptr;
+std::optional<MemTableEntry> CedarMemTable::Iterator::Entry() const {
+  if (!valid_) return std::nullopt;
 
-  return &outer_iter_->second[inner_idx_];
+  return outer_iter_->second[inner_idx_];
 }
 
 // ========== VersionChainIterator 实现 ==========
 
 CedarMemTable::VersionChainIterator::VersionChainIterator(TemporalVersionNode* head)
-    : head_(head), current_(head) {}
+    : current_idx_(0) {
+  // 构造时拷贝整个版本链，避免原始指针逃出锁保护后 flush 导致 UAF
+  TemporalVersionNode* node = head;
+  while (node != nullptr) {
+    entries_.emplace_back(node->timestamp, node->descriptor, node->txn_version);
+    node = node->older;
+  }
+}
 
 void CedarMemTable::VersionChainIterator::SeekToFirst() {
-  // 定位到链头 (最新版本 - timestamp 最大)
-  current_ = head_;
+  // 定位到链头 (最新版本 - index 0)
+  current_idx_ = 0;
 }
 
 void CedarMemTable::VersionChainIterator::SeekToLast() {
-  // 定位到链尾 (最旧版本 - timestamp 最小)
-  if (head_ == nullptr) {
-    current_ = nullptr;
+  // 定位到链尾 (最旧版本)
+  if (entries_.empty()) {
+    current_idx_ = static_cast<size_t>(-1);
     return;
   }
-  current_ = head_;
-  while (current_->older != nullptr) {
-    current_ = current_->older;
-  }
+  current_idx_ = entries_.size() - 1;
 }
 
 void CedarMemTable::VersionChainIterator::NextOlder() {
-  // 移动到更旧的版本
-  if (current_ != nullptr) {
-    current_ = current_->older;
+  // 移动到更旧的版本 (index 增加)
+  if (current_idx_ + 1 < entries_.size()) {
+    ++current_idx_;
+  } else {
+    current_idx_ = static_cast<size_t>(-1);  // 无效
   }
 }
 
 void CedarMemTable::VersionChainIterator::NextNewer() {
-  // 移动到更新的版本 (时间戳更大)
-  if (current_ != nullptr) {
-    current_ = current_->newer;
+  // 移动到更新的版本 (时间戳更大, index 减少)
+  if (current_idx_ > 0 && current_idx_ != static_cast<size_t>(-1)) {
+    --current_idx_;
+  } else {
+    current_idx_ = static_cast<size_t>(-1);  // 无效
   }
 }
 
 bool CedarMemTable::VersionChainIterator::Valid() const {
-  return current_ != nullptr;
-}
-
-const TemporalVersionNode* CedarMemTable::VersionChainIterator::Node() const {
-  return current_;
+  return current_idx_ < entries_.size();
 }
 
 MemTableEntry CedarMemTable::VersionChainIterator::Entry() const {
-  if (current_ == nullptr) {
+  if (!Valid()) {
     return MemTableEntry();
   }
-  return MemTableEntry(current_->timestamp, current_->descriptor, current_->txn_version);
+  return entries_[current_idx_];
 }
 
 Timestamp CedarMemTable::VersionChainIterator::GetTimestamp() const {
-  if (current_ == nullptr) return Timestamp(0);
-  return current_->timestamp;
+  if (!Valid()) return Timestamp(0);
+  return entries_[current_idx_].timestamp;
 }
 
 Descriptor CedarMemTable::VersionChainIterator::GetDescriptor() const {
-  if (current_ == nullptr) return cedar::Descriptor();
-  return current_->descriptor;
+  if (!Valid()) return cedar::Descriptor();
+  return entries_[current_idx_].descriptor;
 }
 
 }  // namespace cedar

@@ -32,8 +32,7 @@
 // 方案三：分片时间戳分配器
 #include "cedar/transaction/sharded_timestamp_allocator.h"
 
-// 方案四：增量版本编码器
-#include "cedar/storage/delta_version_encoder.h"
+// 方案四：增量版本编码器 (removed in cleanup)
 
 // 方案六：时间范围布隆过滤器
 #include "cedar/storage/temporal_bloom_filter.h"

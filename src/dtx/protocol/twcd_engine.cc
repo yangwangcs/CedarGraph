@@ -38,10 +38,10 @@ void TemporalWindowIntervalTree::Remove(const TemporalWindow& window, TxnID txn_
   if (size_ > 0) --size_;
 }
 
-std::set<TxnID> TemporalWindowIntervalTree::QueryOverlapping(
+std::unordered_set<TxnID> TemporalWindowIntervalTree::QueryOverlapping(
     const TemporalWindow& window) const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
-  std::set<TxnID> result;
+  std::unordered_set<TxnID> result;
   QueryRecursive(root_.get(), window, result);
   return result;
 }
@@ -125,7 +125,7 @@ IntervalTreeNode* TemporalWindowIntervalTree::RemoveRecursive(
 void TemporalWindowIntervalTree::QueryRecursive(
     IntervalTreeNode* node,
     const TemporalWindow& window,
-    std::set<TxnID>& result) const {
+    std::unordered_set<TxnID>& result) const {
   
   if (!node) return;
   
@@ -299,7 +299,7 @@ bool TwcdEngine::HasOverlappingTransactions(TxnID txn_id, const TemporalWindow& 
   return !overlapping.empty();
 }
 
-std::set<TxnID> TwcdEngine::GetOverlappingTxns(const TemporalWindow& window) {
+std::unordered_set<TxnID> TwcdEngine::GetOverlappingTxns(const TemporalWindow& window) {
   return interval_tree_.QueryOverlapping(window);
 }
 
@@ -354,7 +354,7 @@ void TwcdEngine::UnregisterWriteSet(TxnID txn_id) {
 std::vector<CedarKey> TwcdEngine::DetectReadWriteConflicts(
     TxnID txn_id,
     const std::vector<CedarKey>& read_set,
-    const std::set<TxnID>& overlapping_txns) {
+    const std::unordered_set<TxnID>& overlapping_txns) {
   
   std::vector<CedarKey> conflicts;
   
@@ -379,7 +379,7 @@ std::vector<CedarKey> TwcdEngine::DetectReadWriteConflicts(
 std::vector<CedarKey> TwcdEngine::DetectWriteWriteConflicts(
     TxnID txn_id,
     const std::vector<CedarKey>& write_set,
-    const std::set<TxnID>& overlapping_txns) {
+    const std::unordered_set<TxnID>& overlapping_txns) {
   
   std::vector<CedarKey> conflicts;
   

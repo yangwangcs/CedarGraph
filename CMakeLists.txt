@@ -10,6 +10,8 @@ if(APPLE)
         "-Wl,-U,_mallctl"
         "-Wl,-U,_malloc_stats_print"
     )
+    # Global link directory for Homebrew libraries (gflags, grpc, etc.)
+    link_directories(/opt/homebrew/lib)
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
@@ -188,7 +190,6 @@ set(CEDAR_STORAGE_SOURCES
     src/storage/parallel_query_engine.cc
     src/storage/adaptive_thread_pool.cc
     src/storage/auto_blob_storage.cc
-    src/storage/temporal_storage_layer.cc
     src/storage/cedar_compaction_filter.cc
     src/storage/active_entity_bitmap.cc
     src/storage/skeleton_cache.cc
@@ -196,16 +197,10 @@ set(CEDAR_STORAGE_SOURCES
     src/storage/failover_manager.cc
     src/storage/consistent_hash_ring.cc
     src/storage/storage_interface.cc
-)
-
-# Compute layer sources (Epoch-based Block-linked CSR)
-set(CEDAR_COMPUTE_SOURCES
-    src/compute/arena_pool.cc
-)
-
-# Update sources (event to CedarKey conversion)
-set(CEDAR_UPDATE_SOURCES
-    src/update/cedar_update.cc
+    src/storage/delta_encoder.cc
+    src/storage/arena_pool.cc
+    src/storage/async_io.cc
+    src/storage/cedar_update.cc
 )
 
 # Query sources (CedarScan - snapshot-based temporal scan engine)
@@ -222,18 +217,6 @@ set(CEDAR_DRIVER_SOURCES
     src/driver/session.cc
 )
 
-# Raft sources (Partition-level Raft consensus)
-set(CEDAR_RAFT_SOURCES
-    src/raft/partition_raft_group.cc
-    src/raft/partition_raft_manager.cc
-    src/raft/partition_router.cc
-    src/raft/partition_metadata_service.cc
-    src/raft/partition_log_store.cc
-    src/raft/partition_raft_service.cc
-    src/raft/batch_log_committer.cc
-    src/raft/hotspot_detector.cc
-)
-
 # DTx sources (Distributed Transaction Protocol)
 set(CEDAR_DTX_SOURCES
     src/dtx/utils/temporal_window.cc
@@ -247,11 +230,9 @@ set(CEDAR_DTX_SOURCES
     src/dtx/meta/meta_service.cc
     src/dtx/meta/meta_service_impl.cc
     src/dtx/meta/meta_types.cc
-    src/dtx/raft/grpc_transport.cc
     src/dtx/raft/grpc_tls.cc
     src/dtx/raft/braft_node.cc
     src/dtx/raft/raft_node_factory.cc
-    src/dtx/metad/admin_service.cc
     src/dtx/load_balancer.cc
     src/dtx/coordinator_integration.cc
     src/dtx/storage/storage_service_stub.cc
@@ -263,6 +244,8 @@ set(CEDAR_DTX_SOURCES
     src/dtx/storage/metrics_collector.cc
     src/dtx/storage/metrics_storage_impl.cc
     src/dtx/storage/partition_migrator.cc
+    src/dtx/storage/braft_partition_raft.cc
+    src/dtx/storage/partition_raft_manager.cc
     src/dtx/chaos/chaos_testing.cc
     src/dtx/storage_impl/partition_storage.cc
     src/dtx/storage_impl/partition_manager.cc
@@ -275,6 +258,7 @@ set(CEDAR_DTX_SOURCES
     src/dtx/storage_impl/storage_service_ext.cc
     src/dtx/storage_impl/partition_index.cc
     src/dtx/grpc/rpc_client.cc
+    src/dtx/grpc/meta_service_grpc.cc
     src/dtx/dtx_rpc_client.cc
     src/dtx/dtx_rpc_client_storage_adapter.cc
     src/dtx/transaction_state.cc
@@ -309,7 +293,7 @@ set(CEDAR_DB_SOURCES
     src/db/graph_db.cc
     src/db/graph_db_impl.cc
     src/db/manifest.cc
-    src/db/database.cc
+    src/db/event_bus.cc
 )
 
 # SST format sources
@@ -338,11 +322,6 @@ set(CEDAR_PARTITION_SOURCES
     src/partition/mth/mth_partitioner.cc
 )
 
-# IO sources
-set(CEDAR_IO_SOURCES
-    src/io/async_io.cc
-)
-
 # Governance sources (Service Registry, ConfigManager, etc.)
 set(CEDAR_GOVERNANCE_SOURCES
     src/governance/service_registry.cc
@@ -350,25 +329,15 @@ set(CEDAR_GOVERNANCE_SOURCES
     src/governance/health_checker.cc
 )
 
-# Integration sources (EventBus, etc.)
-set(CEDAR_INTEGRATION_SOURCES
-    src/integration/event_bus.cc
-)
-
 # Create cedar library
 add_library(cedar STATIC 
     ${CEDAR_CORE_SOURCES}
     ${CEDAR_STORAGE_SOURCES}
-    ${CEDAR_COMPUTE_SOURCES}
-    ${CEDAR_RAFT_SOURCES}
     ${CEDAR_TRANSACTION_SOURCES}
     ${CEDAR_SST_SOURCES}
-    ${CEDAR_IO_SOURCES}
     ${CEDAR_DB_SOURCES}
-    ${CEDAR_UPDATE_SOURCES}
     ${CEDAR_QUERY_SOURCES}
     ${CEDAR_GOVERNANCE_SOURCES}
-    ${CEDAR_INTEGRATION_SOURCES}
     ${CEDAR_DRIVER_SOURCES}
     ${CEDAR_DTX_SOURCES}
     ${CEDAR_PARTITION_SOURCES}
@@ -377,6 +346,8 @@ add_library(cedar STATIC
     ${PROTO_OUT_DIR}/raft_service.grpc.pb.cc
     ${PROTO_OUT_DIR}/storage_service.pb.cc
     ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc
+    ${PROTO_OUT_DIR}/meta_service.pb.cc
+    ${PROTO_OUT_DIR}/meta_service.grpc.pb.cc
     ${PROTO_OUT_DIR}/migration_service.pb.cc
     ${PROTO_OUT_DIR}/migration_service.grpc.pb.cc
     ${PROTO_OUT_DIR}/dtx_protocol.pb.cc
@@ -467,7 +438,6 @@ target_link_libraries(cedar_queryd
     cedar
     gRPC::grpc++ 
     gflags 
-    glog
 )
 
 # cedar-queryd 可执行文件
@@ -481,10 +451,10 @@ target_link_libraries(cedar-queryd
     cedar_queryd
     cedar_cypher
     gflags
-    glog
     ${GRPC_LIBRARIES}
     pthread
 )
+target_compile_definitions(cedar-queryd PRIVATE CEDAR_NO_GLOG)
 
 # GraphD - Graph Query Router Service (Nebula-style)
 add_executable(graphd
@@ -497,6 +467,8 @@ add_executable(graphd
     ${PROTO_OUT_DIR}/meta_service.grpc.pb.cc
     ${PROTO_OUT_DIR}/storage_service.pb.cc
     ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc
+    ${PROTO_OUT_DIR}/cedar_graph.pb.cc
+    ${PROTO_OUT_DIR}/cedar_graph.grpc.pb.cc
 )
 set_target_properties(graphd PROPERTIES OUTPUT_NAME "cedar-graphd")
 target_include_directories(graphd PRIVATE 
@@ -505,6 +477,7 @@ target_include_directories(graphd PRIVATE
 )
 target_link_directories(graphd PRIVATE /opt/homebrew/lib)
 target_link_libraries(graphd cedar cedar_cypher gRPC::grpc++ gflags pthread)
+target_compile_definitions(graphd PRIVATE CEDAR_NO_GLOG)
 
 # Test client for GraphD
 add_executable(test_graphd_client
@@ -531,39 +504,24 @@ target_link_libraries(test_performance gRPC::grpc++ protobuf::libprotobuf pthrea
 add_executable(cedar-queryd-minimal src/queryd/minimal_queryd.cpp)
 target_link_libraries(cedar-queryd-minimal cedar gRPC::grpc++)
 
-# Compression sources
-set(CEDAR_COMPRESSION_SOURCES
-    src/compression/delta_encoder.cc
-)
-
-add_library(cedar_compression STATIC ${CEDAR_COMPRESSION_SOURCES})
-
-# Metadata server executable (Raft-based - legacy)
-add_executable(metad_server 
-    src/dtx/metad/metad_server.cc
-    ${PROTO_OUT_DIR}/raft.pb.cc
-    ${PROTO_OUT_DIR}/raft.grpc.pb.cc
-    ${PROTO_OUT_DIR}/metad_admin.pb.cc
-    ${PROTO_OUT_DIR}/metad_admin.grpc.pb.cc
-)
-target_link_libraries(metad_server cedar ${LZ4_LIBRARIES} gRPC::grpc++)
-
-# MetaD - Standalone Metadata Service (Nebula-style)
+# MetaD - Standalone Metadata Service (braft-based, stub until full implementation)
 add_executable(metad
     tools/metad.cc
-    src/service/meta_service_handler.cc
-    src/service/partition_allocator.cc
-    ${PROTO_OUT_DIR}/meta_service.pb.cc
-    ${PROTO_OUT_DIR}/meta_service.grpc.pb.cc
 )
 set_target_properties(metad PROPERTIES OUTPUT_NAME "cedar-metad")
-target_link_libraries(metad cedar cedar_graph gRPC::grpc++ pthread)
+target_link_libraries(metad cedar cedar_graph ${LZ4_LIBRARIES} gRPC::grpc++ pthread)
+if(APPLE)
+    target_link_directories(metad PRIVATE /opt/homebrew/lib)
+endif()
 
 # Storage server executable (with gRPC service - legacy)
 add_executable(storaged_legacy
     src/dtx/storage/storage_server_with_grpc.cc
 )
 target_link_libraries(storaged_legacy cedar cedar_graph cedar_cypher ${LZ4_LIBRARIES} gRPC::grpc++)
+if(APPLE)
+    target_link_directories(storaged_legacy PRIVATE /opt/homebrew/lib)
+endif()
 
 # StorageD - Standalone Storage Service (Nebula-style)
 add_executable(storaged
@@ -575,6 +533,10 @@ add_executable(storaged
 )
 set_target_properties(storaged PROPERTIES OUTPUT_NAME "cedar-storaged")
 target_link_libraries(storaged cedar cedar_graph gRPC::grpc++ pthread)
+target_compile_definitions(storaged PRIVATE CEDAR_NO_GLOG)
+if(APPLE)
+    target_link_directories(storaged PRIVATE /opt/homebrew/lib)
+endif()
 
 # Queryd client example
 add_executable(queryd_client_example
@@ -594,13 +556,13 @@ target_link_libraries(test_distributed_write gRPC::grpc++ protobuf::libprotobuf)
 
 # 直接存储测试
 add_executable(test_storage_direct
-    tests/test_storage_direct.cpp
+    tests/storage/test_storage_direct.cpp
 )
 target_link_libraries(test_storage_direct cedar)
 
 # 简单存储测试
 add_executable(test_simple_storage
-    tests/test_simple_storage.cpp
+    tests/storage/test_simple_storage.cpp
 )
 target_link_libraries(test_simple_storage cedar)
 
@@ -630,7 +592,7 @@ target_link_libraries(test_flush_fixed cedar)
 
 # SST 调试测试
 add_executable(test_sst_debug
-    tests/test_sst_debug.cpp
+    tests/storage/test_sst_debug.cpp
 )
 target_link_libraries(test_sst_debug cedar)
 
@@ -724,7 +686,7 @@ target_link_libraries(test_optimized_temporal_perf cedar ${LZ4_LIBRARIES})
 add_executable(test_distributed_simple
     tests/test_distributed_simple.cpp
 )
-target_link_libraries(test_distributed_simple cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+target_link_libraries(test_distributed_simple cedar cedar_cypher ${LZ4_LIBRARIES} gRPC::grpc++)
 
 # Fixed Distributed Test
 add_executable(test_distributed_fixed
@@ -764,7 +726,7 @@ target_link_libraries(test_flush_persistence cedar ${LZ4_LIBRARIES} gRPC::grpc++
 
 # Real CedarGraphStorage Performance Test
 add_executable(test_real_storage_perf
-    tests/test_real_storage_perf.cpp
+    tests/storage/test_real_storage_perf.cpp
 )
 target_link_libraries(test_real_storage_perf cedar ${LZ4_LIBRARIES})
 target_compile_features(test_real_storage_perf PRIVATE cxx_std_17)
@@ -873,6 +835,9 @@ target_link_libraries(cedar_cluster_client
     cedar_graph
     pthread
 )
+if(APPLE)
+    target_link_directories(cedar_cluster_client PRIVATE /opt/homebrew/lib)
+endif()
 
 # CedarGraph Cluster Benchmark Executable
 add_executable(cedar_cluster_benchmark 
@@ -885,6 +850,9 @@ target_link_libraries(cedar_cluster_benchmark
     cedar_graph
     pthread
 )
+if(APPLE)
+    target_link_directories(cedar_cluster_benchmark PRIVATE /opt/homebrew/lib)
+endif()
 if(TARGET gRPC::grpc++)
     target_link_libraries(cedar_cluster_benchmark gRPC::grpc++)
 elseif(GRPC_FOUND)

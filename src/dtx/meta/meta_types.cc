@@ -45,10 +45,16 @@ StatusOr<SpaceDef> SpaceDef::Deserialize(const std::string& data) {
     return Status::InvalidArgument("Invalid SpaceDef serialization");
   }
   
-  space.name = name_str;
-  space.partition_num = std::stoul(part_str);
-  space.replica_factor = std::stoul(rep_str);
-  space.created_at = std::chrono::system_clock::from_time_t(std::stoll(time_str));
+  try {
+    space.name = name_str;
+    space.partition_num = std::stoul(part_str);
+    space.replica_factor = std::stoul(rep_str);
+    space.created_at = std::chrono::system_clock::from_time_t(std::stoll(time_str));
+  } catch (const std::invalid_argument& e) {
+    return Status::InvalidArgument("Invalid SpaceDef numeric field: " + std::string(e.what()));
+  } catch (const std::out_of_range& e) {
+    return Status::InvalidArgument("SpaceDef numeric field out of range: " + std::string(e.what()));
+  }
   
   return space;
 }
@@ -90,20 +96,26 @@ StatusOr<PartitionAssignment> PartitionAssignment::Deserialize(const std::string
     return Status::InvalidArgument("Invalid PartitionAssignment serialization");
   }
   
-  assign.partition_id = std::stoul(pid_str);
-  assign.space_name = space;
-  assign.leader_node = std::stoul(leader);
-  assign.version = std::stoull(ver);
-  assign.state = static_cast<State>(std::stoi(state_str));
-  assign.last_updated = std::chrono::system_clock::from_time_t(std::stoll(time_str));
-  
-  // Parse follower nodes
-  std::istringstream follower_iss(followers);
-  std::string node_str;
-  while (std::getline(follower_iss, node_str, ',')) {
-    if (!node_str.empty()) {
-      assign.follower_nodes.push_back(std::stoul(node_str));
+  try {
+    assign.partition_id = std::stoul(pid_str);
+    assign.space_name = space;
+    assign.leader_node = std::stoul(leader);
+    assign.version = std::stoull(ver);
+    assign.state = static_cast<State>(std::stoi(state_str));
+    assign.last_updated = std::chrono::system_clock::from_time_t(std::stoll(time_str));
+    
+    // Parse follower nodes
+    std::istringstream follower_iss(followers);
+    std::string node_str;
+    while (std::getline(follower_iss, node_str, ',')) {
+      if (!node_str.empty()) {
+        assign.follower_nodes.push_back(std::stoul(node_str));
+      }
     }
+  } catch (const std::invalid_argument& e) {
+    return Status::InvalidArgument("Invalid PartitionAssignment numeric field: " + std::string(e.what()));
+  } catch (const std::out_of_range& e) {
+    return Status::InvalidArgument("PartitionAssignment numeric field out of range: " + std::string(e.what()));
   }
   
   return assign;
@@ -159,11 +171,17 @@ StatusOr<SpacePartitionMap> SpacePartitionMap::Deserialize(const std::string& da
     return Status::InvalidArgument("Invalid SpacePartitionMap serialization");
   }
   
-  map.space_name = name;
-  map.num_partitions = std::stoul(parts);
-  map.replication_factor = std::stoul(rep);
-  map.version = std::stoull(ver);
-  map.updated_at = std::chrono::system_clock::from_time_t(std::stoll(time));
+  try {
+    map.space_name = name;
+    map.num_partitions = std::stoul(parts);
+    map.replication_factor = std::stoul(rep);
+    map.version = std::stoull(ver);
+    map.updated_at = std::chrono::system_clock::from_time_t(std::stoll(time));
+  } catch (const std::invalid_argument& e) {
+    return Status::InvalidArgument("Invalid SpacePartitionMap numeric field: " + std::string(e.what()));
+  } catch (const std::out_of_range& e) {
+    return Status::InvalidArgument("SpacePartitionMap numeric field out of range: " + std::string(e.what()));
+  }
   
   return map;
 }
@@ -203,15 +221,21 @@ StatusOr<NodeInfo> NodeInfo::Deserialize(const std::string& data) {
     return Status::InvalidArgument("Invalid NodeInfo serialization");
   }
   
-  info.node_id = std::stoul(id);
-  info.address = addr;
-  info.data_path = path;
-  info.num_cpu_cores = std::stoul(cpu);
-  info.total_memory_bytes = std::stoull(mem);
-  info.total_disk_bytes = std::stoull(disk);
-  info.registered_at = std::chrono::system_clock::from_time_t(std::stoll(reg));
-  info.last_heartbeat = std::chrono::system_clock::from_time_t(std::stoll(hb));
-  info.state = static_cast<State>(std::stoi(st));
+  try {
+    info.node_id = std::stoul(id);
+    info.address = addr;
+    info.data_path = path;
+    info.num_cpu_cores = std::stoul(cpu);
+    info.total_memory_bytes = std::stoull(mem);
+    info.total_disk_bytes = std::stoull(disk);
+    info.registered_at = std::chrono::system_clock::from_time_t(std::stoll(reg));
+    info.last_heartbeat = std::chrono::system_clock::from_time_t(std::stoll(hb));
+    info.state = static_cast<State>(std::stoi(st));
+  } catch (const std::invalid_argument& e) {
+    return Status::InvalidArgument("Invalid NodeInfo numeric field: " + std::string(e.what()));
+  } catch (const std::out_of_range& e) {
+    return Status::InvalidArgument("NodeInfo numeric field out of range: " + std::string(e.what()));
+  }
   
   return info;
 }
@@ -265,29 +289,35 @@ StatusOr<NodeStatus> NodeStatus::Deserialize(const std::string& data) {
     return Status::InvalidArgument("Invalid NodeStatus serialization");
   }
   
-  status.node_id = std::stoul(id);
-  status.cpu_usage_percent = std::stod(cpu);
-  status.memory_usage_percent = std::stod(mem);
-  status.disk_usage_percent = std::stod(disk);
-  status.qps = std::stoull(qps_str);
-  status.latency_ms = std::stoull(lat);
-  status.timestamp = std::chrono::system_clock::from_time_t(std::stoll(time));
-  
-  // Parse leader partitions
-  std::istringstream leader_iss(leaders);
-  std::string part_str;
-  while (std::getline(leader_iss, part_str, ',')) {
-    if (!part_str.empty()) {
-      status.leader_partitions.push_back(std::stoul(part_str));
+  try {
+    status.node_id = std::stoul(id);
+    status.cpu_usage_percent = std::stod(cpu);
+    status.memory_usage_percent = std::stod(mem);
+    status.disk_usage_percent = std::stod(disk);
+    status.qps = std::stoull(qps_str);
+    status.latency_ms = std::stoull(lat);
+    status.timestamp = std::chrono::system_clock::from_time_t(std::stoll(time));
+    
+    // Parse leader partitions
+    std::istringstream leader_iss(leaders);
+    std::string part_str;
+    while (std::getline(leader_iss, part_str, ',')) {
+      if (!part_str.empty()) {
+        status.leader_partitions.push_back(std::stoul(part_str));
+      }
     }
-  }
-  
-  // Parse follower partitions
-  std::istringstream follower_iss(followers);
-  while (std::getline(follower_iss, part_str, ',')) {
-    if (!part_str.empty()) {
-      status.follower_partitions.push_back(std::stoul(part_str));
+    
+    // Parse follower partitions
+    std::istringstream follower_iss(followers);
+    while (std::getline(follower_iss, part_str, ',')) {
+      if (!part_str.empty()) {
+        status.follower_partitions.push_back(std::stoul(part_str));
+      }
     }
+  } catch (const std::invalid_argument& e) {
+    return Status::InvalidArgument("Invalid NodeStatus numeric field: " + std::string(e.what()));
+  } catch (const std::out_of_range& e) {
+    return Status::InvalidArgument("NodeStatus numeric field out of range: " + std::string(e.what()));
   }
   
   return status;

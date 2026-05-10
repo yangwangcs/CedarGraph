@@ -82,7 +82,7 @@ class TemporalWindowIntervalTree {
   void Remove(const TemporalWindow& window, TxnID txn_id);
   
   // 查询与窗口重叠的所有事务
-  std::set<TxnID> QueryOverlapping(const TemporalWindow& window) const;
+  std::unordered_set<TxnID> QueryOverlapping(const TemporalWindow& window) const;
   
   // 获取树中事务数量
   size_t Size() const { return size_; }
@@ -113,7 +113,7 @@ class TemporalWindowIntervalTree {
   void QueryRecursive(
       IntervalTreeNode* node,
       const TemporalWindow& window,
-      std::set<TxnID>& result) const;
+      std::unordered_set<TxnID>& result) const;
   
   // 更新max_end
   void UpdateMaxEnd(IntervalTreeNode* node);
@@ -135,7 +135,7 @@ struct ConflictCheckResult {
   } type{Type::kNoConflict};
   
   std::vector<CedarKey> conflict_keys;
-  std::set<TxnID> conflict_txns;
+  std::unordered_set<TxnID> conflict_txns;
   
   bool Ok() const { return !has_conflict; }
   
@@ -145,13 +145,13 @@ struct ConflictCheckResult {
   
   static ConflictCheckResult ReadWriteConflict(
       const std::vector<CedarKey>& keys,
-      const std::set<TxnID>& txns) {
+      const std::unordered_set<TxnID>& txns) {
     return ConflictCheckResult{true, Type::kReadWrite, keys, txns};
   }
   
   static ConflictCheckResult WriteWriteConflict(
       const std::vector<CedarKey>& keys,
-      const std::set<TxnID>& txns) {
+      const std::unordered_set<TxnID>& txns) {
     return ConflictCheckResult{true, Type::kWriteWrite, keys, txns};
   }
 };
@@ -208,7 +208,7 @@ class TwcdEngine {
   /**
    * @brief 获取与指定窗口重叠的所有事务
    */
-  std::set<TxnID> GetOverlappingTxns(const TemporalWindow& window);
+  std::unordered_set<TxnID> GetOverlappingTxns(const TemporalWindow& window);
   
   // ==================== Key级冲突检测 ====================
   
@@ -222,13 +222,13 @@ class TwcdEngine {
   std::vector<CedarKey> DetectReadWriteConflicts(
       TxnID txn_id,
       const std::vector<CedarKey>& read_set,
-      const std::set<TxnID>& overlapping_txns);
+      const std::unordered_set<TxnID>& overlapping_txns);
   
   // 检查写-写冲突
   std::vector<CedarKey> DetectWriteWriteConflicts(
       TxnID txn_id,
       const std::vector<CedarKey>& write_set,
-      const std::set<TxnID>& overlapping_txns);
+      const std::unordered_set<TxnID>& overlapping_txns);
   
   // ==================== 统计和监控 ====================
   

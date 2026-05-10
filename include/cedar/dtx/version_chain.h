@@ -82,7 +82,7 @@ struct VersionChainNode {
   // 释放引用
   void Release() {
     if (ref_count.fetch_sub(1, std::memory_order_release) == 1) {
-      // 可以安全删除（在实际GC中实现）
+      delete this;
     }
   }
 };
@@ -101,6 +101,11 @@ struct VersionChainHead {
   
   // 版本链长度（用于GC决策）
   std::atomic<uint32_t> chain_length{0};
+  
+  // 保护链表结构修改的互斥锁（读者用 shared_lock，GC 用 unique_lock）
+  mutable std::shared_mutex chain_mutex_;
+
+  ~VersionChainHead();
   
   // 获取最新可见版本
   VersionChainNode* GetLatestVisible() const;
@@ -242,6 +247,7 @@ class CrossShardVersionView {
   void Clear();
   
  private:
+  mutable std::mutex mutex_;
   std::unordered_map<PartitionID, std::vector<VersionInfo>> shard_views_;
 };
 

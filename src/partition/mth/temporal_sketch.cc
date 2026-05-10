@@ -4,7 +4,7 @@
 // 
 // Ported from subgraph2
 
-#include "partition/mth/temporal_sketch.h"
+#include "cedar/partition/mth/temporal_sketch.h"
 #include <cmath>
 #include <random>
 #include <algorithm>
@@ -31,6 +31,7 @@ TemporalSketch::TemporalSketch(uint16_t num_partitions, int depth, int width,
 }
 
 int TemporalSketch::Hash(uint64_t vertex, int seed_index) const {
+  if (width_ <= 0) return 0;
   return static_cast<int>(std::hash<uint64_t>{}(vertex ^ static_cast<uint64_t>(seeds_[seed_index]))) % width_;
 }
 

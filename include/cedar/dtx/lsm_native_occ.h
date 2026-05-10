@@ -28,6 +28,7 @@
 #include <unordered_map>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 
 #include "cedar/core/status.h"
 #include "cedar/dtx/types.h"
@@ -263,6 +264,7 @@ class LndOccEngine {
   TwcdEngine* twcd_engine_{nullptr};
   
   // 分区 -> 本地协调器
+  mutable std::shared_mutex coordinators_mutex_;
   std::unordered_map<PartitionID, std::unique_ptr<LocalTransactionCoordinator>> coordinators_;
   
   // 2PC 支持

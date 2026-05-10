@@ -93,10 +93,10 @@ class WaitForGraph {
   void RemoveTxn(TxnID txn_id);
   
   // 检测死锁
-  DeadlockDetectionResult DetectDeadlock();
+  DeadlockDetectionResult DetectDeadlock(size_t max_cycle_size = 0);
   
   // 检测特定事务是否参与死锁
-  DeadlockDetectionResult DetectDeadlockForTxn(TxnID txn_id);
+  DeadlockDetectionResult DetectDeadlockForTxn(TxnID txn_id, size_t max_cycle_size = 0);
   
   // 获取事务的等待信息
   std::vector<WaitForEdge> GetWaitsFor(TxnID txn_id) const;
@@ -118,7 +118,9 @@ class WaitForGraph {
                  std::unordered_set<TxnID>& visited,
                  std::unordered_set<TxnID>& in_stack,
                  std::vector<TxnID>& path,
-                 std::vector<TxnID>& cycle);
+                 std::vector<TxnID>& cycle,
+                 size_t depth,
+                 size_t max_depth);
   
   // 选择牺牲者（youngest transaction）
   TxnID SelectVictim(const std::vector<TxnID>& cycle) const;
@@ -162,7 +164,7 @@ class DistributedDeadlockDetector {
   Status Initialize(const Config& config);
   
   // 关闭
-  void Shutdown();
+  void Shutdown() noexcept;
   
   // ===== 等待图操作 =====
   
@@ -225,6 +227,9 @@ class DistributedDeadlockDetector {
   // 统计
   mutable std::mutex stats_mutex_;
   Stats stats_;
+  
+  // 防止并发处理同一死锁
+  mutable std::mutex handle_mutex_;
 };
 
 // =============================================================================

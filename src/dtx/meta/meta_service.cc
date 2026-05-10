@@ -6,49 +6,150 @@
 namespace cedar {
 namespace dtx {
 
+// =============================================================================
+// MetaServiceClient base class
+// =============================================================================
+
+MetaServiceClient::MetaServiceClient() = default;
+MetaServiceClient::~MetaServiceClient() = default;
+
+// =============================================================================
+// Binary Serialization Helpers
+// =============================================================================
+
+static void AppendString(std::string& out, const std::string& s) {
+    uint32_t len = static_cast<uint32_t>(s.size());
+    out.append(reinterpret_cast<const char*>(&len), sizeof(len));
+    out.append(s);
+}
+
+static StatusOr<std::string> ReadString(const std::string& data, size_t& pos) {
+    if (pos + sizeof(uint32_t) > data.size()) {
+        return Status::InvalidArgument("Corrupt data: string length");
+    }
+    uint32_t len;
+    std::memcpy(&len, &data[pos], sizeof(len));
+    pos += sizeof(len);
+    if (pos + len > data.size()) {
+        return Status::InvalidArgument("Corrupt data: string data");
+    }
+    std::string result = data.substr(pos, len);
+    pos += len;
+    return result;
+}
+
 // Serialize implementations
 std::string SpaceDef::Serialize() const {
-    return name + "|" + std::to_string(partition_num) + "|" + std::to_string(replica_factor);
+    std::string result;
+    AppendString(result, name);
+    result.append(reinterpret_cast<const char*>(&partition_num), sizeof(partition_num));
+    result.append(reinterpret_cast<const char*>(&replica_factor), sizeof(replica_factor));
+    return result;
 }
 
 StatusOr<SpaceDef> SpaceDef::Deserialize(const std::string& data) {
     SpaceDef space;
-    size_t pos1 = data.find('|');
-    if (pos1 == std::string::npos) return space;
-    space.name = data.substr(0, pos1);
-    size_t pos2 = data.find('|', pos1 + 1);
-    if (pos2 == std::string::npos) return space;
-    space.partition_num = std::stoul(data.substr(pos1 + 1, pos2 - pos1 - 1));
-    space.replica_factor = std::stoul(data.substr(pos2 + 1));
+    size_t pos = 0;
+    auto name_result = ReadString(data, pos);
+    if (!name_result.ok()) return name_result.status();
+    space.name = name_result.value();
+    if (pos + sizeof(partition_num) > data.size()) return Status::InvalidArgument("Corrupt SpaceDef");
+    std::memcpy(&space.partition_num, &data[pos], sizeof(partition_num));
+    pos += sizeof(partition_num);
+    if (pos + sizeof(replica_factor) > data.size()) return Status::InvalidArgument("Corrupt SpaceDef");
+    std::memcpy(&space.replica_factor, &data[pos], sizeof(replica_factor));
     return space;
 }
 
 std::string PartitionAssignment::Serialize() const {
-    return std::to_string(partition_id) + "|" + space_name + "|" + std::to_string(leader_node);
+    std::string result;
+    result.append(reinterpret_cast<const char*>(&partition_id), sizeof(partition_id));
+    AppendString(result, space_name);
+    result.append(reinterpret_cast<const char*>(&leader_node), sizeof(leader_node));
+    uint32_t follower_count = static_cast<uint32_t>(follower_nodes.size());
+    result.append(reinterpret_cast<const char*>(&follower_count), sizeof(follower_count));
+    for (auto nid : follower_nodes) {
+        result.append(reinterpret_cast<const char*>(&nid), sizeof(nid));
+    }
+    result.append(reinterpret_cast<const char*>(&version), sizeof(version));
+    uint8_t state_val = static_cast<uint8_t>(state);
+    result.append(reinterpret_cast<const char*>(&state_val), sizeof(state_val));
+    return result;
 }
 
 StatusOr<PartitionAssignment> PartitionAssignment::Deserialize(const std::string& data) {
     PartitionAssignment assign;
-    size_t pos1 = data.find('|');
-    if (pos1 == std::string::npos) return assign;
-    assign.partition_id = static_cast<PartitionID>(std::stoul(data.substr(0, pos1)));
-    size_t pos2 = data.find('|', pos1 + 1);
-    if (pos2 == std::string::npos) return assign;
-    assign.space_name = data.substr(pos1 + 1, pos2 - pos1 - 1);
-    assign.leader_node = std::stoul(data.substr(pos2 + 1));
+    size_t pos = 0;
+    if (pos + sizeof(partition_id) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
+    std::memcpy(&assign.partition_id, &data[pos], sizeof(partition_id));
+    pos += sizeof(partition_id);
+    auto space_result = ReadString(data, pos);
+    if (!space_result.ok()) return space_result.status();
+    assign.space_name = space_result.value();
+    if (pos + sizeof(leader_node) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
+    std::memcpy(&assign.leader_node, &data[pos], sizeof(leader_node));
+    pos += sizeof(leader_node);
+    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
+    uint32_t follower_count;
+    std::memcpy(&follower_count, &data[pos], sizeof(follower_count));
+    pos += sizeof(follower_count);
+    for (uint32_t i = 0; i < follower_count; ++i) {
+        if (pos + sizeof(NodeID) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
+        NodeID nid;
+        std::memcpy(&nid, &data[pos], sizeof(nid));
+        pos += sizeof(nid);
+        assign.follower_nodes.push_back(nid);
+    }
+    if (pos + sizeof(version) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
+    std::memcpy(&assign.version, &data[pos], sizeof(version));
+    pos += sizeof(version);
+    if (pos + sizeof(uint8_t) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
+    uint8_t state_val;
+    std::memcpy(&state_val, &data[pos], sizeof(state_val));
+    assign.state = static_cast<State>(state_val);
     return assign;
 }
 
 std::string SpacePartitionMap::Serialize() const {
-    return space_name + "|" + std::to_string(num_partitions);
+    std::string result;
+    AppendString(result, space_name);
+    result.append(reinterpret_cast<const char*>(&num_partitions), sizeof(num_partitions));
+    result.append(reinterpret_cast<const char*>(&replication_factor), sizeof(replication_factor));
+    uint32_t assign_count = static_cast<uint32_t>(assignments.size());
+    result.append(reinterpret_cast<const char*>(&assign_count), sizeof(assign_count));
+    for (const auto& [pid, assign] : assignments) {
+        std::string assign_data = assign.Serialize();
+        AppendString(result, assign_data);
+    }
+    result.append(reinterpret_cast<const char*>(&version), sizeof(version));
+    return result;
 }
 
 StatusOr<SpacePartitionMap> SpacePartitionMap::Deserialize(const std::string& data) {
     SpacePartitionMap map;
-    size_t pos = data.find('|');
-    if (pos == std::string::npos) return map;
-    map.space_name = data.substr(0, pos);
-    map.num_partitions = std::stoul(data.substr(pos + 1));
+    size_t pos = 0;
+    auto name_result = ReadString(data, pos);
+    if (!name_result.ok()) return name_result.status();
+    map.space_name = name_result.value();
+    if (pos + sizeof(num_partitions) > data.size()) return Status::InvalidArgument("Corrupt SpacePartitionMap");
+    std::memcpy(&map.num_partitions, &data[pos], sizeof(num_partitions));
+    pos += sizeof(num_partitions);
+    if (pos + sizeof(replication_factor) > data.size()) return Status::InvalidArgument("Corrupt SpacePartitionMap");
+    std::memcpy(&map.replication_factor, &data[pos], sizeof(replication_factor));
+    pos += sizeof(replication_factor);
+    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt SpacePartitionMap");
+    uint32_t assign_count;
+    std::memcpy(&assign_count, &data[pos], sizeof(assign_count));
+    pos += sizeof(assign_count);
+    for (uint32_t i = 0; i < assign_count; ++i) {
+        auto assign_data = ReadString(data, pos);
+        if (!assign_data.ok()) return assign_data.status();
+        auto assign_result = PartitionAssignment::Deserialize(assign_data.value());
+        if (!assign_result.ok()) return assign_result.status();
+        map.assignments[assign_result.value().partition_id] = assign_result.value();
+    }
+    if (pos + sizeof(version) > data.size()) return Status::InvalidArgument("Corrupt SpacePartitionMap");
+    std::memcpy(&map.version, &data[pos], sizeof(version));
     return map;
 }
 
@@ -69,28 +170,117 @@ StatusOr<PartitionAssignment> SpacePartitionMap::GetAssignment(PartitionID pid) 
 }
 
 std::string NodeInfo::Serialize() const {
-    return std::to_string(node_id) + "|" + address;
+    std::string result;
+    result.append(reinterpret_cast<const char*>(&node_id), sizeof(node_id));
+    AppendString(result, address);
+    AppendString(result, data_path);
+    result.append(reinterpret_cast<const char*>(&num_cpu_cores), sizeof(num_cpu_cores));
+    result.append(reinterpret_cast<const char*>(&total_memory_bytes), sizeof(total_memory_bytes));
+    result.append(reinterpret_cast<const char*>(&total_disk_bytes), sizeof(total_disk_bytes));
+    uint8_t state_val = static_cast<uint8_t>(state);
+    result.append(reinterpret_cast<const char*>(&state_val), sizeof(state_val));
+    return result;
 }
 
 StatusOr<NodeInfo> NodeInfo::Deserialize(const std::string& data) {
     NodeInfo info;
-    size_t pos = data.find('|');
-    if (pos == std::string::npos) return info;
-    info.node_id = std::stoul(data.substr(0, pos));
-    info.address = data.substr(pos + 1);
+    size_t pos = 0;
+    if (pos + sizeof(node_id) > data.size()) return Status::InvalidArgument("Corrupt NodeInfo");
+    std::memcpy(&info.node_id, &data[pos], sizeof(node_id));
+    pos += sizeof(node_id);
+    auto addr_result = ReadString(data, pos);
+    if (!addr_result.ok()) return addr_result.status();
+    info.address = addr_result.value();
+    auto path_result = ReadString(data, pos);
+    if (!path_result.ok()) return path_result.status();
+    info.data_path = path_result.value();
+    if (pos + sizeof(num_cpu_cores) > data.size()) return Status::InvalidArgument("Corrupt NodeInfo");
+    std::memcpy(&info.num_cpu_cores, &data[pos], sizeof(num_cpu_cores));
+    pos += sizeof(num_cpu_cores);
+    if (pos + sizeof(total_memory_bytes) > data.size()) return Status::InvalidArgument("Corrupt NodeInfo");
+    std::memcpy(&info.total_memory_bytes, &data[pos], sizeof(total_memory_bytes));
+    pos += sizeof(total_memory_bytes);
+    if (pos + sizeof(total_disk_bytes) > data.size()) return Status::InvalidArgument("Corrupt NodeInfo");
+    std::memcpy(&info.total_disk_bytes, &data[pos], sizeof(total_disk_bytes));
+    pos += sizeof(total_disk_bytes);
+    if (pos + sizeof(uint8_t) > data.size()) return Status::InvalidArgument("Corrupt NodeInfo");
+    uint8_t state_val;
+    std::memcpy(&state_val, &data[pos], sizeof(state_val));
+    info.state = static_cast<State>(state_val);
     return info;
 }
 
 std::string NodeStatus::Serialize() const {
-    return std::to_string(node_id) + "|" + std::to_string(cpu_usage_percent);
+    std::string result;
+    result.append(reinterpret_cast<const char*>(&node_id), sizeof(node_id));
+    result.append(reinterpret_cast<const char*>(&cpu_usage_percent), sizeof(cpu_usage_percent));
+    result.append(reinterpret_cast<const char*>(&memory_usage_percent), sizeof(memory_usage_percent));
+    result.append(reinterpret_cast<const char*>(&disk_usage_percent), sizeof(disk_usage_percent));
+    result.append(reinterpret_cast<const char*>(&qps), sizeof(qps));
+    result.append(reinterpret_cast<const char*>(&latency_ms), sizeof(latency_ms));
+    auto timestamp_sec = std::chrono::system_clock::to_time_t(timestamp);
+    result.append(reinterpret_cast<const char*>(&timestamp_sec), sizeof(timestamp_sec));
+    uint32_t leader_count = static_cast<uint32_t>(leader_partitions.size());
+    result.append(reinterpret_cast<const char*>(&leader_count), sizeof(leader_count));
+    for (auto pid : leader_partitions) {
+        result.append(reinterpret_cast<const char*>(&pid), sizeof(pid));
+    }
+    uint32_t follower_count = static_cast<uint32_t>(follower_partitions.size());
+    result.append(reinterpret_cast<const char*>(&follower_count), sizeof(follower_count));
+    for (auto pid : follower_partitions) {
+        result.append(reinterpret_cast<const char*>(&pid), sizeof(pid));
+    }
+    return result;
 }
 
 StatusOr<NodeStatus> NodeStatus::Deserialize(const std::string& data) {
     NodeStatus status;
-    size_t pos = data.find('|');
-    if (pos == std::string::npos) return status;
-    status.node_id = std::stoul(data.substr(0, pos));
-    status.cpu_usage_percent = std::stod(data.substr(pos + 1));
+    size_t pos = 0;
+    if (pos + sizeof(node_id) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+    std::memcpy(&status.node_id, &data[pos], sizeof(node_id));
+    pos += sizeof(node_id);
+    if (pos + sizeof(cpu_usage_percent) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+    std::memcpy(&status.cpu_usage_percent, &data[pos], sizeof(cpu_usage_percent));
+    pos += sizeof(cpu_usage_percent);
+    if (pos + sizeof(memory_usage_percent) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+    std::memcpy(&status.memory_usage_percent, &data[pos], sizeof(memory_usage_percent));
+    pos += sizeof(memory_usage_percent);
+    if (pos + sizeof(disk_usage_percent) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+    std::memcpy(&status.disk_usage_percent, &data[pos], sizeof(disk_usage_percent));
+    pos += sizeof(disk_usage_percent);
+    if (pos + sizeof(qps) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+    std::memcpy(&status.qps, &data[pos], sizeof(qps));
+    pos += sizeof(qps);
+    if (pos + sizeof(latency_ms) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+    std::memcpy(&status.latency_ms, &data[pos], sizeof(latency_ms));
+    pos += sizeof(latency_ms);
+    if (pos + sizeof(std::time_t) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+    std::time_t timestamp_sec;
+    std::memcpy(&timestamp_sec, &data[pos], sizeof(timestamp_sec));
+    status.timestamp = std::chrono::system_clock::from_time_t(timestamp_sec);
+    pos += sizeof(timestamp_sec);
+    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+    uint32_t leader_count;
+    std::memcpy(&leader_count, &data[pos], sizeof(leader_count));
+    pos += sizeof(leader_count);
+    for (uint32_t i = 0; i < leader_count; ++i) {
+        if (pos + sizeof(PartitionID) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+        PartitionID pid;
+        std::memcpy(&pid, &data[pos], sizeof(pid));
+        pos += sizeof(pid);
+        status.leader_partitions.push_back(pid);
+    }
+    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+    uint32_t follower_count;
+    std::memcpy(&follower_count, &data[pos], sizeof(follower_count));
+    pos += sizeof(follower_count);
+    for (uint32_t i = 0; i < follower_count; ++i) {
+        if (pos + sizeof(PartitionID) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
+        PartitionID pid;
+        std::memcpy(&pid, &data[pos], sizeof(pid));
+        pos += sizeof(pid);
+        status.follower_partitions.push_back(pid);
+    }
     return status;
 }
 
@@ -126,7 +316,48 @@ void MetadataService::MetadataStateMachine::ApplyCreateSpace(const SpaceDef& spa
     partition_map.num_partitions = space.partition_num;
     partition_map.replication_factor = space.replica_factor;
     partition_map.version = 1;
-    partition_maps_[space.name] = partition_map;
+    
+    // Get online nodes for partition assignment
+    std::vector<NodeID> online_nodes;
+    for (const auto& [id, node] : nodes_) {
+        if (node.state == NodeInfo::State::kOnline) {
+            online_nodes.push_back(id);
+        }
+    }
+    
+    // If no nodes are online, we can't assign partitions yet
+    // The assignments will be empty and need to be filled later via rebalancing
+    if (!online_nodes.empty()) {
+        // Sort nodes for deterministic assignment
+        std::sort(online_nodes.begin(), online_nodes.end());
+        
+        // Ensure we have enough nodes for replication factor
+        uint32_t effective_replicas = std::min(space.replica_factor,
+                                               static_cast<uint32_t>(online_nodes.size()));
+        
+        // Assign partitions using round-robin
+        for (PartitionID pid = 0; pid < space.partition_num; ++pid) {
+            PartitionAssignment assign;
+            assign.partition_id = pid;
+            assign.space_name = space.name;
+            assign.version = 1;
+            assign.state = PartitionAssignment::State::kNormal;
+            
+            // Leader: round-robin across nodes
+            size_t leader_idx = pid % online_nodes.size();
+            assign.leader_node = online_nodes[leader_idx];
+            
+            // Followers: next (replica_factor - 1) nodes
+            for (uint32_t r = 1; r < effective_replicas; ++r) {
+                size_t follower_idx = (leader_idx + r) % online_nodes.size();
+                assign.follower_nodes.push_back(online_nodes[follower_idx]);
+            }
+            
+            partition_map.assignments[pid] = std::move(assign);
+        }
+    }
+    
+    partition_maps_[space.name] = std::move(partition_map);
 }
 
 void MetadataService::MetadataStateMachine::ApplyDropSpace(const std::string& space_name) {
@@ -214,16 +445,155 @@ std::vector<NodeInfo> MetadataService::MetadataStateMachine::GetAliveNodes(uint6
     return alive_nodes;
 }
 
+std::vector<NodeID> MetadataService::MetadataStateMachine::CheckNodeHeartbeats(uint64_t timeout_sec) const {
+    std::vector<NodeID> failed_nodes;
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    auto now = std::chrono::system_clock::now();
+    for (const auto& [id, node] : nodes_) {
+        if (node.state == NodeInfo::State::kOnline) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                now - node.last_heartbeat).count();
+            if (elapsed > static_cast<int64_t>(timeout_sec)) {
+                failed_nodes.push_back(id);
+            }
+        }
+    }
+    return failed_nodes;
+}
+
+bool MetadataService::MetadataStateMachine::MarkNodeOffline(NodeID node_id) {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    auto it = nodes_.find(node_id);
+    if (it != nodes_.end() && it->second.state == NodeInfo::State::kOnline) {
+        it->second.state = NodeInfo::State::kOffline;
+        return true;
+    }
+    return false;
+}
+
 std::string MetadataService::MetadataStateMachine::Serialize() const {
-    // Simple serialization - in production use protobuf
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     std::string result;
-    result += "spaces:" + std::to_string(spaces_.size()) + ";";
-    result += "nodes:" + std::to_string(nodes_.size()) + ";";
+    // Magic + version
+    result.append("CMSN", 4);  // Cedar Meta Snapshot
+    uint32_t version = 1;
+    result.append(reinterpret_cast<const char*>(&version), sizeof(version));
+    
+    // spaces
+    uint32_t space_count = static_cast<uint32_t>(spaces_.size());
+    result.append(reinterpret_cast<const char*>(&space_count), sizeof(space_count));
+    for (const auto& [name, space] : spaces_) {
+        (void)name;
+        std::string space_data = space.Serialize();
+        AppendString(result, space_data);
+    }
+    
+    // nodes
+    uint32_t node_count = static_cast<uint32_t>(nodes_.size());
+    result.append(reinterpret_cast<const char*>(&node_count), sizeof(node_count));
+    for (const auto& [id, node] : nodes_) {
+        (void)id;
+        std::string node_data = node.Serialize();
+        AppendString(result, node_data);
+    }
+    
+    // node_statuses
+    uint32_t status_count = static_cast<uint32_t>(node_statuses_.size());
+    result.append(reinterpret_cast<const char*>(&status_count), sizeof(status_count));
+    for (const auto& [id, status] : node_statuses_) {
+        (void)id;
+        std::string status_data = status.Serialize();
+        AppendString(result, status_data);
+    }
+    
+    // partition_maps
+    uint32_t map_count = static_cast<uint32_t>(partition_maps_.size());
+    result.append(reinterpret_cast<const char*>(&map_count), sizeof(map_count));
+    for (const auto& [name, pmap] : partition_maps_) {
+        (void)name;
+        std::string map_data = pmap.Serialize();
+        AppendString(result, map_data);
+    }
+    
     return result;
 }
 
 Status MetadataService::MetadataStateMachine::Deserialize(const std::string& data) {
-    // Simple deserialization
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    spaces_.clear();
+    nodes_.clear();
+    node_statuses_.clear();
+    partition_maps_.clear();
+    
+    size_t pos = 0;
+    if (data.size() < 8) return Status::InvalidArgument("Snapshot data too short");
+    
+    // Magic
+    if (std::memcmp(data.data(), "CMSN", 4) != 0) {
+        return Status::InvalidArgument("Invalid snapshot magic");
+    }
+    pos += 4;
+    
+    // Version
+    uint32_t version;
+    std::memcpy(&version, &data[pos], sizeof(version));
+    pos += sizeof(version);
+    if (version != 1) {
+        return Status::InvalidArgument("Unsupported snapshot version");
+    }
+    
+    // spaces
+    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt snapshot: space count");
+    uint32_t space_count;
+    std::memcpy(&space_count, &data[pos], sizeof(space_count));
+    pos += sizeof(space_count);
+    for (uint32_t i = 0; i < space_count; ++i) {
+        auto space_data = ReadString(data, pos);
+        if (!space_data.ok()) return space_data.status();
+        auto space_result = SpaceDef::Deserialize(space_data.value());
+        if (!space_result.ok()) return space_result.status();
+        spaces_[space_result.value().name] = space_result.value();
+    }
+    
+    // nodes
+    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt snapshot: node count");
+    uint32_t node_count;
+    std::memcpy(&node_count, &data[pos], sizeof(node_count));
+    pos += sizeof(node_count);
+    for (uint32_t i = 0; i < node_count; ++i) {
+        auto node_data = ReadString(data, pos);
+        if (!node_data.ok()) return node_data.status();
+        auto node_result = NodeInfo::Deserialize(node_data.value());
+        if (!node_result.ok()) return node_result.status();
+        nodes_[node_result.value().node_id] = node_result.value();
+    }
+    
+    // node_statuses
+    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt snapshot: status count");
+    uint32_t status_count;
+    std::memcpy(&status_count, &data[pos], sizeof(status_count));
+    pos += sizeof(status_count);
+    for (uint32_t i = 0; i < status_count; ++i) {
+        auto status_data = ReadString(data, pos);
+        if (!status_data.ok()) return status_data.status();
+        auto status_result = NodeStatus::Deserialize(status_data.value());
+        if (!status_result.ok()) return status_result.status();
+        node_statuses_[status_result.value().node_id] = status_result.value();
+    }
+    
+    // partition_maps
+    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt snapshot: map count");
+    uint32_t map_count;
+    std::memcpy(&map_count, &data[pos], sizeof(map_count));
+    pos += sizeof(map_count);
+    for (uint32_t i = 0; i < map_count; ++i) {
+        auto map_data = ReadString(data, pos);
+        if (!map_data.ok()) return map_data.status();
+        auto map_result = SpacePartitionMap::Deserialize(map_data.value());
+        if (!map_result.ok()) return map_result.status();
+        partition_maps_[map_result.value().space_name] = map_result.value();
+    }
+    
     return Status::OK();
 }
 
@@ -336,9 +706,18 @@ Status MetadataService::RegisterNode(const NodeInfo& info) {
 }
 
 Status MetadataService::Heartbeat(const NodeStatus& status) {
-    // Heartbeat can be processed by any node
-    state_machine_.ApplyUpdateNodeStatus(status);
-    return Status::OK();
+    if (!raft_node_) {
+        return Status::IOError("Raft node not initialized");
+    }
+    // Heartbeat must go through Raft consensus to ensure all replicas see
+    // the same node status updates. Only the leader can propose.
+    if (!raft_node_->IsLeader()) {
+        return Status::InvalidArgument("Not leader");
+    }
+    RaftCommand cmd;
+    cmd.type = RaftCommandType::kUpdateNode;
+    cmd.payload = status.Serialize();
+    return raft_node_->Propose(cmd);
 }
 
 StatusOr<NodeInfo> MetadataService::GetNode(NodeID node_id) const {
@@ -392,10 +771,23 @@ void MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
             size_t p1 = cmd.payload.find('|');
             size_t p2 = cmd.payload.find('|', p1 + 1);
             if (p1 != std::string::npos && p2 != std::string::npos) {
-                std::string space_name = cmd.payload.substr(0, p1);
-                PartitionID pid = std::stoul(cmd.payload.substr(p1 + 1, p2 - p1 - 1));
-                NodeID leader = std::stoul(cmd.payload.substr(p2 + 1));
-                state_machine_.ApplyUpdatePartitionLeader(space_name, pid, leader);
+                try {
+                    std::string space_name = cmd.payload.substr(0, p1);
+                    unsigned long pid_raw = std::stoul(cmd.payload.substr(p1 + 1, p2 - p1 - 1));
+                    unsigned long leader_raw = std::stoul(cmd.payload.substr(p2 + 1));
+                    if (pid_raw > std::numeric_limits<PartitionID>::max() ||
+                        leader_raw > std::numeric_limits<NodeID>::max()) {
+                        std::cerr << "[MetadataService] kUpdateAssignment value out of range"
+                                  << std::endl;
+                        break;
+                    }
+                    PartitionID pid = static_cast<PartitionID>(pid_raw);
+                    NodeID leader = static_cast<NodeID>(leader_raw);
+                    state_machine_.ApplyUpdatePartitionLeader(space_name, pid, leader);
+                } catch (const std::exception& e) {
+                    std::cerr << "[MetadataService] Invalid kUpdateAssignment payload: "
+                              << e.what() << std::endl;
+                }
             }
             break;
         }
@@ -414,8 +806,40 @@ void MetadataService::OnStepDown() {
 
 void MetadataService::HeartbeatCheckLoop() {
     while (running_) {
-        // Check for node timeouts
-        // TODO: implement node failure detection
+        try {
+            // Check for node timeouts
+            auto failed_nodes = state_machine_.CheckNodeHeartbeats(config_.heartbeat_timeout_sec);
+            
+            // Mark failed nodes as offline
+            for (NodeID node_id : failed_nodes) {
+                if (state_machine_.MarkNodeOffline(node_id)) {
+                    std::cerr << "[MetaD] Node " << node_id << " marked as OFFLINE "
+                              << "(heartbeat timeout after " << config_.heartbeat_timeout_sec << "s)" << std::endl;
+                    
+                    // Trigger node change callbacks
+                    NodeChange change;
+                    change.node_id = node_id;
+                    change.change_type = NodeChangeType::kNodeLeft;
+                    change.timestamp = std::chrono::system_clock::now();
+                    
+                    std::vector<NodeChangeCallback> callbacks_copy;
+                    {
+                      std::lock_guard<std::mutex> cb_lock(callbacks_mutex_);
+                      callbacks_copy = node_callbacks_;
+                    }
+                    for (const auto& callback : callbacks_copy) {
+                        try {
+                            callback(change);
+                        } catch (...) {
+                            // 回调异常不应导致心跳检测线程崩溃
+                        }
+                    }
+                }
+            }
+        } catch (...) {
+            // 心跳检测循环异常不应导致后台线程崩溃
+        }
+        
         std::this_thread::sleep_for(std::chrono::seconds(config_.heartbeat_check_interval_sec));
     }
 }
@@ -428,71 +852,6 @@ void MetadataService::WatchPartitionMap(const std::string& space_name, Partition
 void MetadataService::WatchNodes(NodeChangeCallback callback) {
     std::lock_guard<std::mutex> lock(callbacks_mutex_);
     node_callbacks_.push_back(callback);
-}
-
-// MetaServiceClient implementation
-MetaServiceClient::MetaServiceClient() = default;
-MetaServiceClient::~MetaServiceClient() = default;
-
-Status MetaServiceClient::Connect(const std::vector<std::string>& meta_addresses) {
-    meta_addresses_ = meta_addresses;
-    // TODO: implement actual connection
-    return Status::OK();
-}
-
-StatusOr<NodeID> MetaServiceClient::GetPartitionLeader(const std::string& space_name, PartitionID partition_id) {
-    // Check cache first
-    {
-        std::shared_lock<std::shared_mutex> lock(cache_mutex_);
-        auto it = partition_map_cache_.find(space_name);
-        if (it != partition_map_cache_.end() && !it->second.IsExpired()) {
-            return it->second.map.GetLeader(partition_id);
-        }
-    }
-    // TODO: fetch from MetaD and update cache
-    return kInvalidNodeID;
-}
-
-StatusOr<NodeID> MetaServiceClient::GetRouteForKey(const std::string& space_name, const CedarKey& key) {
-    // Get partition for key, then get leader
-    // TODO: implement
-    return kInvalidNodeID;
-}
-
-void MetaServiceClient::RefreshCache(const std::string& space_name) {
-    std::unique_lock<std::shared_mutex> lock(cache_mutex_);
-    partition_map_cache_.erase(space_name);
-}
-
-StatusOr<PartitionAssignment> MetaServiceClient::GetPartitionAssignment(
-    const std::string& space_name, PartitionID partition_id) {
-    // TODO: implement RPC call
-    return PartitionAssignment();
-}
-
-StatusOr<SpacePartitionMap> MetaServiceClient::GetSpacePartitionMap(const std::string& space_name) {
-    // TODO: implement RPC call
-    return SpacePartitionMap();
-}
-
-StatusOr<NodeInfo> MetaServiceClient::GetNode(NodeID node_id) {
-    // TODO: implement RPC call
-    return NodeInfo();
-}
-
-Status MetaServiceClient::RegisterNode(const NodeInfo& info) {
-    // TODO: implement RPC call
-    return Status::OK();
-}
-
-Status MetaServiceClient::Heartbeat(const NodeStatus& status) {
-    // TODO: implement RPC call
-    return Status::OK();
-}
-
-void MetaServiceClient::WatchPartitionMap(const std::string& space_name,
-                                          std::function<void(const PartitionMapChange&)> callback) {
-    // TODO: implement watch
 }
 
 std::string MetadataService::SerializeState() const {

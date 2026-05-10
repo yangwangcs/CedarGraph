@@ -26,6 +26,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -263,13 +264,17 @@ class StorageRaftGroup {
   std::string snapshot_dir_;
   
   // Timers
-  std::chrono::steady_clock::time_point last_election_reset_;
-  std::chrono::steady_clock::time_point last_heartbeat_sent_;
+  std::chrono::steady_clock::time_point last_election_reset_{};
+  std::chrono::steady_clock::time_point last_heartbeat_sent_{};
   std::chrono::milliseconds election_timeout_{1000};
   
   // Threads
   std::unique_ptr<std::thread> raft_thread_;
-  
+
+  // Background RPC futures (heartbeat / vote / append entries)
+  std::vector<std::future<void>> bg_futures_;
+  std::mutex bg_future_mutex_;
+
   // Callbacks
   ApplyCallback apply_callback_;
   StateChangeCallback state_change_callback_;
@@ -291,6 +296,7 @@ class StorageRaftGroup {
   void BecomeFollower(uint64_t term);
   void BecomeCandidate();
   void BecomeLeader();
+  void PruneBgFutures();
   
   Status PersistState();
   Status LoadState();

@@ -499,12 +499,19 @@ WalReader::~WalReader() {
 }
 
 Status WalReader::Open() {
-  cedar::Status s = env_->NewRandomAccessFile(wal_file_, &file_);
+  // Check file size first - empty WAL files are valid (no records to replay)
+  cedar::Status s = env_->GetFileSize(wal_file_, &file_size_);
   if (!s.ok()) {
     return Status::IOError("WalReader", s.ToString());
   }
   
-  s = env_->GetFileSize(wal_file_, &file_size_);
+  if (file_size_ == 0) {
+    // Empty file - nothing to read
+    file_ = nullptr;
+    return Status::OK();
+  }
+  
+  s = env_->NewRandomAccessFile(wal_file_, &file_);
   if (!s.ok()) {
     return Status::IOError("WalReader", s.ToString());
   }
@@ -513,7 +520,7 @@ Status WalReader::Open() {
 }
 
 Status WalReader::ReadNextRecord(WalBatch* batch, uint64_t* sequence) {
-  if (current_offset_ + WalRecordHeader::kEncodedSize > file_size_) {
+  if (!file_ || current_offset_ + WalRecordHeader::kEncodedSize > file_size_) {
     return Status::NotFound("WalReader", "end of file");
   }
   
@@ -529,20 +536,25 @@ Status WalReader::ReadNextRecord(WalBatch* batch, uint64_t* sequence) {
   Slice header_input(header_slice.data(), header_slice.size());
   WalRecordHeader header;
   Status st = header.DecodeFrom(&header_input);
-  CEDAR_RETURN_IF_ERROR(st);
+  if (!st.ok()) {
+    // Header corrupted - advance by 1 byte to attempt recovery at next position
+    current_offset_ += 1;
+    return Status::Corruption("WalReader", "invalid header");
+  }
   
   *sequence = header.sequence;
   
-  // 读取数据
-  current_offset_ += WalRecordHeader::kEncodedSize;
+  uint64_t data_offset = current_offset_ + WalRecordHeader::kEncodedSize;
   
-  if (current_offset_ + header.data_length > file_size_) {
+  if (data_offset + header.data_length > file_size_) {
+    // Truncated record - skip what we can and report corruption
+    current_offset_ = data_offset + header.data_length;
     return Status::Corruption("WalReader", "truncated record");
   }
   
   std::unique_ptr<char[]> data_buf(new char[header.data_length]);
   cedar::Slice data_slice;
-  s = file_->Read(current_offset_, header.data_length, &data_slice, data_buf.get());
+  s = file_->Read(data_offset, header.data_length, &data_slice, data_buf.get());
   if (!s.ok()) {
     return Status::IOError("WalReader", s.ToString());
   }
@@ -550,15 +562,20 @@ Status WalReader::ReadNextRecord(WalBatch* batch, uint64_t* sequence) {
   // 验证 CRC
   uint32_t actual_crc = cedar::crc32c::Value(data_slice.data(), data_slice.size());
   if (actual_crc != header.crc32) {
+    // CRC mismatch - skip corrupted data and report corruption
+    current_offset_ = data_offset + header.data_length;
     return Status::Corruption("WalReader", "CRC mismatch");
   }
   
   // 解码 batch
   Slice data_input(data_slice.data(), data_slice.size());
   st = batch->DecodeFrom(&data_input);
-  CEDAR_RETURN_IF_ERROR(st);
+  if (!st.ok()) {
+    current_offset_ = data_offset + header.data_length;
+    return Status::Corruption("WalReader", "batch decode failed");
+  }
   
-  current_offset_ += header.data_length;
+  current_offset_ = data_offset + header.data_length;
   return Status::OK();
 }
 

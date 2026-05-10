@@ -146,10 +146,12 @@ class ServiceDiscovery {
   mutable std::mutex nodes_mutex_;
   
   // 后台线程
+  mutable std::mutex thread_mutex_;
   std::thread discovery_thread_;
   std::thread health_check_thread_;
   
   // 回调
+  mutable std::mutex callback_mutex_;
   NodeDiscoveredCallback discovered_callback_;
   NodeHealthChangedCallback health_changed_callback_;
   

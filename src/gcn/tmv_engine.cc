@@ -33,7 +33,7 @@ void TMVEngine::BootstrapVertex(uint64_t entity_id,
       break;
     }
 
-    chunk->next = nullptr;
+    chunk->next.store(nullptr, std::memory_order_relaxed);
     chunk->event_count.store(0, std::memory_order_relaxed);
     chunk->min_valid_from.store(std::numeric_limits<uint32_t>::max(),
                                 std::memory_order_relaxed);
@@ -62,7 +62,7 @@ void TMVEngine::BootstrapVertex(uint64_t entity_id,
     chunk->max_valid_to.store(max_to, std::memory_order_relaxed);
 
     if (prev_chunk) {
-      prev_chunk->next = chunk;
+      prev_chunk->next.store(chunk, std::memory_order_release);
     } else {
       first_chunk = chunk;
     }
@@ -73,9 +73,9 @@ void TMVEngine::BootstrapVertex(uint64_t entity_id,
   if (first_chunk) {
     TMVChunk* old_tail = tail_ptr->exchange(prev_chunk, std::memory_order_relaxed);
     if (old_tail) {
-      old_tail->next = first_chunk;
+      old_tail->next.store(first_chunk, std::memory_order_release);
     } else {
-      head_ptr->store(first_chunk, std::memory_order_relaxed);
+      head_ptr->store(first_chunk, std::memory_order_release);
     }
 
     count_ptr->fetch_add(total_bootstrapped, std::memory_order_relaxed);
@@ -155,7 +155,7 @@ void TMVEngine::AppendToEntry(TMVVertexEntry* entry,
     return;
   }
 
-  new_chunk->next = nullptr;
+  new_chunk->next.store(nullptr, std::memory_order_relaxed);
   new_chunk->event_count.store(0, std::memory_order_relaxed);
   new_chunk->min_valid_from.store(std::numeric_limits<uint32_t>::max(),
                                   std::memory_order_relaxed);
@@ -171,9 +171,9 @@ void TMVEngine::AppendToEntry(TMVVertexEntry* entry,
   // Link the new chunk
   TMVChunk* old_tail = tail_ptr->exchange(new_chunk, std::memory_order_relaxed);
   if (old_tail) {
-    old_tail->next = new_chunk;
+    old_tail->next.store(new_chunk, std::memory_order_release);
   } else {
-    head_ptr->store(new_chunk, std::memory_order_relaxed);
+    head_ptr->store(new_chunk, std::memory_order_release);
   }
 
   count_ptr->fetch_add(1, std::memory_order_relaxed);
@@ -202,6 +202,14 @@ std::vector<TMVEdge> TMVEngine::ScanAtTime(uint64_t entity_id,
                        ? entry->out_chunk_head.load(std::memory_order_relaxed)
                        : entry->in_chunk_head.load(std::memory_order_relaxed);
 
+  // Saturate query_time to uint32_t range to match TMVEdge timestamp fields.
+  // This prevents the chunk-level filter from incorrectly skipping all chunks
+  // when query_time exceeds UINT32_MAX.
+  const uint32_t effective_query_time =
+      (query_time > std::numeric_limits<uint32_t>::max())
+          ? std::numeric_limits<uint32_t>::max()
+          : static_cast<uint32_t>(query_time);
+
   // Step 1 & 2: Chunk skip + linear scan, collect edges where valid_from <= query_time
   TMVChunk* chunk = head;
   while (chunk) {
@@ -209,15 +217,15 @@ std::vector<TMVEdge> TMVEngine::ScanAtTime(uint64_t entity_id,
     uint32_t max_to = chunk->max_valid_to.load(std::memory_order_relaxed);
 
     // Chunk-level filter: skip if chunk cannot contain any valid edge
-    if (min_from > query_time || max_to < query_time) {
-      chunk = chunk->next;
+    if (min_from > effective_query_time || max_to < effective_query_time) {
+      chunk = chunk->next.load(std::memory_order_acquire);
       continue;
     }
 
     uint32_t count = chunk->event_count.load(std::memory_order_acquire);
     for (uint32_t i = 0; i < count; ++i) {
       const TMVEdge& edge = chunk->edges[i];
-      if (edge.valid_from <= query_time) {
+      if (edge.valid_from <= effective_query_time) {
         candidates.push_back(edge);
       }
     }
@@ -276,10 +284,10 @@ size_t TMVEngine::DropChunksBelowWatermark(std::atomic<TMVChunk*>* head_ptr,
   size_t dropped = 0;
 
   while (curr) {
-    TMVChunk* next = curr->next;
+    TMVChunk* next = curr->next.load(std::memory_order_acquire);
     if (curr->max_valid_to.load(std::memory_order_relaxed) < watermark) {
       if (prev) {
-        prev->next = next;
+        prev->next.store(next, std::memory_order_release);
       }
       pool_.Free(curr);
       ++dropped;

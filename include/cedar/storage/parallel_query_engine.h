@@ -33,6 +33,7 @@
 #include <mutex>
 #include <condition_variable>
 
+#include "cedar/core/threading.h"
 #include "cedar/types/cedar_types.h"
 #include "cedar/types/descriptor.h"
 
@@ -172,6 +173,7 @@ class ParallelQueryEngine {
 
  private:
   std::unique_ptr<ThreadPoolQueryExecutor> executor_;
+  std::unique_ptr<cedar::ThreadPool> thread_pool_;
 };
 
 }  // namespace cedar

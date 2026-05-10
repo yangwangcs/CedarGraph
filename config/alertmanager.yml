@@ -2,7 +2,9 @@
 # 告警管理器配置
 
 global:
-  smtp_smarthost: 'localhost:587'
+  # NOTE: Configure a real SMTP relay or use null sink for container env.
+  # 'localhost:587' will not work inside a container.
+  smtp_smarthost: 'null-sink:25'
   smtp_from: 'alerts@cedargraph.io'
   smtp_auth_username: ''
   smtp_auth_password: ''
@@ -47,7 +49,10 @@ receivers:
 
   - name: 'slack'
     slack_configs:
-      - api_url: '${SLACK_WEBHOOK_URL}'
+      # NOTE: Replace with actual Slack webhook URL before deployment.
+      # Alertmanager does NOT perform shell variable expansion.
+      # Use an init container or config-reloader to inject real values.
+      - api_url: 'https://hooks.slack.com/services/PLACEHOLDER'
         channel: '#cedar-alerts'
         title: 'CedarGraph Alert'
         text: |
@@ -59,7 +64,8 @@ receivers:
 
   - name: 'pagerduty'
     pagerduty_configs:
-      - service_key: '${PAGERDUTY_KEY}'
+      # NOTE: Replace with actual PagerDuty integration key before deployment.
+      - service_key: 'PLACEHOLDER'
         description: '{{ .GroupLabels.alertname }}'
 
 # Inhibit rules

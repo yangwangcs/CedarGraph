@@ -37,7 +37,9 @@ void EventApplier::ApplyInternal(const GraphCDCEvent& event) {
     edge.valid_to = event.valid_from;
   }
 
-  tmv_engine_->AppendEdge(event.entity_id, Direction::kOut, edge, true);
+  if (tmv_engine_) {
+    tmv_engine_->AppendEdge(event.entity_id, Direction::kOut, edge, true);
+  }
 }
 
 void EventApplier::DrainBuffer() {

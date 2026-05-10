@@ -14,7 +14,13 @@
 #include <thread>
 #include <grpcpp/grpcpp.h>
 
-#include "src/service/graph_service_router.h"
+#include "cedar/service/graph_service_router.h"
+#include "cedar/governance/health_checker.h"
+#include "cedar/governance/config_manager.h"
+#include "cedar/dtx/storage/metrics_collector.h"
+#include "cedar/dtx/monitoring.h"
+#include "cedar/dtx/raft/grpc_tls.h"
+#include "cedar/common/json_logger.h"
 #include "gcn_service.grpc.pb.h"
 
 std::atomic<bool> g_running{true};
@@ -29,15 +35,7 @@ void SignalHandler(int sig) {
 }
 
 void PrintBanner() {
-  std::cout << R"(
-   ____                 _     _              
-  / ___|_ __ __ _ _ __ | |__ (_)_ __   __ _  
- | |  _| '__/ _` | '_ \| '_ \| | '_ \ / _` | 
- | |_| | | | (_| | |_) | | | | | | | | (_| | 
-  \____|_|  \__,_| .__/|_| |_|_|_| |_|\__, | 
-                 |_|                  |___/  
-         Graph Query Router Service v2.0
-)" << std::endl;
+  std::cout << "CedarGraph GraphD v2.0 starting..." << std::endl;
 }
 
 struct Config {
@@ -45,11 +43,29 @@ struct Config {
   std::string bind_address = "0.0.0.0";
   std::string meta_server = "127.0.0.1:9559";
   std::string gcn_server = "127.0.0.1:9780";
+  cedar::dtx::raft::TlsConfig tls;
 };
+
+static void LoadConfigFromFile(Config* config, const std::string& path) {
+  cedar::governance::ConfigManager cm;
+  if (!cm.LoadFromFile(path).ok()) return;
+  if (cm.HasKey("graphd.port")) config->port = cm.GetInt("graphd.port", config->port);
+  if (cm.HasKey("graphd.bind_address")) config->bind_address = cm.GetString("graphd.bind_address", config->bind_address);
+  if (cm.HasKey("graphd.meta_server")) config->meta_server = cm.GetString("graphd.meta_server", config->meta_server);
+  if (cm.HasKey("graphd.gcn_server")) config->gcn_server = cm.GetString("graphd.gcn_server", config->gcn_server);
+  config->tls.enabled = cm.GetBool("tls.enabled", config->tls.enabled);
+  config->tls.server_cert_file = cm.GetString("tls.server_cert", config->tls.server_cert_file);
+  config->tls.server_key_file = cm.GetString("tls.server_key", config->tls.server_key_file);
+  config->tls.ca_cert_file = cm.GetString("tls.ca_cert", config->tls.ca_cert_file);
+  config->tls.mtls_enabled = cm.GetBool("tls.mtls", config->tls.mtls_enabled);
+  config->tls.client_cert_file = cm.GetString("tls.client_cert", config->tls.client_cert_file);
+  config->tls.client_key_file = cm.GetString("tls.client_key", config->tls.client_key_file);
+}
 
 Config ParseArgs(int argc, char* argv[]) {
   Config config;
-  
+  std::string config_file;
+
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
     if ((arg == "--port" || arg == "-p") && i + 1 < argc) {
@@ -60,6 +76,8 @@ Config ParseArgs(int argc, char* argv[]) {
       config.meta_server = argv[++i];
     } else if ((arg == "--gcn" || arg == "-g") && i + 1 < argc) {
       config.gcn_server = argv[++i];
+    } else if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
+      config_file = argv[++i];
     } else if (arg == "--help" || arg == "-h") {
       std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
       std::cout << "Options:" << std::endl;
@@ -67,11 +85,16 @@ Config ParseArgs(int argc, char* argv[]) {
       std::cout << "  -b, --bind <addr>      Bind address (default: 0.0.0.0)" << std::endl;
       std::cout << "  -m, --meta <addr>      MetaD server address (default: 127.0.0.1:9559)" << std::endl;
       std::cout << "  -g, --gcn <addr>       GCN server address (default: 127.0.0.1:9780)" << std::endl;
+      std::cout << "  -c, --config <path>    Configuration file (YAML)" << std::endl;
       std::cout << "  -h, --help             Show this help" << std::endl;
       exit(0);
     }
   }
-  
+
+  if (!config_file.empty()) {
+    LoadConfigFromFile(&config, config_file);
+  }
+
   return config;
 }
 
@@ -80,19 +103,19 @@ int main(int argc, char* argv[]) {
   
   Config config = ParseArgs(argc, argv);
   
-  std::cout << "Configuration:" << std::endl;
-  std::cout << "  Port:      " << config.port << std::endl;
-  std::cout << "  Bind:      " << config.bind_address << std::endl;
-  std::cout << "  MetaD:     " << config.meta_server << std::endl;
-  std::cout << "  GCN:       " << config.gcn_server << std::endl;
-  std::cout << std::endl;
+  JSON_LOG(INFO).KV("service", "graphd")
+                  .KV("port", config.port)
+                  .KV("bind", config.bind_address)
+                  .KV("meta_server", config.meta_server)
+                  .KV("gcn_server", config.gcn_server);
 
   signal(SIGINT, SignalHandler);
   signal(SIGTERM, SignalHandler);
 
   // Create router service
   auto router = std::make_unique<cedar::service::GraphServiceRouter>();
-  
+  router->SetTlsConfig(config.tls);
+
   // Initialize router
   auto status = router->Initialize(config.meta_server, config.gcn_server);
   if (!status.ok()) {
@@ -112,8 +135,14 @@ int main(int argc, char* argv[]) {
   // Build and start gRPC server
   std::string server_address = config.bind_address + ":" + std::to_string(config.port);
   grpc::ServerBuilder builder;
-  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-  builder.RegisterService(router.get());
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(config.tls);
+  if (!creds) {
+    std::cerr << "[GraphD] Failed to create server credentials, using insecure" << std::endl;
+    creds = grpc::InsecureServerCredentials();
+  }
+  builder.AddListeningPort(server_address, creds);
+  builder.RegisterService(static_cast<cedar::query::QueryService::Service*>(router.get()));
+  builder.RegisterService(static_cast<cedargrpc::CedarGraphService::Service*>(router.get()));
   
   g_grpc_server = builder.BuildAndStart();
   if (!g_grpc_server) {
@@ -125,11 +154,50 @@ int main(int argc, char* argv[]) {
   std::cout << "[GraphD] Ready for queries. Press Ctrl+C to stop." << std::endl;
   std::cout << std::endl;
 
+  // Start health check and metrics HTTP endpoints
+  cedar::governance::HealthChecker health_checker;
+  health_checker.RegisterComponent("graphd", [&router]() {
+    return router ? cedar::governance::HealthStatus::kHealthy 
+                  : cedar::governance::HealthStatus::kUnhealthy;
+  });
+  auto health_status = health_checker.StartHttpEndpoint("0.0.0.0", 9668);
+  if (health_status.ok()) {
+    std::cout << "[GraphD] Health endpoint on http://0.0.0.0:9668/health" << std::endl;
+  }
+
+  cedar::dtx::storage::MetricsCollector metrics_collector;
+  cedar::dtx::storage::MetricsCollector::Config metrics_config;
+  metrics_config.endpoint = ":9667";
+  metrics_config.enable_http_server = true;
+  auto metrics_status = metrics_collector.Initialize(metrics_config);
+  if (metrics_status.ok()) {
+    std::cout << "[GraphD] Metrics endpoint on http://0.0.0.0:9667/metrics" << std::endl;
+  }
+
+  auto* alert_mgr = cedar::dtx::monitoring::AlertManager::GetInstance();
+  cedar::dtx::monitoring::AlertManager::Config alert_config;
+  alert_mgr->Initialize(alert_config);
+  {
+    cedar::dtx::monitoring::AlertRule rule;
+    rule.name = "GraphDHighLatency";
+    rule.description = "GraphD query latency is too high";
+    rule.severity = cedar::dtx::monitoring::AlertSeverity::kWarning;
+    rule.condition_metric = "cedar_graphd_query_latency_seconds";
+    rule.threshold = 2.0;
+    rule.comparison = ">";
+    rule.duration = std::chrono::seconds(60);
+    alert_mgr->AddRule(rule);
+  }
+  std::cout << "[GraphD] AlertManager initialized with default rules" << std::endl;
+
   // Wait for shutdown
   g_grpc_server->Wait();
 
   // Cleanup
   std::cout << "[GraphD] Shutting down..." << std::endl;
+  health_checker.StopHttpEndpoint();
+  metrics_collector.Shutdown();
+  alert_mgr->Shutdown();
   router->Stop();
   std::cout << "[GraphD] Stopped." << std::endl;
 

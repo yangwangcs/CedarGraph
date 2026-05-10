@@ -1,0 +1,63 @@
+name: Snyk Security Scan
+
+on:
+  push:
+    branches: [main, master, production-readiness]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    # Run every Monday at 00:00 UTC
+    - cron: '0 0 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  snyk-fs:
+    name: Snyk Filesystem Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --sarif-file-output=snyk-fs.sarif
+
+      - name: Upload Snyk scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk-fs.sarif
+          category: snyk-fs
+
+  snyk-container:
+    name: Snyk Container Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -f cedar-docker-compose/Dockerfile -t cedargraph:test .
+
+      - name: Run Snyk to check Docker image
+        uses: snyk/actions/docker@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: cedargraph:test
+          args: --sarif-file-output=snyk-container.sarif
+
+      - name: Upload Snyk container scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk-container.sarif
+          category: snyk-container

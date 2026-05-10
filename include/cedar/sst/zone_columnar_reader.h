@@ -214,6 +214,9 @@ class ZoneColumnarSstReader {
   // 带谓词的范围扫描
   void Scan(const ReadPredicate& predicate, ScanCallback callback) const;
   
+  // 获取序列化的 TemporalBloomFilter 数据（如果 SST 包含）
+  const std::string& GetTemporalFilterData() const { return temporal_filter_data_; }
+  
   // 延迟物化扫描：先过滤，再物化匹配的 Value
   // 1. 先扫描 Zone 0/3，收集匹配的行号
   // 2. 再批量读取 Zone 4
@@ -358,6 +361,9 @@ class ZoneColumnarSstReader {
   
   // Bloom Filter
   BloomFilter bloom_filter_;
+  
+  // Temporal Bloom Filter 序列化数据
+  std::string temporal_filter_data_;
   
   // Block 缓存（LRU，可配置大小）
   mutable std::unordered_map<uint32_t, std::shared_ptr<BlockCacheEntry>> block_cache_;

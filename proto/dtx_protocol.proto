@@ -1,0 +1,243 @@
+syntax = "proto3";
+
+package cedar.dtx;
+
+// Distributed Transaction Service - Two-Phase Commit Protocol
+service DTXService {
+  // 2PC Protocol RPCs
+  rpc Prepare(PrepareRequest) returns (PrepareResponse);
+  rpc Commit(CommitRequest) returns (CommitResponse);
+  rpc Abort(AbortRequest) returns (AbortResponse);
+
+  // Transaction State Inquiry
+  rpc Inquire(InquireRequest) returns (InquireResponse);
+
+  // Participant Registration
+  rpc RegisterParticipant(RegisterRequest) returns (RegisterResponse);
+}
+
+// =============================================================================
+// 2PC Protocol Messages
+// =============================================================================
+
+message PrepareRequest {
+  // Transaction identification
+  string txn_id = 1;
+  string coordinator_id = 2;
+  uint64 prepare_version = 3;
+
+  // Read/Write sets
+  repeated CedarKey reads = 4;
+  repeated CedarKey writes = 5;
+
+  // Transaction configuration
+  int32 isolation_level = 6;  // 0=READ_UNCOMMITTED, 1=READ_COMMITTED, 2=SERIALIZABLE
+  int64 timeout_ms = 7;
+
+  // Timestamp for OCC validation
+  TimestampInfo timestamp_info = 8;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message PrepareResponse {
+  bool success = 1;
+  string error_msg = 2;
+
+  // Vote from participant
+  bool vote_commit = 3;       // true = vote commit, false = vote abort
+  bool can_prepare = 4;      // participant can prepare
+
+  // Version information for OCC
+  repeated VersionInfo committed_versions = 5;
+
+  // Participant endpoint for coordinator records
+  string participant_id = 6;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message CommitRequest {
+  string txn_id = 1;
+  string coordinator_id = 2;
+  uint64 commit_version = 3;
+
+  // Optional: pre-computed commit timestamp
+  TimestampInfo timestamp_info = 4;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message CommitResponse {
+  bool success = 1;
+  string error_msg = 2;
+
+  // Participant commit timestamp
+  uint64 committed_at = 3;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message AbortRequest {
+  string txn_id = 1;
+  string coordinator_id = 2;
+  string reason = 3;
+
+  // Who initiated the abort
+  string initiator = 4;  // "coordinator" or participant_id
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message AbortResponse {
+  bool success = 1;
+  string error_msg = 2;
+
+  // Clean up status
+  bool cleanup_complete = 3;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+// =============================================================================
+// State Inquiry Messages
+// =============================================================================
+
+message InquireRequest {
+  string txn_id = 1;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message InquireResponse {
+  string txn_id = 1;
+
+  // Transaction state enumeration
+  enum TxnState {
+    UNKNOWN = 0;
+    PREPARING = 1;
+    PREPARED = 2;
+    COMMITTING = 3;
+    COMMITTED = 4;
+    ABORTING = 5;
+    ABORTED = 6;
+  
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+  TxnState state = 2;
+
+  // Additional info
+  uint64 version = 3;
+  string details = 4;
+}
+
+// =============================================================================
+// Participant Registration
+// =============================================================================
+
+message RegisterRequest {
+  string txn_id = 1;
+  string participant_id = 2;
+  string endpoint = 3;
+
+  // Participant role
+  enum Role {
+    PARTICIPANT = 0;
+    COORDINATOR = 1;
+    OBSERVER = 2;
+  
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+  Role role = 4;
+}
+
+message RegisterResponse {
+  bool success = 1;
+  string error_msg = 2;
+  string assigned_id = 3;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+// =============================================================================
+// Data Types
+// =============================================================================
+
+message CedarKey {
+  uint64 entity_id = 1;
+  uint32 type_flags = 2;       // EntityType (lower 16 bits)
+  uint32 column_id = 3;
+  uint64 timestamp = 4;
+  uint32 sequence = 5;
+  uint64 target_id = 6;        // For edges
+  uint32 partition_id = 7;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message VersionInfo {
+  CedarKey key = 1;
+  uint64 committed_version = 2;
+  uint64 timestamp = 3;
+
+  // Descriptor payload
+  bytes descriptor_data = 4;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message TimestampInfo {
+  uint64 wall_time = 1;       // Physical clock
+  uint64 logical_counter = 2;  // Logical counter
+  uint64 server_id = 3;       // Server that generated this timestamp
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+// =============================================================================
+// Utility Messages
+// =============================================================================
+
+message HealthCheckRequest {
+  string service_id = 1;
+  int64 timestamp = 2;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  string status = 2;
+  int64 current_time = 3;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message BatchRequest {
+  repeated PrepareRequest prepares = 1;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}
+
+message BatchResponse {
+  repeated PrepareResponse responses = 1;
+
+  // Reserved for future extensions
+  reserved 100 to 199;
+}

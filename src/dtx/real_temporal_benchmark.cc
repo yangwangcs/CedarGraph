@@ -199,12 +199,14 @@ std::shared_ptr<StorageClient> BenchmarkStorageClientPool::GetClient(const std::
     }
   }
   
+  if (clients_.empty()) return nullptr;
   size_t index = next_index_.fetch_add(1) % clients_.size();
   return clients_[index];
 }
 
 std::shared_ptr<StorageClient> BenchmarkStorageClientPool::GetClient() {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (clients_.empty()) return nullptr;
   size_t index = next_index_.fetch_add(1) % clients_.size();
   return clients_[index];
 }

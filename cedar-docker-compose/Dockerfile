@@ -58,15 +58,14 @@ RUN mkdir -p /data /logs /etc/cedar /usr/local/bin && \
 COPY --from=builder /build/build/cedar-graphd /usr/local/bin/
 COPY --from=builder /build/build/cedar-metad /usr/local/bin/
 COPY --from=builder /build/build/cedar-storaged /usr/local/bin/
-COPY --from=builder /build/build/cedar-cli /usr/local/bin/
-COPY --from=builder /build/build/cedar-admin /usr/local/bin/
+COPY --from=builder /build/build/cedar-queryd /usr/local/bin/
 
-# 复制入口脚本
-COPY scripts/graphd-entrypoint.sh /usr/local/bin/
-COPY scripts/cedar-admin.sh /usr/local/bin/cedar-admin
+# 复制运维脚本
 COPY scripts/cedar-cli.sh /usr/local/bin/cedar-cli
+COPY scripts/cedar_health_monitor.sh /usr/local/bin/cedar_health_monitor.sh
+COPY scripts/cedar_health_check.sh /usr/local/bin/cedar_health_check.sh
 
-RUN chmod +x /usr/local/bin/*.sh && \
+RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/cedar_health_monitor.sh /usr/local/bin/cedar_health_check.sh && \
     chmod +x /usr/local/bin/cedar-*
 
 # 设置环境变量

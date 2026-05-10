@@ -41,8 +41,10 @@ std::string LogEntry::ToJson() const {
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
       timestamp.time_since_epoch()).count() % 1000;
   
+  struct tm timeinfo;
+  localtime_r(&time_t, &timeinfo);
   oss << "{";
-  oss << "\"timestamp\":\"" << std::put_time(std::localtime(&time_t), 
+  oss << "\"timestamp\":\"" << std::put_time(&timeinfo,
                                                "%Y-%m-%dT%H:%M:%S");
   oss << "." << std::setfill('0') << std::setw(3) << ms << "Z\",";
   oss << "\"level\":\"" << LogLevelToString(level) << "\",";
@@ -76,7 +78,9 @@ std::string LogEntry::ToText() const {
   
   auto time_t = std::chrono::system_clock::to_time_t(timestamp);
   
-  oss << "[" << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S") << "]";
+  struct tm timeinfo;
+  localtime_r(&time_t, &timeinfo);
+  oss << "[" << std::put_time(&timeinfo, "%Y-%m-%d %H:%M:%S") << "]";
   oss << " [" << LogLevelToString(level) << "]";
   oss << " [" << component << "]";
   oss << " " << message;
@@ -163,8 +167,10 @@ void FileSink::OpenNewFile() {
   auto time_t = std::chrono::system_clock::to_time_t(now);
   
   std::ostringstream oss;
+  struct tm timeinfo;
+  localtime_r(&time_t, &timeinfo);
   oss << config_.filename_prefix << "_";
-  oss << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S");
+  oss << std::put_time(&timeinfo, "%Y%m%d_%H%M%S");
   oss << "_" << file_index_++ << ".log";
   
   current_filename_ = config_.log_dir + "/" + oss.str();

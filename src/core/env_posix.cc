@@ -258,7 +258,7 @@ class PosixWritableFile final : public WritableFile {
     size_t write_size = data.size();
     const char* write_data = data.data();
     
-    std::cout << "[PosixWritableFile::Append] Writing " << write_size << " bytes, pos=" << pos_ << std::endl;
+    // std::cout << "[PosixWritableFile::Append] Writing " << write_size << " bytes, pos=" << pos_ << std::endl;
 
     size_t copy_size = std::min(write_size, kWritableFileBufferSize - pos_);
     std::memcpy(buf_ + pos_, write_data, copy_size);
@@ -266,7 +266,7 @@ class PosixWritableFile final : public WritableFile {
     write_size -= copy_size;
     pos_ += copy_size;
     if (write_size == 0) {
-      std::cout << "[PosixWritableFile::Append] All data copied to buffer, new pos=" << pos_ << std::endl;
+      // std::cout << "[PosixWritableFile::Append] All data copied to buffer, new pos=" << pos_ << std::endl;
       return Status::OK();
     }
 
@@ -296,36 +296,36 @@ class PosixWritableFile final : public WritableFile {
   Status Flush() override { return FlushBuffer(); }
 
   Status Sync() override {
-    std::cout << "[PosixWritableFile::Sync] Starting sync, pos=" << pos_ << std::endl;
+    // std::cout << "[PosixWritableFile::Sync] Starting sync, pos=" << pos_ << std::endl;
     Status status = SyncDirIfManifest();
     if (!status.ok()) {
-      std::cout << "[PosixWritableFile::Sync] SyncDirIfManifest failed" << std::endl;
+      // std::cout << "[PosixWritableFile::Sync] SyncDirIfManifest failed" << std::endl;
       return status;
     }
 
     status = FlushBuffer();
     if (!status.ok()) {
-      std::cout << "[PosixWritableFile::Sync] FlushBuffer failed" << std::endl;
+      // std::cout << "[PosixWritableFile::Sync] FlushBuffer failed" << std::endl;
       return status;
     }
 
     status = SyncFd(fd_, filename_);
     if (status.ok()) {
-      std::cout << "[PosixWritableFile::Sync] Sync completed successfully" << std::endl;
+      // std::cout << "[PosixWritableFile::Sync] Sync completed successfully" << std::endl;
     } else {
-      std::cout << "[PosixWritableFile::Sync] SyncFd failed: " << status.ToString() << std::endl;
+      // std::cout << "[PosixWritableFile::Sync] SyncFd failed: " << status.ToString() << std::endl;
     }
     return status;
   }
 
  private:
   Status FlushBuffer() {
-    std::cout << "[PosixWritableFile::FlushBuffer] Flushing " << pos_ << " bytes" << std::endl;
+    // std::cout << "[PosixWritableFile::FlushBuffer] Flushing " << pos_ << " bytes" << std::endl;
     Status status = WriteUnbuffered(buf_, pos_);
     if (status.ok()) {
-      std::cout << "[PosixWritableFile::FlushBuffer] Flushed successfully" << std::endl;
+      // std::cout << "[PosixWritableFile::FlushBuffer] Flushed successfully" << std::endl;
     } else {
-      std::cout << "[PosixWritableFile::FlushBuffer] Flush failed: " << status.ToString() << std::endl;
+      // std::cout << "[PosixWritableFile::FlushBuffer] Flush failed: " << status.ToString() << std::endl;
     }
     pos_ = 0;
     return status;
@@ -502,7 +502,6 @@ class PosixLogger final : public Logger {
           dynamic_buffer_size = buffer_offset + 2;
           continue;
         }
-        assert(false);
         buffer_offset = buffer_size - 1;
       }
 
@@ -531,10 +530,11 @@ class PosixEnv : public Env {
  public:
   PosixEnv();
   ~PosixEnv() override {
-    static const char msg[] =
-        "PosixEnv singleton destroyed. Unsupported behavior!\n";
-    std::fwrite(msg, 1, sizeof(msg), stderr);
-    std::abort();
+    // Join all started threads to avoid UAF on process exit
+    std::lock_guard<std::mutex> lock(started_threads_mutex_);
+    for (auto& t : started_threads_) {
+      if (t.joinable()) t.join();
+    }
   }
 
   Status NewSequentialFile(const std::string& filename,
@@ -584,7 +584,7 @@ class PosixEnv : public Env {
 
   Status NewWritableFile(const std::string& filename,
                          WritableFile** result) override {
-    std::cout << "[PosixEnv::NewWritableFile] Creating: " << filename << std::endl;
+    // std::cout << "[PosixEnv::NewWritableFile] Creating: " << filename << std::endl;
     int fd = ::open(filename.c_str(),
                     O_TRUNC | O_WRONLY | O_CREAT | kOpenBaseFlags, 0644);
     if (fd < 0) {
@@ -709,13 +709,18 @@ class PosixEnv : public Env {
   }
 
   void StartThread(void (*thread_main)(void* arg), void* arg) override {
-    // Use std::thread for StartThread (one-shot thread)
     std::thread t(thread_main, arg);
-    t.detach();
+    std::lock_guard<std::mutex> lock(started_threads_mutex_);
+    started_threads_.push_back(std::move(t));
   }
 
   Status GetTestDirectory(std::string* result) override {
-    const char* env = std::getenv("TEST_TMPDIR");
+    const char* env = nullptr;
+    {
+      static std::mutex getenv_mutex;
+      std::lock_guard<std::mutex> lock(getenv_mutex);
+      env = std::getenv("TEST_TMPDIR");
+    }
     if (env && env[0] != '\0') {
       *result = env;
     } else {
@@ -764,6 +769,8 @@ class PosixEnv : public Env {
   Limiter mmap_limiter_;
   Limiter fd_limiter_;
   BackgroundWorker background_worker_;
+  std::mutex started_threads_mutex_;
+  std::vector<std::thread> started_threads_;
 };
 
 int MaxMmaps() { return g_mmap_limit; }

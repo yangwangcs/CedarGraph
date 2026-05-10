@@ -21,8 +21,14 @@
 #include <brpc/channel.h>
 #include <brpc/server.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <atomic>
 #include <fstream>
 #include <future>
+#include <shared_mutex>
 
 namespace cedar {
 namespace dtx {
@@ -41,14 +47,19 @@ void MetaRaftStateMachine::on_apply(braft::Iterator& iter) {
         std::string data = iter.data().to_string();
         
         if (data.size() < sizeof(uint8_t) + sizeof(uint32_t)) {
-            LOG(ERROR) << "Log entry too small";
-            continue;
+            LOG(FATAL) << "Corrupt log entry: size too small at index=" << iter.index();
+            return;
         }
         
         uint8_t cmd_type = static_cast<uint8_t>(data[0]);
         
         uint32_t payload_len;
         memcpy(&payload_len, data.data() + sizeof(uint8_t), sizeof(uint32_t));
+        
+        if (data.size() < sizeof(uint8_t) + sizeof(uint32_t) + payload_len) {
+            LOG(FATAL) << "Corrupt log entry: payload truncated at index=" << iter.index();
+            return;
+        }
         
         std::string payload = data.substr(sizeof(uint8_t) + sizeof(uint32_t), payload_len);
         
@@ -71,24 +82,72 @@ void MetaRaftStateMachine::on_snapshot_save(
         braft::Closure* done) {
     
     std::string snapshot_path = writer->get_path() + "/meta_snapshot.bin";
-    
     std::string snapshot_data;
     if (meta_service_) {
         snapshot_data = meta_service_->SerializeState();
     }
     
-    std::ofstream file(snapshot_path, std::ios::binary);
-    if (!file) {
-        LOG(ERROR) << "Failed to open snapshot file for writing: " << snapshot_path;
+    // Atomic snapshot write: write to temp file, fsync, then rename
+    std::string temp_path = snapshot_path + ".tmp";
+    int fd = ::open(temp_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        LOG(ERROR) << "Failed to open snapshot temp file: " << temp_path;
         if (done) {
-            done->status().set_error(EIO, "Failed to open snapshot file");
+            done->status().set_error(EIO, "Failed to open snapshot temp file");
             done->Run();
         }
         return;
     }
     
-    file.write(snapshot_data.data(), snapshot_data.size());
-    file.close();
+    ssize_t written = ::write(fd, snapshot_data.data(), snapshot_data.size());
+    if (written < 0 || static_cast<size_t>(written) != snapshot_data.size()) {
+        LOG(ERROR) << "Failed to write snapshot data";
+        ::close(fd);
+        ::unlink(temp_path.c_str());
+        if (done) {
+            done->status().set_error(EIO, "Failed to write snapshot data");
+            done->Run();
+        }
+        return;
+    }
+    
+    // Ensure data is on physical storage
+    #ifdef __APPLE__
+        if (fcntl(fd, F_FULLFSYNC) < 0) {
+            LOG(ERROR) << "F_FULLFSYNC failed for snapshot";
+            ::close(fd);
+            ::unlink(temp_path.c_str());
+            if (done) {
+                done->status().set_error(EIO, "F_FULLFSYNC failed");
+                done->Run();
+            }
+            return;
+        }
+    #else
+        if (fsync(fd) < 0) {
+            LOG(ERROR) << "fsync failed for snapshot";
+            ::close(fd);
+            ::unlink(temp_path.c_str());
+            if (done) {
+                done->status().set_error(EIO, "fsync failed");
+                done->Run();
+            }
+            return;
+        }
+    #endif
+    
+    ::close(fd);
+    
+    // Atomic rename
+    if (::rename(temp_path.c_str(), snapshot_path.c_str()) < 0) {
+        LOG(ERROR) << "rename failed for snapshot";
+        ::unlink(temp_path.c_str());
+        if (done) {
+            done->status().set_error(EIO, "rename failed");
+            done->Run();
+        }
+        return;
+    }
     
     writer->add_file("meta_snapshot.bin");
     
@@ -102,22 +161,34 @@ void MetaRaftStateMachine::on_snapshot_save(
 int MetaRaftStateMachine::on_snapshot_load(braft::SnapshotReader* reader) {
     std::string snapshot_path = reader->get_path() + "/meta_snapshot.bin";
     
-    std::ifstream file(snapshot_path, std::ios::binary);
-    if (!file) {
+    int fd = ::open(snapshot_path.c_str(), O_RDONLY);
+    if (fd < 0) {
         LOG(ERROR) << "Failed to open snapshot file for reading: " << snapshot_path;
         return -1;
     }
     
-    file.seekg(0, std::ios::end);
-    size_t size = file.tellg();
-    file.seekg(0, std::ios::beg);
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        LOG(ERROR) << "Failed to stat snapshot file";
+        ::close(fd);
+        return -1;
+    }
     
-    std::string snapshot_data(size, '\0');
-    file.read(snapshot_data.data(), size);
-    file.close();
+    std::string snapshot_data(st.st_size, '\0');
+    ssize_t n = ::read(fd, &snapshot_data[0], st.st_size);
+    ::close(fd);
+    
+    if (n < 0 || n != st.st_size) {
+        LOG(ERROR) << "Failed to read complete snapshot data (expected "
+                   << st.st_size << ", got " << n << ")";
+        return -1;
+    }
     
     if (meta_service_) {
-        meta_service_->DeserializeState(snapshot_data);
+        if (!meta_service_->DeserializeState(snapshot_data)) {
+            LOG(ERROR) << "Snapshot deserialization failed";
+            return -1;
+        }
     }
     
     LOG(INFO) << "MetadataService snapshot loaded from " << snapshot_path;
@@ -126,10 +197,16 @@ int MetaRaftStateMachine::on_snapshot_load(braft::SnapshotReader* reader) {
 
 void MetaRaftStateMachine::on_leader_start(int64_t term) {
     LOG(INFO) << "MetadataService became leader, term=" << term;
+    if (meta_service_) {
+        meta_service_->OnBecomeLeader();
+    }
 }
 
 void MetaRaftStateMachine::on_leader_stop(const butil::Status& status) {
     LOG(INFO) << "MetadataService stopped being leader: " << status.error_str();
+    if (meta_service_) {
+        meta_service_->OnStepDown();
+    }
 }
 
 void MetaRaftStateMachine::on_shutdown() {
@@ -196,14 +273,17 @@ public:
         node_options.snapshot_uri = "local://" + options.data_path + "/snapshot";
         
         braft::PeerId self(options.listen_address);
-        node_ = new braft::Node("meta_service", self);
-        
-        int ret = node_->init(node_options);
-        if (ret != 0) {
-            LOG(ERROR) << "Failed to init braft node";
-            delete node_;
-            node_ = nullptr;
-            return ::cedar::Status::IOError("Failed to init braft node");
+        {
+            std::lock_guard<std::mutex> lock(node_mutex_);
+            node_ = new braft::Node("meta_service", self);
+            
+            int ret = node_->init(node_options);
+            if (ret != 0) {
+                LOG(ERROR) << "Failed to init braft node";
+                delete node_;
+                node_ = nullptr;
+                return ::cedar::Status::IOError("Failed to init braft node");
+            }
         }
         
         initialized_ = true;
@@ -211,20 +291,25 @@ public:
     }
     
     void Shutdown() {
-        if (node_) {
-            node_->shutdown(nullptr);
-            node_->join();
-            delete node_;
-            node_ = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(node_mutex_);
+            if (node_) {
+                node_->shutdown(nullptr);
+                node_->join();
+                delete node_;
+                node_ = nullptr;
+            }
         }
         initialized_ = false;
     }
     
     bool IsLeader() const {
+        std::lock_guard<std::mutex> lock(node_mutex_);
         return node_ && node_->is_leader();
     }
     
     std::optional<NodeID> GetLeaderId() const {
+        std::lock_guard<std::mutex> lock(node_mutex_);
         if (!node_ || !node_->is_leader()) {
             return std::nullopt;
         }
@@ -233,9 +318,15 @@ public:
     
     class ProposeClosure : public braft::Closure {
      public:
-      explicit ProposeClosure(std::promise<::cedar::Status>* promise) : promise_(promise) {}
+      explicit ProposeClosure(std::shared_ptr<std::promise<::cedar::Status>> promise)
+          : promise_(std::move(promise)) {}
       
       void Run() override {
+        bool expected = false;
+        if (!done_.compare_exchange_strong(expected, true)) {
+          delete this;
+          return;
+        }
         if (this->status().ok()) {
           promise_->set_value(::cedar::Status::OK());
         } else {
@@ -245,12 +336,16 @@ public:
       }
       
      private:
-      std::promise<::cedar::Status>* promise_;
+      std::shared_ptr<std::promise<::cedar::Status>> promise_;
+      std::atomic<bool> done_{false};
     };
     
     ::cedar::Status Propose(const RaftCommand& command) {
-        if (!node_ || !node_->is_leader()) {
-            return ::cedar::Status::InvalidArgument("Not a leader");
+        {
+            std::lock_guard<std::mutex> lock(node_mutex_);
+            if (!node_ || !node_->is_leader()) {
+                return ::cedar::Status::InvalidArgument("Not a leader");
+            }
         }
         
         butil::IOBuf data;
@@ -263,12 +358,18 @@ public:
         braft::Task task;
         task.data = &data;
         
-        std::promise<::cedar::Status> promise;
-        task.done = new ProposeClosure(&promise);
+        auto promise = std::make_shared<std::promise<::cedar::Status>>();
+        task.done = new ProposeClosure(promise);
         
-        node_->apply(task);
+        {
+            std::lock_guard<std::mutex> lock(node_mutex_);
+            if (!node_) {
+                return ::cedar::Status::IOError("Node shut down");
+            }
+            node_->apply(task);
+        }
         
-        auto future = promise.get_future();
+        auto future = promise->get_future();
         if (future.wait_for(std::chrono::seconds(5)) == std::future_status::timeout) {
           return ::cedar::Status::IOError("BRaftNode", "propose timeout");
         }
@@ -277,6 +378,7 @@ public:
     }
     
     ::cedar::Status AddPeer(const std::string& peer_address) {
+        std::lock_guard<std::mutex> lock(node_mutex_);
         if (!node_ || !node_->is_leader()) {
             return ::cedar::Status::InvalidArgument("Not a leader");
         }
@@ -287,6 +389,7 @@ public:
     }
     
     ::cedar::Status RemovePeer(const std::string& peer_address) {
+        std::lock_guard<std::mutex> lock(node_mutex_);
         if (!node_ || !node_->is_leader()) {
             return ::cedar::Status::InvalidArgument("Not a leader");
         }
@@ -297,6 +400,7 @@ public:
     }
     
     BRaftNode::NodeStatus GetStatus() const {
+        std::lock_guard<std::mutex> lock(node_mutex_);
         BRaftNode::NodeStatus status;
         if (!node_) {
             return status;
@@ -317,6 +421,7 @@ public:
     
 private:
     braft::Node* node_;
+    mutable std::mutex node_mutex_;
     MetadataService* meta_service_;
     std::unique_ptr<MetaRaftStateMachine> state_machine_;
     BRaftNode::Options options_;

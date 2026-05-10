@@ -256,6 +256,26 @@ struct CedarOptions {
     // 每分片 overhead 约 4KB
     return total_entries * 72 + skeleton_cache_shards * 4096;
   }
+  
+  // ============================================================================
+  // Phase 4c: ParallelQueryEngine Configuration
+  // ============================================================================
+  
+  // 是否启用并行查询引擎（默认: true）
+  // 对多属性顶点查询自动并行化列读取
+  bool enable_parallel_query = true;
+  
+  // 并行查询线程池大小 (0 = 硬件线程数)
+  int parallel_query_threads = 0;
+  
+  // 单查询最大并发列数
+  int parallel_query_max_columns = 8;
+  
+  // 小查询阈值（列数少于此值不启用并行）
+  int parallel_query_threshold = 2;
+  
+  // 查询超时（毫秒）
+  int parallel_query_timeout_ms = 5000;
 };
 
 // Read options

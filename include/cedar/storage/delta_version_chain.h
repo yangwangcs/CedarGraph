@@ -55,7 +55,7 @@
 #include <shared_mutex>
 #include <vector>
 
-#include "cedar/storage/delta_version_encoder.h"
+// DeltaVersionEncoder removed in cleanup.
 #include "cedar/types/descriptor.h"
 #include "cedar/types/cedar_key.h"
 

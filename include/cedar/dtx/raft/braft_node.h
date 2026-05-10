@@ -46,7 +46,7 @@ namespace cedar {
 namespace dtx {
 
 // Forward declarations
-class MetaService;
+class MetadataService;
 
 // =============================================================================
 // Raft Command Types
@@ -75,7 +75,7 @@ struct RaftCommand {
 
 class MetaRaftStateMachine : public braft::StateMachine {
  public:
-  explicit MetaRaftStateMachine(MetaService* meta_service);
+  explicit MetaRaftStateMachine(MetadataService* meta_service);
   ~MetaRaftStateMachine() override = default;
 
   // Apply Raft log entry to state machine
@@ -98,7 +98,7 @@ class MetaRaftStateMachine : public braft::StateMachine {
   void on_start_following(const braft::LeaderChangeContext& ctx) override;
 
  private:
-  MetaService* meta_service_;
+  MetadataService* meta_service_;
   std::atomic<int64_t> last_term_{0};
 };
 
@@ -121,7 +121,7 @@ class BRaftNode {
   ~BRaftNode();
 
   // Initialize and start Raft node
-  Status Init(const Options& options, MetaService* meta_service);
+  Status Init(const Options& options, MetadataService* meta_service);
   
   // Shutdown node
   void Shutdown();
@@ -140,7 +140,7 @@ class BRaftNode {
   Status RemovePeer(const std::string& peer_address);
   
   // Get node status
-  struct Status {
+  struct NodeStatus {
     bool is_leader;
     int64_t term;
     int64_t committed_index;
@@ -148,7 +148,7 @@ class BRaftNode {
     std::string leader_address;
     size_t peer_count;
   };
-  Status GetStatus() const;
+  NodeStatus GetStatus() const;
   
   // Set callback for leadership changes
   void SetLeaderChangeCallback(
@@ -168,7 +168,7 @@ class RaftNodeFactory {
   // Create appropriate Raft implementation based on config
   static std::unique_ptr<BRaftNode> Create(
       const BRaftNode::Options& options,
-      MetaService* meta_service);
+      MetadataService* meta_service);
   
   // Check if braft is available
   static bool IsBraftAvailable();

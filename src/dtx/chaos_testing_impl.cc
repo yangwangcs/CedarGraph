@@ -65,38 +65,46 @@ void FaultInjector::FaultWorkerLoop() {
   auto start_time = std::chrono::steady_clock::now();
   
   while (!shutdown_) {
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - start_time);
-    
-    // Check each fault spec
-    {
-      std::lock_guard<std::mutex> lock(specs_mutex_);
-      for (const auto& spec : specs_) {
-        if (elapsed >= spec.start_after && 
-            elapsed < spec.start_after + spec.duration) {
-          // Fault should be active
-          std::lock_guard<std::mutex> fault_lock(faults_mutex_);
-          for (NodeID node : spec.target_nodes) {
-            if (active_faults_[node].insert(spec.type).second) {
-              // Newly inserted
-              ApplyFault(spec);
-              
-              std::lock_guard<std::mutex> cb_lock(callback_mutex_);
-              for (auto& cb : callbacks_) {
-                cb(spec.type, node, true);
+    try {
+      auto now = std::chrono::steady_clock::now();
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - start_time);
+      
+      // Check each fault spec
+      {
+        std::lock_guard<std::mutex> lock(specs_mutex_);
+        for (const auto& spec : specs_) {
+          if (elapsed >= spec.start_after && 
+              elapsed < spec.start_after + spec.duration) {
+            // Fault should be active
+            std::lock_guard<std::mutex> fault_lock(faults_mutex_);
+            for (NodeID node : spec.target_nodes) {
+              if (active_faults_[node].insert(spec.type).second) {
+                // Newly inserted
+                ApplyFault(spec);
+                
+                std::lock_guard<std::mutex> cb_lock(callback_mutex_);
+                for (auto& cb : callbacks_) {
+                  cb(spec.type, node, true);
+                }
               }
             }
           }
         }
       }
+      
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    } catch (...) {
+      // 故障注入线程异常不应导致崩溃
     }
-    
-    std::this_thread::sleep_for(std::chrono::seconds(1));
   }
   
   // Clean up all faults on shutdown
-  ClearAllFaults();
+  try {
+    ClearAllFaults();
+  } catch (...) {
+    // 清理异常不应传播
+  }
 }
 
 void FaultInjector::ApplyFault(const FaultSpec& spec) {
@@ -300,7 +308,9 @@ void LongTermStabilityTest::WorkloadGeneratorLoop() {
     UpdateLatencyStats(latency_us);
     
     // Rate limiting
-    std::this_thread::sleep_for(std::chrono::microseconds(1000000 / config_.target_throughput / 4));
+    if (config_.target_throughput > 0) {
+      std::this_thread::sleep_for(std::chrono::microseconds(1000000 / config_.target_throughput / 4));
+    }
   }
 }
 

@@ -5,129 +5,166 @@
 // =============================================================================
 // CedarGraph MetaD - Metadata Service
 // =============================================================================
-// Standalone metadata service for CedarGraph cluster
-// Provides partition topology, node registration, and cluster state management
+// Production metadata service using braft for consensus and gRPC for client
+// communication.
+//
+// Dependencies:
+//   - braft (third_party/braft) for Raft consensus
+//   - brpc (third_party/brpc) for Raft internal communication (via braft)
+//   - gRPC for MetaService client API
+// =============================================================================
 
+#include <csignal>
 #include <iostream>
 #include <string>
-#include <csignal>
-#include <atomic>
-#include <chrono>
 #include <thread>
-#include <grpcpp/grpcpp.h>
+#include <atomic>
 
-#include "src/service/meta_service_handler.h"
+#include "cedar/dtx/meta_service.h"
+#include "cedar/dtx/meta_service_grpc.h"
+#include "cedar/dtx/raft/grpc_tls.h"
+
+namespace cedar {
+namespace dtx {
 
 std::atomic<bool> g_running{true};
-std::unique_ptr<grpc::Server> g_grpc_server;
+std::unique_ptr<MetaServiceGrpcServer> g_grpc_server;
+std::unique_ptr<MetadataService> g_meta_service;
 
-void SignalHandler(int sig) {
-  std::cout << "\n[MetaD] Received signal " << sig << ", shutting down..." << std::endl;
-  g_running = false;
-  if (g_grpc_server) {
-    g_grpc_server->Shutdown();
+void SignalHandler(int signal) {
+  if (signal == SIGINT || signal == SIGTERM) {
+    std::cout << "[MetaD] Received signal " << signal << ", shutting down..." << std::endl;
+    g_running = false;
+    if (g_grpc_server) {
+      g_grpc_server->Stop();
+    }
   }
 }
 
-void PrintBanner() {
-  std::cout << R"(
-   __  __       _        _                 _ 
-  |  \/  | __ _| |_ _ __| |__   __ _ _ __ | |_
-  | |\/| |/ _` | __| '__| '_ \ / _` | '_ \| __|
-  | |  | | (_| | |_| |  | |_) | (_| | | | | |_ 
-  |_|  |_|\__,_|\__|_|  |_.__/ \__,_|_| |_|\__|
-              Meta Data Service v1.0
-)" << std::endl;
-}
-
-struct Config {
-  int port = 9559;
-  std::string data_dir = "/tmp/cedar/metad";
-  std::string bind_address = "0.0.0.0";
+struct MetadConfig {
+  uint32_t node_id = 0;
+  std::string listen_address = "0.0.0.0:9559";
+  std::string advertise_address;
+  std::string data_dir = "./meta_data";
+  std::vector<std::pair<uint32_t, std::string>> peers;
+  
+  // Raft settings
+  uint64_t election_timeout_ms = 1000;
+  uint64_t heartbeat_interval_ms = 100;
+  
+  // Heartbeat check
+  uint64_t heartbeat_timeout_sec = 10;
+  uint64_t heartbeat_check_interval_sec = 5;
 };
 
-Config ParseArgs(int argc, char* argv[]) {
-  Config config;
-  
-  for (int i = 1; i < argc; i++) {
+MetadConfig ParseArgs(int argc, char* argv[]) {
+  MetadConfig config;
+  for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
-    if ((arg == "--port" || arg == "-p") && i + 1 < argc) {
-      config.port = std::stoi(argv[++i]);
-    } else if ((arg == "--data_dir" || arg == "-d") && i + 1 < argc) {
+    if (arg == "--node_id" && i + 1 < argc) {
+      config.node_id = std::stoul(argv[++i]);
+    } else if (arg == "--listen" && i + 1 < argc) {
+      config.listen_address = argv[++i];
+    } else if (arg == "--advertise" && i + 1 < argc) {
+      config.advertise_address = argv[++i];
+    } else if (arg == "--data_dir" && i + 1 < argc) {
       config.data_dir = argv[++i];
-    } else if ((arg == "--bind" || arg == "-b") && i + 1 < argc) {
-      config.bind_address = argv[++i];
+    } else if (arg == "--peer" && i + 1 < argc) {
+      std::string peer = argv[++i];
+      size_t colon = peer.find(':');
+      if (colon != std::string::npos) {
+        try {
+          uint32_t id = std::stoul(peer.substr(0, colon));
+          std::string addr = peer.substr(colon + 1);
+          config.peers.push_back({id, addr});
+        } catch (...) {
+          std::cerr << "[MetaD] Invalid peer format: " << peer << std::endl;
+        }
+      }
+    } else if (arg == "--election_timeout" && i + 1 < argc) {
+      config.election_timeout_ms = std::stoul(argv[++i]);
+    } else if (arg == "--heartbeat_interval" && i + 1 < argc) {
+      config.heartbeat_interval_ms = std::stoul(argv[++i]);
     } else if (arg == "--help" || arg == "-h") {
-      std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
-      std::cout << "Options:" << std::endl;
-      std::cout << "  -p, --port <port>      Port to listen on (default: 9559)" << std::endl;
-      std::cout << "  -d, --data_dir <dir>   Data directory (default: /tmp/cedar/metad)" << std::endl;
-      std::cout << "  -b, --bind <addr>      Bind address (default: 0.0.0.0)" << std::endl;
-      std::cout << "  -h, --help             Show this help" << std::endl;
+      std::cout << "CedarGraph Metadata Server (MetaD)\n"
+                << "Usage: " << argv[0] << " [options]\n"
+                << "\n"
+                << "Options:\n"
+                << "  --node_id <id>              Node ID (default: 0)\n"
+                << "  --listen <addr>             Listen address (default: 0.0.0.0:9559)\n"
+                << "  --advertise <addr>          Advertise address for Raft\n"
+                << "  --data_dir <path>           Data directory (default: ./meta_data)\n"
+                << "  --peer <id:address>         Add a peer node (repeatable)\n"
+                << "  --election_timeout <ms>     Raft election timeout (default: 1000)\n"
+                << "  --heartbeat_interval <ms>   Raft heartbeat interval (default: 100)\n"
+                << "  -h, --help                  Show this help\n";
       exit(0);
     }
   }
-  
   return config;
 }
 
+}  // namespace dtx
+}  // namespace cedar
+
 int main(int argc, char* argv[]) {
-  PrintBanner();
+  using namespace cedar::dtx;
   
-  Config config = ParseArgs(argc, argv);
+  MetadConfig config = ParseArgs(argc, argv);
   
-  std::cout << "Configuration:" << std::endl;
-  std::cout << "  Port:      " << config.port << std::endl;
-  std::cout << "  Bind:      " << config.bind_address << std::endl;
-  std::cout << "  Data Dir:  " << config.data_dir << std::endl;
-  std::cout << std::endl;
+  std::cout << "[MetaD] CedarGraph Metadata Server starting..." << std::endl;
+  std::cout << "[MetaD] Node ID: " << config.node_id << std::endl;
+  std::cout << "[MetaD] Listen: " << config.listen_address << std::endl;
+  std::cout << "[MetaD] Data dir: " << config.data_dir << std::endl;
+  std::cout << "[MetaD] Peers: " << config.peers.size() << std::endl;
   
   // Setup signal handlers
-  signal(SIGINT, SignalHandler);
-  signal(SIGTERM, SignalHandler);
+  std::signal(SIGINT, SignalHandler);
+  std::signal(SIGTERM, SignalHandler);
   
-  // Create service handler
-  auto service_handler = std::make_unique<cedar::service::MetaServiceHandler>();
+  // Create metadata service with braft consensus
+  g_meta_service = std::make_unique<MetadataService>();
   
-  // Initialize
-  auto status = service_handler->Initialize(config.data_dir);
-  if (!status.ok()) {
-    std::cerr << "[MetaD] Failed to initialize: " << status.ToString() << std::endl;
+  MetaServiceConfig meta_config;
+  meta_config.node_id = config.node_id;
+  meta_config.listen_address = config.listen_address;
+  meta_config.advertise_address = config.advertise_address;
+  meta_config.data_dir = config.data_dir;
+  meta_config.peers = config.peers;
+  meta_config.election_timeout_ms = config.election_timeout_ms;
+  meta_config.heartbeat_timeout_sec = config.heartbeat_timeout_sec;
+  meta_config.heartbeat_check_interval_sec = config.heartbeat_check_interval_sec;
+  
+  auto init_status = g_meta_service->Initialize(meta_config);
+  if (!init_status.ok()) {
+    std::cerr << "[MetaD] Failed to initialize metadata service: " 
+              << init_status.ToString() << std::endl;
     return 1;
   }
-  std::cout << "[MetaD] Service handler initialized" << std::endl;
+  std::cout << "[MetaD] Metadata service initialized with braft consensus" << std::endl;
   
-  // Start background tasks
-  status = service_handler->Start();
-  if (!status.ok()) {
-    std::cerr << "[MetaD] Failed to start: " << status.ToString() << std::endl;
+  // Start gRPC server for client API
+  g_grpc_server = std::make_unique<MetaServiceGrpcServer>();
+  auto grpc_status = g_grpc_server->Start(config.listen_address, g_meta_service.get());
+  if (!grpc_status.ok()) {
+    std::cerr << "[MetaD] Failed to start gRPC server: " 
+              << grpc_status.ToString() << std::endl;
+    g_meta_service->Shutdown();
     return 1;
   }
-  std::cout << "[MetaD] Background tasks started" << std::endl;
+  std::cout << "[MetaD] gRPC server listening on " << config.listen_address << std::endl;
   
-  // Build and start gRPC server
-  std::string server_address = config.bind_address + ":" + std::to_string(config.port);
-  grpc::ServerBuilder builder;
-  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-  builder.RegisterService(service_handler.get());
-  
-  g_grpc_server = builder.BuildAndStart();
-  if (!g_grpc_server) {
-    std::cerr << "[MetaD] Failed to start gRPC server" << std::endl;
-    return 1;
+  // Wait for shutdown signal
+  std::cout << "[MetaD] Server running. Press Ctrl+C to stop." << std::endl;
+  while (g_running) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
   }
   
-  std::cout << "[MetaD] gRPC server listening on " << server_address << std::endl;
-  std::cout << "[MetaD] Ready for connections. Press Ctrl+C to stop." << std::endl;
-  std::cout << std::endl;
-  
-  // Wait for shutdown
-  g_grpc_server->Wait();
-  
-  // Cleanup
+  // Graceful shutdown
   std::cout << "[MetaD] Shutting down..." << std::endl;
-  service_handler->Stop();
-  std::cout << "[MetaD] Stopped." << std::endl;
+  g_grpc_server->Stop();
+  g_meta_service->Shutdown();
+  std::cout << "[MetaD] Shutdown complete." << std::endl;
   
   return 0;
 }

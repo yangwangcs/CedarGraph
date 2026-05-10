@@ -17,6 +17,7 @@
 // =============================================================================
 
 #include "cedar/dtx/grpc_connection_pool.h"
+#include "cedar/dtx/raft/grpc_tls.h"
 
 #include <iostream>
 #include <chrono>
@@ -120,18 +121,40 @@ std::shared_ptr<PooledChannel> GrpcConnectionPool::Acquire() {
   auto channel = available_connections_.front();
   available_connections_.pop();
   in_use_count_++;
-  
+
   // 检查健康状态
   if (!CheckHealth(channel)) {
-    // 连接不健康，创建新连接
+    // 检查该端点连接数是否已达上限
+    size_t endpoint_count = 0;
+    auto ep_it = endpoint_connections_.find(channel->GetAddress());
+    if (ep_it != endpoint_connections_.end()) {
+      endpoint_count = ep_it->second.size();
+    }
+    if (endpoint_count >= config_.max_connections_per_endpoint) {
+      in_use_count_--;
+      return nullptr;
+    }
+    // 连接不健康，创建新连接替换
+    auto old_address = channel->GetAddress();
+    auto old_channel = channel;
     lock.unlock();
-    channel = CreateConnection(channel->GetAddress());
+    channel = CreateConnection(old_address);
     lock.lock();
-    
+
     if (!channel) {
       in_use_count_--;
       return nullptr;
     }
+    // 从 endpoint_connections_ 中移除旧的不健康连接
+    auto ep_it2 = endpoint_connections_.find(old_address);
+    if (ep_it2 != endpoint_connections_.end()) {
+      auto& conns = ep_it2->second;
+      conns.erase(std::remove(conns.begin(), conns.end(), old_channel), conns.end());
+      if (conns.empty()) {
+        endpoint_connections_.erase(ep_it2);
+      }
+    }
+    endpoint_connections_[old_address].push_back(channel);
   }
   
   channel->IncrementUseCount();
@@ -156,17 +179,21 @@ std::shared_ptr<PooledChannel> GrpcConnectionPool::AcquireForEndpoint(
     for (auto& conn : it->second) {
       // 检查是否在可用队列中
       // 简化实现：直接返回第一个健康连接
-      if (CheckHealth(conn)) {
+      if (conn->GetUseCount() == 0 && CheckHealth(conn)) {
         in_use_count_++;
         conn->IncrementUseCount();
         total_acquisitions_++;
         return conn;
       }
     }
+    // 已达上限且没有健康连接，拒绝创建
+    if (it->second.size() >= config_.max_connections_per_endpoint) {
+      return nullptr;
+    }
   }
-  
+
   lock.unlock();
-  
+
   // 创建新连接
   auto conn = CreateConnection(endpoint);
   if (conn) {
@@ -239,18 +266,27 @@ GrpcConnectionPool::Stats GrpcConnectionPool::GetStats() const {
   return stats;
 }
 
-void GrpcConnectionPool::Shutdown() {
+void GrpcConnectionPool::Shutdown() noexcept {
   std::cout << "[ConnectionPool] Shutting down..." << std::endl;
   
   shutdown_ = true;
   cv_.notify_all();
   
-  if (health_check_thread_.joinable()) {
-    health_check_thread_.join();
+  std::lock_guard<std::mutex> join_lock(shutdown_mutex_);
+  try {
+    if (health_check_thread_.joinable()) {
+      health_check_thread_.join();
+    }
+  } catch (...) {
+    std::cerr << "[GrpcConnectionPool] Thread join exception" << std::endl;
   }
   
-  if (cleanup_thread_.joinable()) {
-    cleanup_thread_.join();
+  try {
+    if (cleanup_thread_.joinable()) {
+      cleanup_thread_.join();
+    }
+  } catch (...) {
+    std::cerr << "[GrpcConnectionPool] Thread join exception" << std::endl;
   }
   
   // 清空连接池
@@ -305,17 +341,19 @@ void GrpcConnectionPool::IdleCleanupLoop() {
     size_t removed = 0;
     
     // 清理空闲时间过长的连接，但保留最小连接数
-    while (!available_connections_.empty() && 
-           keep_queue.size() < config_.min_connections_per_endpoint * endpoints_.size()) {
+    size_t kept = 0;
+    while (!available_connections_.empty()) {
       auto conn = available_connections_.front();
       available_connections_.pop();
       
       auto idle_time = std::chrono::duration_cast<std::chrono::seconds>(
           now - conn->GetCreateTime()).count();
       
+      // 保留条件：空闲时间未超过上限，或未达到每个端点的最小连接数
       if (idle_time < config_.max_idle_time.count() || 
-          keep_queue.size() < config_.min_connections_per_endpoint) {
+          kept < config_.min_connections_per_endpoint * endpoints_.size()) {
         keep_queue.push(conn);
+        kept++;
       } else {
         removed++;
       }
@@ -342,13 +380,17 @@ std::shared_ptr<PooledChannel> GrpcConnectionPool::CreateConnection(
   
   // 创建通道
   auto channel = grpc::CreateCustomChannel(
-      endpoint, 
-      grpc::InsecureChannelCredentials(),
+      endpoint,
+      cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv(),
       args);
-  
-  // 等待连接就绪（非阻塞检查）
-  auto state = channel->GetState(true);
-  
+
+  // 等待连接就绪（避免将未连接好的通道放入连接池）
+  auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(2);
+  if (!channel->WaitForConnected(deadline)) {
+    std::cerr << "[ConnectionPool] Channel to " << endpoint
+              << " did not connect within 2s" << std::endl;
+  }
+
   return std::make_shared<PooledChannel>(endpoint, channel);
 }
 

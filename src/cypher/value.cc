@@ -1,6 +1,9 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 
 #include "cedar/cypher/value.h"
+#include <cmath>
+#include <functional>
+#include <string>
 
 namespace cedar {
 namespace cypher {
@@ -160,43 +163,271 @@ bool Value::operator>=(const Value& other) const {
 }
 
 Value Value::operator+(const Value& other) const {
-  // Minimal stub
-  (void)other;
-  return *this;
+  // Null propagation
+  if (IsNull() || other.IsNull()) return Value();
+  
+  // Numeric addition
+  if (IsInt() && other.IsInt()) {
+    return Value(GetInt() + other.GetInt());
+  }
+  if (IsNumeric() && other.IsNumeric()) {
+    double a = IsInt() ? static_cast<double>(GetInt()) : GetFloat();
+    double b = other.IsInt() ? static_cast<double>(other.GetInt()) : other.GetFloat();
+    return Value(a + b);
+  }
+  
+  // String concatenation
+  if (IsString() || other.IsString()) {
+    return Value(ToString() + other.ToString());
+  }
+  
+  // Duration + Duration
+  if (IsDuration() && other.IsDuration()) {
+    return Value(GetDuration() + other.GetDuration());
+  }
+  
+  // Timestamp + Duration
+  if (IsTimestamp() && other.IsDuration()) {
+    return Value(Timestamp(GetTimestamp().value() + other.GetDuration().microseconds));
+  }
+  if (IsDuration() && other.IsTimestamp()) {
+    return Value(Timestamp(other.GetTimestamp().value() + GetDuration().microseconds));
+  }
+  
+  return Value();
 }
 
 Value Value::operator-(const Value& other) const {
-  (void)other;
-  return *this;
+  if (IsNull() || other.IsNull()) return Value();
+  
+  if (IsInt() && other.IsInt()) {
+    return Value(GetInt() - other.GetInt());
+  }
+  if (IsNumeric() && other.IsNumeric()) {
+    double a = IsInt() ? static_cast<double>(GetInt()) : GetFloat();
+    double b = other.IsInt() ? static_cast<double>(other.GetInt()) : other.GetFloat();
+    return Value(a - b);
+  }
+  
+  // Duration - Duration
+  if (IsDuration() && other.IsDuration()) {
+    return Value(GetDuration() - other.GetDuration());
+  }
+  
+  // Timestamp - Duration
+  if (IsTimestamp() && other.IsDuration()) {
+    return Value(Timestamp(GetTimestamp().value() - other.GetDuration().microseconds));
+  }
+  
+  // Timestamp - Timestamp = Duration
+  if (IsTimestamp() && other.IsTimestamp()) {
+    return Value(Duration(GetTimestamp().value() - other.GetTimestamp().value()));
+  }
+  
+  return Value();
 }
 
 Value Value::operator*(const Value& other) const {
-  (void)other;
-  return *this;
+  if (IsNull() || other.IsNull()) return Value();
+  
+  if (IsInt() && other.IsInt()) {
+    return Value(GetInt() * other.GetInt());
+  }
+  if (IsNumeric() && other.IsNumeric()) {
+    double a = IsInt() ? static_cast<double>(GetInt()) : GetFloat();
+    double b = other.IsInt() ? static_cast<double>(other.GetInt()) : other.GetFloat();
+    return Value(a * b);
+  }
+  
+  return Value();
 }
 
 Value Value::operator/(const Value& other) const {
-  (void)other;
-  return *this;
+  if (IsNull() || other.IsNull()) return Value();
+  
+  if (IsInt() && other.IsInt()) {
+    int64_t b = other.GetInt();
+    if (b == 0) return Value();
+    return Value(GetInt() / b);
+  }
+  if (IsNumeric() && other.IsNumeric()) {
+    double b = other.IsInt() ? static_cast<double>(other.GetInt()) : other.GetFloat();
+    if (b == 0.0) return Value();
+    double a = IsInt() ? static_cast<double>(GetInt()) : GetFloat();
+    return Value(a / b);
+  }
+  
+  return Value();
 }
 
 Value Value::operator%(const Value& other) const {
-  (void)other;
-  return *this;
+  if (IsNull() || other.IsNull()) return Value();
+  
+  if (IsInt() && other.IsInt()) {
+    int64_t b = other.GetInt();
+    if (b == 0) return Value();
+    return Value(GetInt() % b);
+  }
+  if (IsNumeric() && other.IsNumeric()) {
+    double b = other.IsInt() ? static_cast<double>(other.GetInt()) : other.GetFloat();
+    if (b == 0.0) return Value();
+    double a = IsInt() ? static_cast<double>(GetInt()) : GetFloat();
+    return Value(std::fmod(a, b));
+  }
+  
+  return Value();
 }
 
 Value& Value::operator+=(const Value& other) {
-  (void)other;
+  *this = *this + other;
   return *this;
 }
 
 Value& Value::operator-=(const Value& other) {
-  (void)other;
+  *this = *this - other;
   return *this;
 }
 
 Value Value::operator-() const {
-  return *this;
+  if (IsNull()) return Value();
+  if (IsInt()) return Value(-GetInt());
+  if (IsFloat()) return Value(-GetFloat());
+  if (IsDuration()) return Value(Duration(-GetDuration().microseconds));
+  return Value();
+}
+
+Value Value::operator+(const std::string& str) const {
+  return Value(ToString() + str);
+}
+
+Value Value::operator+(const char* str) const {
+  return Value(ToString() + std::string(str));
+}
+
+std::optional<Value> Value::GetProperty(const std::string& key) const {
+  if (IsNode()) {
+    const auto& props = GetNode().properties;
+    auto it = props.find(key);
+    if (it != props.end()) return it->second;
+  }
+  if (IsMap()) {
+    const auto& map = GetMap();
+    auto it = map.find(key);
+    if (it != map.end()) return it->second;
+  }
+  return std::nullopt;
+}
+
+void Value::SetProperty(const std::string& key, const Value& val) {
+  if (IsNode()) {
+    GetNode().properties[key] = val;
+  } else if (IsMap()) {
+    GetMap()[key] = val;
+  }
+}
+
+std::optional<Value> Value::GetElement(size_t index) const {
+  if (IsList()) {
+    const auto& list = GetList();
+    if (index < list.size()) return list[index];
+  }
+  return std::nullopt;
+}
+
+size_t Value::Size() const {
+  switch (type_) {
+    case ValueType::kString:
+      return GetString().size();
+    case ValueType::kList:
+      return GetList().size();
+    case ValueType::kMap:
+      return GetMap().size();
+    case ValueType::kPath:
+      return GetPath().Length();
+    default:
+      return 0;
+  }
+}
+
+double Value::ToDouble() const {
+  if (IsInt()) return static_cast<double>(GetInt());
+  if (IsFloat()) return GetFloat();
+  if (IsString()) {
+    try {
+      return std::stod(GetString());
+    } catch (...) {
+      return 0.0;
+    }
+  }
+  return 0.0;
+}
+
+int64_t Value::ToInt() const {
+  if (IsInt()) return GetInt();
+  if (IsFloat()) return static_cast<int64_t>(GetFloat());
+  if (IsString()) {
+    try {
+      return std::stoll(GetString());
+    } catch (...) {
+      return 0;
+    }
+  }
+  return 0;
+}
+
+size_t Value::Hash() const {
+  size_t h = static_cast<size_t>(type_);
+  switch (type_) {
+    case ValueType::kNull:
+      return h;
+    case ValueType::kBool:
+      return h ^ std::hash<bool>{}(std::get<bool>(value_));
+    case ValueType::kInt:
+      return h ^ std::hash<int64_t>{}(std::get<int64_t>(value_));
+    case ValueType::kFloat:
+      return h ^ std::hash<double>{}(std::get<double>(value_));
+    case ValueType::kString:
+      return h ^ std::hash<std::string>{}(std::get<std::string>(value_));
+    case ValueType::kTimestamp:
+      return h ^ std::hash<uint64_t>{}(std::get<Timestamp>(value_).value());
+    case ValueType::kList: {
+      const auto& list = std::get<std::vector<Value>>(value_);
+      for (const auto& v : list) {
+        h = h * 31 + v.Hash();
+      }
+      return h;
+    }
+    case ValueType::kMap: {
+      const auto& map = std::get<std::map<std::string, Value>>(value_);
+      for (const auto& [k, v] : map) {
+        h = h * 31 + std::hash<std::string>{}(k) + v.Hash();
+      }
+      return h;
+    }
+    default:
+      return h;
+  }
+}
+
+Value Value::AddDuration(const Duration& dur) const {
+  if (IsTimestamp()) {
+    return Value(Timestamp(GetTimestamp().value() + dur.microseconds));
+  }
+  return Value();
+}
+
+Value Value::SubDuration(const Duration& dur) const {
+  if (IsTimestamp()) {
+    return Value(Timestamp(GetTimestamp().value() - dur.microseconds));
+  }
+  return Value();
+}
+
+Duration Value::DiffTimestamp(const Value& other) const {
+  if (IsTimestamp() && other.IsTimestamp()) {
+    return Duration(GetTimestamp().value() - other.GetTimestamp().value());
+  }
+  return Duration(0);
 }
 
 bool Value::GetBool() const {

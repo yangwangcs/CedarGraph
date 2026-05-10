@@ -120,6 +120,8 @@ ParallelQueryEngine::ParallelQueryEngine(LsmEngine* engine,
                                          const ParallelQueryConfig& config) {
   executor_ = std::make_unique<ThreadPoolQueryExecutor>(engine, config);
   executor_->Start();
+  thread_pool_ = std::make_unique<ThreadPool>(
+      std::thread::hardware_concurrency());
 }
 
 ParallelQueryEngine::~ParallelQueryEngine() = default;
@@ -170,35 +172,39 @@ std::optional<Descriptor> ParallelQueryEngine::QuerySingle(
 std::vector<ParallelQueryEngine::RangeQueryResult> 
 ParallelQueryEngine::QueryRangeParallel(const RangeQueryRequest& request,
                                         int num_shards) {
-  // 分片并行扫描
+  // 分片并行扫描（使用线程池复用线程）
   uint64_t range_size = request.end_entity_id - request.start_entity_id;
   uint64_t shard_size = range_size / num_shards;
   
-  std::vector<std::future<std::vector<RangeQueryResult>>> futures;
+  std::vector<std::vector<RangeQueryResult>> shard_results(num_shards);
+  std::atomic<int> completed{0};
   
   for (int i = 0; i < num_shards; ++i) {
     uint64_t shard_start = request.start_entity_id + i * shard_size;
     uint64_t shard_end = (i == num_shards - 1) ? request.end_entity_id 
                                                 : shard_start + shard_size;
     
-    futures.push_back(std::async(std::launch::async, [this, shard_start, shard_end, &request]() {
-      std::vector<RangeQueryResult> shard_results;
-      
+    thread_pool_->Schedule([this, &request, shard_start, shard_end, &shard_results, i, &completed]() {
+      std::vector<RangeQueryResult> results;
       for (uint64_t id = shard_start; id < shard_end; ++id) {
         auto value = this->QuerySingle(id, request.column_id, request.entity_type);
         if (value) {
-          shard_results.push_back({id, request.column_id, *value});
+          results.push_back({id, request.column_id, *value});
         }
       }
-      
-      return shard_results;
-    }));
+      shard_results[i] = std::move(results);
+      completed.fetch_add(1, std::memory_order_release);
+    });
+  }
+  
+  // 等待所有分片完成
+  while (completed.load(std::memory_order_acquire) < num_shards) {
+    std::this_thread::yield();
   }
   
   // 合并结果
   std::vector<RangeQueryResult> all_results;
-  for (auto& f : futures) {
-    auto shard = f.get();
+  for (auto& shard : shard_results) {
     all_results.insert(all_results.end(), shard.begin(), shard.end());
   }
   

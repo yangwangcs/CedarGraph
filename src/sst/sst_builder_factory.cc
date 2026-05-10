@@ -57,6 +57,10 @@ class SstBuilderWrapper : public SstBuilderInterface {
     return builder_->NumEntries();
   }
   
+  std::string GetTemporalFilterData() const override {
+    return builder_->GetTemporalFilterData();
+  }
+  
  private:
   std::unique_ptr<ZoneColumnarSstBuilderV2> builder_;
 };

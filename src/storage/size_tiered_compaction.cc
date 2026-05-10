@@ -825,14 +825,16 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
     levels_[task.output_level].files.push_back(output_meta);
   }
   
-  // 从旧层级移除输入文件
+  // 从旧层级移除输入文件并删除物理文件
   for (const auto& f : task.input_files) {
     RemoveFileFromLevel(f.file_number, task.input_level);
+    env_->RemoveFile(GetSstPath(f.file_number));
   }
   
-  // 从下层移除重叠文件
+  // 从下层移除重叠文件并删除物理文件
   for (const auto& f : task.overlapping_files) {
     RemoveFileFromLevel(f.file_number, task.output_level);
+    env_->RemoveFile(GetSstPath(f.file_number));
   }
   
   // 保存 MANIFEST
@@ -1090,6 +1092,8 @@ void SizeTieredCompactionEngine::RemoveFileFromLevel(uint64_t file_number, int l
   if (level < 0 || level >= config_.max_levels) {
     return;
   }
+  
+  std::lock_guard<std::mutex> lock(levels_mutex_);
   
   auto& files = levels_[level].files;
   for (auto it = files.begin(); it != files.end(); ++it) {

@@ -4,7 +4,7 @@
 // 
 // Ported from subgraph2
 
-#include "partition/mth/partition_state.h"
+#include "cedar/partition/mth/partition_state.h"
 
 namespace cedar {
 namespace partition {

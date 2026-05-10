@@ -57,12 +57,6 @@ namespace storage {
   struct HealthMonitorConfig;
 }
 
-// Partition Router forward declarations
-namespace raft {
-  class PartitionRouter;
-  struct PartitionRouterConfig;
-  struct RoutingTarget;
-}
 
 /**
  * @brief CedarGraphStorage - Unified graph storage interface
@@ -462,60 +456,6 @@ class CedarGraphStorage {
   /// Enable health monitoring
   Status EnableHealthMonitoring(const storage::HealthMonitorConfig& config);
 
-  // ========== 分区路由 API (核心) ==========
-  // 分区级路由 - 支持 65536 个独立分区，每个分区独立 Raft 组
-  
-  /// Initialize partition router (REQUIRED)
-  /// @param config Router configuration
-  /// @return Status::OK() on success
-  Status InitializePartitionRouter(const raft::PartitionRouterConfig& config);
-  
-  /// Register a node for partition placement
-  /// @param node_id Node identifier
-  /// @param address Node address (IP or hostname)
-  /// @param port Service port
-  /// @param dc_id Data center ID (optional, for DC-aware routing)
-  Status RegisterPartitionNode(const std::string& node_id,
-                               const std::string& address,
-                               uint16_t port,
-                               const std::string& dc_id = "");
-  
-  /// Create a partition with specified replica nodes
-  /// @param partition_id Partition ID (0-65535)
-  /// @param replica_nodes List of replica node IDs
-  Status CreatePartition(uint16_t partition_id,
-                         const std::vector<std::string>& replica_nodes);
-  
-  /// Remove a partition
-  /// @param partition_id Partition ID (0-65535)
-  Status RemovePartition(uint16_t partition_id);
-  
-  /// Get node for read operation (with load balancing)
-  StatusOr<std::string> GetNodeForRead();
-
-  /// Get node for write operation (always leader)
-  StatusOr<std::string> GetNodeForWrite();
-  
-  /// Get cluster health summary
-  struct ClusterHealthSummary {
-    size_t total_partitions = 0;
-    size_t healthy_partitions = 0;
-    size_t active_partitions = 0;
-    size_t total_nodes = 0;
-    size_t healthy_nodes = 0;
-    std::string local_dc_id;
-  };
-  ClusterHealthSummary GetClusterHealth() const;
-  
-  /// Get partition statistics
-  struct PartitionStats {
-    size_t total_partitions = 0;
-    size_t healthy_partitions = 0;
-    size_t active_partitions = 0;
-    size_t total_nodes = 0;
-    size_t healthy_nodes = 0;
-  };
-  PartitionStats GetPartitionStats() const;
 
   // ========== 自动 Blob Storage API (Auto Blob Storage API) ==========
   // 透明处理大对象存储，自动决策内联或Blob存储

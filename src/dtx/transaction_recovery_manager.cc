@@ -25,8 +25,13 @@ TransactionRecoveryManager::~TransactionRecoveryManager() {
 }
 
 Status TransactionRecoveryManager::Initialize(TransactionStateManager* state_manager) {
-  state_manager_ = state_manager;
-  running_ = true;
+  if (running_.exchange(true)) {
+    return Status::InvalidArgument("Already initialized");
+  }
+  {
+    std::lock_guard<std::mutex> lock(deps_mutex_);
+    state_manager_ = state_manager;
+  }
   
   recovery_thread_ = std::thread(&TransactionRecoveryManager::RecoveryLoop, this);
   
@@ -35,11 +40,17 @@ Status TransactionRecoveryManager::Initialize(TransactionStateManager* state_man
 }
 
 void TransactionRecoveryManager::Shutdown() {
-  running_ = false;
+  if (!running_.exchange(false)) {
+    return;
+  }
   cv_.notify_all();
   
-  if (recovery_thread_.joinable()) {
-    recovery_thread_.join();
+  try {
+    if (recovery_thread_.joinable()) {
+      recovery_thread_.join();
+    }
+  } catch (...) {
+    std::cerr << "[RecoveryManager] Recovery thread join exception" << std::endl;
   }
 }
 
@@ -136,23 +147,14 @@ Status TransactionRecoveryManager::RecoverAllPendingTransactions() {
 
 RecoveryAction TransactionRecoveryManager::DecideHeuristicAction(
     const TransactionRecord& record) {
-  // Heuristic: Check if majority of participants are prepared
-  size_t prepared_count = 0;
-  size_t total_count = record.participant_states.size();
-  
-  for (const auto& [pid, ps] : record.participant_states) {
-    if (ps.state == ParticipantState::State::kPrepared ||
-        ps.state == ParticipantState::State::kCommitted) {
-      ++prepared_count;
-    }
-  }
-  
-  // If majority prepared, commit; otherwise abort
-  if (prepared_count > total_count / 2) {
-    return RecoveryAction::kCommit;
-  } else {
-    return RecoveryAction::kAbort;
-  }
+  // SAFETY FIX: Remove unsafe majority heuristic.
+  // Majority-based commit violates atomicity guarantees - a minority of
+  // unprepared participants would be left in inconsistent state.
+  // For unknown state transactions, the safe default is to abort.
+  // Only transactions explicitly in kPrepared or kCommitting state
+  // should be committed during recovery (handled in StartRecovery).
+  (void)record;
+  return RecoveryAction::kAbort;
 }
 
 Status TransactionRecoveryManager::ApplyRecoveryAction(dtx::TxnID txn_id, 
@@ -222,31 +224,39 @@ void TransactionRecoveryManager::OnOperationRetry(const PendingOperation& op) {
 
 void TransactionRecoveryManager::RecoveryLoop() {
   while (running_) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    cv_.wait(lock, [this] {
-      return !running_ || !recovery_queue_.empty();
-    });
-    
-    if (!running_) break;
-    
-    if (recovery_queue_.empty()) continue;
-    
-    dtx::TxnID txn_id = recovery_queue_.front();
-    recovery_queue_.pop();
-    lock.unlock();
-    
-    // Perform recovery
-    auto result = StartRecovery(txn_id);
-    if (result.recommended_action != RecoveryAction::kNone) {
-      ApplyRecoveryAction(txn_id, result.recommended_action);
+    try {
+      std::unique_lock<std::mutex> lock(mutex_);
+      cv_.wait(lock, [this] {
+        return !running_ || !recovery_queue_.empty();
+      });
+      
+      if (!running_) break;
+      
+      if (recovery_queue_.empty()) continue;
+      
+      dtx::TxnID txn_id = recovery_queue_.front();
+      recovery_queue_.pop();
+      lock.unlock();
+      
+      // Perform recovery
+      auto result = StartRecovery(txn_id);
+      if (result.recommended_action != RecoveryAction::kNone) {
+        ApplyRecoveryAction(txn_id, result.recommended_action);
+      }
+    } catch (...) {
+      std::cerr << "[RecoveryManager] Recovery loop exception" << std::endl;
     }
   }
 }
 
 Status TransactionRecoveryManager::RecoverAsCoordinator(
-    dtx::TxnID txn_id, 
+    dtx::TxnID txn_id,
     const TransactionRecord& record) {
-  auto status = SendCommitToParticipants(txn_id, record.participants);
+  // 优先只向未提交参与者发送 commit，避免冗余 RPC
+  auto result = StartRecovery(txn_id);
+  const auto& targets = result.pending_participants.empty()
+      ? record.participants : result.pending_participants;
+  auto status = SendCommitToParticipants(txn_id, targets, record.commit_ts);
   if (status.ok() && state_manager_) {
     state_manager_->UpdateState(txn_id, TxnState::kCommitted);
   }
@@ -264,22 +274,42 @@ Status TransactionRecoveryManager::RecoverAsParticipant(
 }
 
 Status TransactionRecoveryManager::SendCommitToParticipants(
-    dtx::TxnID txn_id, 
-    const std::vector<dtx::PartitionID>& participants) {
-  if (!rpc_client_) {
+    dtx::TxnID txn_id,
+    const std::vector<dtx::PartitionID>& participants,
+    Timestamp commit_ts) {
+  std::shared_ptr<dtx::DTXRpcClient> client;
+  std::unordered_map<dtx::PartitionID, dtx::NodeID> node_map;
+  {
+    std::lock_guard<std::mutex> lock(deps_mutex_);
+    client = rpc_client_;
+    node_map = partition_node_map_;
+  }
+  if (!client) {
     return Status::IOError("TransactionRecoveryManager", "no RPC client");
   }
-  
+
+  bool all_success = true;
+  std::string last_error;
+
   for (dtx::PartitionID pid : participants) {
-    auto node_it = partition_node_map_.find(pid);
-    if (node_it == partition_node_map_.end()) {
-      return Status::NotFound("TransactionRecoveryManager", "no node mapping for partition " + std::to_string(pid));
+    auto node_it = node_map.find(pid);
+    if (node_it == node_map.end()) {
+      all_success = false;
+      last_error = "no node mapping for partition " + std::to_string(pid);
+      continue;  // Try remaining participants
     }
     cedar::dtx::CommitResponse response;
-    auto status = rpc_client_->Commit(node_it->second, std::to_string(txn_id), "", 0, &response);
+    auto status = client->Commit(node_it->second, std::to_string(txn_id), "", commit_ts.value(), &response);
     if (!status.ok()) {
-      return status;
+      all_success = false;
+      last_error = status.ToString();
+      continue;  // Try remaining participants
     }
+  }
+  
+  if (!all_success) {
+    return Status::IOError("TransactionRecoveryManager",
+        "Partial commit during recovery: " + last_error);
   }
   return Status::OK();
 }
@@ -287,37 +317,63 @@ Status TransactionRecoveryManager::SendCommitToParticipants(
 Status TransactionRecoveryManager::SendAbortToParticipants(
     dtx::TxnID txn_id, 
     const std::vector<dtx::PartitionID>& participants) {
-  if (!rpc_client_) {
+  std::shared_ptr<dtx::DTXRpcClient> client;
+  std::unordered_map<dtx::PartitionID, dtx::NodeID> node_map;
+  {
+    std::lock_guard<std::mutex> lock(deps_mutex_);
+    client = rpc_client_;
+    node_map = partition_node_map_;
+  }
+  if (!client) {
     return Status::IOError("TransactionRecoveryManager", "no RPC client");
   }
   
+  bool all_success = true;
+  std::string last_error;
+  
   for (dtx::PartitionID pid : participants) {
-    auto node_it = partition_node_map_.find(pid);
-    if (node_it == partition_node_map_.end()) {
-      return Status::NotFound("TransactionRecoveryManager", "no node mapping for partition " + std::to_string(pid));
+    auto node_it = node_map.find(pid);
+    if (node_it == node_map.end()) {
+      all_success = false;
+      last_error = "no node mapping for partition " + std::to_string(pid);
+      continue;  // Try remaining participants
     }
     cedar::dtx::AbortResponse response;
-    auto status = rpc_client_->Abort(node_it->second, std::to_string(txn_id), "", "recovery", &response);
+    auto status = client->Abort(node_it->second, std::to_string(txn_id), "", "recovery", &response);
     if (!status.ok()) {
-      return status;
+      all_success = false;
+      last_error = status.ToString();
+      continue;  // Try remaining participants
     }
+  }
+  
+  if (!all_success) {
+    return Status::IOError("TransactionRecoveryManager",
+        "Partial abort during recovery: " + last_error);
   }
   return Status::OK();
 }
 
 Status TransactionRecoveryManager::InquireParticipant(dtx::PartitionID pid, 
                                                        dtx::TxnID txn_id) {
-  if (!rpc_client_) {
+  std::shared_ptr<dtx::DTXRpcClient> client;
+  std::unordered_map<dtx::PartitionID, dtx::NodeID> node_map;
+  {
+    std::lock_guard<std::mutex> lock(deps_mutex_);
+    client = rpc_client_;
+    node_map = partition_node_map_;
+  }
+  if (!client) {
     return Status::IOError("TransactionRecoveryManager", "no RPC client");
   }
   
-  auto node_it = partition_node_map_.find(pid);
-  if (node_it == partition_node_map_.end()) {
+  auto node_it = node_map.find(pid);
+  if (node_it == node_map.end()) {
     return Status::NotFound("TransactionRecoveryManager", "no node mapping for partition " + std::to_string(pid));
   }
   
   cedar::dtx::InquireResponse response;
-  auto status = rpc_client_->Inquire(node_it->second, std::to_string(txn_id), &response);
+  auto status = client->Inquire(node_it->second, std::to_string(txn_id), &response);
   return status;
 }
 

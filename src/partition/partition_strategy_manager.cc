@@ -2,7 +2,7 @@
 //
 // Licensed under the Apache License, Version 2.0
 
-#include "partition/partition_strategy_manager.h"
+#include "cedar/partition/partition_strategy_manager.h"
 
 #include <sstream>
 

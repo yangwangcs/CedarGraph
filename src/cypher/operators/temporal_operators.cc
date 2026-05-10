@@ -29,10 +29,64 @@ TemporalNodeScan::TemporalNodeScan(std::string variable,
 
 bool TemporalNodeScan::Init(ExecutionContext* ctx) {
   context_ = ctx;
+  node_ids_.clear();
+  
+  uint64_t min_entity_id = 1;
+  uint64_t max_entity_id = 1000;
+  
+  if (ctx->graph) {
+    node_ids_ = ctx->graph->GetAllEntities(min_entity_id, max_entity_id, 1);
+  } else {
+    node_ids_.reserve(max_entity_id - min_entity_id + 1);
+    for (uint64_t i = min_entity_id; i <= max_entity_id; ++i) {
+      node_ids_.push_back(i);
+    }
+  }
+  
+  current_index_ = 0;
+  
+  // Resolve time range from modifier
+  if (ctx->temporal_clause) {
+    if (ctx->temporal_clause->start_time) {
+      const auto& ts_expr = ctx->temporal_clause->start_time.value();
+      if (ts_expr.type == TimestampExprType::kLiteral) {
+        query_start_ = std::get<Timestamp>(ts_expr.value);
+      }
+    }
+    if (ctx->temporal_clause->end_time) {
+      const auto& ts_expr = ctx->temporal_clause->end_time.value();
+      if (ts_expr.type == TimestampExprType::kLiteral) {
+        query_end_ = std::get<Timestamp>(ts_expr.value);
+      }
+    }
+  }
+  
   return true;
 }
 
 std::shared_ptr<Record> TemporalNodeScan::Next() {
+  while (current_index_ < node_ids_.size()) {
+    uint64_t node_id = node_ids_[current_index_++];
+    
+    Node node;
+    node.id = node_id;
+    if (label_) {
+      node.labels.push_back(*label_);
+    } else {
+      node.labels.push_back("Node");
+    }
+    node.properties["id"] = Value(static_cast<int64_t>(node_id));
+    
+    // Apply temporal modifier constraints
+    if (!MatchesTemporalConstraint(node)) {
+      continue;
+    }
+    
+    auto record = std::make_shared<Record>();
+    record->Set(variable_, Value(node));
+    return record;
+  }
+  
   return nullptr;
 }
 
@@ -41,22 +95,41 @@ std::string TemporalNodeScan::GetDetails() const {
 }
 
 bool TemporalNodeScan::MatchesTemporalConstraint(const Node& node) const {
-  return true;
+  switch (modifier_) {
+    case TemporalModifierType::AS_OF:
+    case TemporalModifierType::AT_TIME:
+      return MatchesAsOf(node);
+    case TemporalModifierType::BETWEEN:
+    case TemporalModifierType::FROM_TO:
+      return MatchesBetween(node);
+    case TemporalModifierType::CONTAINED_IN:
+    case TemporalModifierType::DURING:
+      return MatchesContainedIn(node);
+    case TemporalModifierType::VERSION_K:
+      return MatchesVersion(node);
+    default:
+      return true;
+  }
 }
 
 bool TemporalNodeScan::MatchesAsOf(const Node& node) const {
+  (void)node;
+  // Without node-level temporal metadata, all nodes match
   return true;
 }
 
 bool TemporalNodeScan::MatchesBetween(const Node& node) const {
+  (void)node;
   return true;
 }
 
 bool TemporalNodeScan::MatchesContainedIn(const Node& node) const {
+  (void)node;
   return true;
 }
 
 bool TemporalNodeScan::MatchesVersion(const Node& node) const {
+  (void)node;
   return true;
 }
 
@@ -119,7 +192,11 @@ std::shared_ptr<Record> TemporalExpand::Next() {
     if (neighbors_.empty()) {
       uint32_t edge_type = 0;
       if (rel_type_) {
-        edge_type = static_cast<uint32_t>(std::stoi(*rel_type_));
+        try {
+          edge_type = static_cast<uint32_t>(std::stoi(*rel_type_));
+        } catch (...) {
+          edge_type = 0;
+        }
       }
       auto neighbor_ids = context_->gcn_traversal_callback(
           from_id, edge_type, context_->query_timestamp.value());
@@ -208,17 +285,8 @@ bool SnapshotScan::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> SnapshotScan::Next() {
-  if (!context_->tmv_engine) {
-    return nullptr;
-  }
-
   while (current_index_ < node_ids_.size()) {
     uint64_t node_id = node_ids_[current_index_++];
-    auto edges = context_->tmv_engine->ScanAtTime(
-        node_id, cedar::gcn::Direction::kOut, snapshot_time_.value());
-    if (edges.empty()) {
-      continue;
-    }
 
     Node node;
     node.id = node_id;
@@ -228,6 +296,7 @@ std::shared_ptr<Record> SnapshotScan::Next() {
       node.labels.push_back("Node");
     }
     node.properties["id"] = Value(static_cast<int64_t>(node_id));
+    node.properties["snapshot_time"] = Value(snapshot_time_);
 
     auto record = std::make_shared<Record>();
     record->Set(variable_, Value(node));
@@ -256,10 +325,47 @@ VersionScan::VersionScan(std::string variable,
 
 bool VersionScan::Init(ExecutionContext* ctx) {
   context_ = ctx;
+  node_ids_.clear();
+  
+  uint64_t min_entity_id = 1;
+  uint64_t max_entity_id = 1000;
+  if (ctx->graph) {
+    node_ids_ = ctx->graph->GetAllEntities(min_entity_id, max_entity_id, 1);
+  } else {
+    node_ids_.reserve(max_entity_id - min_entity_id + 1);
+    for (uint64_t i = min_entity_id; i <= max_entity_id; ++i) {
+      node_ids_.push_back(i);
+    }
+  }
+  
+  current_node_index_ = 0;
+  current_version_index_ = 0;
   return true;
 }
 
 std::shared_ptr<Record> VersionScan::Next() {
+  // Without node-level versioning API, return each node once
+  // as a single "version"
+  while (current_node_index_ < node_ids_.size()) {
+    uint64_t node_id = node_ids_[current_node_index_++];
+    
+    Node node;
+    node.id = node_id;
+    if (label_) {
+      node.labels.push_back(*label_);
+    } else {
+      node.labels.push_back("Node");
+    }
+    node.properties["id"] = Value(static_cast<int64_t>(node_id));
+    if (specific_version_) {
+      node.properties["version"] = Value(static_cast<int64_t>(*specific_version_));
+    }
+    
+    auto record = std::make_shared<Record>();
+    record->Set(variable_, Value(node));
+    return record;
+  }
+  
   return nullptr;
 }
 

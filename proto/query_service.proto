@@ -60,6 +60,9 @@ message ExecuteQueryRequest {
     
     // 是否返回执行计划 (EXPLAIN)
     bool explain_only = 6;
+    
+    // 显式事务 ID (用于多语句事务)
+    bytes txn_id = 7;
 }
 
 enum ConsistencyLevel {
@@ -399,6 +402,45 @@ message SlowQueryInfo {
 }
 
 // ============================================================================
+// 显式事务 (Explicit Transaction)
+// ============================================================================
+
+enum IsolationLevel {
+    READ_UNCOMMITTED = 0;
+    READ_COMMITTED = 1;
+    REPEATABLE_READ = 2;
+    SNAPSHOT = 3;
+    SERIALIZABLE = 4;
+}
+
+message BeginTransactionRequest {
+    IsolationLevel isolation_level = 1;
+    uint64 timeout_ms = 2;
+}
+
+message Transaction {
+    bytes txn_id = 1;
+    IsolationLevel isolation_level = 2;
+    uint64 start_time = 3;
+    bool committed = 4;
+}
+
+message CommitRequest {
+    bytes txn_id = 1;
+}
+
+message RollbackRequest {
+    bytes txn_id = 1;
+}
+
+message QueryGrpcStatus {
+    bool ok = 1;
+    int32 code = 2;
+    string message = 3;
+    string details = 4;
+}
+
+// ============================================================================
 // 查询服务
 // ============================================================================
 
@@ -426,4 +468,9 @@ service QueryService {
     
     // 查询统计
     rpc GetStats(QueryStatsRequest) returns (QueryStatsResponse);
+    
+    // 显式事务
+    rpc BeginTransaction(BeginTransactionRequest) returns (Transaction);
+    rpc Commit(CommitRequest) returns (QueryGrpcStatus);
+    rpc Rollback(RollbackRequest) returns (QueryGrpcStatus);
 }

@@ -72,6 +72,12 @@ class TlsCredentialFactory {
   
   // Validate TLS configuration
   static bool ValidateConfig(const TlsConfig& config, std::string* error_msg);
+  
+  // Create credentials from environment variables
+  // Reads CEDAR_GRPC_TLS_ENABLED, CEDAR_GRPC_CA_CERT, CEDAR_GRPC_SERVER_CERT,
+  // CEDAR_GRPC_SERVER_KEY, CEDAR_GRPC_CLIENT_CERT, CEDAR_GRPC_CLIENT_KEY
+  static std::shared_ptr<grpc::ServerCredentials> CreateServerCredentialsFromEnv();
+  static std::shared_ptr<grpc::ChannelCredentials> CreateClientCredentialsFromEnv();
 };
 
 }  // namespace raft

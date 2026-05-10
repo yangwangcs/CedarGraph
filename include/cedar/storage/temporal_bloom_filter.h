@@ -381,7 +381,7 @@ class TemporalBloomFilter {
     uint64_t DurationHours() const { return DurationMicros() / kMicrosPerHour; }
     
     bool Contains(Timestamp ts) const { return ts >= start && ts <= end; }
-    bool IsValid() const { return end.value() > start.value(); }
+    bool IsValid() const { return end.value() >= start.value(); }
   };
 
   // 默认构造（用于反序列化）

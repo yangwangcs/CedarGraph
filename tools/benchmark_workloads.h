@@ -6,7 +6,6 @@
 
 #include "benchmark_metrics.h"
 #include "cedar/storage/cedar_graph_storage.h"
-#include "cedar/raft/partition_router.h"
 
 #include <thread>
 #include <vector>

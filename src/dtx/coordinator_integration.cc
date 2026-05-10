@@ -1,4 +1,5 @@
 #include "cedar/dtx/coordinator_integration.h"
+#include "cedar/dtx/meta_service_grpc.h"
 #include "cedar/types/descriptor.h"
 
 namespace cedar {
@@ -64,7 +65,12 @@ Status PartitionRouteCache::PreloadSpace(const std::string& space_name,
     return Status::OK();
 }
 
-StorageConnectionPool::StorageConnectionPool() = default;
+StorageConnectionPool::StorageConnectionPool() {
+    running_.store(true);
+    health_check_thread_ = std::thread([this]() {
+        HealthCheckLoop();
+    });
+}
 StorageConnectionPool::~StorageConnectionPool() { CloseAll(); }
 
 void StorageConnectionPool::MarkUnhealthy(NodeID node_id) {
@@ -93,7 +99,33 @@ StorageConnectionPool::HealthStats StorageConnectionPool::GetHealthStats() const
     return stats;
 }
 
-void StorageConnectionPool::HealthCheckLoop() {}
+void StorageConnectionPool::HealthCheckLoop() {
+    // Basic health check: remove connections marked unhealthy or idle for too long
+    while (running_.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(30));
+        if (!running_.load()) break;
+
+        std::unique_lock<std::shared_mutex> lock(pool_mutex_);
+        auto now = std::chrono::steady_clock::now();
+        for (auto it = connections_.begin(); it != connections_.end();) {
+            bool remove = false;
+            if (!it->second->healthy_.load()) {
+                remove = true;
+            } else {
+                auto idle = std::chrono::duration_cast<std::chrono::seconds>(
+                    now - it->second->last_used).count();
+                if (idle > 300) {  // 5 minutes idle timeout
+                    remove = true;
+                }
+            }
+            if (remove) {
+                it = connections_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+}
 
 IntegratedCoordinator::IntegratedCoordinator() = default;
 IntegratedCoordinator::~IntegratedCoordinator() { Shutdown(); }
@@ -122,7 +154,7 @@ Status IntegratedCoordinator::Shutdown() {
 }
 
 Status IntegratedCoordinator::InitializeMetaClient() {
-    meta_client_ = std::make_unique<MetaServiceClient>();
+    meta_client_ = std::make_unique<MetaServiceGrpcClient>();
     auto status = meta_client_->Connect(config_.meta_addresses);
     CEDAR_RETURN_IF_ERROR(status);
     meta_client_->WatchPartitionMap(config_.space_name, 

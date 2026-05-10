@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "cedar/dtx/storage_service_impl.h"
+#include "cedar/dtx/storage/partition_raft_manager.h"
 #include "cedar/dtx/monitoring.h"
 
 #include <csignal>
@@ -56,11 +57,19 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
     return s;
   }
   
-  // Create the gRPC service implementation
-  service_impl_ = std::make_unique<StorageServiceImpl>(&partition_manager_);
+  // Initialize braft partition replication manager
+  raft_manager_ = std::make_unique<PartitionRaftManager>();
+  s = raft_manager_->Initialize(node_id_, config.data_root, config.listen_address);
+  if (!s.ok()) {
+    std::cerr << "Failed to initialize raft manager: " << s.ToString() << std::endl;
+    return s;
+  }
+  
+  // Create the gRPC service implementation (with raft manager for replication)
+  service_impl_ = std::make_unique<StorageServiceImpl>(&partition_manager_, raft_manager_.get());
   
   // Initialize MetaD client
-  MetaServiceClient::ClientConfig meta_config;
+  MetaServiceNodeClient::ClientConfig meta_config;
   meta_config.metad_address = config.metad_address;
   meta_config.node_id = node_id_;
   meta_config.listen_address = config.listen_address;
@@ -68,7 +77,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
   meta_config.max_partitions = config.max_partitions;
   meta_config.heartbeat_interval = config.heartbeat_interval;
   
-  meta_client_ = std::make_unique<MetaServiceClient>();
+  meta_client_ = std::make_unique<MetaServiceNodeClient>();
   s = meta_client_->Initialize(meta_config);
   if (!s.ok()) {
     std::cerr << "Warning: Failed to initialize MetaD client: " << s.ToString() << std::endl;
@@ -94,7 +103,8 @@ void StorageServer::Serve() {
   
   // Build and start gRPC server
   grpc::ServerBuilder builder;
-  builder.AddListeningPort(config_.listen_address, grpc::InsecureServerCredentials());
+  builder.AddListeningPort(config_.listen_address,
+                           cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv());
   builder.RegisterService(service_impl_.get());
   
   // Set server options
@@ -154,6 +164,11 @@ Status StorageServer::Shutdown() {
   // Shutdown partition manager
   partition_manager_.Shutdown();
   
+  // Shutdown raft manager
+  if (raft_manager_) {
+    raft_manager_->Shutdown();
+  }
+  
   std::cout << "StorageServer shutdown complete" << std::endl;
   return Status::OK();
 }
@@ -171,11 +186,94 @@ Status StorageServer::RegisterToMetaD() {
   }
   
   std::cout << "Registered with MetaD successfully" << std::endl;
+  
+  // Fetch partition assignment and initialize raft groups
+  auto nodes_result = meta_client_->GetAliveNodes();
+  if (!nodes_result.ok()) {
+    std::cerr << "Warning: Failed to get alive nodes: " << nodes_result.status().ToString() << std::endl;
+    return Status::OK();  // Continue anyway
+  }
+  
+  std::unordered_map<uint32_t, std::string> node_address_map;
+  for (const auto& node : nodes_result.value()) {
+    node_address_map[node.node_id()] = node.address();
+  }
+  
+  auto map_result = meta_client_->GetSpacePartitionMap("default");
+  if (!map_result.ok()) {
+    std::cerr << "Warning: Failed to get partition map: " << map_result.status().ToString() << std::endl;
+    return Status::OK();  // Continue anyway, partitions can be added later
+  }
+  
+  const auto& partition_map = map_result.value();
+  for (const auto& entry : partition_map.assignments()) {
+    PartitionID pid = entry.first;
+    const auto& assignment = entry.second;
+    
+    // Check if this node is part of the partition's raft group
+    bool is_member = (assignment.leader_node() == node_id_);
+    if (!is_member) {
+      for (uint32_t follower : assignment.follower_nodes()) {
+        if (follower == node_id_) {
+          is_member = true;
+          break;
+        }
+      }
+    }
+    
+    if (!is_member) continue;
+    
+    // Add partition to manager
+    auto s = partition_manager_.AddPartition(pid);
+    if (!s.ok() && !s.IsInvalidArgument()) {
+      std::cerr << "Warning: Failed to add partition " << pid << ": " << s.ToString() << std::endl;
+      continue;
+    }
+    
+    // Build peer list
+    std::vector<std::string> peers;
+    auto it = node_address_map.find(assignment.leader_node());
+    if (it != node_address_map.end()) {
+      peers.push_back(it->second);
+    }
+    for (uint32_t follower : assignment.follower_nodes()) {
+      auto fit = node_address_map.find(follower);
+      if (fit != node_address_map.end()) {
+        peers.push_back(fit->second);
+      }
+    }
+    
+    if (peers.empty()) {
+      std::cerr << "Warning: No peers found for partition " << pid << std::endl;
+      continue;
+    }
+    
+    auto* storage = partition_manager_.GetPartition(pid);
+    if (!storage) {
+      std::cerr << "Warning: Partition " << pid << " not found after add" << std::endl;
+      continue;
+    }
+    
+    // Build peer_node_ids for leader address resolution
+    std::unordered_map<std::string, NodeID> peer_node_ids;
+    for (const auto& [nid, addr] : node_address_map) {
+      peer_node_ids[addr] = nid;
+    }
+    
+    s = raft_manager_->CreateRaftGroup(pid, peers, storage, 1000, peer_node_ids);
+    if (!s.ok()) {
+      std::cerr << "Warning: Failed to create raft group for partition " << pid << ": " << s.ToString() << std::endl;
+      continue;
+    }
+    
+    std::cout << "Created raft group for partition " << pid << " with " << peers.size() << " peers" << std::endl;
+  }
+  
   return Status::OK();
 }
 
 void StorageServer::HeartbeatLoop() {
-  // This is now handled by MetaServiceClient
+  // This is now handled by MetaServiceNodeClient
   // Keeping this method for backward compatibility
 }
 

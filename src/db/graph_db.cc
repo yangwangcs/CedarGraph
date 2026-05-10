@@ -30,7 +30,7 @@ Status CedarGraphDB::Open(const std::string& db_path,
   }
   
   // 创建实现
-  auto impl = std::make_unique<CedarGraphDBImpl>(db_path, options);
+  auto impl = std::make_shared<CedarGraphDBImpl>(db_path, options);
   
   // 打开数据库
   Status s = impl->Open();
@@ -38,7 +38,7 @@ Status CedarGraphDB::Open(const std::string& db_path,
     return s;
   }
   
-  *db_ptr = new CedarGraphDB(std::move(impl));
+  *db_ptr = new CedarGraphDB(impl);
   return Status::OK();
 }
 
@@ -121,8 +121,9 @@ Status CedarGraphDB::RepairDB(const std::string& db_path,
 
 // ==================== CedarGraphDB 构造函数/析构函数 ====================
 
-CedarGraphDB::CedarGraphDB(std::unique_ptr<CedarGraphDBImpl> impl)
-    : impl_(std::move(impl)) {}
+CedarGraphDB::CedarGraphDB(std::shared_ptr<CedarGraphDBImpl> impl,
+                           ColumnFamilyHandle* cf_handle)
+    : impl_(std::move(impl)), cf_handle_(cf_handle) {}
 
 CedarGraphDB::~CedarGraphDB() {
   // 实现会自动清理
@@ -180,10 +181,9 @@ Status CedarGraphDB::CreateColumnFamily(const std::string& name,
   ColumnFamilyHandle* handle;
   Status s = impl_->CreateColumnFamily(name, &handle);
   if (s.ok() && cf_handle) {
-    // 返回新的 CedarGraphDB 实例，指向同一个 impl 但不同列族
-    auto impl_ptr = impl_.get();
-    // 注意：这里需要特殊处理，暂时返回 this
-    *cf_handle = this;
+    // Return a new CedarGraphDB instance bound to this column family.
+    // The new instance shares the underlying impl (reference-counted).
+    *cf_handle = new CedarGraphDB(impl_, handle);
   }
   return s;
 }

@@ -3,9 +3,9 @@
 // Licensed under the Apache License, Version 2.0
 
 #include "cedar/dtx/partition.h"
-#include "partition/strategies/static_hash_strategy.h"
-#include "partition/strategies/mth_stream_strategy.h"
-#include "partition/partition_strategy.h"
+#include "cedar/partition/strategies/static_hash_strategy.h"
+#include "cedar/partition/strategies/mth_stream_strategy.h"
+#include "cedar/partition/partition_strategy.h"
 #include <sstream>
 
 namespace cedar {

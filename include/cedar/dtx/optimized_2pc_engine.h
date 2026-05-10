@@ -39,6 +39,8 @@
 
 namespace cedar {
 class TransactionStateManager;
+class TransactionRecoveryManager;
+class TransactionTimeoutManager;
 namespace dtx {
 
 // Forward declarations
@@ -50,8 +52,8 @@ class RaftGroup;
 // =============================================================================
 struct TransactionContext {
   TxnID txn_id;
-  std::vector<CedarKey> read_set;
-  std::vector<CedarKey> write_set;
+  std::vector<::cedar::CedarKey> read_set;
+  std::vector<::cedar::CedarKey> write_set;
   Timestamp commit_ts;
   
   // 2PC state
@@ -75,12 +77,15 @@ struct TransactionContext {
   // Callback for async completion
   std::function<void(Status)> callback;
   
+  // Promise for synchronous waiters (e.g., SubmitPipelined)
+  std::shared_ptr<std::promise<void>> done_promise;
+  
   // Timing
   std::chrono::steady_clock::time_point start_time;
   std::chrono::steady_clock::time_point prepare_complete_time;
   
-  TransactionContext(TxnID id, const std::vector<CedarKey>& reads,
-                     const std::vector<CedarKey>& writes, Timestamp ts)
+  TransactionContext(TxnID id, const std::vector<::cedar::CedarKey>& reads,
+                     const std::vector<::cedar::CedarKey>& writes, Timestamp ts)
       : txn_id(id), read_set(reads), write_set(writes), commit_ts(ts) {
     start_time = std::chrono::steady_clock::now();
   }
@@ -153,33 +158,44 @@ class Optimized2PCEngine {
   // Initialize with storage clients for each partition
   Status Initialize(const std::vector<std::shared_ptr<StorageClient>>& clients);
   
+  // Dynamic client management (for runtime topology changes)
+  void AddClient(std::shared_ptr<StorageClient> client);
+  void RemoveClient(const std::string& server_address);
+  size_t GetClientCount() const;
+  
   // Set state manager for transaction persistence
   void SetStateManager(TransactionStateManager* state_manager) { state_manager_ = state_manager; }
   
+  // Set recovery manager for coordinator crash recovery
+  void SetRecoveryManager(TransactionRecoveryManager* recovery_manager) { recovery_manager_ = recovery_manager; }
+  
+  // Set timeout manager for transaction timeout tracking
+  void SetTimeoutManager(TransactionTimeoutManager* timeout_manager) { timeout_manager_ = timeout_manager; }
+  
   // Shutdown
-  void Shutdown();
+  void Shutdown() noexcept;
   
   // ==========================================================================
   // Transaction Execution APIs
   // ==========================================================================
   
   // Synchronous 2PC - blocks until complete
-  Status Execute2PC(TxnID txn_id, const std::vector<CedarKey>& read_set,
-                    const std::vector<CedarKey>& write_set, Timestamp commit_ts);
+  Status Execute2PC(TxnID txn_id, const std::vector<::cedar::CedarKey>& read_set,
+                    const std::vector<::cedar::CedarKey>& write_set, Timestamp commit_ts);
   
   // Asynchronous 2PC - returns immediately, callback on completion
-  void Execute2PCAsync(TxnID txn_id, const std::vector<CedarKey>& read_set,
-                       const std::vector<CedarKey>& write_set, Timestamp commit_ts,
+  void Execute2PCAsync(TxnID txn_id, const std::vector<::cedar::CedarKey>& read_set,
+                       const std::vector<::cedar::CedarKey>& write_set, Timestamp commit_ts,
                        std::function<void(Status)> callback);
   
   // Batch 2PC - execute multiple transactions as a batch
   std::vector<Status> Execute2PCBatch(
-      const std::vector<std::tuple<TxnID, std::vector<CedarKey>, 
-                                   std::vector<CedarKey>, Timestamp>>& transactions);
+      const std::vector<std::tuple<TxnID, std::vector<::cedar::CedarKey>, 
+                                   std::vector<::cedar::CedarKey>, Timestamp>>& transactions);
   
   // Pipelined 2PC - submit to pipeline, returns immediately
-  Status SubmitPipelined(TxnID txn_id, const std::vector<CedarKey>& read_set,
-                         const std::vector<CedarKey>& write_set, Timestamp commit_ts);
+  Status SubmitPipelined(TxnID txn_id, const std::vector<::cedar::CedarKey>& read_set,
+                         const std::vector<::cedar::CedarKey>& write_set, Timestamp commit_ts);
   
   // ==========================================================================
   // Adaptive Tuning
@@ -219,7 +235,9 @@ class Optimized2PCEngine {
   
   // Helper methods
   std::vector<std::shared_ptr<StorageClient>> GetParticipants(
-      const std::vector<CedarKey>& keys);
+      const std::vector<::cedar::CedarKey>& keys);
+  std::vector<PartitionID> GetPartitionIDs(
+      const std::vector<::cedar::CedarKey>& keys);
   bool WaitForPrepareQuorum(const std::shared_ptr<TransactionContext>& ctx,
                             std::vector<std::future<bool>>& futures);
   bool WaitForCommitQuorum(const std::shared_ptr<TransactionContext>& ctx,
@@ -231,7 +249,7 @@ class Optimized2PCEngine {
   
   // Storage clients (one per partition/node)
   std::vector<std::shared_ptr<StorageClient>> clients_;
-  std::mutex clients_mutex_;
+  mutable std::mutex clients_mutex_;
   
   // Pipeline queue
   std::queue<std::shared_ptr<TransactionContext>> pipeline_queue_;
@@ -248,12 +266,23 @@ class Optimized2PCEngine {
   std::thread pipeline_thread_;
   std::thread tuning_thread_;
   
+  // Task queue for async execution
+  std::queue<std::function<void()>> task_queue_;
+  std::mutex task_mutex_;
+  std::condition_variable task_cv_;
+  
   // State
   std::atomic<bool> running_{false};
   std::atomic<bool> shutdown_{false};
   
   // Transaction state manager for persistence
   TransactionStateManager* state_manager_ = nullptr;
+  
+  // Transaction recovery manager for coordinator crash recovery
+  TransactionRecoveryManager* recovery_manager_ = nullptr;
+  
+  // Transaction timeout manager for timeout tracking
+  TransactionTimeoutManager* timeout_manager_ = nullptr;
   
   // Statistics
   AtomicStats stats_;

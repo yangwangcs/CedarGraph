@@ -28,6 +28,7 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <limits>
 
 #include "cedar/core/status.h"
 #include "cedar/driver/bookmark.h"
@@ -42,39 +43,39 @@ namespace dtx {
  * 
  * 结合物理时间和逻辑时间，用于分布式因果排序
  */
-struct HybridLogicalClock {
+struct BookmarkHlc {
   uint64_t wall_time{0};  // 物理时间（微秒）
   uint64_t logical{0};    // 逻辑计数
   
   // 默认构造函数
-  HybridLogicalClock() = default;
-  HybridLogicalClock(uint64_t wt, uint64_t l = 0) : wall_time(wt), logical(l) {}
+  BookmarkHlc() = default;
+  BookmarkHlc(uint64_t wt, uint64_t l = 0) : wall_time(wt), logical(l) {}
   
   // 比较操作
-  bool operator<(const HybridLogicalClock& other) const {
+  bool operator<(const BookmarkHlc& other) const {
     if (wall_time != other.wall_time) return wall_time < other.wall_time;
     return logical < other.logical;
   }
   
-  bool operator>(const HybridLogicalClock& other) const {
+  bool operator>(const BookmarkHlc& other) const {
     return other < *this;
   }
   
-  bool operator==(const HybridLogicalClock& other) const {
+  bool operator==(const BookmarkHlc& other) const {
     return wall_time == other.wall_time && logical == other.logical;
   }
   
-  bool operator!=(const HybridLogicalClock& other) const {
+  bool operator!=(const BookmarkHlc& other) const {
     return !(*this == other);
   }
   
   // 检查是否为因果前序
-  bool HappensBefore(const HybridLogicalClock& other) const {
+  bool HappensBefore(const BookmarkHlc& other) const {
     return *this < other;
   }
   
   // 检查是否并发（无因果关系）
-  bool IsConcurrentWith(const HybridLogicalClock& other) const {
+  bool IsConcurrentWith(const BookmarkHlc& other) const {
     // 相等的不是并发的（它们是同一个）
     if (*this == other) return false;
     // 如果既不是 HappensBefore 也不是 HappensAfter，则是并发的
@@ -87,10 +88,10 @@ struct HybridLogicalClock {
   }
   
   // 反序列化
-  static HybridLogicalClock FromString(const std::string& str);
+  static BookmarkHlc FromString(const std::string& str);
   
   // 获取当前HLC（静态方法）
-  static HybridLogicalClock Now();
+  static BookmarkHlc Now();
 };
 
 /**
@@ -105,12 +106,12 @@ struct DistributedBookmark {
   
   // 分布式扩展
   std::vector<std::pair<PartitionID, uint64_t>> shard_watermarks;  // 各分片水位
-  HybridLogicalClock hlc;  // HLC时间戳
+  BookmarkHlc hlc;  // HLC时间戳
   
   // 构造函数
   DistributedBookmark() = default;
   DistributedBookmark(uint64_t ts, uint64_t tid) 
-      : timestamp(ts), txn_id(tid), hlc(HybridLogicalClock::Now()) {}
+      : timestamp(ts), txn_id(tid), hlc(BookmarkHlc::Now()) {}
   
   // 从单机 Bookmark 构造
   explicit DistributedBookmark(const driver::Bookmark& bm);
@@ -195,10 +196,10 @@ class BookmarkManager {
   // ==================== HLC 管理 ====================
   
   // 获取当前 HLC
-  HybridLogicalClock GetCurrentHLC();
+  BookmarkHlc GetCurrentHLC();
   
   // 更新本地 HLC（收到远程事件时调用）
-  void UpdateHLC(const HybridLogicalClock& remote);
+  void UpdateHLC(const BookmarkHlc& remote);
   
   // ==================== Bookmark 操作 ====================
   
@@ -249,11 +250,11 @@ class BookmarkManager {
  private:
   // HLC
   std::mutex hlc_mutex_;
-  HybridLogicalClock current_hlc_;
+  BookmarkHlc current_hlc_;
   
   // 分片水位
   mutable std::mutex watermarks_mutex_;
-  std::unordered_map<PartitionID, std::atomic<uint64_t>> watermarks_;
+  std::unordered_map<PartitionID, uint64_t> watermarks_;
   
   // 会话 Bookmark
   mutable std::mutex sessions_mutex_;

@@ -48,8 +48,9 @@ Status StorageClient::Initialize(const ClientConfig& config) {
   config_ = config;
   
   // Initialize gRPC channel and stub
-  channel_ = grpc::CreateChannel(config_.server_address, 
-                                  grpc::InsecureChannelCredentials());
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
+  if (!creds) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  channel_ = grpc::CreateChannel(config_.server_address, creds);
   stub_ = cedar::storage::StorageService::NewStub(channel_);
   
   // Wait for channel to be ready
@@ -125,10 +126,10 @@ Status StorageClient::Put(const CedarKey& key, const Descriptor& descriptor,
     cedar::storage::PutRequest request;
     cedar::storage::PutResponse response;
     grpc::ClientContext context;
-    
+
     // Set timeout
     context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
-    
+
     // Populate key
     auto* pb_key = request.mutable_key();
     pb_key->set_entity_id(key.entity_id());
@@ -138,29 +139,29 @@ Status StorageClient::Put(const CedarKey& key, const Descriptor& descriptor,
     pb_key->set_sequence(key.sequence());
     pb_key->set_type_flags(key.flags());
     pb_key->set_partition_id(key.part_id());
-    
+
     // Populate descriptor - store raw 8 bytes
     uint64_t raw_value = descriptor.AsRaw();
     request.mutable_descriptor_()->set_data(
         reinterpret_cast<const char*>(&raw_value), sizeof(raw_value));
-    
+
     // Populate transaction info
     request.mutable_txn_version()->set_value(static_cast<uint64_t>(txn_version));
     request.set_txn_id(txn_id);
-    
+
     // Make gRPC call
     grpc::Status status = stub_->Put(&context, request, &response);
-    
+
     if (!status.ok()) {
       return Status::IOError("gRPC Put failed: " + status.error_message());
     }
-    
+
     if (!response.success()) {
       return Status::IOError("Storage error: " + response.error_msg());
     }
-    
+
     return Status::OK();
-  });
+  }, false);
 }
 
 StatusOr<Descriptor> StorageClient::Get(const CedarKey& key, Timestamp read_time) {
@@ -234,6 +235,89 @@ Status StorageClient::BatchPut(
   }
   
   return Status::OK();
+}
+
+Status StorageClient::ScanNodeV2(uint64_t node_id, Timestamp start_time, Timestamp end_time,
+                                 std::vector<std::pair<Timestamp, Descriptor>>* results) {
+  if (!connected_.load()) {
+    return Status::IOError("Client not connected");
+  }
+
+  return RetryWithBackoff([&]() {
+    cedar::storage::ScanNodeRequestV2 request;
+    request.set_node_id(node_id);
+    request.set_start_time(start_time.value());
+    request.set_end_time(end_time.value());
+
+    cedar::storage::ScanResponse response;
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
+
+    auto grpc_status = stub_->ScanNodeV2(&context, request, &response);
+    if (!grpc_status.ok()) {
+      return Status::IOError("Storage RPC failed: " + grpc_status.error_message());
+    }
+    if (!response.success()) {
+      return Status::IOError(response.error_msg());
+    }
+
+    results->clear();
+    for (const auto& item : response.items()) {
+      const std::string& data = item.descriptor_().data();
+      Descriptor desc;
+      if (data.size() >= sizeof(uint64_t)) {
+        uint64_t raw_value;
+        std::memcpy(&raw_value, data.data(), sizeof(uint64_t));
+        desc = Descriptor(raw_value);
+      }
+      results->emplace_back(Timestamp(item.timestamp()), std::move(desc));
+    }
+    return Status::OK();
+  });
+}
+
+Status StorageClient::ScanEdgeV2(uint64_t node_id, uint16_t edge_type,
+                                 cedar::storage::Direction direction,
+                                 Timestamp start_time, Timestamp end_time,
+                                 std::vector<EdgeScanEntry>* edges) {
+  if (!connected_.load()) {
+    return Status::IOError("Client not connected");
+  }
+
+  return RetryWithBackoff([&]() {
+    cedar::storage::ScanEdgeRequestV2 request;
+    request.set_node_id(node_id);
+    request.set_edge_type(edge_type);
+    request.set_direction(direction);
+    request.set_start_time(start_time.value());
+    request.set_end_time(end_time.value());
+
+    cedar::storage::ScanResponse response;
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
+
+    auto grpc_status = stub_->ScanEdgeV2(&context, request, &response);
+    if (!grpc_status.ok()) {
+      return Status::IOError("Storage RPC failed: " + grpc_status.error_message());
+    }
+    if (!response.success()) {
+      return Status::IOError(response.error_msg());
+    }
+
+    edges->clear();
+    for (const auto& item : response.items()) {
+      EdgeScanEntry entry;
+      entry.timestamp = Timestamp(item.timestamp());
+      const std::string& data = item.descriptor_().data();
+      if (data.size() >= sizeof(uint64_t)) {
+        uint64_t raw_value;
+        std::memcpy(&raw_value, data.data(), sizeof(uint64_t));
+        entry.descriptor = Descriptor(raw_value);
+      }
+      edges->push_back(std::move(entry));
+    }
+    return Status::OK();
+  });
 }
 
 StatusOr<bool> StorageClient::Prepare(TxnID txn_id, const std::vector<CedarKey>& reads,
@@ -354,6 +438,47 @@ Status StorageClient::Abort(TxnID txn_id) {
   return Status::OK();
 }
 
+Status StorageClient::Inquire(TxnID txn_id, ParticipantState::State* state) {
+  if (!connected_.load()) {
+    return Status::IOError("Client not connected");
+  }
+  
+  cedar::storage::InquireRequest request;
+  request.set_txn_id(txn_id);
+  
+  cedar::storage::InquireResponse response;
+  grpc::ClientContext context;
+  
+  auto deadline = std::chrono::system_clock::now() + config_.operation_timeout;
+  context.set_deadline(deadline);
+  
+  grpc::Status status = stub_->Inquire(&context, request, &response);
+  
+  if (!status.ok()) {
+    if (status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
+      return Status::IOError("StorageClient::Inquire", "Operation timeout");
+    }
+    return Status::IOError("StorageClient::Inquire", status.error_message());
+  }
+  
+  switch (response.state()) {
+    case cedar::storage::InquireResponse::PREPARED:
+      *state = ParticipantState::State::kPrepared;
+      break;
+    case cedar::storage::InquireResponse::COMMITTED:
+      *state = ParticipantState::State::kCommitted;
+      break;
+    case cedar::storage::InquireResponse::ABORTED:
+      *state = ParticipantState::State::kAborted;
+      break;
+    default:
+      *state = ParticipantState::State::kUnknown;
+      break;
+  }
+  
+  return Status::OK();
+}
+
 bool StorageClient::IsConnected() const {
   return connected_.load() && !shutdown_.load();
 }
@@ -399,51 +524,59 @@ static std::chrono::milliseconds CalculateBackoffDelay(
   return delay;
 }
 
-Status StorageClient::RetryWithBackoff(std::function<Status()> operation) {
+Status StorageClient::RetryWithBackoff(std::function<Status()> operation,
+                                           bool is_idempotent) {
   Status last_status;
-  
+
   for (size_t attempt = 0; attempt < config_.max_retries; ++attempt) {
     last_status = operation();
-    
+
     if (last_status.ok()) {
       return Status::OK();
     }
-    
+
     // 检查是否应该重试
     bool should_retry = true;
-    
+
     // 业务逻辑错误不重试
-    if (last_status.IsInvalidArgument() || 
+    if (last_status.IsInvalidArgument() ||
         last_status.IsNotFound()) {
       should_retry = false;
     }
-    
+
+    // 非幂等操作在 DEADLINE_EXCEEDED 时不重试（服务器可能已经处理）
+    if (!is_idempotent) {
+      std::string error_msg = last_status.ToString();
+      if (error_msg.find("DEADLINE_EXCEEDED") != std::string::npos) {
+        should_retry = false;
+      }
+    }
+
     // 检查错误消息中的 gRPC 错误码
     std::string error_msg = last_status.ToString();
-    if (error_msg.find("DEADLINE_EXCEEDED") != std::string::npos ||
-        error_msg.find("UNAVAILABLE") != std::string::npos ||
+    if (error_msg.find("UNAVAILABLE") != std::string::npos ||
         error_msg.find("RESOURCE_EXHAUSTED") != std::string::npos) {
       should_retry = true;
     }
-    
+
     if (!should_retry) {
       return last_status;
     }
-    
+
     // 指数退避 + 抖动
     if (attempt < config_.max_retries - 1) {
       auto delay = CalculateBackoffDelay(
           attempt, config_.retry_base_delay, config_.operation_timeout / 2);
-      
+
       // 检查是否正在关闭
       if (shutdown_.load()) {
         return Status::IOError("Operation aborted: client shutting down");
       }
-      
+
       std::this_thread::sleep_for(delay);
     }
   }
-  
+
   return last_status;
 }
 
@@ -463,9 +596,13 @@ Status StorageClientPool::Initialize(const PoolConfig& config) {
   
   // Start cleanup thread
   cleanup_thread_ = std::thread([this]() {
-    while (!shutdown_.load()) {
-      std::this_thread::sleep_for(config_.idle_timeout / 2);
-      EvictIdleConnections();
+    try {
+      while (!shutdown_.load()) {
+        std::this_thread::sleep_for(config_.idle_timeout / 2);
+        EvictIdleConnections();
+      }
+    } catch (const std::exception& e) {
+      std::cerr << "StorageClientPool cleanup thread exception: " << e.what() << std::endl;
     }
   });
   

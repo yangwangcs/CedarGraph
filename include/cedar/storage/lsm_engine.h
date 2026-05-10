@@ -40,6 +40,7 @@
 #include "cedar/common/roaring_bitmap.h"
 #include "cedar/storage/active_entity_bitmap.h"
 #include "cedar/storage/skeleton_cache.h"
+#include "cedar/storage/parallel_query_engine.h"
 
 #include <set>
 #include <unordered_set>
@@ -50,6 +51,9 @@ namespace cedar {
 
 // 前向声明
 class BatchExecutor;
+class BlobFileManager;
+class AutoBlobStorage;
+class ParallelQueryEngine;
 
 // SST file metadata
 struct SSTFileMeta {
@@ -73,6 +77,9 @@ struct SSTFileMeta {
   // This allows excluding files without opening them
   uint64_t bloom_filter_hash = 0;
   bool has_bloom_filter = false;
+  
+  // Temporal Bloom Filter 序列化数据（用于时间范围查询过滤）
+  std::string temporal_filter_metadata;
   
   std::string file_name() const;
 };
@@ -108,6 +115,19 @@ class LsmEngine {
 
   // Get a value (legacy interface)
   Status Get(uint64_t entity_id, uint64_t tx_time, std::string* value);
+  
+  // ========== Blob Storage API ==========
+  // 设置 BlobFileManager（由上层 CedarGraphStorage 传入）
+  void SetBlobFileManager(BlobFileManager* blob_mgr);
+  
+  // 设置 AutoBlobStorage（由上层 CedarGraphStorage 传入）
+  void SetAutoBlobStorage(AutoBlobStorage* auto_blob);
+  
+  // 存储字符串（自动选择内联或 Blob）
+  Status PutString(uint64_t entity_id, uint16_t col_id, const std::string& value);
+  
+  // 读取字符串（自动解析 Blob 引用）
+  std::optional<std::string> GetString(uint64_t entity_id, uint16_t col_id);
 
   // Get with new types
   std::optional<Descriptor> Get(const CedarKey& key);
@@ -532,7 +552,16 @@ class LsmEngine {
   
   // ========== Phase 5: SkeletonCache 内存拓扑缓存 ==========
   // 分片 LRU 缓存，12B 极致压缩边
-  std::unique_ptr<ShardedSkeletonCache> skeleton_cache_;
+  mutable std::unique_ptr<ShardedSkeletonCache> skeleton_cache_;
+  
+  // ========== Phase 4c: ParallelQueryEngine ==========
+  // 跨列并行查询引擎
+  std::unique_ptr<ParallelQueryEngine> parallel_engine_;
+  
+  // ========== Phase 4c: BlobFileManager ==========
+  // Blob 存储（由上层 CedarGraphStorage 设置）
+  BlobFileManager* blob_manager_ = nullptr;
+  AutoBlobStorage* auto_blob_storage_ = nullptr;
   
   // 公开访问接口
  public:
@@ -568,20 +597,43 @@ class LsmEngine {
   ShardedSkeletonCache* GetSkeletonCache() { return skeleton_cache_.get(); }
   
   // ============================================================================
+  // Phase 4c: ParallelQueryEngine API
+  // ============================================================================
+  
+  // 并行多列查询（同时查询一个实体的多个属性列）
+  // 当 column_ids 数量 >= parallel_threshold 时启用线程池并行
+  std::vector<ColumnQueryResult> QueryColumnsParallel(
+      uint64_t entity_id,
+      const std::vector<uint16_t>& column_ids,
+      EntityType entity_type = EntityType::Vertex,
+      Timestamp timestamp = Timestamp::Static());
+  
+  // 获取 ParallelQueryEngine 统计
+  ThreadPoolQueryExecutor::Stats GetParallelQueryStats() const;
+  
+  // ============================================================================
   // QUERY OPTIMIZATION: Fast File Lookup by Entity Range
   // ============================================================================
   // Organize files by column_id for faster lookup
-  // column_id -> list of file metadata (sorted by min_entity_id)
-  std::unordered_map<uint16_t, std::vector<SSTFileMeta*>> column_file_index_;
+  // column_id -> list of lightweight index entries (sorted by min_entity_id)
+  // Stores copies of filtering fields so reallocation of levels_ does not
+  // invalidate pointers.
+  struct ColumnIndexEntry {
+    uint64_t file_number;
+    uint64_t min_entity_id;
+    uint64_t max_entity_id;
+    uint8_t entity_type;
+  };
+  std::unordered_map<uint16_t, std::vector<ColumnIndexEntry>> column_file_index_;
   mutable std::shared_mutex column_index_mutex_;
   
   // Build column-based file index
   void BuildColumnFileIndex();
   
   // Get candidate files for an entity (using range filtering + Bloom Filter)
-  std::vector<SSTFileMeta*> GetCandidateFiles(uint64_t entity_id, 
-                                                 EntityType entity_type, 
-                                                 uint16_t column_id) const;
+  std::vector<uint64_t> GetCandidateFiles(uint64_t entity_id,
+                                             EntityType entity_type,
+                                             uint16_t column_id) const;
   
   // Track column IDs during write for quick lookup
   void TrackColumnId(uint64_t entity_id, uint16_t column_id);

@@ -47,32 +47,43 @@ PartitionMeta PartitionMeta::Deserialize(const std::string& data) {
   std::istringstream iss(data);
   std::string token;
   
-  // 解析基本字段
-  std::getline(iss, token, ',');
-  meta.partition_id = static_cast<PartitionID>(std::stoul(token));
+  auto safe_getline = [&iss, &token]() -> bool {
+    if (!std::getline(iss, token, ',')) return false;
+    return !token.empty();
+  };
   
-  std::getline(iss, token, ',');
-  meta.primary_node = static_cast<NodeID>(std::stoul(token));
-  
-  std::getline(iss, token, ',');
-  meta.vertex_count.store(std::stoull(token));
-  
-  std::getline(iss, token, ',');
-  meta.edge_count.store(std::stoull(token));
-  
-  std::getline(iss, token, ',');
-  meta.txn_rate.store(std::stoull(token));
-  
-  std::getline(iss, token, ',');
-  meta.conflict_rate.store(std::stoull(token));
-  
-  // 解析子图列表
-  std::getline(iss, token, ',');
-  size_t subgraph_count = std::stoul(token);
-  
-  for (size_t i = 0; i < subgraph_count; ++i) {
-    std::getline(iss, token, ',');
-    meta.subgraphs.insert(static_cast<SubgraphID>(std::stoul(token)));
+  try {
+    // 解析基本字段
+    if (!safe_getline()) return PartitionMeta{};
+    meta.partition_id = static_cast<PartitionID>(std::stoul(token));
+    
+    if (!safe_getline()) return PartitionMeta{};
+    meta.primary_node = static_cast<NodeID>(std::stoul(token));
+    
+    if (!safe_getline()) return PartitionMeta{};
+    meta.vertex_count.store(std::stoull(token));
+    
+    if (!safe_getline()) return PartitionMeta{};
+    meta.edge_count.store(std::stoull(token));
+    
+    if (!safe_getline()) return PartitionMeta{};
+    meta.txn_rate.store(std::stoull(token));
+    
+    if (!safe_getline()) return PartitionMeta{};
+    meta.conflict_rate.store(std::stoull(token));
+    
+    // 解析子图列表
+    if (!safe_getline()) return PartitionMeta{};
+    size_t subgraph_count = std::stoul(token);
+    
+    for (size_t i = 0; i < subgraph_count; ++i) {
+      if (!safe_getline()) return PartitionMeta{};
+      meta.subgraphs.insert(static_cast<SubgraphID>(std::stoul(token)));
+    }
+  } catch (const std::exception& e) {
+    // Corrupted or tampered data: return default-constructed meta
+    // Caller should check partition_id == 0 to detect failure
+    return PartitionMeta{};
   }
   
   return meta;
@@ -255,8 +266,9 @@ std::shared_ptr<PartitionMeta> PartitionManager::GetPartitionMeta(
 }
 
 NodeID PartitionManager::GetPartitionLeader(PartitionID pid) const {
-  auto meta = GetPartitionMeta(pid);
-  return meta ? meta->primary_node : kInvalidNodeID;
+  std::shared_lock<std::shared_mutex> lock(meta_mutex_);
+  auto it = partition_metas_.find(pid);
+  return (it != partition_metas_.end()) ? it->second->primary_node : kInvalidNodeID;
 }
 
 Status PartitionManager::SetPartitionLeader(PartitionID pid, NodeID node_id) {

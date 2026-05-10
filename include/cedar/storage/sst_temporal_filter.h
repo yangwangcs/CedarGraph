@@ -51,7 +51,7 @@ class LsmEngine;
 // - cached_filter: 懒加载的过滤器对象，避免重复反序列化
 // - 线程安全：cached_filter 的访问需要外部同步或使用 GetFilter() 的互斥保护
 //
-struct SstFileMetaOptimized : public SstFileMeta {
+struct SstFileMetaOptimized : public SSTFileMeta {
   // 序列化的过滤器元数据（存储在 SST 文件 footer 中）
   std::string temporal_filter_metadata;
 
@@ -68,8 +68,8 @@ struct SstFileMetaOptimized : public SstFileMeta {
   SstFileMetaOptimized() = default;
 
   // 从基础 SstFileMeta 构造
-  explicit SstFileMetaOptimized(const SstFileMeta& base)
-      : SstFileMeta(base),
+  explicit SstFileMetaOptimized(const SSTFileMeta& base)
+      : SSTFileMeta(base),
         temporal_filter_metadata(),
         cached_filter(nullptr),
         filter_loaded_(false) {}
@@ -80,14 +80,14 @@ struct SstFileMetaOptimized : public SstFileMeta {
 
   // 允许移动
   SstFileMetaOptimized(SstFileMetaOptimized&& other) noexcept
-      : SstFileMeta(other),
+      : SSTFileMeta(other),
         temporal_filter_metadata(std::move(other.temporal_filter_metadata)),
         cached_filter(std::move(other.cached_filter)),
         filter_loaded_(other.filter_loaded_.load()) {}
 
   SstFileMetaOptimized& operator=(SstFileMetaOptimized&& other) noexcept {
     if (this != &other) {
-      SstFileMeta::operator=(other);
+      SSTFileMeta::operator=(other);
       temporal_filter_metadata = std::move(other.temporal_filter_metadata);
       cached_filter = std::move(other.cached_filter);
       filter_loaded_.store(other.filter_loaded_.load());

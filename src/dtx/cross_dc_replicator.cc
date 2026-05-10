@@ -18,7 +18,13 @@ namespace cedar {
 namespace dtx {
 
 CrossDCReplicator::CrossDCReplicator() = default;
-CrossDCReplicator::~CrossDCReplicator() { Stop(); }
+CrossDCReplicator::~CrossDCReplicator() {
+  try {
+    Stop();
+  } catch (...) {
+    // 析构函数中异常不应逃逸
+  }
+}
 
 Status CrossDCReplicator::Initialize(
     const DCReplicationConfig& config,
@@ -42,7 +48,12 @@ Status CrossDCReplicator::Start() {
   }
   
   if (config_.mode == ReplicationMode::kAsync) {
-    replication_thread_ = std::thread(&CrossDCReplicator::ReplicationLoop, this);
+    try {
+      replication_thread_ = std::thread(&CrossDCReplicator::ReplicationLoop, this);
+    } catch (...) {
+      running_ = false;
+      return Status::IOError("Failed to start replication thread");
+    }
   }
   
   return Status::OK();
@@ -53,8 +64,12 @@ void CrossDCReplicator::Stop() {
     return;
   }
   
-  if (replication_thread_.joinable()) {
-    replication_thread_.join();
+  try {
+    if (replication_thread_.joinable()) {
+      replication_thread_.join();
+    }
+  } catch (...) {
+    // join 异常不应逃逸
   }
 }
 
@@ -153,12 +168,17 @@ Status CrossDCReplicator::ResolveConflict(
 }
 
 void CrossDCReplicator::SetReplicationCallback(ReplicationCallback callback) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   replication_callback_ = callback;
 }
 
 void CrossDCReplicator::ReplicationLoop() {
   while (running_) {
-    ProcessReplicationQueue();
+    try {
+      ProcessReplicationQueue();
+    } catch (...) {
+      // 处理循环异常不应导致线程崩溃
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
 }
@@ -178,8 +198,17 @@ void CrossDCReplicator::ProcessReplicationQueue() {
     for (const auto& dc : log.target_dcs) {
       Status s = ReplicateToDC(log, dc);
       
-      if (replication_callback_) {
-        replication_callback_(log, s);
+      ReplicationCallback callback;
+      {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        callback = replication_callback_;
+      }
+      if (callback) {
+        try {
+          callback(log, s);
+        } catch (...) {
+          // callback 异常不应导致复制线程崩溃
+        }
       }
     }
   }
@@ -195,9 +224,17 @@ Status CrossDCReplicator::ReplicateToDC(const ReplicationLog& log,
       UpdateLag(dc_id);
       return Status::OK();
     }
-    
+
+    // Don't retry on timeout: remote DC may have already processed the log
+    if (s.ToString().find("DEADLINE_EXCEEDED") != std::string::npos ||
+        s.ToString().find("TIMEOUT") != std::string::npos) {
+      break;
+    }
+
     attempts++;
-    std::this_thread::sleep_for(config_.retry_delay);
+    // Exponential backoff with cap
+    auto delay = config_.retry_delay * (1ULL << std::min(attempts, 6u));
+    std::this_thread::sleep_for(delay);
   }
   
   std::lock_guard<std::mutex> lock(status_mutex_);

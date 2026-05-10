@@ -126,6 +126,8 @@ class CrossDCReplicator {
   
   std::atomic<bool> running_{false};
   std::thread replication_thread_;
+  
+  mutable std::mutex callback_mutex_;
   ReplicationCallback replication_callback_;
 };
 

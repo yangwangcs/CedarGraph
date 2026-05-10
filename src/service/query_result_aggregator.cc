@@ -1,4 +1,4 @@
-#include "src/service/query_result_aggregator.h"
+#include "cedar/service/query_result_aggregator.h"
 
 #include <algorithm>
 #include <unordered_set>
@@ -18,8 +18,11 @@ static int CompareValues(const QueryResultAggregator::Value& a,
 
   // Compare based on type
   if (a.has_int_val() && b.has_int_val()) {
-    int64_t diff = a.int_val() - b.int_val();
-    return diff < 0 ? -1 : (diff > 0 ? 1 : 0);
+    int64_t av = a.int_val();
+    int64_t bv = b.int_val();
+    if (av < bv) return -1;
+    if (av > bv) return 1;
+    return 0;
   }
   if (a.has_float_val() && b.has_float_val()) {
     double diff = a.float_val() - b.float_val();
@@ -103,14 +106,19 @@ QueryResultAggregator::MergeResults(const std::vector<ResultSet>& partial_result
     merged.add_columns(first.columns(i));
   }
 
-  // Merge all rows from all partial results
+  // Pre-calculate total rows to reserve space and avoid repeated reallocations
   uint64_t total_rows = 0;
+  for (const auto& partial : partial_results) {
+    total_rows += static_cast<uint64_t>(partial.rows_size());
+  }
+  merged.mutable_rows()->Reserve(static_cast<int>(total_rows));
+
+  // Merge all rows from all partial results
   for (const auto& partial : partial_results) {
     for (int i = 0; i < partial.rows_size(); ++i) {
       auto* new_row = merged.add_rows();
       new_row->CopyFrom(partial.rows(i));
     }
-    total_rows += partial.total_rows();
   }
 
   merged.set_total_rows(total_rows);

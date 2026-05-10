@@ -117,13 +117,29 @@ struct FailureDetectionConfig {
 // =============================================================================
 
 enum class RecoveryStrategy : uint8_t {
-  kRestartService = 0,     // 重启服务
+  kRestartService = 0,     // 重启服务（容器化环境感知）
   kSwitchLeader = 1,       // 切换 Leader
   kPromoteReplica = 2,     // 提升副本
   kMigratePartition = 3,   // 迁移分区
   kScaleOut = 4,           // 扩容
   kManualIntervention = 5, // 人工介入
 };
+
+// =============================================================================
+// 容器化运行环境检测
+// =============================================================================
+
+enum class ContainerRuntime : uint8_t {
+  kBareMetal = 0,    // 裸机/虚拟机（传统进程管理）
+  kKubernetes = 1,   // Kubernetes Pod
+  kSystemd = 2,      // systemd service
+  kDocker = 3,       // Docker 容器（非 K8s）
+  kUnknown = 4,      // 无法确定
+};
+
+// 检测当前运行环境
+ContainerRuntime DetectContainerRuntime();
+std::string ContainerRuntimeToString(ContainerRuntime runtime);
 
 struct RecoveryAction {
   RecoveryStrategy strategy;
@@ -144,6 +160,7 @@ class PartitionFailoverController {
     std::chrono::milliseconds leader_lease_duration{10000};  // Leader 租约
     uint32_t min_replicas{2};                                 // 最小副本数
     bool enable_auto_promote{true};                          // 自动提升副本
+    NodeID local_node_id{0};                                  // 本地节点ID
   };
   
   PartitionFailoverController();
@@ -154,7 +171,7 @@ class PartitionFailoverController {
   PartitionFailoverController& operator=(const PartitionFailoverController&) = delete;
   
   Status Initialize(const Config& config);
-  void Shutdown();
+  void Shutdown() noexcept;
   
   // 注册分区及其副本
   Status RegisterPartition(PartitionID pid, NodeID leader,
@@ -191,6 +208,9 @@ class PartitionFailoverController {
   // 注册路由更新回调
   using RouteUpdateCallback = std::function<void(PartitionID, NodeID new_leader)>;
   void SetRouteUpdateCallback(RouteUpdateCallback callback);
+  
+  // Register node address for health probing
+  void RegisterNodeAddress(NodeID node_id, const std::string& address);
 
  private:
   // 故障转移流程
@@ -213,9 +233,26 @@ class PartitionFailoverController {
   mutable std::mutex callbacks_mutex_;
   
   RouteUpdateCallback route_update_callback_;
+  mutable std::mutex route_mutex_;
+  
+  // Failover threads tracking (to prevent UAF from detached threads)
+  mutable std::mutex thread_mutex_;
+  std::vector<std::thread> failover_threads_;
   
   std::thread lease_thread_;
   std::thread health_thread_;
+  
+  bool CheckReplicaHealth(NodeID node_id);
+  bool PerformActiveHealthCheck(NodeID node_id);
+  
+  std::unordered_map<NodeID, bool> replica_health_;
+  mutable std::mutex replica_health_mutex_;
+  
+  // Node address registry (populated by RegisterPartition or external caller)
+  std::unordered_map<NodeID, std::string> node_addresses_;
+  mutable std::mutex node_addresses_mutex_;
+  
+  std::unordered_map<PartitionID, std::chrono::steady_clock::time_point> lease_expiry_;
 };
 
 // =============================================================================
@@ -239,7 +276,7 @@ class ClusterFailoverManager {
   ClusterFailoverManager& operator=(const ClusterFailoverManager&) = delete;
   
   Status Initialize(const Config& config);
-  void Shutdown();
+  void Shutdown() noexcept;
   
   // 注册故障检测器
   void RegisterFailureDetector(
@@ -284,6 +321,17 @@ class ClusterFailoverManager {
   Status ExecuteRecovery(const FailureEvent& event);
   bool ShouldAttemptRecovery(const FailureEvent& event);
   RecoveryAction DetermineRecoveryAction(const FailureEvent& event);
+  
+  // 容器化恢复策略
+  Status ExecuteContainerizedRecovery(const FailureEvent& event, ContainerRuntime runtime);
+  Status RestartViaKubernetes(const FailureEvent& event);
+  Status RestartViaSystemd(const FailureEvent& event);
+  Status RestartViaSignal(const FailureEvent& event);
+  
+  // 运行环境（延迟检测）
+  ContainerRuntime DetectedRuntime() const;
+  mutable std::atomic<ContainerRuntime> detected_runtime_{ContainerRuntime::kUnknown};
+  mutable std::once_flag detect_runtime_once_;
   
   // 记录故障历史
   void RecordFailure(const FailureEvent& event);

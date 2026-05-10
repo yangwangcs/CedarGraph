@@ -19,9 +19,9 @@ struct alignas(4096) TMVChunk {
   std::atomic<bool> sealed{false};
   char pad[9];
 
-  // Pointers
-  TMVChunk* next = nullptr;
-  TMVChunk* next_freelist = nullptr;
+  // Pointers (atomic to prevent data races in multi-threaded access)
+  std::atomic<TMVChunk*> next{nullptr};
+  std::atomic<TMVChunk*> next_freelist{nullptr};
 
   // Data
   TMVEdge edges[kCapacity];

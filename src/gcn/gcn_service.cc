@@ -49,9 +49,10 @@ void GcnServiceImpl::EnqueueEvent(const CDCEvent& event) {
   queue_cv_.notify_one();
 }
 
-grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* /*context*/,
+grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* context,
                                       const TraversalRequest* request,
                                       TraversalResponse* response) {
+  if (context->IsCancelled()) return grpc::Status::CANCELLED;
   if (dispatcher_) {
     return dispatcher_->DispatchTraversal(*request, response);
   }
@@ -60,26 +61,28 @@ grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* /*context*/,
   return grpc::Status::OK;
 }
 
-grpc::Status GcnServiceImpl::SubQuery(grpc::ServerContext* /*context*/,
+grpc::Status GcnServiceImpl::SubQuery(grpc::ServerContext* context,
                                       const SubQueryRequest* /*request*/,
                                       SubQueryResponse* response) {
+  if (context->IsCancelled()) return grpc::Status::CANCELLED;
   // Stub: return default response fields
   response->Clear();
   return grpc::Status::OK;
 }
 
-grpc::Status GcnServiceImpl::OnCacheInvalidate(grpc::ServerContext* /*context*/,
+grpc::Status GcnServiceImpl::OnCacheInvalidate(grpc::ServerContext* context,
                                                const CacheInvalidateNotice* /*request*/,
                                                Empty* response) {
+  if (context->IsCancelled()) return grpc::Status::CANCELLED;
   // Stub: return empty response
   response->Clear();
   return grpc::Status::OK;
 }
 
 grpc::Status GcnServiceImpl::OnEventStream(
-    grpc::ServerContext* /*context*/,
+    grpc::ServerContext* context,
     grpc::ServerReaderWriter<CDCEvent, Ack>* stream) {
-  while (true) {
+  while (!context->IsCancelled()) {
     CDCEvent event;
     {
       std::unique_lock<std::mutex> lock(queue_mutex_);

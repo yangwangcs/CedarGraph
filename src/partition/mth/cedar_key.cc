@@ -4,8 +4,8 @@
 // 
 // Ported from subgraph2
 
-#include "partition/mth/cedar_key.h"
-#include "partition/mth/op_type.h"
+#include "cedar/partition/mth/cedar_key.h"
+#include "cedar/partition/mth/op_type.h"
 #include <cstring>
 
 namespace cedar {

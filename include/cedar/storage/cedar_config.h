@@ -27,8 +27,8 @@
 #include <vector>
 
 #include "cedar/storage/cedar_options.h"
-#include "cedar/storage/sharded_wal.h"
-#include "cedar/storage/lockfree_memtable_full.h"
+// ShardedWAL was a stub; removed in cleanup.
+// LockFreeMemTableFull was a placeholder; actual memtable is VSLMemTable.
 #include "cedar/storage/async_index_builder.h"
 #include "cedar/core/env.h"
 

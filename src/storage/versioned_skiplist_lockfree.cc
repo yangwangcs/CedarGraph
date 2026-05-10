@@ -1,6 +1,7 @@
 // Lock-Free Versioned SkipList 实现
 #include "cedar/storage/versioned_skiplist_lockfree.h"
 #include "cedar/storage/active_entity_bitmap.h"
+#include <iostream>
 
 namespace cedar {
 
@@ -23,7 +24,7 @@ LFNode::LFNode(const CedarKey& key, const Descriptor& desc, int height, Timestam
       height_(height),
       older_version_(nullptr), 
       newer_version_(nullptr) {
-  for (int i = 0; i < height; i++) {
+  for (int i = 0; i < 16; i++) {
     next_[i].store(nullptr, std::memory_order_relaxed);
   }
 }
@@ -46,6 +47,7 @@ CedarKey LFNode::GetKey() const {
 LFNode::~LFNode() = default;
 
 LFNode* LFNode::Next(int level) const {
+  if (level >= height_) return nullptr;
   return next_[level].load(std::memory_order_acquire);
 }
 
@@ -175,7 +177,7 @@ LFNode* LockFreeVSL::FindNode(const CedarKey& key, LFNode* preds[], LFNode* succ
   
   for (int level = curr_max - 1; level >= 0; level--) {
     LFNode* curr = pred->Next(level);
-    while (curr != tail_) {
+    while (curr != tail_ && curr != nullptr) {
       // Compare: entity_id asc, column_id asc, target_id asc, timestamp desc
       if (curr->entity_id() < key.entity_id() ||
           (curr->entity_id() == key.entity_id() && curr->column_id() < key.column_id()) ||
@@ -214,7 +216,7 @@ LFNode* LockFreeVSL::FindLatestVersion(uint64_t entity_id,
   
   for (int level = curr_max - 1; level >= 0; level--) {
     LFNode* curr = pred->Next(level);
-    while (curr != tail_ && curr->entity_id() < entity_id) {
+    while (curr != tail_ && curr != nullptr && curr->entity_id() < entity_id) {
       pred = curr;
       curr = pred->Next(level);
     }
@@ -248,7 +250,7 @@ LFNode* LockFreeVSL::FindLatestVersion(uint64_t entity_id,
   
   for (int level = curr_max - 1; level >= 0; level--) {
     LFNode* curr = pred->Next(level);
-    while (curr != tail_ && curr->entity_id() < entity_id) {
+    while (curr != tail_ && curr != nullptr && curr->entity_id() < entity_id) {
       pred = curr;
       curr = pred->Next(level);
     }
@@ -349,7 +351,7 @@ std::vector<LockFreeVSL::VersionInfo> LockFreeVSL::ScanRange(
   
   for (int level = curr_max - 1; level >= 0; level--) {
     LFNode* curr = pred->Next(level);
-    while (curr != tail_ && curr->entity_id() < entity_id) {
+    while (curr != tail_ && curr != nullptr && curr->entity_id() < entity_id) {
       pred = curr;
       curr = pred->Next(level);
     }

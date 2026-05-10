@@ -14,8 +14,6 @@
 
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/dtx/monitoring.h"
-#include "cedar/raft/partition_router.h"
-
 #include <filesystem>
 #include <fstream>
 
@@ -57,20 +55,6 @@ Status StoragePartitionManager::Initialize(const PartitionConfig& config) {
   }
   
   shared_storage_.reset(storage);
-  
-  // Initialize partition router (required for CedarGraphStorage::Put)
-  raft::PartitionRouterConfig router_config;
-  router_config.default_replica_count = 1;  // Single-node mode for tests / embedded usage
-  s = shared_storage_->InitializePartitionRouter(router_config);
-  if (!s.ok()) {
-    return Status::IOError("Failed to initialize partition router: " + s.ToString());
-  }
-  
-  // Register a default local node so that partition routing can auto-create groups
-  s = shared_storage_->RegisterPartitionNode("node1", "127.0.0.1", 0, "");
-  if (!s.ok()) {
-    return Status::IOError("Failed to register default partition node: " + s.ToString());
-  }
   
   initialized_ = true;
   return Status::OK();
@@ -121,6 +105,14 @@ Status StoragePartitionManager::AddPartition(PartitionID pid) {
   // Create logical partition view - shares the same LSM-Tree
   // No physical directory created, partition_id is encoded in keys
   auto storage = std::make_unique<PartitionStorage>(pid, shared_storage_.get(), this);
+  
+  // Recover any prepared transaction state from WAL
+  auto recover_status = storage->RecoverFromWAL();
+  if (!recover_status.ok()) {
+    std::cerr << "[PartitionManager] WAL recovery warning for partition " << pid
+              << ": " << recover_status.ToString() << std::endl;
+    // Continue anyway - partition is usable even if WAL recovery fails
+  }
   
   partitions_[pid] = std::move(storage);
   return Status::OK();

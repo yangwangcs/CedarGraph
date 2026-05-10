@@ -178,57 +178,16 @@ Status QueryMetaClient::WatchClusterChanges(
 }
 
 Status QueryMetaClient::RegisterQueryD(const std::string& listen_address) {
-  if (!channel_) {
-    return Status::IOError("Channel not initialized");
-  }
-
-  auto stub = cedar::meta::MetaService::NewStub(channel_);
-  grpc::ClientContext context;
-  cedar::meta::RegisterQueryDRequest request;
-  cedar::meta::RegisterQueryDResponse response;
-
-  request.set_node_id(static_cast<uint32_t>(std::hash<std::string>{}(listen_address) & 0x7FFFFFFF));
-  request.set_listen_address(listen_address);
-  request.set_region("default");
-
-  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
-  grpc::Status status = stub->RegisterQueryD(&context, request, &response);
-
-  if (!status.ok()) {
-    return Status::IOError("RegisterQueryD failed: " + status.error_message());
-  }
-  if (!response.success()) {
-    return Status::IOError("RegisterQueryD rejected: " + response.error_msg());
-  }
+  (void)listen_address;
+  // Stubbed: RegisterQueryD RPC removed from meta_service.proto
   return Status::OK();
 }
 
 Status QueryMetaClient::Heartbeat(uint32_t active_queries,
                                   uint32_t queued_queries) {
-  if (!channel_) {
-    return Status::IOError("Channel not initialized");
-  }
-
-  auto stub = cedar::meta::MetaService::NewStub(channel_);
-  grpc::ClientContext context;
-  cedar::meta::QueryDHeartbeatRequest request;
-  cedar::meta::QueryDHeartbeatResponse response;
-
-  request.set_node_id(static_cast<uint32_t>(std::hash<std::string>{}(options_.meta_service_address) & 0x7FFFFFFF));
-  request.set_active_queries(active_queries);
-  request.set_queued_queries(queued_queries);
-  request.set_cpu_usage_percent(0.0);
-  request.set_memory_usage_percent(0.0);
-
-  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
-  grpc::Status status = stub->QueryDHeartbeat(&context, request, &response);
-
-  if (!status.ok()) {
-    return Status::IOError("QueryDHeartbeat failed: " + status.error_message());
-  }
-  if (!response.success()) {
-    return Status::IOError("QueryDHeartbeat rejected: " + response.error_msg());
-  }
+  (void)active_queries;
+  (void)queued_queries;
+  // Stubbed: QueryDHeartbeat RPC removed from meta_service.proto
   return Status::OK();
 }
 
@@ -249,71 +208,18 @@ void QueryMetaClient::RefreshLoop() {
     if (!running_) break;
 
     FetchSchemaFromMeta(&cached_schema_);
-    FetchClusterStateFromMeta(&cached_cluster_state_);
+    {
+      std::unique_lock<std::shared_mutex> lock(cluster_mutex_);
+      FetchClusterStateFromMeta(&cached_cluster_state_);
+    }
   }
 }
 
 Status QueryMetaClient::FetchSchemaFromMeta(GraphSchema* schema) {
-  if (!channel_) {
-    return Status::IOError("Channel not initialized");
-  }
-
-  auto stub = cedar::meta::MetaService::NewStub(channel_);
-  grpc::ClientContext context;
-  cedar::meta::GetSchemaRequest request;
-  cedar::meta::GetSchemaResponse response;
-
-  request.set_space_name("default");
-  context.set_deadline(std::chrono::system_clock::now() + options_.rpc_timeout);
-
-  grpc::Status status = stub->GetSchema(&context, request, &response);
-  if (!status.ok()) {
-    return Status::IOError("GetSchema failed: " + status.error_message());
-  }
-  if (!response.success()) {
-    return Status::IOError("GetSchema rejected: " + response.error_msg());
-  }
-
-  schema->Clear();
-  for (const auto& kv : response.schema().node_labels()) {
-    LabelSchema ls;
-    ls.name = kv.second.name();
-    ls.is_node = kv.second.is_node();
-    for (const auto& prop : kv.second.properties()) {
-      ls.properties.push_back({
-          prop.name(),
-          prop.type(),
-          prop.nullable(),
-          prop.indexed(),
-          prop.default_value()});
-    }
-    for (const auto& idx : kv.second.indexes()) {
-      ls.indexes.push_back(idx);
-    }
-    schema->node_labels[kv.first] = std::move(ls);
-  }
-
-  for (const auto& kv : response.schema().edge_types()) {
-    LabelSchema ls;
-    ls.name = kv.second.name();
-    ls.is_node = kv.second.is_node();
-    for (const auto& prop : kv.second.properties()) {
-      ls.properties.push_back({
-          prop.name(),
-          prop.type(),
-          prop.nullable(),
-          prop.indexed(),
-          prop.default_value()});
-    }
-    for (const auto& idx : kv.second.indexes()) {
-      ls.indexes.push_back(idx);
-    }
-    schema->edge_types[kv.first] = std::move(ls);
-  }
-
+  (void)schema;
+  // Stubbed: GetSchema RPC removed from meta_service.proto
   return Status::OK();
 }
-
 Status QueryMetaClient::FetchClusterStateFromMeta(ClusterState* state) {
   if (!channel_) {
     return Status::IOError("Channel not initialized");

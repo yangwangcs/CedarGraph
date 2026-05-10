@@ -167,6 +167,7 @@ struct DTxConfig {
 
 // 生成分区哈希（用于默认分区策略）
 inline PartitionID HashToPartition(const CedarKey& key, PartitionID num_partitions) {
+  if (num_partitions == 0) return 0;
   // 使用entity_id和column_id的组合哈希
   uint64_t hash = std::hash<uint64_t>{}(key.entity_id());
   hash ^= std::hash<uint16_t>{}(key.column_id()) + 0x9e3779b9 + (hash << 6) + (hash >> 2);

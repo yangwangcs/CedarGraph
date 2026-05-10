@@ -510,11 +510,63 @@ Status ManifestManager::WriteCurrentFile(const std::string& manifest_filename) {
 Status ManifestManager::LoadCurrentVersion(std::shared_ptr<Version>* version,
                                            uint64_t* next_file_number,
                                            uint64_t* last_sequence) {
-  // TODO: 从 Manifest 文件读取版本信息
-  // 暂时返回空版本
   *version = std::make_shared<Version>(1, 0);
   *next_file_number = 1;
   *last_sequence = 0;
+
+  if (manifest_filename_.empty()) {
+    return Status::OK();
+  }
+
+  // Read the manifest file and replay all edits
+  std::ifstream file(manifest_filename_, std::ios::binary);
+  if (!file.is_open()) {
+    return Status::IOError("Manifest", "Cannot open manifest file: " + manifest_filename_);
+  }
+
+  // Skip 12-byte header (magic + version + reserved)
+  char header[12];
+  if (!file.read(header, 12)) {
+    return Status::Corruption("Manifest", "Cannot read header");
+  }
+
+  // Read all length-prefixed records
+  while (file.good()) {
+    char len_buf[4];
+    if (!file.read(len_buf, 4)) {
+      break;
+    }
+    uint32_t record_len = DecodeFixed32(len_buf);
+    if (record_len == 0 || record_len > 64 * 1024 * 1024) {
+      break;  // Invalid record length
+    }
+
+    std::string record(record_len, '\0');
+    if (!file.read(&record[0], record_len)) {
+      break;
+    }
+
+    Slice slice(record);
+    ManifestEdit edit;
+    Status s = edit.DecodeFrom(&slice);
+    if (!s.ok()) {
+      continue;  // Skip corrupted records
+    }
+
+    (*version)->ApplyEdit(edit);
+
+    switch (edit.type) {
+      case ManifestEditType::kNextFileNumber:
+        *next_file_number = edit.number;
+        break;
+      case ManifestEditType::kLastSequence:
+        *last_sequence = edit.number;
+        break;
+      default:
+        break;
+    }
+  }
+
   return Status::OK();
 }
 

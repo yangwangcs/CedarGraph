@@ -30,6 +30,29 @@ namespace cedar {
 namespace dtx {
 namespace index {
 
+// 简单的 JSON 字符串转义
+static std::string EscapeJsonString(const std::string& input) {
+  std::ostringstream oss;
+  for (char c : input) {
+    switch (c) {
+      case '"': oss << "\\\""; break;
+      case '\\': oss << "\\\\"; break;
+      case '\b': oss << "\\b"; break;
+      case '\f': oss << "\\f"; break;
+      case '\n': oss << "\\n"; break;
+      case '\r': oss << "\\r"; break;
+      case '\t': oss << "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          oss << std::hex << std::setfill('0') << std::setw(4) << "\\u" << (int)c;
+        } else {
+          oss << c;
+        }
+    }
+  }
+  return oss.str();
+}
+
 // Curl global initialization
 static std::atomic<bool> curl_initialized_{false};
 static std::mutex curl_init_mutex_;
@@ -140,22 +163,27 @@ std::string DingTalkChannel::BuildMessage(const storage::Alert& alert) {
   oss << "{\n";
   oss << "  \"msgtype\": \"markdown\",\n";
   oss << "  \"markdown\": {\n";
-  oss << "    \"title\": \"" << config_.title_prefix << " " << alert.name << "\",\n";
-  oss << "    \"text\": \"### " << severity_emoji << config_.title_prefix << " " << alert.name << "\\n\\n";
+  oss << "    \"title\": \"" << EscapeJsonString(config_.title_prefix) << " " << EscapeJsonString(alert.name) << "\",\n";
+  oss << "    \"text\": \"### " << severity_emoji << EscapeJsonString(config_.title_prefix) << " " << EscapeJsonString(alert.name) << "\\n\\n";
   oss << "**Severity:** " << static_cast<int>(alert.severity) << "\\n\\n";
-  oss << "**Summary:** " << alert.summary << "\\n\\n";
-  oss << "**Description:** " << alert.description << "\\n\\n";
+  oss << "**Summary:** " << EscapeJsonString(alert.summary) << "\\n\\n";
+  oss << "**Description:** " << EscapeJsonString(alert.description) << "\\n\\n";
   
   if (!alert.labels.empty()) {
     oss << "**Labels:**\\n";
     for (const auto& label : alert.labels) {
-      oss << "- " << label.first << ": " << label.second << "\\n";
+      oss << "- " << EscapeJsonString(label.first) << ": " << EscapeJsonString(label.second) << "\\n";
     }
     oss << "\\n";
   }
   
   auto time_t = std::chrono::system_clock::to_time_t(alert.fired_at);
-  oss << "**Time:** " << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+  struct tm tm_buf;
+  if (localtime_r(&time_t, &tm_buf)) {
+    oss << "**Time:** " << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
+  } else {
+    oss << "**Time:** invalid";
+  }
   oss << "\"\n";
   oss << "  }";
   
@@ -195,6 +223,11 @@ std::string DingTalkChannel::SignRequest(uint64_t timestamp) {
   // Base64 encode
   BIO* b64 = BIO_new(BIO_f_base64());
   BIO* bio = BIO_new(BIO_s_mem());
+  if (!b64 || !bio) {
+    if (b64) BIO_free_all(b64);
+    if (bio) BIO_free_all(bio);
+    return "";
+  }
   b64 = BIO_push(b64, bio);
   BIO_write(b64, digest, digest_len);
   BIO_flush(b64);
@@ -202,7 +235,10 @@ std::string DingTalkChannel::SignRequest(uint64_t timestamp) {
   BUF_MEM* buffer_ptr;
   BIO_get_mem_ptr(b64, &buffer_ptr);
   
-  std::string signature(buffer_ptr->data, buffer_ptr->length - 1);
+  std::string signature;
+  if (buffer_ptr && buffer_ptr->length > 0) {
+    signature.assign(buffer_ptr->data, buffer_ptr->length - 1);
+  }
   BIO_free_all(b64);
   
   // URL encode
@@ -291,22 +327,22 @@ std::string PagerDutyChannel::BuildPayload(const storage::Alert& alert) {
   std::ostringstream oss;
   
   oss << "{\n";
-  oss << "  \"routing_key\": \"" << config_.integration_key << "\",\n";
+  oss << "  \"routing_key\": \"" << EscapeJsonString(config_.integration_key) << "\",\n";
   oss << "  \"event_action\": \"trigger\",\n";
   oss << "  \"payload\": {\n";
-  oss << "    \"summary\": \"" << alert.name << "\",\n";
-  oss << "    \"severity\": \"" << SeverityToString(alert.severity) << "\",\n";
-  oss << "    \"source\": \"" << config_.source << "\",\n";
+  oss << "    \"summary\": \"" << EscapeJsonString(alert.name) << "\",\n";
+  oss << "    \"severity\": \"" << EscapeJsonString(SeverityToString(alert.severity)) << "\",\n";
+  oss << "    \"source\": \"" << EscapeJsonString(config_.source) << "\",\n";
   oss << "    \"custom_details\": {\n";
-  oss << "      \"summary\": \"" << alert.summary << "\",\n";
-  oss << "      \"description\": \"" << alert.description << "\"";
+  oss << "      \"summary\": \"" << EscapeJsonString(alert.summary) << "\",\n";
+  oss << "      \"description\": \"" << EscapeJsonString(alert.description) << "\"";
   
   if (!alert.labels.empty()) {
     oss << ",\n";
     bool first = true;
     for (const auto& label : alert.labels) {
       if (!first) oss << ",\n";
-      oss << "      \"" << label.first << "\": \"" << label.second << "\"";
+      oss << "      \"" << EscapeJsonString(label.first) << "\": \"" << EscapeJsonString(label.second) << "\"";
       first = false;
     }
   }
@@ -384,7 +420,12 @@ std::string EmailChannel::BuildBody(const storage::Alert& alert) {
   }
   
   auto time_t = std::chrono::system_clock::to_time_t(alert.fired_at);
-  oss << "Time: " << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S") << "\n";
+  struct tm tm_buf;
+  if (localtime_r(&time_t, &tm_buf)) {
+    oss << "Time: " << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S") << "\n";
+  } else {
+    oss << "Time: invalid\n";
+  }
   
   return oss.str();
 }
@@ -421,26 +462,26 @@ std::string WebhookChannel::BuildPayload(const storage::Alert& alert) {
     std::string result = config_.template_json;
     size_t pos;
     while ((pos = result.find("{{name}}")) != std::string::npos) {
-      result.replace(pos, 8, alert.name);
+      result.replace(pos, 8, EscapeJsonString(alert.name));
     }
     while ((pos = result.find("{{description}}")) != std::string::npos) {
-      result.replace(pos, 15, alert.description);
+      result.replace(pos, 15, EscapeJsonString(alert.description));
     }
     while ((pos = result.find("{{severity}}")) != std::string::npos) {
       result.replace(pos, 12, std::to_string(static_cast<int>(alert.severity)));
     }
     while ((pos = result.find("{{summary}}")) != std::string::npos) {
-      result.replace(pos, 11, alert.summary);
+      result.replace(pos, 11, EscapeJsonString(alert.summary));
     }
     return result;
   }
   
   std::ostringstream oss;
   oss << "{\n";
-  oss << "  \"name\": \"" << alert.name << "\",\n";
-  oss << "  \"description\": \"" << alert.description << "\",\n";
+  oss << "  \"name\": \"" << EscapeJsonString(alert.name) << "\",\n";
+  oss << "  \"description\": \"" << EscapeJsonString(alert.description) << "\",\n";
   oss << "  \"severity\": " << static_cast<int>(alert.severity) << ",\n";
-  oss << "  \"summary\": \"" << alert.summary << "\",\n";
+  oss << "  \"summary\": \"" << EscapeJsonString(alert.summary) << "\",\n";
   oss << "  \"timestamp\": " << std::chrono::duration_cast<std::chrono::milliseconds>(
       alert.fired_at.time_since_epoch()).count() << ",\n";
   oss << "  \"labels\": {\n";
@@ -448,7 +489,7 @@ std::string WebhookChannel::BuildPayload(const storage::Alert& alert) {
   bool first = true;
   for (const auto& label : alert.labels) {
     if (!first) oss << ",\n";
-    oss << "    \"" << label.first << "\": \"" << label.second << "\"";
+    oss << "    \"" << EscapeJsonString(label.first) << "\": \"" << EscapeJsonString(label.second) << "\"";
     first = false;
   }
   
@@ -476,13 +517,14 @@ Status WebhookChannel::SendHttpRequest(const std::string& payload) {
   CURLcode res = CURLE_OK;
   int retries = config_.retry_count;
   
+  int attempt = 0;
   do {
     curl_easy_setopt(curl, CURLOPT_URL, config_.url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(config_.timeout_ms));
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    
+
     if (config_.method == "POST") {
       curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
     } else if (config_.method == "PUT") {
@@ -492,13 +534,21 @@ Status WebhookChannel::SendHttpRequest(const std::string& payload) {
       curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
       curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
     }
-    
+
     res = curl_easy_perform(curl);
     if (res == CURLE_OK) break;
-    
-    if (retries > 0) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Don't retry on timeout: webhook may have already processed the request
+    if (res == CURLE_OPERATION_TIMEDOUT) {
+      break;
     }
+
+    if (retries > 0) {
+      // Exponential backoff: 100ms, 200ms, 400ms, ... capped at 5s
+      int delay_ms = 100 * (1 << std::min(attempt, 5));
+      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+    }
+    attempt++;
   } while (--retries >= 0);
   
   long http_code = 0;

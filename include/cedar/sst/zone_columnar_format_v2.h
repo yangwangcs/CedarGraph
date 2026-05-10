@@ -81,18 +81,22 @@ struct BlockIndexEntry {
 // 文件级 Footer（精简版）
 // =============================================================================
 struct ZoneColumnarFooterV2 {
-  uint64_t block_index_offset;     // Block 索引偏移
-  uint64_t block_index_size;       // Block 索引大小
-  uint64_t bloom_filter_offset;    // Bloom Filter 偏移（可选）
-  uint64_t bloom_filter_size;      // Bloom Filter 大小
-  uint64_t row_count;              // 总行数
-  uint32_t block_count;            // Block 数量
-  uint32_t footer_magic;           // Footer 魔数校验
+  uint32_t block_index_offset;       // Block 索引偏移
+  uint32_t block_index_size;         // Block 索引大小
+  uint32_t bloom_filter_offset;      // Bloom Filter 偏移（可选）
+  uint32_t bloom_filter_size;        // Bloom Filter 大小
+  uint64_t row_count;                // 总行数
+  uint32_t block_count;              // Block 数量
+  uint32_t footer_magic;             // Footer 魔数校验
+  uint32_t temporal_filter_offset;   // Temporal Bloom Filter 偏移（可选，V2+）
+  uint32_t temporal_filter_size;     // Temporal Bloom Filter 大小（V2+）
+  uint32_t reserved;                 // Reserved
+  uint64_t data_checksum;            // CRC64 of all data between header and footer
   
   void EncodeTo(std::string* dst) const;
   Status DecodeFrom(Slice* input);
   
-  static constexpr size_t kEncodedSize = 48;  // 5*8 + 2*4 = 48 bytes
+  static constexpr size_t kEncodedSize = 64;  // 52 bytes payload + 12 bytes padding
   static constexpr uint32_t kFooterMagic = 0x464F4F54;  // "FOOT"
 };
 
@@ -109,6 +113,9 @@ struct ZoneColumnarHeaderV2 {
   uint64_t max_timestamp = 0;       // 全局最大 Timestamp
   uint32_t column_id = 0;           // Column ID
   uint8_t entity_type = 0;          // Entity Type
+  uint8_t reserved[3] = {0};        // Reserved
+  uint32_t header_checksum = 0;     // CRC32C of header (excluding this field)
+  uint32_t padding = 0;             // Padding to 64 bytes
   
   void EncodeTo(std::string* dst) const;
   Status DecodeFrom(Slice* input);

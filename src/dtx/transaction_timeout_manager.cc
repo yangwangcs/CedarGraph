@@ -15,6 +15,7 @@
 #include "cedar/dtx/transaction_timeout_manager.h"
 
 #include <algorithm>
+#include <iostream>
 
 namespace cedar {
 
@@ -26,24 +27,35 @@ TransactionTimeoutManager::~TransactionTimeoutManager() {
 
 void TransactionTimeoutManager::Initialize(const TimeoutConfig& config, 
                                            TimeoutCallback* callback) {
+  if (running_.exchange(true)) {
+    return;  // 已初始化
+  }
   config_ = config;
-  callback_ = callback;
-  running_ = true;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    callback_ = callback;
+  }
   
   timeout_thread_ = std::thread(&TransactionTimeoutManager::TimeoutCheckLoop, this);
   retry_thread_ = std::thread(&TransactionTimeoutManager::RetryLoop, this);
 }
 
 void TransactionTimeoutManager::Shutdown() {
-  running_ = false;
+  if (!running_.exchange(false)) {
+    return;
+  }
   cv_.notify_all();
   
-  if (timeout_thread_.joinable()) {
-    timeout_thread_.join();
-  }
-  if (retry_thread_.joinable()) {
-    retry_thread_.join();
-  }
+  try {
+    if (timeout_thread_.joinable()) {
+      timeout_thread_.join();
+    }
+  } catch (...) { std::cerr << "[TimeoutManager] Timeout thread join exception" << std::endl; }
+  try {
+    if (retry_thread_.joinable()) {
+      retry_thread_.join();
+    }
+  } catch (...) { std::cerr << "[TimeoutManager] Retry thread join exception" << std::endl; }
   
   std::lock_guard<std::mutex> lock(mutex_);
   transactions_.clear();
@@ -146,33 +158,65 @@ void TransactionTimeoutManager::TimeoutCheckLoop() {
     auto now = std::chrono::steady_clock::now();
     
     // Check for transaction timeouts
-    for (auto& [txn_id, info] : transactions_) {
+    // Collect timed-out txns first to avoid UB of erasing during range-for
+    std::vector<dtx::TxnID> timed_out_txns;
+    std::vector<std::pair<dtx::TxnID, dtx::PartitionID>> participant_timeouts;
+    
+    for (const auto& [txn_id, info] : transactions_) {
       auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           now - info.start_time);
       
       if (elapsed > config_.max_transaction_duration) {
-        if (callback_) {
-          lock.unlock();
-          callback_->OnTransactionTimeout(txn_id);
-          lock.lock();
-        }
+        timed_out_txns.push_back(txn_id);
         continue;
       }
       
-      // Check participant timeouts
+      // Check participant timeouts using last_activity (updated on state changes)
       auto phase_timeout = info.is_preparing ? config_.prepare_timeout : config_.commit_timeout;
+      auto participant_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - info.last_activity);
       
-      for (auto& [pid, last_update] : info.participant_timeouts) {
-        auto participant_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - last_update);
-        
-        if (participant_elapsed > phase_timeout) {
-          if (callback_) {
-            lock.unlock();
-            callback_->OnParticipantTimeout(txn_id, pid);
-            lock.lock();
-          }
+      if (participant_elapsed > phase_timeout) {
+        for (const auto& [pid, last_update] : info.participant_timeouts) {
+          (void)last_update;
+          participant_timeouts.emplace_back(txn_id, pid);
         }
+      }
+    }
+    
+    // Process timeouts outside the iteration
+    for (dtx::TxnID txn_id : timed_out_txns) {
+      TimeoutCallback* cb = nullptr;
+      {
+        std::lock_guard<std::mutex> cb_lock(callback_mutex_);
+        cb = callback_;
+      }
+      if (cb) {
+        lock.unlock();
+        try {
+          cb->OnTransactionTimeout(txn_id);
+        } catch (...) { std::cerr << "[TimeoutManager] OnTransactionTimeout exception for txn_id=" << txn_id << std::endl; }
+        lock.lock();
+      }
+      transactions_.erase(txn_id);
+    }
+    
+    for (const auto& [txn_id, pid] : participant_timeouts) {
+      auto it = transactions_.find(txn_id);
+      if (it != transactions_.end()) {
+        it->second.last_activity = now;
+      }
+      TimeoutCallback* cb = nullptr;
+      {
+        std::lock_guard<std::mutex> cb_lock(callback_mutex_);
+        cb = callback_;
+      }
+      if (cb) {
+        lock.unlock();
+        try {
+          cb->OnParticipantTimeout(txn_id, pid);
+        } catch (...) { std::cerr << "[TimeoutManager] OnParticipantTimeout exception for txn_id=" << txn_id << ", participant_id=" << pid << std::endl; }
+        lock.lock();
       }
     }
   }
@@ -205,8 +249,15 @@ void TransactionTimeoutManager::RetryLoop() {
     
     // Process ready operations
     for (const auto& op : ready_ops) {
-      if (callback_) {
-        callback_->OnOperationRetry(op);
+      TimeoutCallback* cb = nullptr;
+      {
+        std::lock_guard<std::mutex> cb_lock(callback_mutex_);
+        cb = callback_;
+      }
+      if (cb) {
+        try {
+          cb->OnOperationRetry(op);
+        } catch (...) { std::cerr << "[TimeoutManager] OnOperationRetry exception for txn_id=" << op.txn_id << std::endl; }
       }
     }
   }

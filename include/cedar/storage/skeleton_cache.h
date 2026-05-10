@@ -209,12 +209,24 @@ class ShardedSkeletonCache {
       return {&it->second.skeleton, false};
     }
     
-    // 创建新条目
+    // 释放锁后再调用 factory，避免 factory 内部调用 skeleton_cache_ 方法时死锁
+    lock.unlock();
     VertexSkeleton skeleton = factory();
     
     // 检查是否创建失败（IsDeleted 表示未找到）
     if (skeleton.IsDeleted()) {
       return {nullptr, false};
+    }
+    
+    // 重新获取锁进行插入
+    lock.lock();
+    
+    // 三重检查（其他线程可能在 factory 执行期间已创建）
+    it = shard.entries.find(vertex_id);
+    if (it != shard.entries.end() && !it->second.skeleton.IsDeleted()) {
+      it->second.skeleton.access_count++;
+      shard.hits++;
+      return {&it->second.skeleton, false};
     }
     
     // 检查容量

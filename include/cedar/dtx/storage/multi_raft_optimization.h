@@ -113,7 +113,7 @@ class RaftThreadPool {
   ~RaftThreadPool();
   
   Status Initialize(const Config& config);
-  void Shutdown();
+  void Shutdown() noexcept;
   
   // Submit task for specific partition
   Status Submit(PartitionID pid, TaskPriority priority, std::function<void()> task);
@@ -146,6 +146,7 @@ class RaftThreadPool {
   std::condition_variable queue_cv_;
   
   std::vector<std::unique_ptr<std::thread>> workers_;
+  mutable std::mutex workers_mutex_;
   std::atomic<uint32_t> active_workers_{0};
   
   Stats stats_;
@@ -186,7 +187,7 @@ class BatchHeartbeatManager {
   ~BatchHeartbeatManager();
   
   Status Initialize(const Config& config, SendCallback callback);
-  void Shutdown();
+  void Shutdown() noexcept;
   
   // Queue a heartbeat to be sent
   Status QueueHeartbeat(const HeartbeatEntry& entry);

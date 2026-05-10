@@ -64,56 +64,66 @@ std::unique_ptr<DistributedTxnContext> DistributedTxnContext::Deserialize(
   std::istringstream iss(data);
   std::string token;
   
-  // 解析基础信息
-  std::getline(iss, token, ',');
-  ctx->txn_id_ = std::stoull(token);
+  auto safe_getline = [&iss, &token]() -> bool {
+    if (!std::getline(iss, token, ',')) return false;
+    return !token.empty();
+  };
   
-  std::getline(iss, token, ',');
-  ctx->start_ts_ = std::stoull(token);
-  
-  std::getline(iss, token, ',');
-  ctx->commit_ts_ = std::stoull(token);
-  
-  std::getline(iss, token, ',');
-  ctx->type_ = static_cast<TxnType>(std::stoi(token));
-  
-  std::getline(iss, token, ',');
-  ctx->state_.store(static_cast<DistributedTxnState>(std::stoi(token)));
-  
-  std::getline(iss, token, ',');
-  ctx->coordinator_node_ = static_cast<NodeID>(std::stoul(token));
-  
-  // 解析时序窗口
-  std::getline(iss, token, ',');
-  uint64_t start_ts = std::stoull(token);
-  std::getline(iss, token, ',');
-  uint64_t end_ts = std::stoull(token);
-  ctx->temporal_window_ = TemporalWindow(Timestamp(start_ts), Timestamp(end_ts));
-  
-  // 解析参与者
-  std::getline(iss, token, ',');
-  size_t participant_count = std::stoul(token);
-  for (size_t i = 0; i < participant_count; ++i) {
-    std::getline(iss, token, ',');
-    ctx->participant_partitions_.insert(static_cast<PartitionID>(std::stoul(token)));
+  try {
+    // 解析基础信息
+    if (!safe_getline()) return nullptr;
+    ctx->txn_id_ = std::stoull(token);
+    
+    if (!safe_getline()) return nullptr;
+    ctx->start_ts_ = std::stoull(token);
+    
+    if (!safe_getline()) return nullptr;
+    ctx->commit_ts_ = std::stoull(token);
+    
+    if (!safe_getline()) return nullptr;
+    ctx->type_ = static_cast<TxnType>(std::stoi(token));
+    
+    if (!safe_getline()) return nullptr;
+    ctx->state_.store(static_cast<DistributedTxnState>(std::stoi(token)));
+    
+    if (!safe_getline()) return nullptr;
+    ctx->coordinator_node_ = static_cast<NodeID>(std::stoul(token));
+    
+    // 解析时序窗口
+    if (!safe_getline()) return nullptr;
+    uint64_t start_ts = std::stoull(token);
+    if (!safe_getline()) return nullptr;
+    uint64_t end_ts = std::stoull(token);
+    ctx->temporal_window_ = TemporalWindow(Timestamp(start_ts), Timestamp(end_ts));
+    
+    // 解析参与者
+    if (!safe_getline()) return nullptr;
+    size_t participant_count = std::stoul(token);
+    for (size_t i = 0; i < participant_count; ++i) {
+      if (!safe_getline()) return nullptr;
+      ctx->participant_partitions_.insert(static_cast<PartitionID>(std::stoul(token)));
+    }
+    
+    // 解析读写集大小（实际数据未序列化）
+    if (!safe_getline()) return nullptr;
+    // size_t read_set_size = std::stoul(token);
+    
+    if (!safe_getline()) return nullptr;
+    // size_t write_set_size = std::stoul(token);
+    
+    // 解析统计信息
+    if (!safe_getline()) return nullptr;
+    ctx->execution_time_ms_ = std::stoull(token);
+    
+    if (!safe_getline()) return nullptr;
+    ctx->coord_time_ms_ = std::stoull(token);
+    
+    if (!safe_getline()) return nullptr;
+    ctx->retry_count_ = static_cast<uint32_t>(std::stoul(token));
+  } catch (const std::exception& e) {
+    // Corrupted or tampered data
+    return nullptr;
   }
-  
-  // 解析读写集大小（实际数据未序列化）
-  std::getline(iss, token, ',');
-  // size_t read_set_size = std::stoul(token);
-  
-  std::getline(iss, token, ',');
-  // size_t write_set_size = std::stoul(token);
-  
-  // 解析统计信息
-  std::getline(iss, token, ',');
-  ctx->execution_time_ms_ = std::stoull(token);
-  
-  std::getline(iss, token, ',');
-  ctx->coord_time_ms_ = std::stoull(token);
-  
-  std::getline(iss, token, ',');
-  ctx->retry_count_ = static_cast<uint32_t>(std::stoul(token));
   
   return ctx;
 }

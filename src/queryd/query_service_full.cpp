@@ -199,7 +199,7 @@ class QueryServiceImpl::Impl {
                   const cedar::query::TraverseRequest* request,
                   cedar::query::TraverseResponse* response) {
     
-    (void)context;
+    if (context->IsCancelled()) return Status::CANCELLED;
     
     // Convert direction
     cypher::Direction dir;
@@ -254,7 +254,7 @@ class QueryServiceImpl::Impl {
                 const cedar::query::HealthRequest* request,
                 cedar::query::HealthResponse* response) {
     
-    (void)context;
+    if (context->IsCancelled()) return Status::CANCELLED;
     
     bool healthy = true;
     

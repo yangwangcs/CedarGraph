@@ -22,25 +22,29 @@ namespace cedar {
 namespace dtx {
 
 // =============================================================================
-// HybridLogicalClock 实现
+// BookmarkHlc 实现
 // =============================================================================
 
-HybridLogicalClock HybridLogicalClock::FromString(const std::string& str) {
-  size_t pos = str.find('.');
-  if (pos == std::string::npos) {
-    return HybridLogicalClock(std::stoull(str), 0);
+BookmarkHlc BookmarkHlc::FromString(const std::string& str) {
+  try {
+    size_t pos = str.find('.');
+    if (pos == std::string::npos) {
+      return BookmarkHlc(std::stoull(str), 0);
+    }
+    
+    uint64_t wt = std::stoull(str.substr(0, pos));
+    uint64_t l = std::stoull(str.substr(pos + 1));
+    return BookmarkHlc(wt, l);
+  } catch (...) {
+    return BookmarkHlc(0, 0);
   }
-  
-  uint64_t wt = std::stoull(str.substr(0, pos));
-  uint64_t l = std::stoull(str.substr(pos + 1));
-  return HybridLogicalClock(wt, l);
 }
 
-HybridLogicalClock HybridLogicalClock::Now() {
+BookmarkHlc BookmarkHlc::Now() {
   auto now = std::chrono::system_clock::now();
   auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
       now.time_since_epoch()).count();
-  return HybridLogicalClock(static_cast<uint64_t>(micros), 0);
+  return BookmarkHlc(static_cast<uint64_t>(micros), 0);
 }
 
 // =============================================================================
@@ -50,7 +54,7 @@ HybridLogicalClock HybridLogicalClock::Now() {
 DistributedBookmark::DistributedBookmark(const driver::Bookmark& bm)
     : timestamp(bm.GetTimestamp()),
       txn_id(bm.GetTransactionId()),
-      hlc(HybridLogicalClock::Now()) {}
+      hlc(BookmarkHlc::Now()) {}
 
 void DistributedBookmark::SetShardWatermark(PartitionID pid, uint64_t watermark) {
   // 查找是否已存在
@@ -106,48 +110,52 @@ std::string DistributedBookmark::Serialize() const {
 }
 
 std::optional<DistributedBookmark> DistributedBookmark::Deserialize(const std::string& str) {
-  if (str.substr(0, 3) != "v3:") {
-    // 尝试解析旧版本格式
-    if (str.substr(0, 3) == "v2:") {
-      auto bm = driver::Bookmark::FromString(str);
-      if (bm) {
-        return DistributedBookmark(*bm);
+  try {
+    if (str.size() < 3 || str.substr(0, 3) != "v3:") {
+      // 尝试解析旧版本格式
+      if (str.size() >= 3 && str.substr(0, 3) == "v2:") {
+        auto bm = driver::Bookmark::FromString(str);
+        if (bm) {
+          return DistributedBookmark(*bm);
+        }
+      }
+      return std::nullopt;
+    }
+    
+    DistributedBookmark result;
+    std::istringstream iss(str.substr(3));  // 跳过 "v3:"
+    std::string token;
+    
+    // 解析 timestamp
+    std::getline(iss, token, ':');
+    result.timestamp = std::stoull(token);
+    
+    // 解析 txn_id
+    std::getline(iss, token, ':');
+    result.txn_id = std::stoull(token);
+    
+    // 解析 HLC
+    std::getline(iss, token, ':');
+    result.hlc = BookmarkHlc::FromString(token);
+    
+    // 解析分片水位数量
+    std::getline(iss, token, ':');
+    size_t watermark_count = std::stoul(token);
+  
+    for (size_t i = 0; i < watermark_count; ++i) {
+      std::getline(iss, token, ':');
+      size_t pos = token.find(',');
+      if (pos != std::string::npos) {
+        PartitionID pid = static_cast<PartitionID>(std::stoul(token.substr(0, pos)));
+        uint64_t wm = std::stoull(token.substr(pos + 1));
+        result.shard_watermarks.emplace_back(pid, wm);
       }
     }
+    
+    return result;
+  } catch (...) {
     return std::nullopt;
   }
-  
-  DistributedBookmark result;
-  std::istringstream iss(str.substr(3));  // 跳过 "v3:"
-  std::string token;
-  
-  // 解析 timestamp
-  std::getline(iss, token, ':');
-  result.timestamp = std::stoull(token);
-  
-  // 解析 txn_id
-  std::getline(iss, token, ':');
-  result.txn_id = std::stoull(token);
-  
-  // 解析 HLC
-  std::getline(iss, token, ':');
-  result.hlc = HybridLogicalClock::FromString(token);
-  
-  // 解析分片水位数量
-  std::getline(iss, token, ':');
-  size_t watermark_count = std::stoul(token);
-  
-  for (size_t i = 0; i < watermark_count; ++i) {
-    std::getline(iss, token, ':');
-    size_t pos = token.find(',');
-    if (pos != std::string::npos) {
-      PartitionID pid = static_cast<PartitionID>(std::stoul(token.substr(0, pos)));
-      uint64_t wm = std::stoull(token.substr(pos + 1));
-      result.shard_watermarks.emplace_back(pid, wm);
-    }
-  }
-  
-  return result;
 }
 
 DistributedBookmark DistributedBookmark::Merge(
@@ -162,11 +170,14 @@ DistributedBookmark DistributedBookmark::Merge(
   for (size_t i = 1; i < bookmarks.size(); ++i) {
     const auto& bm = bookmarks[i];
     
-    // 取最大时间戳
-    if (bm.timestamp > result.timestamp) {
+    // 优先使用 HLC 比较，取最大值
+    if (bm.hlc > result.hlc) {
       result.timestamp = bm.timestamp;
       result.txn_id = bm.txn_id;
       result.hlc = bm.hlc;
+    } else if (bm.hlc == result.hlc && bm.timestamp > result.timestamp) {
+      result.timestamp = bm.timestamp;
+      result.txn_id = bm.txn_id;
     }
     
     // 合并分片水位（取最大值）
@@ -218,16 +229,16 @@ bool CausalConsistencyChecker::CheckMonotonicWrites(
 // =============================================================================
 
 BookmarkManager::BookmarkManager() {
-  current_hlc_ = HybridLogicalClock::Now();
+  current_hlc_ = BookmarkHlc::Now();
 }
 
 BookmarkManager::~BookmarkManager() = default;
 
-HybridLogicalClock BookmarkManager::GetCurrentHLC() {
+BookmarkHlc BookmarkManager::GetCurrentHLC() {
   std::lock_guard<std::mutex> lock(hlc_mutex_);
   
   // 获取当前物理时间
-  auto now = HybridLogicalClock::Now();
+  auto now = BookmarkHlc::Now();
   
   // 如果物理时间前进，重置逻辑计数
   if (now.wall_time > current_hlc_.wall_time) {
@@ -241,21 +252,21 @@ HybridLogicalClock BookmarkManager::GetCurrentHLC() {
   return current_hlc_;
 }
 
-void BookmarkManager::UpdateHLC(const HybridLogicalClock& remote) {
+void BookmarkManager::UpdateHLC(const BookmarkHlc& remote) {
   std::lock_guard<std::mutex> lock(hlc_mutex_);
   
-  // HLC 更新规则
+  // HLC 更新规则（标准 HLC 算法）
   if (remote.wall_time > current_hlc_.wall_time) {
     // 远程物理时间更新
     current_hlc_.wall_time = remote.wall_time;
     current_hlc_.logical = remote.logical + 1;
   } else if (remote.wall_time == current_hlc_.wall_time) {
-    // 物理时间相同，取最大逻辑计数
-    if (remote.logical > current_hlc_.logical) {
-      current_hlc_.logical = remote.logical;
-    }
+    // 物理时间相同，取最大逻辑计数后 +1
+    current_hlc_.logical = std::max(current_hlc_.logical, remote.logical) + 1;
+  } else {
+    // 远程时间更旧，只增加本地逻辑计数
+    ++current_hlc_.logical;
   }
-  // 如果远程时间更旧，忽略
 }
 
 DistributedBookmark BookmarkManager::CreateBookmark(const DistributedTxnContext& ctx) {
@@ -267,7 +278,7 @@ DistributedBookmark BookmarkManager::CreateBookmark(const DistributedTxnContext&
   // 添加各分片水位
   std::lock_guard<std::mutex> lock(watermarks_mutex_);
   for (const auto& [pid, wm] : watermarks_) {
-    bm.SetShardWatermark(pid, wm.load());
+    bm.SetShardWatermark(pid, wm);
   }
   
   ++bookmarks_created_;
@@ -303,18 +314,18 @@ Status BookmarkManager::WaitForBookmark(const DistributedBookmark& bookmark,
 bool BookmarkManager::IsBookmarkSatisfied(const DistributedBookmark& bookmark) {
   // 检查本地 HLC 是否已经超过 Bookmark 的 HLC
   auto current = GetCurrentHLC();
-  if (bookmark.hlc < current) {
-    return true;
+  if (bookmark.hlc > current) {
+    return false;  // HLC 未满足
   }
   
-  // 检查分片水位
+  // 检查分片水位（即使 HLC 满足，也必须验证各分片水位）
   std::lock_guard<std::mutex> lock(watermarks_mutex_);
   for (const auto& [pid, wm] : bookmark.shard_watermarks) {
     auto it = watermarks_.find(pid);
     if (it == watermarks_.end()) {
       return false;  // 未知分片
     }
-    if (it->second.load() < wm) {
+    if (it->second < wm) {
       return false;  // 水位未满足
     }
   }
@@ -326,18 +337,17 @@ void BookmarkManager::UpdateLocalWatermark(PartitionID pid, uint64_t watermark) 
   std::lock_guard<std::mutex> lock(watermarks_mutex_);
   
   auto& current = watermarks_[pid];
-  uint64_t old = current.load();
   
   // 只更新更大的水位
-  while (watermark > old && !current.compare_exchange_weak(old, watermark)) {
-    // 重试
+  if (watermark > current) {
+    current = watermark;
   }
 }
 
 uint64_t BookmarkManager::GetWatermark(PartitionID pid) const {
   std::lock_guard<std::mutex> lock(watermarks_mutex_);
   auto it = watermarks_.find(pid);
-  return (it != watermarks_.end()) ? it->second.load() : 0;
+  return (it != watermarks_.end()) ? it->second : 0;
 }
 
 uint64_t BookmarkManager::GetGlobalMinWatermark() const {
@@ -349,9 +359,8 @@ uint64_t BookmarkManager::GetGlobalMinWatermark() const {
   
   uint64_t min_wm = std::numeric_limits<uint64_t>::max();
   for (const auto& [_, wm] : watermarks_) {
-    uint64_t current = wm.load();
-    if (current < min_wm) {
-      min_wm = current;
+    if (wm < min_wm) {
+      min_wm = wm;
     }
   }
   

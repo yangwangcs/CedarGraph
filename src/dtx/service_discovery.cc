@@ -22,6 +22,7 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>
+#include <mutex>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -71,6 +72,7 @@ Status ServiceDiscovery::Start() {
   std::cout << "[ServiceDiscovery] Initial discovery found " << nodes.size() << " nodes" << std::endl;
   
   // 启动后台线程
+  std::lock_guard<std::mutex> lock(thread_mutex_);
   discovery_thread_ = std::thread(&ServiceDiscovery::DiscoveryLoop, this);
   health_check_thread_ = std::thread(&ServiceDiscovery::HealthCheckLoop, this);
   
@@ -84,6 +86,7 @@ void ServiceDiscovery::Stop() {
   
   std::cout << "[ServiceDiscovery] Stopping discovery service..." << std::endl;
   
+  std::lock_guard<std::mutex> lock(thread_mutex_);
   if (discovery_thread_.joinable()) {
     discovery_thread_.join();
   }
@@ -168,22 +171,29 @@ bool ServiceDiscovery::CheckNodeHealth(const StorageNodeInfo& node) {
   struct timeval tv;
   tv.tv_sec = config_.health_check_timeout_ms / 1000;
   tv.tv_usec = (config_.health_check_timeout_ms % 1000) * 1000;
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0 ||
+      setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+    close(sock);
+    return false;
+  }
   
   struct sockaddr_in addr;
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
   addr.sin_port = htons(node.port);
   
-  // 尝试解析主机名
-  struct hostent* host = gethostbyname(node.host.c_str());
-  if (host == nullptr) {
+  // 尝试解析主机名（线程安全：使用 getaddrinfo 替代 gethostbyname）
+  struct addrinfo hints = {};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  struct addrinfo* res = nullptr;
+  if (getaddrinfo(node.host.c_str(), nullptr, &hints, &res) != 0 || res == nullptr) {
     close(sock);
     return false;
   }
-  
-  memcpy(&addr.sin_addr, host->h_addr_list[0], host->h_length);
+  struct sockaddr_in* sin = reinterpret_cast<struct sockaddr_in*>(res->ai_addr);
+  memcpy(&addr.sin_addr, &sin->sin_addr, sizeof(addr.sin_addr));
+  freeaddrinfo(res);
   
   int result = connect(sock, (struct sockaddr*)&addr, sizeof(addr));
   close(sock);
@@ -206,7 +216,12 @@ std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaDocker() {
   // 简化版：通过环境变量或文件获取 Docker 信息
   // 实际生产环境应该使用 Docker API
   
-  const char* docker_host = getenv("DOCKER_HOST");
+  static std::mutex getenv_mutex;
+  const char* docker_host = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(getenv_mutex);
+    docker_host = getenv("DOCKER_HOST");
+  }
   if (docker_host == nullptr) {
     // 尝试本地 Docker socket
     if (access(config_.docker_socket.c_str(), F_OK) != 0) {
@@ -227,13 +242,22 @@ std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaDocker() {
   };
   
   for (const auto& name : possible_names) {
-    struct hostent* host = gethostbyname(name.c_str());
-    if (host != nullptr) {
+    struct addrinfo hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = nullptr;
+    if (getaddrinfo(name.c_str(), nullptr, &hints, &res) == 0 && res != nullptr) {
       StorageNodeInfo node;
       node.host = name;
       node.port = config_.storaged_port;
       node.container_name = name;
-      node.ip_address = inet_ntoa(*(struct in_addr*)host->h_addr_list[0]);
+      char ip_str[INET_ADDRSTRLEN];
+      if (inet_ntop(AF_INET,
+                    &reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr,
+                    ip_str, sizeof(ip_str))) {
+        node.ip_address = ip_str;
+      }
+      freeaddrinfo(res);
       node.register_time = std::chrono::duration_cast<std::chrono::seconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
       node.is_healthy = true;  // 初始假设健康
@@ -252,13 +276,22 @@ std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaDNS() {
   std::cout << "[ServiceDiscovery] Discovering via DNS..." << std::endl;
   
   for (const auto& name : config_.dns_names) {
-    struct hostent* host = gethostbyname(name.c_str());
-    if (host != nullptr) {
+    struct addrinfo hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = nullptr;
+    if (getaddrinfo(name.c_str(), nullptr, &hints, &res) == 0 && res != nullptr) {
       StorageNodeInfo node;
       node.host = name;
       node.port = config_.storaged_port;
       node.container_name = name;
-      node.ip_address = inet_ntoa(*(struct in_addr*)host->h_addr_list[0]);
+      char ip_str[INET_ADDRSTRLEN];
+      if (inet_ntop(AF_INET,
+                    &reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr,
+                    ip_str, sizeof(ip_str))) {
+        node.ip_address = ip_str;
+      }
+      freeaddrinfo(res);
       node.register_time = std::chrono::duration_cast<std::chrono::seconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
       node.is_healthy = true;
@@ -311,6 +344,7 @@ void ServiceDiscovery::HealthCheckLoop() {
     }
     
     int healthy_count = 0;
+    std::vector<std::pair<StorageNodeInfo, bool>> health_changes;
     for (auto& node : nodes) {
       bool was_healthy = node.is_healthy;
       node.is_healthy = CheckNodeHealth(node);
@@ -319,9 +353,32 @@ void ServiceDiscovery::HealthCheckLoop() {
         healthy_count++;
       }
       
-      // 状态变化回调
-      if (was_healthy != node.is_healthy && health_changed_callback_) {
-        health_changed_callback_(node, node.is_healthy);
+      // 记录状态变化，稍后回调
+      if (was_healthy != node.is_healthy) {
+        health_changes.emplace_back(node, node.is_healthy);
+      }
+    }
+    
+    // 将健康检查结果写回 discovered_nodes_
+    {
+      std::lock_guard<std::mutex> lock(nodes_mutex_);
+      for (const auto& updated : nodes) {
+        for (auto& existing : discovered_nodes_) {
+          if (existing.GetEndpoint() == updated.GetEndpoint()) {
+            existing.is_healthy = updated.is_healthy;
+            break;
+          }
+        }
+      }
+    }
+    
+    // 在锁外调用回调，避免死锁
+    {
+      std::lock_guard<std::mutex> cb_lock(callback_mutex_);
+      for (const auto& [node, healthy] : health_changes) {
+        if (health_changed_callback_) {
+          health_changed_callback_(node, healthy);
+        }
       }
     }
     
@@ -336,22 +393,31 @@ void ServiceDiscovery::HealthCheckLoop() {
 }
 
 void ServiceDiscovery::MergeNodes(const std::vector<StorageNodeInfo>& new_nodes) {
-  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  std::vector<StorageNodeInfo> newly_discovered;
   
-  for (const auto& new_node : new_nodes) {
-    auto it = std::find_if(discovered_nodes_.begin(), discovered_nodes_.end(),
-                           [&new_node](const auto& existing) {
-                             return existing.GetEndpoint() == new_node.GetEndpoint();
-                           });
+  {
+    std::lock_guard<std::mutex> lock(nodes_mutex_);
     
-    if (it == discovered_nodes_.end()) {
-      // 新节点
-      discovered_nodes_.push_back(new_node);
-      std::cout << "[ServiceDiscovery] New node discovered: " << new_node.GetEndpoint() << std::endl;
+    for (const auto& new_node : new_nodes) {
+      auto it = std::find_if(discovered_nodes_.begin(), discovered_nodes_.end(),
+                             [&new_node](const auto& existing) {
+                               return existing.GetEndpoint() == new_node.GetEndpoint();
+                             });
       
-      if (discovered_callback_) {
-        discovered_callback_(new_node);
+      if (it == discovered_nodes_.end()) {
+        // 新节点
+        discovered_nodes_.push_back(new_node);
+        newly_discovered.push_back(new_node);
       }
+    }
+  }
+  
+  // 在锁外调用回调，避免死锁
+  for (const auto& node : newly_discovered) {
+    std::cout << "[ServiceDiscovery] New node discovered: " << node.GetEndpoint() << std::endl;
+    std::lock_guard<std::mutex> cb_lock(callback_mutex_);
+    if (discovered_callback_) {
+      discovered_callback_(node);
     }
   }
 }
@@ -405,7 +471,14 @@ Status ClusterInitializer::WaitForMetaD() {
       if (colon_pos == std::string::npos) continue;
       
       std::string host = meta_server.substr(0, colon_pos);
-      int port = std::stoi(meta_server.substr(colon_pos + 1));
+      int port = 0;
+      try {
+        port = std::stoi(meta_server.substr(colon_pos + 1));
+      } catch (const std::exception& e) {
+        std::cerr << "[ClusterInitializer] Invalid port in meta server address: "
+                  << meta_server << " - " << e.what() << std::endl;
+        continue;
+      }
       
       int sock = socket(AF_INET, SOCK_STREAM, 0);
       if (sock < 0) continue;
@@ -413,17 +486,26 @@ Status ClusterInitializer::WaitForMetaD() {
       struct timeval tv;
       tv.tv_sec = 2;
       tv.tv_usec = 0;
-      setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-      setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+      if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0 ||
+          setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        close(sock);
+        continue;
+      }
       
       struct sockaddr_in addr;
       memset(&addr, 0, sizeof(addr));
       addr.sin_family = AF_INET;
       addr.sin_port = htons(port);
       
-      struct hostent* he = gethostbyname(host.c_str());
-      if (he != nullptr) {
-        memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
+      struct addrinfo hints = {};
+      hints.ai_family = AF_INET;
+      hints.ai_socktype = SOCK_STREAM;
+      struct addrinfo* res = nullptr;
+      if (getaddrinfo(host.c_str(), nullptr, &hints, &res) == 0 && res != nullptr) {
+        memcpy(&addr.sin_addr,
+               &reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr,
+               sizeof(addr.sin_addr));
+        freeaddrinfo(res);
         
         if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
           close(sock);
@@ -475,7 +557,10 @@ Status ClusterInitializer::RegisterStorageNodes(const std::vector<StorageNodeInf
     // 简化版：模拟成功
     
     bool success = true;
-    for (int retry = 0; retry < config_.init_timeout_seconds / config_.retry_interval_seconds; ++retry) {
+    int max_retries = (config_.retry_interval_seconds > 0)
+        ? config_.init_timeout_seconds / config_.retry_interval_seconds
+        : 0;
+    for (int retry = 0; retry < max_retries; ++retry) {
       // 模拟 RPC 调用
       // 实际应该调用: meta_client_->AddHost(node.host, node.port);
       

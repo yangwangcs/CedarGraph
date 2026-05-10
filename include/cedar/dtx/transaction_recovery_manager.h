@@ -85,9 +85,10 @@ class TransactionRecoveryManager : public TimeoutCallback {
   Status RecoverAsParticipant(dtx::TxnID txn_id, const TransactionRecord& record);
   
   // Helper methods
-  Status SendCommitToParticipants(dtx::TxnID txn_id, 
-                                   const std::vector<dtx::PartitionID>& participants);
-  Status SendAbortToParticipants(dtx::TxnID txn_id, 
+  Status SendCommitToParticipants(dtx::TxnID txn_id,
+                                   const std::vector<dtx::PartitionID>& participants,
+                                   Timestamp commit_ts);
+  Status SendAbortToParticipants(dtx::TxnID txn_id,
                                   const std::vector<dtx::PartitionID>& participants);
   Status InquireParticipant(dtx::PartitionID pid, dtx::TxnID txn_id);
   
@@ -95,6 +96,7 @@ class TransactionRecoveryManager : public TimeoutCallback {
   void RecoveryLoop();
   
   TransactionStateManager* state_manager_ = nullptr;
+  mutable std::mutex deps_mutex_;
   std::shared_ptr<dtx::DTXRpcClient> rpc_client_;
   std::unordered_map<dtx::PartitionID, dtx::NodeID> partition_node_map_;
   

@@ -44,19 +44,29 @@ Status RaftThreadPool::Initialize(const Config& config) {
   return Status::OK();
 }
 
-void RaftThreadPool::Shutdown() {
+void RaftThreadPool::Shutdown() noexcept {
   if (!running_.exchange(false)) {
     return;
   }
   
   queue_cv_.notify_all();
   
-  for (auto& worker : workers_) {
+  std::vector<std::unique_ptr<std::thread>> threads_to_join;
+  {
+    std::lock_guard<std::mutex> lock(workers_mutex_);
+    threads_to_join = std::move(workers_);
+    workers_.clear();
+  }
+  
+  for (auto& worker : threads_to_join) {
     if (worker && worker->joinable()) {
-      worker->join();
+      try {
+        worker->join();
+      } catch (...) {
+        std::cerr << "[MultiRaftOptimization] Thread join exception" << std::endl;
+      }
     }
   }
-  workers_.clear();
 }
 
 Status RaftThreadPool::Submit(PartitionID pid, TaskPriority priority, 
@@ -90,9 +100,12 @@ Status RaftThreadPool::Submit(PartitionID pid, TaskPriority priority,
   queue_cv_.notify_one();
   
   // Scale up if needed
-  if (task_queue_.size() > workers_.size() * 2 && 
-      workers_.size() < config_.max_threads) {
-    ScaleThreads();
+  {
+    std::lock_guard<std::mutex> workers_lock(workers_mutex_);
+    if (task_queue_.size() > workers_.size() * 2 && 
+        workers_.size() < config_.max_threads) {
+      ScaleThreads();
+    }
   }
   
   return Status::OK();
@@ -129,24 +142,29 @@ void RaftThreadPool::WorkerLoop() {
         continue;
       }
       
-      task = std::move(const_cast<Task&>(task_queue_.top()));
+      Task t = task_queue_.top();
       task_queue_.pop();
+      task = std::move(t);
     }
     
     active_workers_.fetch_add(1);
     
-    // Record wait time
-    auto wait_time = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - task.submit_time);
-    {
-      std::unique_lock<std::mutex> stats_lock(stats_mutex_);
-      stats_.queue_wait_time_us = (stats_.queue_wait_time_us + wait_time.count()) / 2;
-      stats_.total_tasks_executed++;
-    }
-    
-    // Execute task
-    if (task.callback) {
-      task.callback();
+    try {
+      // Record wait time
+      auto wait_time = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - task.submit_time);
+      {
+        std::unique_lock<std::mutex> stats_lock(stats_mutex_);
+        stats_.queue_wait_time_us = (stats_.queue_wait_time_us + wait_time.count()) / 2;
+        stats_.total_tasks_executed++;
+      }
+      
+      // Execute task
+      if (task.callback) {
+        task.callback();
+      }
+    } catch (...) {
+      // Task 异常不应导致工作线程崩溃
     }
     
     active_workers_.fetch_sub(1);
@@ -154,6 +172,7 @@ void RaftThreadPool::WorkerLoop() {
 }
 
 void RaftThreadPool::ScaleThreads() {
+  std::lock_guard<std::mutex> lock(workers_mutex_);
   if (workers_.size() < config_.max_threads) {
     workers_.push_back(std::make_unique<std::thread>(&RaftThreadPool::WorkerLoop, this));
   }
@@ -162,7 +181,11 @@ void RaftThreadPool::ScaleThreads() {
 RaftThreadPool::Stats RaftThreadPool::GetStats() const {
   std::unique_lock<std::mutex> lock(stats_mutex_);
   Stats s = stats_;
-  s.current_threads = static_cast<uint32_t>(workers_.size());
+  lock.unlock();
+  {
+    std::lock_guard<std::mutex> workers_lock(workers_mutex_);
+    s.current_threads = static_cast<uint32_t>(workers_.size());
+  }
   s.active_threads = active_workers_.load();
   return s;
 }
@@ -189,19 +212,27 @@ Status BatchHeartbeatManager::Initialize(const Config& config, SendCallback call
   return Status::OK();
 }
 
-void BatchHeartbeatManager::Shutdown() {
+void BatchHeartbeatManager::Shutdown() noexcept {
   if (!running_.exchange(false)) {
     return;
   }
   
   pending_cv_.notify_all();
   
-  if (batcher_thread_ && batcher_thread_->joinable()) {
-    batcher_thread_->join();
+  try {
+    if (batcher_thread_ && batcher_thread_->joinable()) {
+      batcher_thread_->join();
+    }
+  } catch (...) {
+    std::cerr << "[MultiRaftOptimization] Thread join exception" << std::endl;
   }
   
   // Flush remaining
-  FlushAll();
+  try {
+    FlushAll();
+  } catch (...) {
+    std::cerr << "[MultiRaftOptimization] Flush exception" << std::endl;
+  }
 }
 
 Status BatchHeartbeatManager::QueueHeartbeat(const HeartbeatEntry& entry) {
@@ -229,22 +260,23 @@ Status BatchHeartbeatManager::QueueHeartbeat(const HeartbeatEntry& entry) {
 }
 
 Status BatchHeartbeatManager::FlushAll() {
-  std::unique_lock<std::mutex> lock(pending_mutex_);
+  std::unordered_map<NodeID, std::vector<HeartbeatEntry>> to_send;
+  {
+    std::unique_lock<std::mutex> lock(pending_mutex_);
+    to_send = std::move(pending_heartbeats_);
+    pending_heartbeats_.clear();
+  }
   
-  for (const auto& [node_id, entries] : pending_heartbeats_) {
+  for (auto& [node_id, entries] : to_send) {
     if (!entries.empty()) {
       BatchedHeartbeat batch;
       batch.to_node = node_id;
-      batch.entries = entries;
+      batch.entries = std::move(entries);
       batch.batch_id = next_batch_id_.fetch_add(1);
-      
-      lock.unlock();
       SendBatch(batch);
-      lock.lock();
     }
   }
   
-  pending_heartbeats_.clear();
   return Status::OK();
 }
 
@@ -262,8 +294,10 @@ void BatchHeartbeatManager::BatcherLoop() {
       return !running_.load();
     });
     
-    // Send batches for all nodes with pending heartbeats
-    std::vector<NodeID> nodes_to_clear;
+    if (!running_.load()) break;
+    
+    // 收集所有待发送的心跳批次（在锁内移走数据）
+    std::vector<BatchedHeartbeat> batches;
     
     for (auto& [node_id, entries] : pending_heartbeats_) {
       if (!entries.empty()) {
@@ -272,22 +306,27 @@ void BatchHeartbeatManager::BatcherLoop() {
         batch.entries = std::move(entries);
         batch.batch_id = next_batch_id_.fetch_add(1);
         
-        lock.unlock();
-        SendBatch(batch);
-        lock.lock();
+        {
+          std::unique_lock<std::mutex> stats_lock(stats_mutex_);
+          stats_.total_batches_sent++;
+          stats_.avg_batch_size = (stats_.avg_batch_size + batch.entries.size()) / 2;
+          // Estimate: 100 bytes per heartbeat header saved
+          stats_.network_bytes_saved += batch.entries.size() * 100;
+        }
         
-        nodes_to_clear.push_back(node_id);
-        
-        std::unique_lock<std::mutex> stats_lock(stats_mutex_);
-        stats_.total_batches_sent++;
-        stats_.avg_batch_size = (stats_.avg_batch_size + batch.entries.size()) / 2;
-        // Estimate: 100 bytes per heartbeat header saved
-        stats_.network_bytes_saved += batch.entries.size() * 100;
+        batches.push_back(std::move(batch));
       }
     }
     
-    for (const auto& node_id : nodes_to_clear) {
-      pending_heartbeats_[node_id].clear();
+    lock.unlock();
+    
+    // 在锁外发送，避免阻塞 QueueHeartbeat
+    for (auto& batch : batches) {
+      try {
+        SendBatch(batch);
+      } catch (...) {
+        std::cerr << "[MultiRaftOptimization] SendBatch exception" << std::endl;
+      }
     }
   }
 }

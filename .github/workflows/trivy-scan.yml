@@ -1,0 +1,89 @@
+name: Trivy Security Scan
+
+on:
+  push:
+    branches: [main, master, production-readiness]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    # Run every Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  fs-scan:
+    name: Filesystem Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scanner
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-fs-results.sarif'
+          category: 'trivy-fs'
+
+  config-scan:
+    name: Infrastructure Misconfiguration Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy config scanner
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-config-results.sarif'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+
+      - name: Upload Trivy config scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-config-results.sarif'
+          category: 'trivy-config'
+
+  docker-scan:
+    name: Dockerfile & Image Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy on Dockerfile
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          scan-type: 'filesystem'
+          scan-ref: './cedar-docker-compose/Dockerfile'
+          format: 'sarif'
+          output: 'trivy-docker-results.sarif'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+          scanners: 'vuln,secret,config'
+
+      - name: Upload Docker scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-docker-results.sarif'
+          category: 'trivy-docker'

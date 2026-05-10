@@ -1,0 +1,120 @@
+有时为了保证可用性，需要同时访问两路服务，哪个先返回就取哪个。在brpc中，这有多种做法：
+
+# 当后端server可以挂在一个命名服务内时
+
+Channel开启backup request。这个Channel会先向其中一个server发送请求，如果在ChannelOptions.backup_request_ms后还没回来，再向另一个server发送。之后哪个先回来就取哪个。在设置了合理的backup_request_ms后，大部分时候只会发一个请求，对后端服务只有一倍压力。
+
+示例代码见[example/backup_request_c++](https://github.com/apache/brpc/blob/master/example/backup_request_c++)。这个例子中，client设定了在2ms后发送backup request，server在碰到偶数位的请求后会故意睡眠20ms以触发backup request。
+
+运行后，client端和server端的日志分别如下，"index"是请求的编号。可以看到server端在收到第一个请求后会故意sleep 20ms，client端之后发送另一个同样index的请求，最终的延时并没有受到故意sleep的影响。
+
+![img](../images/backup_request_1.png)
+
+![img](../images/backup_request_2.png)
+
+/rpcz也显示client在2ms后触发了backup超时并发出了第二个请求。
+
+![img](../images/backup_request_3.png)
+
+## 选择合理的backup_request_ms
+
+可以观察brpc默认提供的latency_cdf图，或自行添加。cdf图的y轴是延时（默认微秒），x轴是小于y轴延时的请求的比例。在下图中，选择backup_request_ms=2ms可以大约覆盖95.5%的请求，选择backup_request_ms=10ms则可以覆盖99.99%的请求。
+
+![img](../images/backup_request_4.png)
+
+自行添加的方法：
+
+```c++
+#include <bvar/bvar.h>
+#include <butil/time.h>
+...
+bvar::LatencyRecorder my_func_latency("my_func");
+...
+butil::Timer tm;
+tm.start();
+my_func();
+tm.stop();
+my_func_latency << tm.u_elapsed();  // u代表微秒，还有s_elapsed(), m_elapsed(), n_elapsed()分别对应秒，毫秒，纳秒。
+ 
+// 好了，在/vars中会显示my_func_qps, my_func_latency, my_func_latency_cdf等很多计数器。
+```
+
+## Backup Request 限流
+
+如需限制 backup request 的发送比例，可使用内置工厂函数创建限流策略，也可自行实现 `BackupRequestPolicy` 接口。
+
+优先级顺序：`backup_request_policy` > `backup_request_ms`。
+
+### 使用内置限流策略
+
+调用 `CreateRateLimitedBackupPolicy` 创建限流策略，并将其设置到 `ChannelOptions.backup_request_policy`：
+
+```c++
+#include "brpc/backup_request_policy.h"
+#include <memory>
+
+brpc::RateLimitedBackupPolicyOptions opts;
+opts.backup_request_ms = 10;       // 超过10ms未返回时发送backup请求
+opts.max_backup_ratio = 0.3;       // backup请求比例上限30%
+opts.window_size_seconds = 10;     // 滑动窗口宽度（秒）
+opts.update_interval_seconds = 5;  // 缓存比例的刷新间隔（秒）
+
+// CreateRateLimitedBackupPolicy返回的指针由调用方负责释放。
+// policy的生命周期必须长于channel——先销毁channel，再销毁policy。
+std::unique_ptr<brpc::BackupRequestPolicy> policy(
+    brpc::CreateRateLimitedBackupPolicy(opts));
+
+brpc::ChannelOptions options;
+options.backup_request_policy = policy.get(); // Channel不拥有该对象
+channel.Init(..., &options);
+// channel必须在policy析构之前销毁。
+```
+
+参数说明（`RateLimitedBackupPolicyOptions`）：
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `backup_request_ms` | -1 | 超时阈值（毫秒）。-1 表示继承 `ChannelOptions.backup_request_ms`（仅在通过 `ChannelOptions.backup_request_policy` 设置策略时有效；通过 Controller 注入时没有 channel 级的回退值，应显式指定 >= 0 的值）。必须 >= -1。 |
+| `max_backup_ratio` | 0.1 | backup比例上限，取值范围 (0, 1] |
+| `window_size_seconds` | 10 | 滑动窗口宽度（秒），取值范围 [1, 3600] |
+| `update_interval_seconds` | 5 | 缓存刷新间隔（秒），必须 >= 1 |
+
+参数不合法时 `CreateRateLimitedBackupPolicy` 返回 `NULL`。
+
+### 使用自定义 BackupRequestPolicy
+
+如需完全控制，可实现 `BackupRequestPolicy` 接口并设置到 `ChannelOptions.backup_request_policy`：
+
+```c++
+#include "brpc/backup_request_policy.h"
+
+class MyBackupPolicy : public brpc::BackupRequestPolicy {
+public:
+    int32_t GetBackupRequestMs(const brpc::Controller*) const override {
+        return 10; // 10ms后发送backup
+    }
+    bool DoBackup(const brpc::Controller*) const override {
+        return should_allow_backup(); // 自定义逻辑
+    }
+    void OnRPCEnd(const brpc::Controller*) override {
+        // 每次RPC结束时调用，可在此更新统计
+    }
+};
+
+MyBackupPolicy my_policy;
+brpc::ChannelOptions options;
+options.backup_request_policy = &my_policy; // Channel不拥有该对象，需保证其生命周期长于Channel
+channel.Init(..., &options);
+```
+
+### 实现说明
+
+- 比例通过bvar计数器在滑动时间窗口内统计。缓存值通过无锁CAS选举最多每 `update_interval_seconds` 刷新一次，因此每次RPC的开销极低（公共路径仅有两次原子读）。
+- Backup决策在做出时立即计数（RPC完成前），以便在延迟抖动期间更快地反馈。总RPC数在完成时统计。这意味着比例在抖动期间可能短暂滞后，这是设计有意为之——限流器的目标是近似的尽力而为的节流，而非精确执行。
+- 每个使用限流的Channel会维护两个 `bvar::Window` 采样任务，在Channel数量极多的部署中请留意此开销。
+
+# 当后端server不能挂在一个命名服务内时
+
+【推荐】建立一个开启backup request的SelectiveChannel，其中包含两个sub channel。访问这个SelectiveChannel和上面的情况类似，会先访问一个sub channel，如果在ChannelOptions.backup_request_ms后没返回，再访问另一个sub channel。如果一个sub channel对应一个集群，这个方法就是在两个集群间做互备。SelectiveChannel的例子见[example/selective_echo_c++](https://github.com/apache/brpc/tree/master/example/selective_echo_c++)，具体做法请参考上面的过程。
+
+【不推荐】发起两个异步RPC后Join它们，它们的done内是相互取消的逻辑。示例代码见[example/cancel_c++](https://github.com/apache/brpc/tree/master/example/cancel_c++)。这种方法的问题是总会发两个请求，对后端服务有两倍压力，这个方法怎么算都是不经济的，你应该尽量避免用这个方法。

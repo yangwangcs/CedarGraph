@@ -51,6 +51,9 @@ class SstBuilderInterface {
   // 获取统计
   virtual uint64_t FileSize() const = 0;
   virtual uint64_t NumEntries() const = 0;
+  
+  // 获取序列化后的 TemporalBloomFilter 数据（如果构建了）
+  virtual std::string GetTemporalFilterData() const = 0;
 };
 
 // Builder 配置

@@ -18,7 +18,7 @@ NumaArenaPool::NumaArenaPool(size_t max_chunks) : total_count_(max_chunks) {
     chunks_.push_back(chunk);
 
     // Push onto free list (single-threaded during construction)
-    chunk->next_freelist = free_head_.load(std::memory_order_relaxed);
+    chunk->next_freelist.store(free_head_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     free_head_.store(chunk, std::memory_order_relaxed);
   }
   free_count_.store(max_chunks, std::memory_order_relaxed);
@@ -34,7 +34,7 @@ NumaArenaPool::~NumaArenaPool() {
 TMVChunk* NumaArenaPool::Alloc() {
   TMVChunk* head = free_head_.load(std::memory_order_acquire);
   while (head != nullptr) {
-    TMVChunk* next = head->next_freelist;
+    TMVChunk* next = head->next_freelist.load(std::memory_order_acquire);
     if (free_head_.compare_exchange_weak(
             head, next,
             std::memory_order_acquire,
@@ -45,8 +45,8 @@ TMVChunk* NumaArenaPool::Alloc() {
       head->max_valid_to.store(0, std::memory_order_relaxed);
       head->event_count.store(0, std::memory_order_relaxed);
       head->sealed.store(false, std::memory_order_relaxed);
-      head->next = nullptr;
-      head->next_freelist = nullptr;
+      head->next.store(nullptr, std::memory_order_relaxed);
+      head->next_freelist.store(nullptr, std::memory_order_relaxed);
       free_count_.fetch_sub(1, std::memory_order_relaxed);
       return head;
     }
@@ -59,12 +59,14 @@ void NumaArenaPool::Free(TMVChunk* chunk) {
   if (chunk == nullptr) {
     return;
   }
-  chunk->next_freelist = free_head_.load(std::memory_order_relaxed);
+  TMVChunk* expected = free_head_.load(std::memory_order_relaxed);
+  chunk->next_freelist.store(expected, std::memory_order_relaxed);
   while (!free_head_.compare_exchange_weak(
-      chunk->next_freelist, chunk,
+      expected, chunk,
       std::memory_order_release,
       std::memory_order_relaxed)) {
-    // retry
+    // retry: another thread updated free_head_; update our next pointer
+    chunk->next_freelist.store(expected, std::memory_order_relaxed);
   }
   free_count_.fetch_add(1, std::memory_order_relaxed);
 }

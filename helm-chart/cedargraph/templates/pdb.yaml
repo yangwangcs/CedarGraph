@@ -1,0 +1,29 @@
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-metad
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metad
+spec:
+  minAvailable: {{ .Values.pdb.metad.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "cedargraph.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metad
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-storaged
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storaged
+spec:
+  minAvailable: {{ .Values.pdb.storaged.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "cedargraph.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: storaged
+{{- end }}

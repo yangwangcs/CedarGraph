@@ -129,13 +129,16 @@ Status ParallelGraphBatchProcessor::ExecuteVertexBatch() {
   size_t total = vertex_items_.size();
   size_t num_batches = (total + batch_size - 1) / batch_size;
   
-  std::vector<std::future<Status>> futures;
+  std::vector<std::thread> threads;
+  std::vector<std::shared_ptr<std::promise<Status>>> promises;
   
   for (size_t b = 0; b < num_batches; ++b) {
     size_t start = b * batch_size;
     size_t end = std::min(start + batch_size, total);
     
-    futures.push_back(std::async(std::launch::async, [this, start, end]() {
+    auto p = std::make_shared<std::promise<Status>>();
+    promises.push_back(p);
+    threads.emplace_back([this, start, end, p]() {
       // 创建批量事务执行器
       BatchTransactionExecutor batch(storage_);
       
@@ -147,27 +150,40 @@ Status ParallelGraphBatchProcessor::ExecuteVertexBatch() {
         }
       }
       
-      return batch.Execute();
-    }));
+      p->set_value(batch.Execute());
+    });
     
     // 限制并发数
-    if (futures.size() >= num_threads) {
-      for (auto& f : futures) {
-        Status s = f.get();
+    if (threads.size() >= num_threads) {
+      for (auto& p : promises) {
+        Status s = p->get_future().get();
         if (!s.ok()) {
+          for (auto& t : threads) {
+            if (t.joinable()) t.join();
+          }
           return s;
         }
       }
-      futures.clear();
+      for (auto& t : threads) {
+        if (t.joinable()) t.join();
+      }
+      threads.clear();
+      promises.clear();
     }
   }
   
   // 等待剩余任务
-  for (auto& f : futures) {
-    Status s = f.get();
+  for (auto& p : promises) {
+    Status s = p->get_future().get();
     if (!s.ok()) {
+      for (auto& t : threads) {
+        if (t.joinable()) t.join();
+      }
       return s;
     }
+  }
+  for (auto& t : threads) {
+    if (t.joinable()) t.join();
   }
   
   return Status::OK();

@@ -18,6 +18,8 @@
 
 #include "cedar/dtx/storage/raft_replication.h"
 
+#include <fcntl.h>
+
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -206,11 +208,26 @@ void StorageRaftGroup::Shutdown() {
   if (!running_.exchange(false)) {
     return;
   }
-  
+
   commit_cv_.notify_all();
-  
+
   if (raft_thread_ && raft_thread_->joinable()) {
     raft_thread_->join();
+  }
+
+  // Wait for all background RPCs to complete
+  std::lock_guard<std::mutex> lock(bg_future_mutex_);
+  bg_futures_.clear();
+}
+
+void StorageRaftGroup::PruneBgFutures() {
+  std::lock_guard<std::mutex> lock(bg_future_mutex_);
+  for (auto it = bg_futures_.begin(); it != bg_futures_.end();) {
+    if (it->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+      it = bg_futures_.erase(it);
+    } else {
+      ++it;
+    }
   }
 }
 
@@ -458,16 +475,15 @@ Status StorageRaftGroup::Propose(const StorageLogEntry& entry) {
   new_entry.term = current_term_.load();
   new_entry.index = GetLastLogIndex() + 1;
   
-  // Append to local log
-  {
-    std::unique_lock<std::shared_mutex> lock(log_mutex_);
-    log_.push_back(new_entry);
-  }
-  
-  // Persist
+  // Persist first, then append to memory log
   auto status = AppendLog({new_entry});
   if (!status.ok()) {
     return status;
+  }
+  
+  {
+    std::unique_lock<std::shared_mutex> lock(log_mutex_);
+    log_.push_back(new_entry);
   }
   
   // Update leader progress
@@ -528,7 +544,18 @@ Status StorageRaftGroup::PersistState() {
   file.write(reinterpret_cast<const char*>(&voted), sizeof(voted));
   
   file.flush();
-  return file.good() ? Status::OK() : Status::IOError("Failed to persist state");
+  if (!file.good()) {
+    return Status::IOError("Failed to persist state");
+  }
+  
+  // Ensure durability with fsync
+  int fd = ::open(state_file_path_.c_str(), O_RDONLY);
+  if (fd >= 0) {
+    ::fsync(fd);
+    ::close(fd);
+  }
+  
+  return Status::OK();
 }
 
 Status StorageRaftGroup::LoadState() {
@@ -569,9 +596,16 @@ Status StorageRaftGroup::AppendLog(const std::vector<StorageLogEntry>& entries) 
   }
   
   file.flush();
-  // fsync to ensure durability
-  sync();
-  return file.good() ? Status::OK() : Status::IOError("Failed to append log");
+  if (!file.good()) {
+    return Status::IOError("Failed to append log");
+  }
+  // fsync to ensure durability (per-file, not system-wide sync)
+  int fd = ::open(log_file_path_.c_str(), O_RDONLY);
+  if (fd >= 0) {
+    ::fsync(fd);
+    ::close(fd);
+  }
+  return Status::OK();
 }
 
 uint64_t StorageRaftGroup::GetLastLogIndex() const {
@@ -606,7 +640,9 @@ void StorageRaftGroup::SendHeartbeats() {
   std::shared_lock<std::shared_mutex> lock(progress_mutex_);
   for (const auto& [node_id, progress] : progress_) {
     // Send heartbeat via RPC (async, don't wait)
-    std::thread([this, node_id, term, commit_index]() {
+    PruneBgFutures();
+    std::lock_guard<std::mutex> flock(bg_future_mutex_);
+    bg_futures_.push_back(std::async(std::launch::async, [this, node_id, term, commit_index]() {
       auto resp = rpc_client_->Heartbeat(
           node_id, term, config_.partition_id, commit_index);
       if (resp.ok()) {
@@ -617,7 +653,7 @@ void StorageRaftGroup::SendHeartbeats() {
           it->second.last_heartbeat = std::chrono::steady_clock::now();
         }
       }
-    }).detach();
+    }));
   }
 }
 
@@ -676,7 +712,9 @@ void StorageRaftGroup::ReplicateLogToPeer(NodeID peer_id) {
   }
 
   // Send AppendEntries RPC
-  std::thread([this, peer_id, prev_log_index, prev_log_term, proto_entries = std::move(proto_entries)]() mutable {
+  PruneBgFutures();
+  std::lock_guard<std::mutex> flock(bg_future_mutex_);
+  bg_futures_.push_back(std::async(std::launch::async, [this, peer_id, prev_log_index, prev_log_term, proto_entries = std::move(proto_entries)]() mutable {
     auto resp = rpc_client_->AppendEntries(
         peer_id,
         current_term_.load(),
@@ -694,7 +732,7 @@ void StorageRaftGroup::ReplicateLogToPeer(NodeID peer_id) {
       local_resp.match_index = resp.ValueOrDie().match_index;
       HandleAppendEntriesResponse(peer_id, local_resp);
     }
-  }).detach();
+  }));
 }
 
 void StorageRaftGroup::HandleAppendEntriesResponse(NodeID peer_id,
@@ -749,7 +787,9 @@ void StorageRaftGroup::SendVoteRequests() {
 
   std::shared_lock<std::shared_mutex> lock(progress_mutex_);
   for (const auto& [node_id, _] : progress_) {
-    std::thread([this, node_id, term, last_log_index, last_log_term]() {
+    PruneBgFutures();
+    std::lock_guard<std::mutex> flock(bg_future_mutex_);
+    bg_futures_.push_back(std::async(std::launch::async, [this, node_id, term, last_log_index, last_log_term]() {
       auto resp = rpc_client_->RequestVote(
           node_id, term, config_.partition_id, last_log_index, last_log_term);
 
@@ -760,7 +800,7 @@ void StorageRaftGroup::SendVoteRequests() {
         local_resp.vote_granted = resp.ValueOrDie().vote_granted;
         HandleVoteResponse(node_id, local_resp);
       }
-    }).detach();
+    }));
   }
 }
 

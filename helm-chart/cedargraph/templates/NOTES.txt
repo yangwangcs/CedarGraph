@@ -1,0 +1,44 @@
+Thank you for installing {{ .Chart.Name }}.
+
+Your release is named {{ .Release.Name }}.
+
+Installed components:
+{{- if .Values.metad.replicas }}
+  - MetaD: {{ .Values.metad.replicas }} replicas (metadata service)
+{{- end }}
+{{- if .Values.storaged.replicas }}
+  - StorageD: {{ .Values.storaged.replicas }} replicas (storage service)
+{{- end }}
+{{- if .Values.graphd.replicas }}
+  - GraphD: {{ .Values.graphd.replicas }} replicas (query service)
+{{- end }}
+{{- if .Values.global.studio.enabled }}
+  - Studio: 1 replica (web UI)
+{{- end }}
+
+Services:
+  - MetaD: {{ include "cedargraph.fullname" . }}-metad:{{ .Values.metad.service.port }}
+  - StorageD: {{ include "cedargraph.fullname" . }}-storaged:{{ .Values.storaged.service.port }}
+  - GraphD Query: {{ include "cedargraph.fullname" . }}-graphd:{{ .Values.graphd.service.ports.query }}
+  - GraphD HTTP: {{ include "cedargraph.fullname" . }}-graphd:{{ .Values.graphd.service.ports.http }}
+
+{{- if .Values.global.monitoring.enabled }}
+Monitoring:
+  - Metrics are exposed on port 9090 (StorageD)
+{{- else }}
+Monitoring is disabled. Enable with --set global.monitoring.enabled=true
+{{- end }}
+
+{{- if .Values.autoscaling.graphd.enabled }}
+Auto-scaling:
+  - GraphD HPA is enabled ({{ .Values.autoscaling.graphd.minReplicas }}-{{ .Values.autoscaling.graphd.maxReplicas }} replicas)
+{{- end }}
+
+To check pod status:
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+To view logs:
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/component=graphd -l app.kubernetes.io/instance={{ .Release.Name }}
+
+To connect to GraphD:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "cedargraph.fullname" . }}-graphd {{ .Values.graphd.service.ports.query }}:{{ .Values.graphd.service.ports.query }}

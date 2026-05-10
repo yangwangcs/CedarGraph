@@ -233,7 +233,7 @@ void Example_BBCC() {
     std::cout << "Current HLC: " << hlc1.ToString() << "\n";
     
     // 模拟分布式更新
-    HybridLogicalClock remote_hlc(1704067200000000ULL, 5);
+    BookmarkHlc remote_hlc(1704067200000000ULL, 5);
     bookmark_mgr.UpdateHLC(remote_hlc);
     
     auto hlc2 = bookmark_mgr.GetCurrentHLC();
@@ -265,7 +265,7 @@ void Example_BBCC() {
     CausalConsistencyChecker checker;
     DistributedBookmark newer_bookmark;
     newer_bookmark.hlc = bookmark.hlc;
-    newer_bookmark.hlc.Update(HybridLogicalClock::Now());
+    newer_bookmark.hlc.Update(BookmarkHlc::Now());
     
     bool ryw = checker.CheckReadYourWrites(bookmark, newer_bookmark);
     std::cout << "Read-Your-Writes check: " << (ryw ? "SATISFIED" : "VIOLATED") << "

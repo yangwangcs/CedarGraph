@@ -140,9 +140,11 @@ class CedarGraphDB {
   LsmEngine* GetLsmEngine();
   
  private:
-  explicit CedarGraphDB(std::unique_ptr<CedarGraphDBImpl> impl);
+  explicit CedarGraphDB(std::shared_ptr<CedarGraphDBImpl> impl,
+                        ColumnFamilyHandle* cf_handle = nullptr);
   
-  std::unique_ptr<CedarGraphDBImpl> impl_;
+  std::shared_ptr<CedarGraphDBImpl> impl_;
+  ColumnFamilyHandle* cf_handle_;
 };
 
 // 范围结构

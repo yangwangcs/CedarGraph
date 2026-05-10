@@ -370,7 +370,7 @@ ConfigManager::ConfigManager(ConfigManager&&) noexcept = default;
 ConfigManager& ConfigManager::operator=(ConfigManager&&) noexcept = default;
 
 Status ConfigManager::LoadFromFile(const std::string& filepath) {
-  std::lock_guard<std::mutex> lock(impl_->mutex_);
+  std::unique_lock<std::mutex> lock(impl_->mutex_);
 
   std::ifstream file(filepath);
   if (!file.is_open()) {
@@ -398,12 +398,12 @@ Status ConfigManager::LoadFromFile(const std::string& filepath) {
   impl_->UpdateFlattened();
 
   // Apply environment overrides
-  lock.~lock_guard();
+  lock.unlock();
   return ApplyEnvironmentOverrides();
 }
 
 Status ConfigManager::LoadFromString(const std::string& content) {
-  std::lock_guard<std::mutex> lock(impl_->mutex_);
+  std::unique_lock<std::mutex> lock(impl_->mutex_);
 
   auto new_root = std::make_shared<SimpleYamlParser::Node>();
   Status s = SimpleYamlParser::Parse(content, new_root);
@@ -415,7 +415,7 @@ Status ConfigManager::LoadFromString(const std::string& content) {
   impl_->UpdateFlattened();
 
   // Apply environment overrides
-  lock.~lock_guard();
+  lock.unlock();
   return ApplyEnvironmentOverrides();
 }
 
@@ -819,13 +819,13 @@ bool ConfigManager::IsHotReloadEnabled() const {
 }
 
 Status ConfigManager::Reload() {
-  std::lock_guard<std::mutex> lock(impl_->mutex_);
+  std::unique_lock<std::mutex> lock(impl_->mutex_);
   if (impl_->source_file_.empty()) {
     return Status::InvalidArgument("No source file configured for reload");
   }
 
   // Release lock before calling LoadFromFile to avoid deadlock
-  lock.~lock_guard();
+  lock.unlock();
   return LoadFromFile(impl_->source_file_);
 }
 

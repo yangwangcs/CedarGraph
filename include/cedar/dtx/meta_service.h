@@ -327,6 +327,10 @@ private:
         StatusOr<NodeInfo> GetNode(NodeID node_id) const;
         std::vector<NodeInfo> GetAliveNodes(uint64_t timeout_sec) const;
         
+        // Heartbeat / failure detection
+        std::vector<NodeID> CheckNodeHeartbeats(uint64_t timeout_sec) const;
+        bool MarkNodeOffline(NodeID node_id);
+        
         // 序列化/反序列化
         std::string Serialize() const;
         Status Deserialize(const std::string& data);
@@ -381,42 +385,74 @@ private:
 class MetaServiceClient {
 public:
     MetaServiceClient();
-    ~MetaServiceClient();
+    virtual ~MetaServiceClient();
     
     // 连接到 MetaD 集群
-    Status Connect(const std::vector<std::string>& meta_addresses);
+    virtual Status Connect(const std::vector<std::string>& meta_addresses) {
+        (void)meta_addresses;
+        return Status::OK();
+    }
     
     // ===== 缓存接口（常用）=====
     
     // 获取分区 Leader（带本地缓存）
-    StatusOr<NodeID> GetPartitionLeader(const std::string& space_name, 
-                                         PartitionID partition_id);
+    virtual StatusOr<NodeID> GetPartitionLeader(const std::string& space_name, 
+                                         PartitionID partition_id) {
+        (void)space_name;
+        (void)partition_id;
+        return Status::NotSupported("GetPartitionLeader not implemented");
+    }
     
     // 获取 Key 应该路由到的节点
-    StatusOr<NodeID> GetRouteForKey(const std::string& space_name, 
-                                     const CedarKey& key);
+    virtual StatusOr<NodeID> GetRouteForKey(const std::string& space_name, 
+                                     const CedarKey& key) {
+        (void)space_name;
+        (void)key;
+        return Status::NotSupported("GetRouteForKey not implemented");
+    }
     
     // 刷新缓存
-    void RefreshCache(const std::string& space_name);
+    virtual void RefreshCache(const std::string& space_name) {
+        (void)space_name;
+    }
     
     // ===== 直接查询接口 =====
     
-    StatusOr<PartitionAssignment> GetPartitionAssignment(
-        const std::string& space_name, PartitionID partition_id);
+    virtual StatusOr<PartitionAssignment> GetPartitionAssignment(
+        const std::string& space_name, PartitionID partition_id) {
+        (void)space_name;
+        (void)partition_id;
+        return Status::NotSupported("GetPartitionAssignment not implemented");
+    }
     
-    StatusOr<SpacePartitionMap> GetSpacePartitionMap(const std::string& space_name);
+    virtual StatusOr<SpacePartitionMap> GetSpacePartitionMap(const std::string& space_name) {
+        (void)space_name;
+        return Status::NotSupported("GetSpacePartitionMap not implemented");
+    }
     
-    StatusOr<NodeInfo> GetNode(NodeID node_id);
+    virtual StatusOr<NodeInfo> GetNode(NodeID node_id) {
+        (void)node_id;
+        return Status::NotSupported("GetNode not implemented");
+    }
     
     // ===== 节点操作（StorageD 使用）=====
     
-    Status RegisterNode(const NodeInfo& info);
-    Status Heartbeat(const NodeStatus& status);
+    virtual Status RegisterNode(const NodeInfo& info) {
+        (void)info;
+        return Status::NotSupported("RegisterNode not implemented");
+    }
+    virtual Status Heartbeat(const NodeStatus& status) {
+        (void)status;
+        return Status::NotSupported("Heartbeat not implemented");
+    }
     
     // ===== 订阅接口 =====
     
-    void WatchPartitionMap(const std::string& space_name,
-                           std::function<void(const PartitionMapChange&)> callback);
+    virtual void WatchPartitionMap(const std::string& space_name,
+                           std::function<void(const PartitionMapChange&)> callback) {
+        (void)space_name;
+        (void)callback;
+    }
     
 private:
     // 尝试连接到一个 MetaD 节点

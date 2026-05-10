@@ -28,6 +28,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include "cedar/dtx/raft/grpc_tls.h"
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -43,6 +44,7 @@
 #include "cedar/storage/storage_interface.h"
 #include "cedar/dtx/types.h"
 #include "cedar/dtx/transaction_state.h"
+#include "cedar/dtx/storage/braft_partition_raft.h"
 
 // gRPC includes
 #include <grpcpp/grpcpp.h>
@@ -59,12 +61,13 @@ namespace governance {
 namespace dtx {
 
 // Forward declarations
-class MetaServiceClient;
+class MetaServiceNodeClient;
 class PartitionManager;
 
 // Forward declaration for PartitionStorage
 class StoragePartitionManager;
 class StorageServiceImpl;
+class PartitionRaftManager;
 
 // =============================================================================
 // PartitionStorage - Logical partition view over shared LSM-Tree
@@ -84,6 +87,7 @@ class PartitionStorage {
     TxnID txn_id;
     std::vector<CedarKey> read_set;
     std::vector<CedarKey> write_set;
+    std::unordered_map<uint64_t, Descriptor> write_descriptors;  // key hash -> descriptor
     Timestamp commit_ts;
     DistributedTxnState status;
   };
@@ -104,9 +108,12 @@ class PartitionStorage {
 
   // 2PC support
   Status Prepare(TxnID txn_id, const std::vector<CedarKey>& reads,
-                 const std::vector<CedarKey>& writes, Timestamp commit_ts);
+                 const std::vector<CedarKey>& writes,
+                 const std::unordered_map<uint64_t, Descriptor>& write_descriptors,
+                 Timestamp commit_ts);
   Status Commit(TxnID txn_id, Timestamp commit_ts);
   Status Abort(TxnID txn_id);
+  Status Inquire(TxnID txn_id, DistributedTxnState* state);
 
   // Utility
   bool IsReadOnly() const;
@@ -114,6 +121,19 @@ class PartitionStorage {
   PartitionID GetPartitionId() const { return partition_id_; }
   StorageStats GetStats() const;
   std::vector<TxnID> GetPreparedTransactions() const;
+
+  // Snapshot support - serialize/deserialize prepared transaction state
+  Status SavePreparedTxns(const std::string& path) const;
+  Status LoadPreparedTxns(const std::string& path);
+
+  // Get the data root directory for snapshot file operations
+  std::string GetDataRoot() const;
+  
+  // Recover transaction state from WAL (replay COMMIT/ABORT records)
+  Status RecoverFromWAL();
+
+  // Get the underlying shared storage engine
+  CedarGraphStorage* GetSharedStorage() const { return shared_storage_; }
 
   // Key manipulation: inject/extract part_id
   CedarKey InjectPartitionId(const CedarKey& key) const;
@@ -187,7 +207,8 @@ class StoragePartitionManager {
 
 class StorageServiceImpl final : public cedar::storage::StorageService::Service {
  public:
-  explicit StorageServiceImpl(StoragePartitionManager* partition_manager);
+  explicit StorageServiceImpl(StoragePartitionManager* partition_manager,
+                               PartitionRaftManager* raft_manager = nullptr);
   ~StorageServiceImpl();
 
   // Disable copy
@@ -241,6 +262,11 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                      const cedar::storage::AbortRequest* request,
                      cedar::storage::AbortResponse* response) override;
 
+  // Inquire 阶段（协调者恢复时查询 participant 状态）
+  grpc::Status Inquire(grpc::ServerContext* context,
+                       const cedar::storage::InquireRequest* request,
+                       cedar::storage::InquireResponse* response) override;
+
   // GCN compute-optimized APIs
   grpc::Status GetRangeForCompute(grpc::ServerContext* context,
                                   const cedar::storage::GetRangeForComputeRequest* request,
@@ -273,15 +299,23 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                                 uint16_t column_id = 0);
   cedar::storage::Descriptor DescriptorToProto(const Descriptor& desc);
 
+  // Leader check for linearizable reads. Returns OK if leader or no raft.
+  // Otherwise returns UNAVAILABLE with leader hint in error_details.
+  grpc::Status CheckReadLeader(PartitionID pid, std::string* leader_hint);
+
   std::unique_ptr<cedar::storage::StorageInterface> storage_interface_;
   std::vector<cedar::storage::PropertyPredicateItem> ConvertPredicates(
       const google::protobuf::RepeatedPtrField<cedar::storage::ScanPredicate>& proto_preds);
 
   StoragePartitionManager* partition_manager_;
+  PartitionRaftManager* raft_manager_;
   
   // Track which partitions are involved in each transaction
   mutable std::mutex txn_partitions_mutex_;
   std::unordered_map<TxnID, std::set<PartitionID>> txn_partitions_;
+
+  // Rebuild txn_partitions_ from all partitions' prepared_txns_ (used after snapshot load)
+  void RebuildTxnPartitions();
 };
 
 // =============================================================================
@@ -295,6 +329,7 @@ class StorageClient {
     size_t max_retries = 3;
     std::chrono::milliseconds retry_base_delay{10};
     std::chrono::milliseconds operation_timeout{5000};
+    cedar::dtx::raft::TlsConfig tls;
   };
 
   StorageClient();
@@ -329,39 +364,61 @@ class StorageClient {
   Status Abort(TxnID txn_id);
   Status Inquire(TxnID txn_id, ParticipantState::State* state);
 
+  // Scan operations (V2 API)
+  Status ScanNodeV2(uint64_t node_id, Timestamp start_time, Timestamp end_time,
+                    std::vector<std::pair<Timestamp, Descriptor>>* results);
+  Status ScanEdgeV2(uint64_t node_id, uint16_t edge_type,
+                    cedar::storage::Direction direction,
+                    Timestamp start_time, Timestamp end_time,
+                    std::vector<EdgeScanEntry>* edges);
+
   // Health check
   bool IsConnected() const;
   Status Ping();
+  
+  // Get server address (for connection pool management)
+  const std::string& GetServerAddress() const { return config_.server_address; }
 
  private:
   // Retry with backoff for Status-returning operations
-  Status RetryWithBackoff(std::function<Status()> operation);
-  
+  Status RetryWithBackoff(std::function<Status()> operation,
+                          bool is_idempotent = true);
+
   // Retry with backoff for StatusOr<T>-returning operations
   template<typename T>
-  StatusOr<T> RetryWithBackoff(std::function<StatusOr<T>()> operation) {
+  StatusOr<T> RetryWithBackoff(std::function<StatusOr<T>()> operation,
+                               bool is_idempotent = true) {
     StatusOr<T> last_result;
-    
+
     for (size_t attempt = 0; attempt < config_.max_retries; ++attempt) {
       last_result = operation();
-      
+
       if (last_result.ok()) {
         return last_result;
       }
-      
+
       // Don't retry on certain errors
-      if (last_result.status().IsInvalidArgument() || 
+      if (last_result.status().IsInvalidArgument() ||
           last_result.status().IsNotFound()) {
         return last_result;
       }
-      
+
+      // Don't retry non-idempotent operations on DEADLINE_EXCEEDED
+      // (server may have already processed the request)
+      if (!is_idempotent) {
+        std::string error_msg = last_result.status().ToString();
+        if (error_msg.find("DEADLINE_EXCEEDED") != std::string::npos) {
+          return last_result;
+        }
+      }
+
       // Exponential backoff
       if (attempt < config_.max_retries - 1) {
         auto delay = config_.retry_base_delay * (1 << attempt);
         std::this_thread::sleep_for(delay);
       }
     }
-    
+
     return last_result;
   }
 
@@ -413,10 +470,12 @@ class StorageClientPool {
 };
 
 // =============================================================================
-// MetaServiceClient - Client for connecting to MetaD via gRPC
+// MetaServiceNodeClient - Client for StorageD nodes to connect to MetaD
+// This is separate from MetaServiceClient (in meta_service.h) which is used
+// by GraphD/QueryD/Coordinator for routing queries.
 // =============================================================================
 
-class MetaServiceClient {
+class MetaServiceNodeClient {
  public:
   struct ClientConfig {
     std::string metad_address;
@@ -426,14 +485,15 @@ class MetaServiceClient {
     size_t max_partitions = 1024;
     std::chrono::seconds heartbeat_interval{5};
     std::chrono::seconds registration_timeout{10};
+    cedar::dtx::raft::TlsConfig tls;
   };
 
-  MetaServiceClient();
-  ~MetaServiceClient();
+  MetaServiceNodeClient();
+  ~MetaServiceNodeClient();
 
   // Disable copy
-  MetaServiceClient(const MetaServiceClient&) = delete;
-  MetaServiceClient& operator=(const MetaServiceClient&) = delete;
+  MetaServiceNodeClient(const MetaServiceNodeClient&) = delete;
+  MetaServiceNodeClient& operator=(const MetaServiceNodeClient&) = delete;
 
   Status Initialize(const ClientConfig& config);
   void Shutdown();
@@ -447,6 +507,8 @@ class MetaServiceClient {
   // Queries
   StatusOr<cedar::meta::PartitionAssignment> GetPartitionAssignment(
       const std::string& space_name, PartitionID partition_id);
+  StatusOr<cedar::meta::SpacePartitionMap> GetSpacePartitionMap(
+      const std::string& space_name);
   StatusOr<std::vector<cedar::meta::NodeInfo>> GetAliveNodes();
 
   // Lifecycle
@@ -506,8 +568,11 @@ class StorageServer {
   StorageServerConfig config_;
   StoragePartitionManager partition_manager_;
   
-  std::unique_ptr<MetaServiceClient> meta_client_;
+  std::unique_ptr<MetaServiceNodeClient> meta_client_;
   std::thread heartbeat_thread_;
+  
+  // braft partition replication manager
+  std::unique_ptr<PartitionRaftManager> raft_manager_;
   
   // gRPC server
   std::unique_ptr<grpc::Server> grpc_server_;

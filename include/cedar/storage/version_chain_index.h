@@ -541,7 +541,7 @@ inline TemporalVersionNode* VersionChainIndex::FindAtTimeUnlocked(Timestamp ts) 
   
   // 如果 head 本身就是答案 (当所有节点都 <= ts)
   if (head->GetTimestamp() <= ts) {
-    return head->version_node;
+    return head ? head->version_node : nullptr;
   }
   
   return nullptr;

@@ -113,6 +113,9 @@ struct ZoneSstMeta {
   std::string path;
   std::string blob_path;
   
+  // Temporal Bloom Filter 序列化数据（用于时间范围查询过滤）
+  std::string temporal_filter_metadata;
+  
   // Zone 统计（用于选择编码策略）
   struct ZoneStats {
     uint64_t uncompressed_size = 0;

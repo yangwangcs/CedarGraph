@@ -14,6 +14,7 @@
 
 #include "cedar/dtx/raft/grpc_tls.h"
 
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -134,6 +135,50 @@ bool TlsCredentialFactory::ValidateConfig(const TlsConfig& config,
   }
 
   return true;
+}
+
+std::shared_ptr<ServerCredentials> TlsCredentialFactory::CreateServerCredentialsFromEnv() {
+  TlsConfig config;
+  const char* enabled = std::getenv("CEDAR_GRPC_TLS_ENABLED");
+  if (enabled && std::string(enabled) == "1") {
+    config.enabled = true;
+    const char* ca_cert = std::getenv("CEDAR_GRPC_CA_CERT");
+    if (ca_cert) config.ca_cert_file = ca_cert;
+    const char* server_cert = std::getenv("CEDAR_GRPC_SERVER_CERT");
+    if (server_cert) config.server_cert_file = server_cert;
+    const char* server_key = std::getenv("CEDAR_GRPC_SERVER_KEY");
+    if (server_key) config.server_key_file = server_key;
+    const char* mtls = std::getenv("CEDAR_GRPC_MTLS_ENABLED");
+    if (mtls && std::string(mtls) == "1") {
+      config.mtls_enabled = true;
+      const char* client_cert = std::getenv("CEDAR_GRPC_CLIENT_CERT");
+      if (client_cert) config.client_cert_file = client_cert;
+      const char* client_key = std::getenv("CEDAR_GRPC_CLIENT_KEY");
+      if (client_key) config.client_key_file = client_key;
+    }
+    return CreateServerCredentials(config);
+  }
+  return InsecureServerCredentials();
+}
+
+std::shared_ptr<ChannelCredentials> TlsCredentialFactory::CreateClientCredentialsFromEnv() {
+  TlsConfig config;
+  const char* enabled = std::getenv("CEDAR_GRPC_TLS_ENABLED");
+  if (enabled && std::string(enabled) == "1") {
+    config.enabled = true;
+    const char* ca_cert = std::getenv("CEDAR_GRPC_CA_CERT");
+    if (ca_cert) config.ca_cert_file = ca_cert;
+    const char* mtls = std::getenv("CEDAR_GRPC_MTLS_ENABLED");
+    if (mtls && std::string(mtls) == "1") {
+      config.mtls_enabled = true;
+      const char* client_cert = std::getenv("CEDAR_GRPC_CLIENT_CERT");
+      if (client_cert) config.client_cert_file = client_cert;
+      const char* client_key = std::getenv("CEDAR_GRPC_CLIENT_KEY");
+      if (client_key) config.client_key_file = client_key;
+    }
+    return CreateClientCredentials(config);
+  }
+  return InsecureChannelCredentials();
 }
 
 }  // namespace raft

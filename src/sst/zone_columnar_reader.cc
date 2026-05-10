@@ -18,7 +18,17 @@
 #include <cstring>
 #include <unordered_set>
 #include "cedar/core/env.h"
+#include "cedar/core/crc32c.h"
 #include "cedar/sst/blob_file_manager.h"
+
+namespace {
+// CRC64: combine two CRC32C with different seeds for 64-bit integrity check
+static uint64_t ComputeCRC64(const char* data, size_t n) {
+  uint32_t crc_lo = cedar::crc32c::Value(data, n);
+  uint32_t crc_hi = cedar::crc32c::Extend(0xa5a5a5a5u, data, n);
+  return (static_cast<uint64_t>(crc_hi) << 32) | static_cast<uint64_t>(crc_lo);
+}
+}  // namespace
 
 namespace cedar {
 
@@ -81,7 +91,7 @@ Status ZoneColumnarSstReader::LoadMetadata() {
   Status s = env->GetFileSize(file_path_, &file_size);
   CEDAR_RETURN_IF_ERROR(s);
   
-  // V2: Header 64 bytes + Footer 48 bytes = 112 bytes minimum
+  // V2: Header 64 bytes + Footer 64 bytes = 128 bytes minimum
   if (file_size < ZoneColumnarHeaderV2::kEncodedSize + ZoneColumnarFooterV2::kEncodedSize) {
     return Status::Corruption("SST file too small");
   }
@@ -106,7 +116,7 @@ Status ZoneColumnarSstReader::LoadMetadata() {
     return Status::Corruption("Invalid SST version");
   }
   
-  // 读取 Footer (48 bytes at end of file)
+  // 读取 Footer (64 bytes at end of file; backward compat for old 48-byte footers)
   char footer_buf[ZoneColumnarFooterV2::kEncodedSize];
   Slice footer_result;
   s = file_->Read(file_size - sizeof(footer_buf), sizeof(footer_buf), 
@@ -148,6 +158,32 @@ Status ZoneColumnarSstReader::LoadMetadata() {
     bloom_filter_.Init(bloom_result.data(), bloom_result.size());
   }
   
+  // 加载 Temporal Bloom Filter (if present)
+  if (footer_.temporal_filter_size > 0) {
+    temporal_filter_data_.resize(footer_.temporal_filter_size);
+    Slice tf_result;
+    s = file_->Read(footer_.temporal_filter_offset, footer_.temporal_filter_size,
+                    &tf_result, &temporal_filter_data_[0]);
+    CEDAR_RETURN_IF_ERROR(s);
+    temporal_filter_data_.assign(tf_result.data(), tf_result.size());
+  }
+
+  // 验证 data_checksum: header 之后到 footer 之前的所有数据
+  size_t data_start = ZoneColumnarHeaderV2::kEncodedSize;
+  size_t data_end = file_size - ZoneColumnarFooterV2::kEncodedSize;
+  if (data_end > data_start) {
+    size_t data_len = data_end - data_start;
+    std::string data_buf;
+    data_buf.resize(data_len);
+    Slice data_result;
+    s = file_->Read(data_start, data_len, &data_result, &data_buf[0]);
+    CEDAR_RETURN_IF_ERROR(s);
+    uint64_t computed = ComputeCRC64(data_result.data(), data_result.size());
+    if (computed != footer_.data_checksum) {
+      return Status::Corruption("SST data checksum mismatch");
+    }
+  }
+
   return Status::OK();
 }
 
@@ -444,6 +480,23 @@ Status ZoneColumnarSstReader::LoadMetadataFromBuffer() {
     }
   }
   
+  // Load temporal filter from buffer (if present)
+  if (footer_.temporal_filter_size > 0) {
+    const char* tf_data = buffer_data_ + footer_.temporal_filter_offset;
+    temporal_filter_data_.assign(tf_data, footer_.temporal_filter_size);
+  }
+
+  // 验证 data_checksum from buffer
+  size_t data_start = ZoneColumnarHeaderV2::kEncodedSize;
+  size_t data_end = buffer_size_ - ZoneColumnarFooterV2::kEncodedSize;
+  if (data_end > data_start) {
+    size_t data_len = data_end - data_start;
+    uint64_t computed = ComputeCRC64(buffer_data_ + data_start, data_len);
+    if (computed != footer_.data_checksum) {
+      return Status::Corruption("SST data checksum mismatch (buffer)");
+    }
+  }
+
   return Status::OK();
 }
 

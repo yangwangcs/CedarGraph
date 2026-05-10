@@ -160,7 +160,7 @@ private:
     
     StorageServerConfig config_;
     PartitionManager partition_mgr_;
-    std::unique_ptr<MetaServiceClient> meta_client_;
+    std::unique_ptr<MetaServiceNodeClient> meta_client_;
     std::atomic<bool> running_{false};
     std::thread heartbeat_thread_;
 };

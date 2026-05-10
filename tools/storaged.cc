@@ -19,9 +19,41 @@
 #include <grpcpp/grpcpp.h>
 
 #include "cedar/storage/cedar_graph_storage.h"
-#include "cedar/raft/partition_router.h"
+#include "cedar/governance/health_checker.h"
+#include "cedar/governance/config_manager.h"
+#include "cedar/dtx/storage/metrics_collector.h"
+#include "cedar/dtx/monitoring.h"
+#include "cedar/dtx/raft/grpc_tls.h"
+#include "cedar/common/json_logger.h"
+#include "cedar/common/grpc_request_id.h"
 #include "meta_service.grpc.pb.h"
 #include "storage_service.grpc.pb.h"
+
+// Metrics helper
+static void RecordStorageOp(const std::string& op, bool success, uint64_t latency_us) {
+  static auto* put_counter = cedar::dtx::storage::MetricsRegistry::Instance().GetCounter(
+      "cedar_storage_put_ops_total", "Total put operations");
+  static auto* get_counter = cedar::dtx::storage::MetricsRegistry::Instance().GetCounter(
+      "cedar_storage_get_ops_total", "Total get operations");
+  static auto* delete_counter = cedar::dtx::storage::MetricsRegistry::Instance().GetCounter(
+      "cedar_storage_delete_ops_total", "Total delete operations");
+  static auto* put_latency = cedar::dtx::storage::MetricsRegistry::Instance().GetHistogram(
+      "cedar_storage_put_latency_seconds", "Put latency",
+      std::vector<double>{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0});
+  static auto* get_latency = cedar::dtx::storage::MetricsRegistry::Instance().GetHistogram(
+      "cedar_storage_get_latency_seconds", "Get latency",
+      std::vector<double>{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0});
+
+  if (op == "put") {
+    put_counter->Increment(1.0);
+    put_latency->Observe(latency_us / 1e6);
+  } else if (op == "get") {
+    get_counter->Increment(1.0);
+    get_latency->Observe(latency_us / 1e6);
+  } else if (op == "delete") {
+    delete_counter->Increment(1.0);
+  }
+}
 
 std::atomic<bool> g_running{true};
 std::unique_ptr<grpc::Server> g_grpc_server;
@@ -35,14 +67,7 @@ void SignalHandler(int sig) {
 }
 
 void PrintBanner() {
-  std::cout << R"(
-   ____  _                     _            _ 
-  / ___|| |_ _ __ ___  ___  __| | ___ _ __ | |_
-  \___ \| __| '__/ _ \/ _ \/ _` |/ _ \ '_ \| __|
-   ___) | |_| | |  __/  __/ (_| |  __/ | | | |_ 
-  |____/ \__|_|  \___|\___|\__,_|\___|_| |_|\__|
-              Storage Service v1.0
-)" << std::endl;
+  std::cout << "CedarGraph StorageD v1.0 starting..." << std::endl;
 }
 
 struct Config {
@@ -52,11 +77,31 @@ struct Config {
   std::string data_dir = "/tmp/cedar/storaged";
   std::string meta_server = "127.0.0.1:9559";
   int heartbeat_interval_sec = 10;
+  cedar::dtx::raft::TlsConfig tls;
 };
+
+static void LoadConfigFromFile(Config* config, const std::string& path) {
+  cedar::governance::ConfigManager cm;
+  if (!cm.LoadFromFile(path).ok()) return;
+  if (cm.HasKey("storaged.node_id")) config->node_id = cm.GetInt("storaged.node_id", config->node_id);
+  if (cm.HasKey("storaged.port")) config->port = cm.GetInt("storaged.port", config->port);
+  if (cm.HasKey("storaged.bind_address")) config->bind_address = cm.GetString("storaged.bind_address", config->bind_address);
+  if (cm.HasKey("storaged.data_dir")) config->data_dir = cm.GetString("storaged.data_dir", config->data_dir);
+  if (cm.HasKey("storaged.meta_server")) config->meta_server = cm.GetString("storaged.meta_server", config->meta_server);
+  if (cm.HasKey("storaged.heartbeat_interval_sec")) config->heartbeat_interval_sec = cm.GetInt("storaged.heartbeat_interval_sec", config->heartbeat_interval_sec);
+  config->tls.enabled = cm.GetBool("tls.enabled", config->tls.enabled);
+  config->tls.server_cert_file = cm.GetString("tls.server_cert", config->tls.server_cert_file);
+  config->tls.server_key_file = cm.GetString("tls.server_key", config->tls.server_key_file);
+  config->tls.ca_cert_file = cm.GetString("tls.ca_cert", config->tls.ca_cert_file);
+  config->tls.mtls_enabled = cm.GetBool("tls.mtls", config->tls.mtls_enabled);
+  config->tls.client_cert_file = cm.GetString("tls.client_cert", config->tls.client_cert_file);
+  config->tls.client_key_file = cm.GetString("tls.client_key", config->tls.client_key_file);
+}
 
 Config ParseArgs(int argc, char* argv[]) {
   Config config;
-  
+  std::string config_file;
+
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
     if ((arg == "--node_id" || arg == "-n") && i + 1 < argc) {
@@ -69,6 +114,8 @@ Config ParseArgs(int argc, char* argv[]) {
       config.data_dir = argv[++i];
     } else if ((arg == "--meta" || arg == "-m") && i + 1 < argc) {
       config.meta_server = argv[++i];
+    } else if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
+      config_file = argv[++i];
     } else if (arg == "--help" || arg == "-h") {
       std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
       std::cout << "Options:" << std::endl;
@@ -77,11 +124,16 @@ Config ParseArgs(int argc, char* argv[]) {
       std::cout << "  -b, --bind <addr>      Bind address (default: 0.0.0.0)" << std::endl;
       std::cout << "  -d, --data_dir <dir>   Data directory (default: /tmp/cedar/storaged)" << std::endl;
       std::cout << "  -m, --meta <addr>      MetaD server address (default: 127.0.0.1:9559)" << std::endl;
+      std::cout << "  -c, --config <path>    Configuration file (YAML)" << std::endl;
       std::cout << "  -h, --help             Show this help" << std::endl;
       exit(0);
     }
   }
-  
+
+  if (!config_file.empty()) {
+    LoadConfigFromFile(&config, config_file);
+  }
+
   return config;
 }
 
@@ -90,14 +142,93 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
  public:
   explicit StorageServiceImpl(cedar::CedarGraphStorage* storage) : storage_(storage) {}
 
+  grpc::Status Prepare(grpc::ServerContext* context,
+                       const cedar::storage::PrepareRequest* request,
+                       cedar::storage::PrepareResponse* response) override {
+    (void)context;
+    std::lock_guard<std::mutex> lock(txn_mutex_);
+    auto& state = txn_states_[request->txn_id()];
+    state = TxnState::kPrepared;
+    response->set_prepared(true);
+    response->set_prepared_ts(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    return grpc::Status::OK;
+  }
+
+  grpc::Status Commit(grpc::ServerContext* context,
+                      const cedar::storage::CommitRequest* request,
+                      cedar::storage::CommitResponse* response) override {
+    (void)context;
+    std::lock_guard<std::mutex> lock(txn_mutex_);
+    auto it = txn_states_.find(request->txn_id());
+    if (it != txn_states_.end()) {
+      it->second = TxnState::kCommitted;
+    }
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status Abort(grpc::ServerContext* context,
+                     const cedar::storage::AbortRequest* request,
+                     cedar::storage::AbortResponse* response) override {
+    (void)context;
+    std::lock_guard<std::mutex> lock(txn_mutex_);
+    auto it = txn_states_.find(request->txn_id());
+    if (it != txn_states_.end()) {
+      it->second = TxnState::kAborted;
+    }
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status Inquire(grpc::ServerContext* context,
+                       const cedar::storage::InquireRequest* request,
+                       cedar::storage::InquireResponse* response) override {
+    (void)context;
+    std::lock_guard<std::mutex> lock(txn_mutex_);
+    auto it = txn_states_.find(request->txn_id());
+    if (it == txn_states_.end()) {
+      response->set_state(cedar::storage::InquireResponse::UNKNOWN);
+      return grpc::Status::OK;
+    }
+    switch (it->second) {
+      case TxnState::kPrepared:
+        response->set_state(cedar::storage::InquireResponse::PREPARED);
+        break;
+      case TxnState::kCommitted:
+        response->set_state(cedar::storage::InquireResponse::COMMITTED);
+        break;
+      case TxnState::kAborted:
+        response->set_state(cedar::storage::InquireResponse::ABORTED);
+        break;
+    }
+    return grpc::Status::OK;
+  }
+
   grpc::Status Put(grpc::ServerContext* context,
                    const cedar::storage::PutRequest* request,
                    cedar::storage::PutResponse* response) override {
     (void)context;
-    (void)request;
-    
-    // TODO: 实现实际的存储操作
-    response->set_success(true);
+    auto start = std::chrono::steady_clock::now();
+    auto desc = cedar::Descriptor::Decode(
+        cedar::Slice(request->descriptor_().data()));
+    if (!desc.has_value()) {
+      response->set_success(false);
+      response->set_error_msg("Invalid descriptor");
+      return grpc::Status::OK;
+    }
+    auto s = storage_->Put(request->key().entity_id(),
+                           request->key().timestamp(),
+                           desc.value(),
+                           cedar::Timestamp(request->txn_version().value()));
+    auto end = std::chrono::steady_clock::now();
+    auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+    RecordStorageOp("put", s.ok(), latency_us);
+    response->set_success(s.ok());
+    if (!s.ok()) {
+      response->set_error_msg(s.ToString());
+    }
     return grpc::Status::OK;
   }
 
@@ -105,11 +236,19 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                    const cedar::storage::GetRequest* request,
                    cedar::storage::GetResponse* response) override {
     (void)context;
-    (void)request;
-    
-    // TODO: 实现实际的读取操作
+    auto start = std::chrono::steady_clock::now();
+    auto result = storage_->Get(request->key().entity_id(),
+                                request->key().timestamp());
+    auto end = std::chrono::steady_clock::now();
+    auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+    RecordStorageOp("get", true, latency_us);
+    if (result.has_value()) {
+      response->set_found(true);
+      response->mutable_descriptor_()->set_data(result->Encode());
+    } else {
+      response->set_found(false);
+    }
     response->set_success(true);
-    response->set_found(false);
     return grpc::Status::OK;
   }
 
@@ -117,23 +256,36 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                       const cedar::storage::DeleteRequest* request,
                       cedar::storage::DeleteResponse* response) override {
     (void)context;
-    (void)request;
-    
-    // TODO: 实现实际的删除操作
-    response->set_success(true);
+    auto start = std::chrono::steady_clock::now();
+    auto s = storage_->Delete(request->key().entity_id(),
+                              request->key().timestamp(),
+                              cedar::Timestamp(request->txn_version().value()));
+    auto end = std::chrono::steady_clock::now();
+    auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+    RecordStorageOp("delete", s.ok(), latency_us);
+    response->set_success(s.ok());
+    if (!s.ok()) {
+      response->set_error_msg(s.ToString());
+    }
     return grpc::Status::OK;
   }
 
  private:
+  enum class TxnState { kPrepared, kCommitted, kAborted };
   cedar::CedarGraphStorage* storage_;
+  std::mutex txn_mutex_;
+  std::unordered_map<uint64_t, TxnState> txn_states_;
 };
 
 // MetaD 客户端 - 处理注册和心跳
 class MetaClient {
  public:
-  MetaClient(const std::string& meta_addr, int node_id, int port)
+  MetaClient(const std::string& meta_addr, int node_id, int port,
+             const cedar::dtx::raft::TlsConfig& tls)
       : node_id_(node_id), port_(port) {
-    auto channel = grpc::CreateChannel(meta_addr, grpc::InsecureChannelCredentials());
+    auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls);
+    if (!client_creds) client_creds = grpc::InsecureChannelCredentials();
+    auto channel = grpc::CreateChannel(meta_addr, client_creds);
     stub_ = cedar::meta::MetaService::NewStub(channel);
   }
 
@@ -214,12 +366,12 @@ int main(int argc, char* argv[]) {
   // 使用 node_id 区分数据目录
   config.data_dir += "/node" + std::to_string(config.node_id);
   
-  std::cout << "Configuration:" << std::endl;
-  std::cout << "  Node ID:   " << config.node_id << std::endl;
-  std::cout << "  Port:      " << config.port << std::endl;
-  std::cout << "  Bind:      " << config.bind_address << std::endl;
-  std::cout << "  Data Dir:  " << config.data_dir << std::endl;
-  std::cout << "  MetaD:     " << config.meta_server << std::endl;
+  JSON_LOG(INFO).KV("service", "storaged")
+                  .KV("node_id", config.node_id)
+                  .KV("port", config.port)
+                  .KV("bind", config.bind_address)
+                  .KV("data_dir", config.data_dir)
+                  .KV("meta_server", config.meta_server);
   std::cout << std::endl;
 
   signal(SIGINT, SignalHandler);
@@ -238,22 +390,38 @@ int main(int argc, char* argv[]) {
   }
   std::cout << "[StorageD] Storage engine opened" << std::endl;
 
-  // 2. 初始化 PartitionRouter（用于本地分区管理）
-  cedar::raft::PartitionRouterConfig router_config;
-  router_config.default_replica_count = 3;
-  router_config.enable_read_from_follower = true;
-  
-  // 暂时禁用 PartitionRouter 初始化，简化版本
-  // status = storage->InitializePartitionRouter(router_config);
-  // if (!status.ok()) {
-  //   std::cerr << "[StorageD] Failed to initialize partition router: " << status.ToString() << std::endl;
-  //   delete storage;
-  //   return 1;
-  // }
-  std::cout << "[StorageD] Partition router initialized (deferred)" << std::endl;
+  // DESIGN NOTE: StorageD Raft replication with braft
+  //
+  // Each partition should have its own braft::Node group for strong consistency.
+  // The integration path is:
+  //
+  // 1. Create a StorageRaftStateMachine : public braft::StateMachine that
+  //    applies committed log entries to PartitionStorage::Put/Delete.
+  //
+  // 2. For each partition managed by this node, create a braft::Node with:
+  //    - group = "partition_" + partition_id
+  //    - peers = replica nodes for this partition (from MetaD assignment)
+  //    - log_uri = "local://" + data_dir + "/raft/partition_" + pid + "/log"
+  //    - snapshot_uri = "local://" + data_dir + "/raft/partition_" + pid + "/snapshot"
+  //
+  // 3. Wire StorageServiceImpl::Put/Delete/BatchPut to propose through the
+  //    partition's braft::Node::apply() instead of direct local writes.
+  //    Only the leader can accept writes; non-leaders redirect to leader.
+  //
+  // 4. On on_apply(), deserialize the StorageLogEntry and call:
+  //    partition_storage->Put(key, descriptor, txn_version)
+  //
+  // 5. For linearizable reads, use braft::Node::read_index() before serving
+  //    Get/Scan requests on followers.
+  //
+  // 6. The existing custom raft (src/dtx/storage/raft_replication.cc) should
+  //    be removed once braft integration is complete.
+  //
+  // TODO: Implement braft-based partition replication. Until then, this
+  // StorageD operates as a single-node storage engine.
 
   // 3. 注册到 MetaD
-  MetaClient meta_client(config.meta_server, config.node_id, config.port);
+  MetaClient meta_client(config.meta_server, config.node_id, config.port, config.tls);
   if (!meta_client.Register()) {
     std::cerr << "[StorageD] Failed to register with MetaD, continuing anyway..." << std::endl;
     // 不退出，允许离线模式运行
@@ -268,7 +436,12 @@ int main(int argc, char* argv[]) {
   // 6. 启动 gRPC 服务器
   std::string server_address = config.bind_address + ":" + std::to_string(config.port);
   grpc::ServerBuilder builder;
-  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(config.tls);
+  if (!creds) {
+    std::cerr << "[StorageD] Failed to create server credentials, using insecure" << std::endl;
+    creds = grpc::InsecureServerCredentials();
+  }
+  builder.AddListeningPort(server_address, creds);
   builder.RegisterService(&service_impl);
   
   g_grpc_server = builder.BuildAndStart();
@@ -284,13 +457,64 @@ int main(int argc, char* argv[]) {
   std::cout << "[StorageD] Ready. Press Ctrl+C to stop." << std::endl;
   std::cout << std::endl;
 
-  // 7. 等待关闭
+  // 7. 启动健康检查和指标 HTTP 端点
+  cedar::governance::HealthChecker health_checker;
+  health_checker.RegisterComponent("storage", [&storage]() {
+    return storage ? cedar::governance::HealthStatus::kHealthy 
+                   : cedar::governance::HealthStatus::kUnhealthy;
+  });
+  auto health_status = health_checker.StartHttpEndpoint("0.0.0.0", 7000);
+  if (health_status.ok()) {
+    std::cout << "[StorageD] Health endpoint on http://0.0.0.0:7000/health" << std::endl;
+  }
+
+  cedar::dtx::storage::MetricsCollector metrics_collector;
+  cedar::dtx::storage::MetricsCollector::Config metrics_config;
+  metrics_config.endpoint = ":7001";
+  metrics_config.enable_http_server = true;
+  auto metrics_status = metrics_collector.Initialize(metrics_config);
+  if (metrics_status.ok()) {
+    std::cout << "[StorageD] Metrics endpoint on http://0.0.0.0:7001/metrics" << std::endl;
+  }
+
+  // 8. 初始化告警管理器
+  auto* alert_mgr = cedar::dtx::monitoring::AlertManager::GetInstance();
+  cedar::dtx::monitoring::AlertManager::Config alert_config;
+  alert_mgr->Initialize(alert_config);
+  {
+    cedar::dtx::monitoring::AlertRule rule;
+    rule.name = "StorageHighLatency";
+    rule.description = "Storage operation latency is too high";
+    rule.severity = cedar::dtx::monitoring::AlertSeverity::kWarning;
+    rule.condition_metric = "cedar_storage_put_latency_seconds";
+    rule.threshold = 1.0;
+    rule.comparison = ">";
+    rule.duration = std::chrono::seconds(60);
+    alert_mgr->AddRule(rule);
+  }
+  {
+    cedar::dtx::monitoring::AlertRule rule;
+    rule.name = "StorageLowSpace";
+    rule.description = "Storage disk space is low";
+    rule.severity = cedar::dtx::monitoring::AlertSeverity::kCritical;
+    rule.condition_metric = "cedar_storage_disk_usage_percent";
+    rule.threshold = 90.0;
+    rule.comparison = ">";
+    rule.duration = std::chrono::seconds(30);
+    alert_mgr->AddRule(rule);
+  }
+  std::cout << "[StorageD] AlertManager initialized with default rules" << std::endl;
+
+  // 9. 等待关闭
   g_grpc_server->Wait();
 
   // 清理
   std::cout << "[StorageD] Shutting down..." << std::endl;
   g_running = false;
   heartbeat_thread.join();
+  health_checker.StopHttpEndpoint();
+  metrics_collector.Shutdown();
+  alert_mgr->Shutdown();
   delete storage;
   std::cout << "[StorageD] Stopped." << std::endl;
 

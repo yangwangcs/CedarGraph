@@ -14,6 +14,12 @@
 # EXTERNAL cache entries
 ########################
 
+//No help, variable specified on the command line.
+BUILD_TESTING:UNINITIALIZED=ON
+
+//Use vendored brpc+braft from third_party/
+CEDAR_VENDOR_BRAFT:BOOL=OFF
+
 //Path to a program.
 CMAKE_ADDR2LINE:FILEPATH=CMAKE_ADDR2LINE-NOTFOUND
 
@@ -591,7 +597,7 @@ pkgcfg_lib_PC_CURL_curl-ADVANCED:INTERNAL=1
 pkgcfg_lib__OPENSSL_crypto-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: pkgcfg_lib__OPENSSL_ssl
 pkgcfg_lib__OPENSSL_ssl-ADVANCED:INTERNAL=1
-prefix_result:INTERNAL=/opt/homebrew/Cellar/openssl@3/3.6.1/lib
+prefix_result:INTERNAL=alt-svc;AsynchDNS;GSS-API;HSTS;HTTP2;HTTPS-proxy;IPv6;Kerberos;Largefile;libz;MultiSSL;NTLM;SPNEGO;SSL;threadsafe;UnixSockets
 //ADVANCED property for variable: protobuf_MODULE_COMPATIBLE
 protobuf_MODULE_COMPATIBLE-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: protobuf_VERBOSE

@@ -20,6 +20,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -141,9 +142,9 @@ class CedarMemTable {
   
   // 获取实体的版本链头节点 (最新版本)
   // 返回 nullptr 如果实体不存在
-  TemporalVersionNode* GetVersionChainHead(uint64_t entity_id,
-                                           EntityType entity_type,
-                                           uint16_t column_id) const;
+  std::vector<MemTableEntry> GetVersionChainEntries(uint64_t entity_id,
+                                                     EntityType entity_type,
+                                                     uint16_t column_id) const;
   
   // 获取实体的完整版本链 (按时间降序: 最新 -> 最旧)
   // 通过版本链遍历，O(k) 复杂度，k 为版本数量
@@ -216,7 +217,7 @@ class CedarMemTable {
 
   // 内部存储: InternalKey -> 按 timestamp 降序排列的 entries
   // 使用 std::map 代替 Rust 的 SkipMap
-  mutable std::mutex mutex_;
+  mutable std::shared_mutex mutex_;
   std::map<InternalKey, std::vector<MemTableEntry>> map_;
   
   // MVCC 版本链存储: InternalKey -> 版本链头节点 (最新版本)
@@ -232,7 +233,7 @@ class CedarMemTable {
   std::atomic<size_t> version_chain_count_{0};  // 版本链数量统计
 };
 
-// MemTable 迭代器
+// MemTable 迭代器 (持有数据快照，不依赖原始 memtable 生命周期)
 class CedarMemTable::Iterator {
  public:
   explicit Iterator(const CedarMemTable* memtable);
@@ -256,19 +257,20 @@ class CedarMemTable::Iterator {
   Descriptor Descriptor() const;
 
   // 获取当前 Entry (包含 timestamp)
-  const MemTableEntry* Entry() const;
+  std::optional<MemTableEntry> Entry() const;
 
  private:
-  const CedarMemTable* memtable_;
+  // 构造时拷贝 memtable->map_ 的快照，避免锁释放后迭代器失效
+  std::map<InternalKey, std::vector<MemTableEntry>> snapshot_;
   std::map<InternalKey, std::vector<MemTableEntry>>::const_iterator outer_iter_;
   size_t inner_idx_;
   bool valid_;
 };
 
-// MVCC 版本链迭代器 - 高效遍历单个实体的所有版本
+// MVCC 版本链迭代器 - 持有版本链快照，不依赖原始节点生命周期
 class CedarMemTable::VersionChainIterator {
  public:
-  VersionChainIterator(TemporalVersionNode* head);
+  explicit VersionChainIterator(TemporalVersionNode* head);
 
   // 定位到最新版本 (链头)
   void SeekToFirst();
@@ -285,10 +287,7 @@ class CedarMemTable::VersionChainIterator {
   // 是否有效
   bool Valid() const;
   
-  // 获取当前节点
-  const TemporalVersionNode* Node() const;
-
-  // 获取当前 Entry
+  // 获取当前 Entry (节点指针已移除，避免 UAF)
   MemTableEntry Entry() const;
   
   // 获取当前 Timestamp
@@ -298,8 +297,9 @@ class CedarMemTable::VersionChainIterator {
   Descriptor GetDescriptor() const;
 
  private:
-  TemporalVersionNode* head_;      // 链头（最新版本），用于重新定位
-  TemporalVersionNode* current_;   // 当前位置
+  // 构造时拷贝版本链所有条目，避免 flush 后节点被释放导致悬空指针
+  std::vector<MemTableEntry> entries_;
+  size_t current_idx_;
 };
 
 }  // namespace cedar

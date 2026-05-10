@@ -343,51 +343,6 @@ struct Alert {
   std::map<std::string, std::string> labels;
 };
 
-class AlertManager {
- public:
-  using AlertCallback = std::function<void(const Alert&)>;
-  
-  AlertManager();
-  ~AlertManager();
-  
-  Status Initialize();
-  void Shutdown();
-  
-  // Add alert rule
-  void AddRule(const AlertRule& rule);
-  void RemoveRule(const std::string& name);
-  
-  // Set callback for alert notifications
-  void SetAlertCallback(AlertCallback cb) { alert_callback_ = std::move(cb); }
-  
-  // Evaluate rules and fire alerts
-  void EvaluateRules();
-  
-  // Get active alerts
-  std::vector<Alert> GetActiveAlerts() const;
-  
-  // Silence an alert
-  void SilenceAlert(const std::string& name, std::chrono::minutes duration);
-
- private:
-  void EvaluationLoop();
-  bool EvaluateRule(const AlertRule& rule);
-  void FireAlert(const AlertRule& rule);
-  void ResolveAlert(const std::string& name);
-  
-  std::atomic<bool> running_{false};
-  std::unique_ptr<std::thread> eval_thread_;
-  
-  mutable std::shared_mutex rules_mutex_;
-  std::vector<AlertRule> rules_;
-  
-  mutable std::shared_mutex alerts_mutex_;
-  std::unordered_map<std::string, Alert> active_alerts_;
-  std::unordered_map<std::string, std::chrono::system_clock::time_point> silenced_until_;
-  
-  AlertCallback alert_callback_;
-};
-
 // =============================================================================
 // Predefined Alert Rules
 // =============================================================================

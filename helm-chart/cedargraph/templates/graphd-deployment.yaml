@@ -17,9 +17,18 @@ spec:
         {{- include "cedargraph.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: graphd
     spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
         - name: wait-for-metad
-          image: busybox:latest
+          image: busybox:1.36.1
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
           command:
             - sh
             - -c
@@ -32,6 +41,8 @@ spec:
         - name: graphd
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
           env:
             - name: NODE_ROLE
               value: "graphd"
@@ -50,6 +61,9 @@ spec:
               protocol: TCP
           resources:
             {{- toYaml .Values.graphd.resources | nindent 12 }}
+          volumeMounts:
+            - name: logs
+              mountPath: /logs
           livenessProbe:
             tcpSocket:
               port: query
@@ -60,6 +74,9 @@ spec:
               port: query
             initialDelaySeconds: 5
             periodSeconds: 5
+      volumes:
+        - name: logs
+          emptyDir: {}
 
 ---
 apiVersion: v1

@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <random>
+#include <shared_mutex>
 #include <thread>
 
 #include "cedar/dtx/twcd_engine.h"
@@ -268,6 +269,7 @@ Status LndOccEngine::Initialize(
   
   partition_manager_ = partition_manager;
   
+  std::unique_lock<std::shared_mutex> lock(coordinators_mutex_);
   // 为每个分区创建本地协调器
   for (const auto& [pid, stores] : partition_stores) {
     auto coordinator = std::make_unique<LocalTransactionCoordinator>(
@@ -534,6 +536,7 @@ LndOccCommitResult LndOccEngine::FullTwoPhaseCommit(
 }
 
 LocalTransactionCoordinator* LndOccEngine::GetCoordinator(PartitionID pid) {
+  std::shared_lock<std::shared_mutex> lock(coordinators_mutex_);
   auto it = coordinators_.find(pid);
   return (it != coordinators_.end()) ? it->second.get() : nullptr;
 }

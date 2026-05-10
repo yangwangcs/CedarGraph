@@ -19,6 +19,8 @@
 #include <limits>
 #include <sstream>
 
+#include "cedar/dtx/raft/grpc_tls.h"
+
 #include <gflags/gflags.h>
 #include <grpcpp/grpcpp.h>
 
@@ -54,6 +56,10 @@ GcnNode::~GcnNode() {
     }
   }
 
+  // Create WatermarkGc and start it (watermark = 0 means no GC yet)
+  watermark_gc_ = std::make_unique<gcn::WatermarkGc>(engine_.get());
+  watermark_gc_->Start(5000);  // 5-second interval
+
   // Create EventApplier
   event_applier_ = std::make_unique<gcn::EventApplier>(engine_.get());
 
@@ -69,7 +75,7 @@ GcnNode::~GcnNode() {
     event.op = gcn::CDCEventOp::kCreate;
     this->event_applier_->ApplyUnordered(event);
   };
-  service_impl_ = std::make_unique<gcn::GcnServiceImpl>(std::move(callback));
+  service_impl_ = std::make_unique<gcn::GcnServiceImpl>(engine_.get(), std::move(callback));
 
   // Build and start gRPC server
   std::ostringstream address;
@@ -77,7 +83,7 @@ GcnNode::~GcnNode() {
   std::string server_address = address.str();
 
   grpc::ServerBuilder builder;
-  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+  builder.AddListeningPort(server_address, cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv());
   builder.RegisterService(service_impl_.get());
 
   grpc_server_ = builder.BuildAndStart();
@@ -97,9 +103,6 @@ GcnNode::~GcnNode() {
 
   running_ = true;
 
-  // Start garbage collection thread
-  gc_thread_ = std::thread(&GcnNode::GarbageCollectLoop, this);
-
   // Start CDC listener thread
   cdc_thread_ = std::thread(&GcnNode::CdcListenerLoop, this);
 
@@ -113,8 +116,8 @@ GcnNode::~GcnNode() {
     grpc_server_->Shutdown();
   }
 
-  if (gc_thread_.joinable()) {
-    gc_thread_.join();
+  if (watermark_gc_) {
+    watermark_gc_->Stop();
   }
   if (cdc_thread_.joinable()) {
     cdc_thread_.join();
@@ -123,16 +126,10 @@ GcnNode::~GcnNode() {
   // Release resources
   grpc_server_.reset();
   service_impl_.reset();
+  watermark_gc_.reset();
   engine_.reset();
 
   return cedar::Status::OK();
-}
-
-void GcnNode::GarbageCollectLoop() {
-  while (running_.load()) {
-    // TODO: Implement actual GC logic (e.g., DropBelowWatermark) in Task 3.3+
-    std::this_thread::sleep_for(std::chrono::seconds(10));
-  }
 }
 
 void GcnNode::CdcListenerLoop() {

@@ -126,7 +126,7 @@ class GrpcConnectionPool {
   Stats GetStats() const;
   
   // 关闭连接池
-  void Shutdown();
+  void Shutdown() noexcept;
   
  private:
   // 后台任务
@@ -158,6 +158,7 @@ class GrpcConnectionPool {
   
   // 后台线程
   std::atomic<bool> shutdown_;
+  std::mutex shutdown_mutex_;
   std::thread health_check_thread_;
   std::thread cleanup_thread_;
 };

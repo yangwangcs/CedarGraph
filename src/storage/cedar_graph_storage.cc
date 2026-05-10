@@ -25,6 +25,7 @@
 #include "cedar/transaction/occ_transaction.h"
 
 // DTX layer includes for distributed mode
+#include "cedar/dtx/meta_service.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/governance/service_registry.h"
 #include "cedar/governance/config_manager.h"
@@ -34,7 +35,6 @@
 #include "cedar/governance/health_checker.h"
 
 // Partition Router includes
-#include "cedar/raft/partition_router.h"
 
 namespace cedar {
 
@@ -92,9 +92,6 @@ struct CedarGraphStorage::Rep {
   std::shared_ptr<storage::StorageHealthMonitor> health_monitor_;
   bool health_monitoring_enabled_ = false;
   
-  // Partition Router - REQUIRED for all operations
-  std::unique_ptr<raft::PartitionRouter> partition_router_;
-  
   // Thread-safety: protect all public operations
   mutable std::shared_mutex mutex_;
 };
@@ -109,11 +106,6 @@ CedarGraphStorage::CedarGraphStorage(const std::string& db_path,
 }
 
 CedarGraphStorage::~CedarGraphStorage() {
-  // Stop partition router first (highest level)
-  if (rep_->partition_router_) {
-    rep_->partition_router_->Stop();
-  }
-  
   // Stop health monitor
   if (rep_->health_monitor_) {
     rep_->health_monitor_->Stop();
@@ -206,6 +198,10 @@ Status CedarGraphStorage::Open() {
     
     rep_->auto_blob = std::make_unique<AutoBlobStorage>(
         rep_->engine.get(), rep_->blob_manager.get(), auto_config);
+    
+    // Wire BlobFileManager into LsmEngine
+    rep_->engine->SetBlobFileManager(rep_->blob_manager.get());
+    rep_->engine->SetAutoBlobStorage(rep_->auto_blob.get());
   }
   
   rep_->is_connected = true;
@@ -318,36 +314,19 @@ Status CedarGraphStorage::Put(const WriteOptions& options,
                              uint64_t tx_time, 
                              const Descriptor& descriptor,
                              Timestamp txn_version) {
-  std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
-  
-  // ============================================================================
-  // Partition Router Mode (REQUIRED for distributed, optional for single-node)
-  // ============================================================================
-  uint16_t part_id = 0;
-  if (rep_->partition_router_) {
-    // Route to appropriate partition leader
-    auto route_result = rep_->partition_router_->RouteWrite(entity_id);
-    if (!route_result.ok()) {
-      return route_result.status();
-    }
-    part_id = route_result.ValueOrDie().partition_id;
-  } else if (rep_->is_distributed) {
-    return Status::InvalidArgument("CedarGraphStorage", 
-        "PartitionRouter not initialized. Call InitializePartitionRouter() first.");
-  } else {
-    // Single-node mode without partition router: compute local partition
-    part_id = ComputePartition(entity_id);
-  }
+  uint16_t part_id = ComputePartition(entity_id);
   
   // 构造 Key with partition ID
   uint8_t flags = PackCreateFlags(true);
   CedarKey key = CedarKey::Vertex(entity_id, VertexColumnId(descriptor.GetColumnId()), 
                                   Timestamp(tx_time), 0, part_id, 0, flags);
   
-  // Use DTX client if in distributed mode
+  // Use DTX client if in distributed mode (RPC should not hold local lock)
   if (rep_->is_distributed && rep_->dtx_client && rep_->is_connected) {
     return rep_->dtx_client->Put(key, descriptor, txn_version, dtx::TxnID(0));
   }
+  
+  std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
   
   // Use local engine for single-node mode
   if (!rep_->engine) {
@@ -372,26 +351,7 @@ Status CedarGraphStorage::Delete(const WriteOptions& options,
                                 uint64_t entity_id, 
                                 uint64_t tx_time,
                                 Timestamp txn_version) {
-  std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
-  
-  // ============================================================================
-  // Partition Router Mode (REQUIRED for distributed, optional for single-node)
-  // ============================================================================
-  uint16_t part_id = 0;
-  if (rep_->partition_router_) {
-    // Route to appropriate partition leader (delete must go to leader)
-    auto route_result = rep_->partition_router_->RouteWrite(entity_id);
-    if (!route_result.ok()) {
-      return route_result.status();
-    }
-    part_id = route_result.ValueOrDie().partition_id;
-  } else if (rep_->is_distributed) {
-    return Status::InvalidArgument("CedarGraphStorage::Delete",
-        "PartitionRouter not initialized. Call InitializePartitionRouter() first.");
-  } else {
-    // Single-node mode without partition router: compute local partition
-    part_id = ComputePartition(entity_id);
-  }
+  uint16_t part_id = ComputePartition(entity_id);
   
   // 构造 Tombstone Key with partition ID
   uint8_t flags = PackDeleteFlags(true);
@@ -405,10 +365,12 @@ Status CedarGraphStorage::Delete(const WriteOptions& options,
   // 2. Compaction 时根据策略决定是否物理清理
   Descriptor tombstone = Descriptor::Tombstone();
   
-  // Use DTX client if in distributed mode
+  // Use DTX client if in distributed mode (RPC should not hold local lock)
   if (rep_->is_distributed && rep_->dtx_client && rep_->is_connected) {
     return rep_->dtx_client->Put(key, tombstone, txn_version, dtx::TxnID(0));
   }
+  
+  std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
   
   // Use local engine for single-node mode
   if (!rep_->engine) {
@@ -448,30 +410,10 @@ std::optional<Descriptor> CedarGraphStorage::Get(uint64_t entity_id,
                                                 EntityType entity_type,
                                                 uint16_t column_id,
                                                 Timestamp timestamp) {
-  std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
-  
-  // Use DTX client if in distributed mode
+  // Use DTX client if in distributed mode (RPC should not hold local lock)
   if (rep_->is_distributed && rep_->dtx_client && rep_->is_connected) {
-    // ============================================================================
-    // Partition Router Mode (REQUIRED for distributed reads)
-    // ============================================================================
-    if (!rep_->partition_router_) {
-      return std::nullopt;
-    }
-    
-    // Route read to appropriate partition (may use follower for read)
-    auto route_result = rep_->partition_router_->RouteRead(entity_id, false);
-    if (!route_result.ok()) {
-      return std::nullopt;
-    }
-    
-    auto target = route_result.ValueOrDie();
-    
-    // 构造 Key with partition ID
-    uint16_t part_id = target.partition_id;
+    uint16_t part_id = ComputePartition(entity_id);
     uint8_t flags = PackCreateFlags(true);
-    
-    // Store entity type info in the extension field for distributed lookup
     uint64_t extension = (static_cast<uint64_t>(entity_type) << 16) | column_id;
     
     CedarKey key = CedarKey::Vertex(entity_id, column_id, timestamp, 
@@ -480,7 +422,6 @@ std::optional<Descriptor> CedarGraphStorage::Get(uint64_t entity_id,
     auto result = rep_->dtx_client->Get(key, timestamp);
     if (result.ok()) {
       auto desc = result.ValueOrDie();
-      // Check if it's a tombstone (deleted)
       if (desc.IsTombstone()) {
         return std::nullopt;
       }
@@ -488,6 +429,8 @@ std::optional<Descriptor> CedarGraphStorage::Get(uint64_t entity_id,
     }
     return std::nullopt;
   }
+  
+  std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
   
   // Use local engine for single-node mode
   if (!rep_->engine) {
@@ -874,18 +817,8 @@ Status CedarGraphStorage::PutString(uint64_t entity_id, uint16_t col_id,
     return Status::InvalidArgument("CedarGraphStorage", "not opened");
   }
   
-  // Use auto blob storage if available
-  if (rep_->auto_blob) {
-    return rep_->auto_blob->PutString(entity_id, col_id, value);
-  }
-  
-  // Fallback to inline storage only
-  uint32_t encoded = 0;
-  memcpy(&encoded, value.data(), std::min(value.size(), size_t(4)));
-  
-  CedarKey key = CedarKey::Vertex(entity_id, col_id, Timestamp(0));
-  Descriptor desc = Descriptor::InlineInt(col_id, static_cast<int32_t>(encoded));
-  return rep_->engine->Put(key, desc, txn_version);
+  // Delegate to LsmEngine (which handles blob storage if enabled)
+  return rep_->engine->PutString(entity_id, col_id, value);
 }
 
 std::optional<std::string> CedarGraphStorage::GetString(uint64_t entity_id, uint16_t col_id) {
@@ -895,26 +828,8 @@ std::optional<std::string> CedarGraphStorage::GetString(uint64_t entity_id, uint
     return std::nullopt;
   }
   
-  // Use auto blob storage if available
-  if (rep_->auto_blob) {
-    return rep_->auto_blob->GetString(entity_id, col_id);
-  }
-  
-  // Fallback to inline storage only
-  auto versions = rep_->engine->GetAll(entity_id, EntityType::Vertex, col_id);
-  if (versions.empty()) {
-    return std::nullopt;
-  }
-  
-  auto val = versions[0].descriptor.AsInlineInt();
-  if (!val) {
-    return std::nullopt;
-  }
-  
-  char buf[5] = {};
-  uint32_t payload = static_cast<uint32_t>(*val);
-  memcpy(buf, &payload, 4);
-  return std::string(buf);
+  // Delegate to LsmEngine (which handles blob storage if enabled)
+  return rep_->engine->GetString(entity_id, col_id);
 }
 
 Status CedarGraphStorage::PutBinary(uint64_t entity_id, uint16_t col_id,
@@ -924,18 +839,8 @@ Status CedarGraphStorage::PutBinary(uint64_t entity_id, uint16_t col_id,
   
   std::string str(static_cast<const char*>(data), size);
   
-  // Use auto blob storage if available
-  if (rep_->auto_blob) {
-    return rep_->auto_blob->PutString(entity_id, col_id, str);
-  }
-  
-  // Fallback to inline storage only
-  uint32_t encoded = 0;
-  memcpy(&encoded, str.data(), std::min(str.size(), size_t(4)));
-  
-  CedarKey key = CedarKey::Vertex(entity_id, col_id, Timestamp(0));
-  Descriptor desc = Descriptor::InlineInt(col_id, static_cast<int32_t>(encoded));
-  return rep_->engine->Put(key, desc, txn_version);
+  // Delegate to LsmEngine (which handles blob storage if enabled)
+  return rep_->engine->PutString(entity_id, col_id, str);
 }
 
 std::vector<uint8_t> CedarGraphStorage::GetBinary(uint64_t entity_id, uint16_t col_id) {
@@ -1233,25 +1138,37 @@ std::vector<CedarGraphStorage::VertexSnapshot> CedarGraphStorage::BatchGetVertex
     return results;
   }
   
+  // Build static column_id -> prop_id mapping for parallel query result decoding
+  std::vector<uint16_t> static_col_ids;
+  static_col_ids.reserve(static_prop_ids.size());
+  for (uint16_t prop_id : static_prop_ids) {
+    static_col_ids.push_back(prop_id | key_flags::kIsStaticColumn);
+  }
+  
   for (uint64_t vid : vertex_ids) {
     VertexSnapshot snapshot;
     snapshot.vertex_id = vid;
     snapshot.query_time = timestamp;
     
-    // 查询静态属性
-    for (uint16_t prop_id : static_prop_ids) {
-      uint16_t static_col_id = prop_id | key_flags::kIsStaticColumn;
-      auto result = rep_->engine->GetAtTime(vid, EntityType::Vertex, static_col_id, Timestamp::Static());
-      if (result.has_value()) {
-        snapshot.static_props[prop_id] = *result;
+    // 查询静态属性（并行化）
+    if (!static_col_ids.empty()) {
+      auto static_results = rep_->engine->QueryColumnsParallel(
+          vid, static_col_ids, EntityType::Vertex, Timestamp::Static());
+      for (size_t i = 0; i < static_results.size(); ++i) {
+        if (static_results[i].value.has_value()) {
+          snapshot.static_props[static_prop_ids[i]] = *static_results[i].value;
+        }
       }
     }
     
-    // 查询动态属性
-    for (uint16_t prop_id : dynamic_prop_ids) {
-      auto result = rep_->engine->GetAtTime(vid, EntityType::Vertex, prop_id, timestamp);
-      if (result.has_value()) {
-        snapshot.dynamic_props[prop_id] = *result;
+    // 查询动态属性（并行化）
+    if (!dynamic_prop_ids.empty()) {
+      auto dynamic_results = rep_->engine->QueryColumnsParallel(
+          vid, dynamic_prop_ids, EntityType::Vertex, timestamp);
+      for (size_t i = 0; i < dynamic_results.size(); ++i) {
+        if (dynamic_results[i].value.has_value()) {
+          snapshot.dynamic_props[dynamic_prop_ids[i]] = *dynamic_results[i].value;
+        }
       }
     }
     
@@ -1539,10 +1456,8 @@ OCCTransaction* CedarGraphStorage::BeginTransaction(
 
 Status CedarGraphStorage::BatchWrite(const std::vector<BatchWriteItem>& items, 
                                      size_t batch_size) {
-  std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
-  
   // ============================================================================
-  // Distributed Mode (NEW)
+  // Distributed Mode (NEW) - RPC should not hold local lock
   // ============================================================================
   if (rep_->is_distributed) {
     if (!rep_->dtx_client || !rep_->is_connected) {
@@ -1586,6 +1501,8 @@ Status CedarGraphStorage::BatchWrite(const std::vector<BatchWriteItem>& items,
     // Use TxnID(0) for non-transactional batch
     return rep_->dtx_client->BatchPut(dtx_items, Timestamp(0));
   }
+  
+  std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
   
   // ============================================================================
   // Single-Node Mode (Original)
@@ -1723,20 +1640,20 @@ Status CedarGraphStorage::ParallelBatchWrite(const std::vector<BatchWriteItem>& 
   Status error_status;
   std::mutex error_mutex;
   
-  std::vector<std::future<void>> futures;
+  std::vector<std::thread> threads;
   
   for (size_t chunk = 0; chunk < num_chunks && !has_error.load(); ++chunk) {
     size_t start = chunk * chunk_size;
     size_t end = std::min(start + chunk_size, total);
     
-    futures.push_back(std::async(std::launch::async, [&, start, end]() {
+    threads.emplace_back([&, start, end]() {
       if (has_error.load()) return;
       
       // 每个线程处理一个 chunk
       auto* txn = BeginTransaction();
       if (!txn) {
         std::lock_guard<std::mutex> lock(error_mutex);
-        error_status = Status::InvalidArgument("ParallelBatchWrite", 
+        error_status = Status::InvalidArgument("ParallelBatchWrite",
                                                "failed to begin transaction");
         has_error.store(true);
         return;
@@ -1769,14 +1686,14 @@ Status CedarGraphStorage::ParallelBatchWrite(const std::vector<BatchWriteItem>& 
       }
       
       completed_chunks.fetch_add(1);
-    }));
+    });
     
     // 限制并发数
-    if (futures.size() >= num_threads) {
-      for (auto& f : futures) {
-        f.wait();
+    if (threads.size() >= num_threads) {
+      for (auto& t : threads) {
+        if (t.joinable()) t.join();
       }
-      futures.clear();
+      threads.clear();
     }
     
     if (has_error.load()) {
@@ -1785,8 +1702,8 @@ Status CedarGraphStorage::ParallelBatchWrite(const std::vector<BatchWriteItem>& 
   }
   
   // 等待剩余任务
-  for (auto& f : futures) {
-    f.wait();
+  for (auto& t : threads) {
+    if (t.joinable()) t.join();
   }
   
   if (has_error.load()) {
@@ -1837,140 +1754,6 @@ Status CedarGraphStorage::EnableHealthMonitoring(
   
   rep_->health_monitoring_enabled_ = true;
   return Status::OK();
-}
-
-StatusOr<std::string> CedarGraphStorage::GetNodeForRead() {
-  std::lock_guard<std::shared_mutex> lock(rep_->mutex_);
-  
-  if (!rep_->partition_router_) {
-    return Status::InvalidArgument("CedarGraphStorage::GetNodeForRead",
-        "PartitionRouter not initialized");
-  }
-  
-  auto result = rep_->partition_router_->GetNodeForRead();
-  if (!result.ok()) {
-    return result.status();
-  }
-  
-  return result.ValueOrDie().node_id;
-}
-
-StatusOr<std::string> CedarGraphStorage::GetNodeForWrite() {
-  std::lock_guard<std::shared_mutex> lock(rep_->mutex_);
-  
-  if (!rep_->partition_router_) {
-    return Status::InvalidArgument("CedarGraphStorage::GetNodeForWrite",
-        "PartitionRouter not initialized");
-  }
-  
-  auto result = rep_->partition_router_->GetNodeForWrite();
-  if (!result.ok()) {
-    return result.status();
-  }
-  
-  return result.ValueOrDie().node_id;
-}
-
-CedarGraphStorage::ClusterHealthSummary 
-CedarGraphStorage::GetClusterHealth() const {
-  std::lock_guard<std::shared_mutex> lock(rep_->mutex_);
-  
-  ClusterHealthSummary summary;
-  
-  if (!rep_->partition_router_) {
-    return summary;
-  }
-  
-  auto stats = rep_->partition_router_->GetStats();
-  summary.total_partitions = stats.total_partitions;
-  summary.healthy_partitions = stats.healthy_partitions;
-  summary.active_partitions = stats.active_partitions;
-  summary.total_nodes = stats.total_nodes;
-  summary.healthy_nodes = stats.healthy_nodes;
-  
-  return summary;
-}
-
-// =============================================================================
-// Partition Router API Implementation
-// =============================================================================
-
-Status CedarGraphStorage::InitializePartitionRouter(
-    const raft::PartitionRouterConfig& config) {
-  std::lock_guard<std::shared_mutex> lock(rep_->mutex_);
-  
-  if (rep_->partition_router_) {
-    return Status::InvalidArgument("Partition router already initialized");
-  }
-  
-  rep_->partition_router_ = std::make_unique<raft::PartitionRouter>();
-  
-  Status s = rep_->partition_router_->Initialize(config, rep_->health_monitor_);
-  if (!s.ok()) {
-    rep_->partition_router_.reset();
-    return s;
-  }
-  
-  s = rep_->partition_router_->Start();
-  if (!s.ok()) {
-    rep_->partition_router_.reset();
-    return s;
-  }
-  
-  return Status::OK();
-}
-
-Status CedarGraphStorage::RegisterPartitionNode(const std::string& node_id,
-                                                const std::string& address,
-                                                uint16_t port,
-                                                const std::string& dc_id) {
-  std::lock_guard<std::shared_mutex> lock(rep_->mutex_);
-  
-  if (!rep_->partition_router_) {
-    return Status::InvalidArgument("Partition router not initialized");
-  }
-  
-  return rep_->partition_router_->RegisterNode(node_id, address, port, dc_id);
-}
-
-Status CedarGraphStorage::CreatePartition(uint16_t partition_id,
-                                          const std::vector<std::string>& replica_nodes) {
-  std::lock_guard<std::shared_mutex> lock(rep_->mutex_);
-  
-  if (!rep_->partition_router_) {
-    return Status::InvalidArgument("Partition router not initialized");
-  }
-  
-  return rep_->partition_router_->CreatePartition(partition_id, replica_nodes);
-}
-
-Status CedarGraphStorage::RemovePartition(uint16_t partition_id) {
-  std::lock_guard<std::shared_mutex> lock(rep_->mutex_);
-  
-  if (!rep_->partition_router_) {
-    return Status::InvalidArgument("Partition router not initialized");
-  }
-  
-  return rep_->partition_router_->RemovePartition(partition_id);
-}
-
-CedarGraphStorage::PartitionStats CedarGraphStorage::GetPartitionStats() const {
-  std::lock_guard<std::shared_mutex> lock(rep_->mutex_);
-  
-  PartitionStats stats;
-  
-  if (!rep_->partition_router_) {
-    return stats;
-  }
-  
-  auto router_stats = rep_->partition_router_->GetStats();
-  stats.total_partitions = router_stats.total_partitions;
-  stats.healthy_partitions = router_stats.healthy_partitions;
-  stats.active_partitions = router_stats.active_partitions;
-  stats.total_nodes = router_stats.total_nodes;
-  stats.healthy_nodes = router_stats.healthy_nodes;
-  
-  return stats;
 }
 
 }  // namespace cedar

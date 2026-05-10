@@ -213,14 +213,14 @@ class ProduceResults : public PhysicalOperator {
  */
 class Sort : public PhysicalOperator {
  public:
-  Sort(std::vector<std::pair<std::string, bool>> sort_items);  // (key, ascending)
+  Sort(std::vector<std::pair<std::shared_ptr<Expression>, bool>> sort_items);
   
   bool Init(ExecutionContext* ctx) override;
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "Sort"; }
   
  private:
-  std::vector<std::pair<std::string, bool>> sort_items_;
+  std::vector<std::pair<std::shared_ptr<Expression>, bool>> sort_items_;
   std::vector<std::shared_ptr<Record>> buffered_records_;
   size_t current_index_ = 0;
   bool sorted_ = false;
@@ -268,17 +268,17 @@ class Skip : public PhysicalOperator {
  */
 class Distinct : public PhysicalOperator {
  public:
-  explicit Distinct(std::vector<std::string> keys);
+  explicit Distinct(std::vector<std::shared_ptr<Expression>> keys);
   
   bool Init(ExecutionContext* ctx) override;
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "Distinct"; }
   
  private:
-  std::vector<std::string> keys_;
-  std::unordered_map<std::string, bool> seen_;
+  std::vector<std::shared_ptr<Expression>> keys_;
+  std::unordered_set<size_t> seen_hashes_;
   
-  std::string ComputeKey(const Record& record);
+  size_t ComputeKeyHash(const Record& record);
 };
 
 /**

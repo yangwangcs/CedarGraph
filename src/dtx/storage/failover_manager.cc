@@ -15,9 +15,85 @@
 #include "cedar/dtx/failover_manager.h"
 
 #include <algorithm>
+#include <csignal>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <thread>
+#include <unistd.h>
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <cstring>
+
+// For Unix domain socket (sd_notify protocol)
+#ifdef __linux__
+#include <sys/socket.h>
+#include <sys/un.h>
+#endif
 
 namespace cedar {
 namespace dtx {
+
+// =============================================================================
+// Container Runtime Detection
+// =============================================================================
+
+ContainerRuntime DetectContainerRuntime() {
+#ifdef __linux__
+  // Check for Kubernetes
+  // K8s mounts service account token at this path
+  std::ifstream k8s_token("/var/run/secrets/kubernetes.io/serviceaccount/token");
+  if (k8s_token.good()) {
+    return ContainerRuntime::kKubernetes;
+  }
+  
+  // Check for systemd
+  const char* notify_socket = std::getenv("NOTIFY_SOCKET");
+  if (notify_socket != nullptr && notify_socket[0] != '\0') {
+    return ContainerRuntime::kSystemd;
+  }
+  
+  // Check for Docker (/.dockerenv or cgroup contains "docker")
+  std::ifstream docker_env("/.dockerenv");
+  if (docker_env.good()) {
+    return ContainerRuntime::kDocker;
+  }
+  
+  // Check cgroup for "docker" or "kubepods"
+  std::ifstream cgroup("/proc/self/cgroup");
+  if (cgroup.good()) {
+    std::string line;
+    while (std::getline(cgroup, line)) {
+      if (line.find("docker") != std::string::npos) {
+        return ContainerRuntime::kDocker;
+      }
+      if (line.find("kubepods") != std::string::npos) {
+        return ContainerRuntime::kKubernetes;
+      }
+    }
+  }
+  
+  return ContainerRuntime::kBareMetal;
+#else
+  // macOS and other platforms: default to bare metal
+  return ContainerRuntime::kBareMetal;
+#endif
+}
+
+std::string ContainerRuntimeToString(ContainerRuntime runtime) {
+  switch (runtime) {
+    case ContainerRuntime::kBareMetal: return "BareMetal";
+    case ContainerRuntime::kKubernetes: return "Kubernetes";
+    case ContainerRuntime::kSystemd: return "Systemd";
+    case ContainerRuntime::kDocker: return "Docker";
+    case ContainerRuntime::kUnknown: return "Unknown";
+  }
+  return "Unknown";
+}
 
 // =============================================================================
 // PartitionFailoverController Implementation
@@ -39,16 +115,42 @@ Status PartitionFailoverController::Initialize(const Config& config) {
   return Status::OK();
 }
 
-void PartitionFailoverController::Shutdown() {
+void PartitionFailoverController::Shutdown() noexcept {
   if (!running_.exchange(false)) {
     return;
   }
   
-  if (lease_thread_.joinable()) {
-    lease_thread_.join();
+  try {
+    if (lease_thread_.joinable()) {
+      lease_thread_.join();
+    }
+  } catch (...) {
+    std::cerr << "[FailoverManager] Lease thread join exception" << std::endl;
   }
-  if (health_thread_.joinable()) {
-    health_thread_.join();
+  
+  try {
+    if (health_thread_.joinable()) {
+      health_thread_.join();
+    }
+  } catch (...) {
+    std::cerr << "[FailoverManager] Health thread join exception" << std::endl;
+  }
+  
+  // Join all failover threads to prevent UAF
+  std::vector<std::thread> threads_to_join;
+  {
+    std::lock_guard<std::mutex> lock(thread_mutex_);
+    threads_to_join = std::move(failover_threads_);
+    failover_threads_.clear();
+  }
+  for (auto& t : threads_to_join) {
+    if (t.joinable()) {
+      try {
+        t.join();
+      } catch (...) {
+        std::cerr << "[FailoverManager] Failover thread join exception" << std::endl;
+      }
+    }
   }
 }
 
@@ -67,6 +169,12 @@ Status PartitionFailoverController::RegisterPartition(
   return Status::OK();
 }
 
+void PartitionFailoverController::RegisterNodeAddress(NodeID node_id, 
+                                                       const std::string& address) {
+    std::lock_guard<std::mutex> lock(node_addresses_mutex_);
+    node_addresses_[node_id] = address;
+}
+
 Status PartitionFailoverController::UnregisterPartition(PartitionID pid) {
   std::lock_guard<std::mutex> lock(partitions_mutex_);
   partitions_.erase(pid);
@@ -74,21 +182,32 @@ Status PartitionFailoverController::UnregisterPartition(PartitionID pid) {
 }
 
 Status PartitionFailoverController::ReportNodeFailure(NodeID node_id) {
-  std::lock_guard<std::mutex> lock(partitions_mutex_);
+  if (!running_.load()) return Status::IOError("Failover controller is shutting down");
   
-  // 检查该节点是否是某个分区的 Leader
-  for (auto& partition : partitions_) {
-    PartitionID pid = partition.first;
-    auto& state = partition.second;
-    if (state.current_leader == node_id) {
-      if (!state.is_failover_in_progress) {
-        state.is_failover_in_progress = true;
-        
-        // 异步执行故障转移
-        std::thread([this, pid]() {
-          ExecuteFailover(pid);
-        }).detach();
+  std::vector<PartitionID> pending_failovers;
+  {
+    std::lock_guard<std::mutex> lock(partitions_mutex_);
+    
+    // 检查该节点是否是某个分区的 Leader
+    for (auto& partition : partitions_) {
+      PartitionID pid = partition.first;
+      auto& state = partition.second;
+      if (state.current_leader == node_id) {
+        if (!state.is_failover_in_progress) {
+          state.is_failover_in_progress = true;
+          pending_failovers.push_back(pid);
+        }
       }
+    }
+  }
+  
+  // 在锁外创建线程，避免死锁（线程内部也会获取 partitions_mutex_）
+  {
+    std::lock_guard<std::mutex> lock(thread_mutex_);
+    for (PartitionID pid : pending_failovers) {
+      failover_threads_.emplace_back([this, pid]() {
+        ExecuteFailover(pid);
+      });
     }
   }
   
@@ -96,19 +215,28 @@ Status PartitionFailoverController::ReportNodeFailure(NodeID node_id) {
 }
 
 Status PartitionFailoverController::ReportLeaderFailure(PartitionID pid) {
-  std::lock_guard<std::mutex> lock(partitions_mutex_);
+  if (!running_.load()) return Status::IOError("Failover controller is shutting down");
   
-  auto it = partitions_.find(pid);
-  if (it == partitions_.end()) {
-    return Status::NotFound("Partition not found");
+  bool should_failover = false;
+  {
+    std::lock_guard<std::mutex> lock(partitions_mutex_);
+    
+    auto it = partitions_.find(pid);
+    if (it == partitions_.end()) {
+      return Status::NotFound("Partition not found");
+    }
+    
+    if (!it->second.is_failover_in_progress) {
+      it->second.is_failover_in_progress = true;
+      should_failover = true;
+    }
   }
   
-  if (!it->second.is_failover_in_progress) {
-    it->second.is_failover_in_progress = true;
-    
-    std::thread([this, pid]() {
+  if (should_failover) {
+    std::lock_guard<std::mutex> lock(thread_mutex_);
+    failover_threads_.emplace_back([this, pid]() {
       ExecuteFailover(pid);
-    }).detach();
+    });
   }
   
   return Status::OK();
@@ -178,9 +306,17 @@ void PartitionFailoverController::ExecuteFailover(PartitionID pid) {
   
   // 通知回调
   if (status.ok()) {
-    std::lock_guard<std::mutex> lock(callbacks_mutex_);
-    for (auto& callback : callbacks_) {
-      callback(pid, old_leader, new_leader);
+    std::vector<FailoverCallback> callbacks_copy;
+    {
+      std::lock_guard<std::mutex> lock(callbacks_mutex_);
+      callbacks_copy = callbacks_;
+    }
+    for (auto& callback : callbacks_copy) {
+      try {
+        callback(pid, old_leader, new_leader);
+      } catch (...) {
+        std::cerr << "[FailoverManager] Failover callback exception" << std::endl;
+      }
     }
   }
 }
@@ -196,8 +332,7 @@ Status PartitionFailoverController::SelectNewLeader(PartitionID pid,
   
   // 从副本中选择新的 Leader（选择 ID 最小的健康副本）
   for (NodeID replica : it->second.replicas) {
-    if (replica != it->second.current_leader) {
-      // TODO: 检查副本健康状态
+    if (replica != it->second.current_leader && CheckReplicaHealth(replica)) {
       *new_leader = replica;
       return Status::OK();
     }
@@ -206,8 +341,94 @@ Status PartitionFailoverController::SelectNewLeader(PartitionID pid,
   return Status::IOError("No healthy replica available");
 }
 
+bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
+    std::string address;
+    {
+        std::lock_guard<std::mutex> lock(node_addresses_mutex_);
+        auto it = node_addresses_.find(node_id);
+        if (it == node_addresses_.end()) {
+            // No address known — we cannot probe, so conservatively mark unhealthy
+            // to force the operator to register addresses.
+            std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+            replica_health_[node_id] = false;
+            return false;
+        }
+        address = it->second;
+    }
+
+    // Parse host:port
+    size_t colon = address.rfind(':');
+    if (colon == std::string::npos) {
+        std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+        replica_health_[node_id] = false;
+        return false;
+    }
+
+    std::string host = address.substr(0, colon);
+    int port = std::stoi(address.substr(colon + 1));
+
+    // TCP connect probe with 500ms timeout
+    bool healthy = false;
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock >= 0) {
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<uint16_t>(port));
+        inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
+
+        // Set non-blocking for timeout control
+        int flags = fcntl(sock, F_GETFL, 0);
+        fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+
+        int rc = connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+        if (rc == 0) {
+            healthy = true;  // Immediate connect
+        } else if (errno == EINPROGRESS) {
+            fd_set fdset;
+            FD_ZERO(&fdset);
+            FD_SET(sock, &fdset);
+            struct timeval tv;
+            tv.tv_sec = 0;
+            tv.tv_usec = 500000;  // 500ms
+            rc = select(sock + 1, nullptr, &fdset, nullptr, &tv);
+            if (rc > 0) {
+                int so_error;
+                socklen_t len = sizeof(so_error);
+                getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &len);
+                healthy = (so_error == 0);
+            }
+        }
+        close(sock);
+    }
+
+    {
+        std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+        replica_health_[node_id] = healthy;
+    }
+
+    if (!healthy) {
+        std::cerr << "[Failover] Health check FAILED for node " << node_id
+                  << " at " << address << std::endl;
+    }
+
+    return healthy;
+}
+
+bool PartitionFailoverController::CheckReplicaHealth(NodeID node_id) {
+    std::unique_lock<std::mutex> lock(replica_health_mutex_);
+    auto it = replica_health_.find(node_id);
+    if (it != replica_health_.end()) {
+        return it->second;
+    }
+    // No health record — trigger active probe instead of blindly trusting
+    lock.unlock();  // release before calling to avoid deadlock
+    return PerformActiveHealthCheck(node_id);
+}
+
 void PartitionFailoverController::SetRouteUpdateCallback(
     RouteUpdateCallback callback) {
+  std::lock_guard<std::mutex> lock(route_mutex_);
   route_update_callback_ = std::move(callback);
 }
 
@@ -241,8 +462,13 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
 
 Status PartitionFailoverController::UpdatePartitionRoute(PartitionID pid,
                                                           NodeID new_leader) {
-  if (route_update_callback_) {
-    route_update_callback_(pid, new_leader);
+  RouteUpdateCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(route_mutex_);
+    callback = route_update_callback_;
+  }
+  if (callback) {
+    callback(pid, new_leader);
   }
   return Status::OK();
 }
@@ -253,8 +479,17 @@ void PartitionFailoverController::LeaseRenewalLoop() {
     
     if (!running_.load()) break;
     
-    // Leader 续约逻辑
-    // TODO: 实现租约续期
+    try {
+      std::lock_guard<std::mutex> lock(partitions_mutex_);
+      auto now = std::chrono::steady_clock::now();
+      for (auto& [pid, state] : partitions_) {
+        if (state.current_leader == config_.local_node_id) {
+          lease_expiry_[pid] = now + config_.leader_lease_duration;
+        }
+      }
+    } catch (...) {
+      std::cerr << "[FailoverManager] Lease renewal exception" << std::endl;
+    }
   }
 }
 
@@ -264,8 +499,58 @@ void PartitionFailoverController::HealthCheckLoop() {
     
     if (!running_.load()) break;
     
-    // 健康检查逻辑
-    // TODO: 定期检查 Leader 健康状态
+    try {
+      // --- Existing leader lease expiry check ---
+      auto now = std::chrono::steady_clock::now();
+      std::vector<PartitionID> expired_leaders;
+      
+      {
+        std::lock_guard<std::mutex> lock(partitions_mutex_);
+        for (const auto& [pid, state] : partitions_) {
+          auto lease_it = lease_expiry_.find(pid);
+          if (lease_it != lease_expiry_.end()) {
+            if (lease_it->second < now) {
+              // Lease expired
+              if (!state.is_failover_in_progress) {
+                expired_leaders.push_back(pid);
+              }
+            } else if (lease_it->second - now < std::chrono::seconds(2)) {
+              // Lease expiring soon - log warning
+              std::cerr << "[Failover] Leader lease for partition " << pid
+                        << " expiring soon" << std::endl;
+            }
+          }
+        }
+      }
+      
+      for (PartitionID pid : expired_leaders) {
+        std::cerr << "[Failover] Leader lease expired for partition " << pid
+                  << ", triggering failover" << std::endl;
+        ReportLeaderFailure(pid);
+      }
+      
+      // --- NEW: Active replica health probing ---
+      std::vector<NodeID> replicas_to_probe;
+      {
+        std::lock_guard<std::mutex> lock(partitions_mutex_);
+        for (const auto& [pid, state] : partitions_) {
+          for (NodeID replica : state.replicas) {
+            replicas_to_probe.push_back(replica);
+          }
+        }
+      }
+      // Deduplicate
+      std::sort(replicas_to_probe.begin(), replicas_to_probe.end());
+      replicas_to_probe.erase(
+          std::unique(replicas_to_probe.begin(), replicas_to_probe.end()),
+          replicas_to_probe.end());
+
+      for (NodeID node_id : replicas_to_probe) {
+        PerformActiveHealthCheck(node_id);
+      }
+    } catch (...) {
+      std::cerr << "[FailoverManager] Health check exception" << std::endl;
+    }
   }
 }
 
@@ -289,16 +574,25 @@ Status ClusterFailoverManager::Initialize(const Config& config) {
   return Status::OK();
 }
 
-void ClusterFailoverManager::Shutdown() {
+void ClusterFailoverManager::Shutdown() noexcept {
   if (!running_.exchange(false)) {
     return;
   }
   
-  if (detection_thread_.joinable()) {
-    detection_thread_.join();
+  try {
+    if (detection_thread_.joinable()) {
+      detection_thread_.join();
+    }
+  } catch (...) {
+    std::cerr << "[FailoverManager] Detection thread join exception" << std::endl;
   }
-  if (recovery_thread_.joinable()) {
-    recovery_thread_.join();
+  
+  try {
+    if (recovery_thread_.joinable()) {
+      recovery_thread_.join();
+    }
+  } catch (...) {
+    std::cerr << "[FailoverManager] Recovery thread join exception" << std::endl;
   }
 }
 
@@ -332,19 +626,24 @@ Status ClusterFailoverManager::ReportFailure(const FailureEvent& event) {
 }
 
 Status ClusterFailoverManager::TriggerRecovery(uint64_t event_id) {
-  std::lock_guard<std::mutex> lock(failures_mutex_);
-  
-  auto it = failures_.find(event_id);
-  if (it == failures_.end()) {
-    return Status::NotFound("Failure event not found");
+  FailureEvent event;
+  {
+    std::lock_guard<std::mutex> lock(failures_mutex_);
+    
+    auto it = failures_.find(event_id);
+    if (it == failures_.end()) {
+      return Status::NotFound("Failure event not found");
+    }
+    
+    if (it->second.is_recovered) {
+      return Status::InvalidArgument("Failure already recovered");
+    }
+    
+    event = it->second;
   }
   
-  if (it->second.is_recovered) {
-    return Status::InvalidArgument("Failure already recovered");
-  }
-  
-  // 执行恢复
-  return ExecuteRecovery(it->second);
+  // 在锁外执行恢复，避免 handler 回调内部再次获取 failures_mutex_ 导致死锁
+  return ExecuteRecovery(event);
 }
 
 std::vector<FailureEvent> ClusterFailoverManager::GetFailureHistory(
@@ -411,18 +710,22 @@ void ClusterFailoverManager::DetectionLoop() {
     
     if (!running_.load()) break;
     
-    // 运行所有注册的故障检测器
-    std::vector<std::function<std::vector<FailureEvent>()>> detectors;
-    {
-      std::lock_guard<std::mutex> lock(detectors_mutex_);
-      detectors = detectors_;
-    }
-    
-    for (auto& detector : detectors) {
-      auto events = detector();
-      for (auto& event : events) {
-        ReportFailure(event);
+    try {
+      // 运行所有注册的故障检测器
+      std::vector<std::function<std::vector<FailureEvent>()>> detectors;
+      {
+        std::lock_guard<std::mutex> lock(detectors_mutex_);
+        detectors = detectors_;
       }
+      
+      for (auto& detector : detectors) {
+        auto events = detector();
+        for (auto& event : events) {
+          ReportFailure(event);
+        }
+      }
+    } catch (...) {
+      std::cerr << "[FailoverManager] Detection loop exception" << std::endl;
     }
   }
 }
@@ -433,49 +736,172 @@ void ClusterFailoverManager::RecoveryLoop() {
     
     if (!running_.load()) break;
     
-    // 处理活跃故障
-    std::vector<uint64_t> active;
-    {
-      std::lock_guard<std::mutex> lock(failures_mutex_);
-      active = active_failures_;
-    }
-    
-    for (uint64_t event_id : active) {
-      FailureEvent event;
+    try {
+      // 处理活跃故障
+      std::vector<uint64_t> active;
       {
         std::lock_guard<std::mutex> lock(failures_mutex_);
-        auto it = failures_.find(event_id);
-        if (it == failures_.end() || it->second.is_recovered) {
-          continue;
-        }
-        event = it->second;
+        active = active_failures_;
       }
       
-      // 检查是否处于维护模式
-      if (IsInMaintenanceMode(event.node_id)) {
-        continue;
-      }
-      
-      // 检查是否应该尝试恢复
-      if (ShouldAttemptRecovery(event)) {
-        auto status = ExecuteRecovery(event);
-        
-        if (status.ok()) {
-          MarkRecovered(event_id);
-          
-          std::lock_guard<std::mutex> lock(stats_mutex_);
-          stats_.recovered_failures++;
-          stats_.auto_recoveries++;
-        } else {
-          // 增加重试计数
+      for (uint64_t event_id : active) {
+        FailureEvent event;
+        {
           std::lock_guard<std::mutex> lock(failures_mutex_);
           auto it = failures_.find(event_id);
-          if (it != failures_.end()) {
-            it->second.retry_count++;
+          if (it == failures_.end() || it->second.is_recovered) {
+            continue;
+          }
+          event = it->second;
+        }
+        
+        // 检查是否处于维护模式
+        if (IsInMaintenanceMode(event.node_id)) {
+          continue;
+        }
+        
+        // 检查是否应该尝试恢复
+        if (ShouldAttemptRecovery(event)) {
+          auto status = ExecuteRecovery(event);
+          
+          if (status.ok()) {
+            MarkRecovered(event_id);
+            
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.recovered_failures++;
+            stats_.auto_recoveries++;
+          } else {
+            // 增加重试计数
+            std::lock_guard<std::mutex> lock(failures_mutex_);
+            auto it = failures_.find(event_id);
+            if (it != failures_.end()) {
+              it->second.retry_count++;
+            }
           }
         }
       }
+    } catch (...) {
+      std::cerr << "[FailoverManager] Recovery loop exception" << std::endl;
     }
+  }
+}
+
+ContainerRuntime ClusterFailoverManager::DetectedRuntime() const {
+  std::call_once(detect_runtime_once_, [this]() {
+    detected_runtime_.store(DetectContainerRuntime());
+    std::cerr << "[ClusterFailover] Detected runtime: "
+              << ContainerRuntimeToString(detected_runtime_.load()) << std::endl;
+  });
+  return detected_runtime_.load();
+}
+
+Status ClusterFailoverManager::RestartViaKubernetes(const FailureEvent& event) {
+  std::cerr << "[ClusterFailover] K8s restart: sending SIGTERM to self (PID "
+            << getpid() << ") for graceful pod restart. Node=" << event.node_id << std::endl;
+  
+  // 发送 SIGTERM 给自身进程，让 K8s 重新调度 pod
+  // K8s 的 preStop hook 和 grace period 会处理优雅退出
+  int rc = std::raise(SIGTERM);
+  if (rc != 0) {
+    std::cerr << "[ClusterFailover] raise(SIGTERM) failed, trying SIGKILL" << std::endl;
+    rc = std::raise(SIGKILL);
+    if (rc != 0) {
+      return Status::IOError("Failed to send termination signal to self");
+    }
+  }
+  
+  // 如果 raise 没有立即终止进程（某些信号处理程序可能捕获了 SIGTERM）
+  // 等待一小段时间让 K8s 处理终止
+  std::this_thread::sleep_for(std::chrono::seconds(5));
+  return Status::OK();
+}
+
+Status ClusterFailoverManager::RestartViaSystemd(const FailureEvent& event) {
+#ifdef __linux__
+  const char* notify_socket = std::getenv("NOTIFY_SOCKET");
+  if (!notify_socket || notify_socket[0] == '\0') {
+    return RestartViaSignal(event);
+  }
+  
+  std::cerr << "[ClusterFailover] systemd restart via NOTIFY_SOCKET="
+            << notify_socket << ", node=" << event.node_id << std::endl;
+  
+  // 实现 sd_notify 协议：向 NOTIFY_SOCKET 发送 WATCHDOG=trigger
+  // 这会触发 systemd 的重启策略（Restart=on-failure/on-abnormal 等）
+  int fd = ::socket(AF_UNIX, SOCK_DGRAM, 0);
+  if (fd < 0) {
+    return RestartViaSignal(event);
+  }
+  
+  struct sockaddr_un addr;
+  std::memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  
+  // NOTIFY_SOCKET may be absolute path (@ for abstract namespace on Linux)
+  if (notify_socket[0] == '@') {
+    // Abstract namespace socket
+    addr.sun_path[0] = '\0';
+    std::strncpy(addr.sun_path + 1, notify_socket + 1, sizeof(addr.sun_path) - 2);
+  } else {
+    std::strncpy(addr.sun_path, notify_socket, sizeof(addr.sun_path) - 1);
+  }
+  
+  if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
+    ::close(fd);
+    return RestartViaSignal(event);
+  }
+  
+  // 发送 WATCHDOG=trigger 让 systemd 认为服务不健康并触发重启
+  const char* msg = "WATCHDOG=trigger\n";
+  ssize_t sent = ::send(fd, msg, std::strlen(msg), MSG_NOSIGNAL);
+  ::close(fd);
+  
+  if (sent < 0) {
+    return RestartViaSignal(event);
+  }
+  
+  std::cerr << "[ClusterFailover] systemd WATCHDOG=trigger sent successfully" << std::endl;
+  
+  // 同时发送 SIGTERM 以加速重启
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  return RestartViaSignal(event);
+#else
+  return RestartViaSignal(event);
+#endif
+}
+
+Status ClusterFailoverManager::RestartViaSignal(const FailureEvent& event) {
+  std::cerr << "[ClusterFailover] Sending SIGTERM to self (PID " << getpid()
+            << ") for service restart. Node=" << event.node_id << std::endl;
+  
+  int rc = std::raise(SIGTERM);
+  if (rc != 0) {
+    return Status::IOError("Failed to raise SIGTERM");
+  }
+  
+  std::this_thread::sleep_for(std::chrono::seconds(3));
+  return Status::OK();
+}
+
+Status ClusterFailoverManager::ExecuteContainerizedRecovery(
+    const FailureEvent& event, ContainerRuntime runtime) {
+  switch (runtime) {
+    case ContainerRuntime::kKubernetes:
+      return RestartViaKubernetes(event);
+    case ContainerRuntime::kSystemd:
+      return RestartViaSystemd(event);
+    case ContainerRuntime::kDocker:
+      // Docker 环境下也发送 SIGTERM，让容器重启策略处理
+      return RestartViaSignal(event);
+    case ContainerRuntime::kBareMetal:
+    case ContainerRuntime::kUnknown:
+    default:
+      std::cerr << "[ClusterFailover] Service restart on bare metal: "
+                << "node=" << event.node_id
+                << ". Consider configuring systemd or K8s for automatic restart."
+                << std::endl;
+      // 裸机环境：发送 SIGTERM 后返回 OK，依赖外部进程管理器（如 systemd）重启
+      return RestartViaSignal(event);
   }
 }
 
@@ -499,15 +925,22 @@ Status ClusterFailoverManager::ExecuteRecovery(const FailureEvent& event) {
   
   // 默认恢复逻辑
   switch (action.strategy) {
-    case RecoveryStrategy::kRestartService:
-      // TODO: 重启服务
-      break;
-    case RecoveryStrategy::kSwitchLeader:
-      // TODO: 切换 Leader
-      break;
-    case RecoveryStrategy::kPromoteReplica:
-      // TODO: 提升副本
-      break;
+    case RecoveryStrategy::kRestartService: {
+      auto runtime = DetectedRuntime();
+      std::cerr << "[ClusterFailover] Service restart for node " << event.node_id
+                << " in " << ContainerRuntimeToString(runtime) << " environment" << std::endl;
+      return ExecuteContainerizedRecovery(event, runtime);
+    }
+    case RecoveryStrategy::kSwitchLeader: {
+      std::cerr << "[ClusterFailoverManager] Leader switch requested for partition "
+                << event.partition_id << " to node " << event.node_id << std::endl;
+      return Status::IOError("No recovery handler registered for leader switch");
+    }
+    case RecoveryStrategy::kPromoteReplica: {
+      std::cerr << "[ClusterFailoverManager] Replica promotion requested for partition "
+                << event.partition_id << " on node " << event.node_id << std::endl;
+      return Status::IOError("No recovery handler registered for replica promotion");
+    }
     case RecoveryStrategy::kManualIntervention:
       return Status::IOError("Requires manual intervention");
     default:

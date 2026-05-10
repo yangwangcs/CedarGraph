@@ -141,6 +141,7 @@ message PrepareRequest {
     repeated CedarKey read_set = 2;
     repeated CedarKey write_set = 3;
     uint64 commit_ts = 4;
+    map<uint64, Descriptor> write_descriptors = 5;  // key hash -> descriptor
 }
 
 message PrepareResponse {
@@ -168,6 +169,24 @@ message AbortRequest {
 message AbortResponse {
     bool success = 1;
     string error_msg = 2;
+}
+
+// Inquire 阶段（协调者恢复时查询 participant 状态）
+message InquireRequest {
+    uint64 txn_id = 1;
+}
+
+message InquireResponse {
+    uint64 txn_id = 1;
+    enum TxnState {
+        UNKNOWN = 0;
+        PREPARED = 1;
+        COMMITTED = 2;
+        ABORTED = 3;
+        INCONSISTENT = 4;
+    }
+    TxnState state = 2;
+    string error_msg = 3;
 }
 
 // ============================================================================
@@ -288,6 +307,7 @@ service StorageService {
     rpc Prepare(PrepareRequest) returns (PrepareResponse);
     rpc Commit(CommitRequest) returns (CommitResponse);
     rpc Abort(AbortRequest) returns (AbortResponse);
+    rpc Inquire(InquireRequest) returns (InquireResponse);
     
     // 分区管理
     rpc GetPartitionInfo(GetPartitionInfoRequest) returns (GetPartitionInfoResponse);

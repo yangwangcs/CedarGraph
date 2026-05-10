@@ -29,7 +29,6 @@
 
 #include "cedar/core/status.h"
 #include "cedar/dtx/types.h"
-#include "cedar/dtx/raft/embedded_raft.h"
 #include "cedar/dtx/meta_service.h"
 
 namespace cedar {
@@ -111,64 +110,12 @@ class MetadataStore {
 };
 
 // =============================================================================
-// Raft-aware Metadata Service
+// Metadata Service (Raft-aware wrapper - to be reimplemented with braft)
 // =============================================================================
-
-class RaftMetaService : public raft::StateMachine {
- public:
-  RaftMetaService();
-  ~RaftMetaService() override = default;
-  
-  // Initialize with Raft node
-  void Initialize(raft::EmbeddedRaftNode* raft_node);
-  
-  // StateMachine interface
-  void Apply(const raft::LogEntry& entry) override;
-  raft::Snapshot CreateSnapshot() override;
-  Status RestoreSnapshot(const raft::Snapshot& snapshot) override;
-  raft::LogIndex GetLastAppliedIndex() const override;
-  
-  // High-level API (proposes through Raft)
-  Status CreateSpace(const SpaceDef& space);
-  Status DropSpace(const std::string& space_name);
-  Status RegisterNode(const NodeInfo& info);
-  Status UpdateNodeStatus(const NodeStatus& status);
-  Status UpdatePartitionLeader(const std::string& space_name,
-                                PartitionID partition_id,
-                                NodeID new_leader);
-  
-  // Read-only queries (direct from store)
-  StatusOr<SpaceDef> GetSpace(const std::string& name) const;
-  StatusOr<PartitionAssignment> GetPartitionAssignment(
-      const std::string& space_name, PartitionID pid) const;
-  StatusOr<SpacePartitionMap> GetSpacePartitionMap(
-      const std::string& space_name) const;
-  StatusOr<NodeInfo> GetNode(NodeID node_id) const;
-  std::vector<NodeInfo> GetAliveNodes() const;
-  std::vector<NodeInfo> GetAllNodes() const;
-  
-  // Check if this is leader
-  bool IsLeader() const;
-  NodeID GetLeaderId() const;
-  
-  // Get store reference (for snapshots)
-  const MetadataStore& GetStore() const { return store_; }
-
- private:
-  // Apply specific command types
-  void ApplyCreateSpace(const std::string& data);
-  void ApplyDropSpace(const std::string& data);
-  void ApplyRegisterNode(const std::string& data);
-  void ApplyUpdateNodeStatus(const std::string& data);
-  void ApplyUpdatePartitionLeader(const std::string& data);
-  
-  // Propose command to Raft
-  Status ProposeCommand(const MetaCommand& cmd);
-  
-  raft::EmbeddedRaftNode* raft_node_{nullptr};
-  MetadataStore store_;
-  std::atomic<raft::LogIndex> last_applied_{0};
-};
+// NOTE: The old RaftMetaService has been removed along with the custom raft
+// layer. MetadataStore and MetaCommand are retained for future braft-based
+// reimplementation.
+// =============================================================================
 
 }  // namespace dtx
 }  // namespace cedar

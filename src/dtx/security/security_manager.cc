@@ -173,12 +173,17 @@ StatusOr<AuthToken> Authenticator::ValidateToken(const std::string& token_str) {
     return Status::InvalidArgument("Token expired");
   }
   
-  // Check if revoked
+  // Check if active and not revoked
   {
     std::lock_guard<std::mutex> lock(tokens_mutex_);
+    auto it = active_tokens_.find(token.token_id);
+    if (it == active_tokens_.end()) {
+      return Status::InvalidArgument("Token not active");
+    }
     if (revoked_tokens_.find(token.token_id) != revoked_tokens_.end()) {
       return Status::InvalidArgument("Token revoked");
     }
+    token = it->second;  // 使用存储的完整 token 信息
   }
   
   return token;
@@ -193,10 +198,12 @@ Status Authenticator::RevokeToken(const std::string& token) {
   std::lock_guard<std::mutex> lock(tokens_mutex_);
   
   auto result = ParseJWT(token);
-  if (result.ok()) {
-    revoked_tokens_.insert(result.value().token_id);
-    active_tokens_.erase(result.value().token_id);
+  if (!result.ok()) {
+    return result.status();
   }
+  
+  revoked_tokens_.insert(result.value().token_id);
+  active_tokens_.erase(result.value().token_id);
   
   return Status::OK();
 }
@@ -317,8 +324,76 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
     return Status::InvalidArgument("Invalid JWT format");
   }
   
+  std::string header = jwt.substr(0, first_dot);
+  std::string payload = jwt.substr(first_dot + 1, second_dot - first_dot - 1);
+  std::string signature = jwt.substr(second_dot + 1);
+  
+  // 验证 HMAC-SHA256 签名
+  std::string signature_input = header + "." + payload;
+  unsigned char expected_sig[EVP_MAX_MD_SIZE];
+  unsigned int expected_sig_len;
+  HMAC(EVP_sha256(), config_.jwt_secret.data(), config_.jwt_secret.size(),
+       reinterpret_cast<const unsigned char*>(signature_input.data()),
+       signature_input.size(), expected_sig, &expected_sig_len);
+  
+  std::ostringstream sig_oss;
+  for (unsigned int i = 0; i < expected_sig_len; i++) {
+    sig_oss << std::hex << std::setw(2) << std::setfill('0') << (int)expected_sig[i];
+  }
+  
+  if (sig_oss.str() != signature) {
+    return Status::InvalidArgument("Invalid JWT signature");
+  }
+  
+  // 解析 payload 提取字段
   AuthToken token;
-  token.token_id = jwt;
+  
+  // 提取 jti (token_id)
+  size_t jti_pos = payload.find("\"jti\":\"");
+  if (jti_pos != std::string::npos) {
+    size_t jti_start = jti_pos + 6;
+    size_t jti_end = payload.find("\"", jti_start);
+    if (jti_end != std::string::npos) {
+      token.token_id = payload.substr(jti_start, jti_end - jti_start);
+    }
+  }
+  
+  // 提取 sub (user_id)
+  size_t sub_pos = payload.find("\"sub\":\"");
+  if (sub_pos != std::string::npos) {
+    size_t sub_start = sub_pos + 7;
+    size_t sub_end = payload.find("\"", sub_start);
+    if (sub_end != std::string::npos) {
+      token.user_id = payload.substr(sub_start, sub_end - sub_start);
+    }
+  }
+  
+  // 提取 name (user_name)
+  size_t name_pos = payload.find("\"name\":\"");
+  if (name_pos != std::string::npos) {
+    size_t name_start = name_pos + 8;
+    size_t name_end = payload.find("\"", name_start);
+    if (name_end != std::string::npos) {
+      token.user_name = payload.substr(name_start, name_end - name_start);
+    }
+  }
+  
+  // 提取 exp
+  size_t exp_pos = payload.find("\"exp\":");
+  if (exp_pos == std::string::npos) {
+    exp_pos = payload.find("\"exp\" :");
+  }
+  if (exp_pos != std::string::npos) {
+    size_t exp_start = payload.find_first_of("0123456789", exp_pos + 6);
+    if (exp_start != std::string::npos) {
+      size_t exp_end = payload.find_first_not_of("0123456789", exp_start);
+      try {
+        auto exp_time = std::stoll(payload.substr(exp_start, exp_end - exp_start));
+        token.expires_at = std::chrono::system_clock::from_time_t(exp_time);
+      } catch (...) {}
+    }
+  }
+  
   return token;
 }
 
@@ -502,6 +577,11 @@ void AuditLogger::Log(const AuditEntry& entry) {
   
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
+    // 限制队列大小，防止无界增长导致内存耗尽
+    constexpr size_t kMaxQueueSize = 10000;
+    if (write_queue_.size() >= kMaxQueueSize) {
+      write_queue_.pop();  // 丢弃最旧的条目
+    }
     write_queue_.push(new_entry);
   }
   
@@ -548,8 +628,13 @@ Status AuditLogger::ExportToFile(const std::string& filename,
     
     oss << "{";
     oss << "\"entry_id\":" << entry.entry_id << ",";
-    oss << "\"timestamp\":\"" << std::put_time(std::localtime(&time_t), 
-                                                 "%Y-%m-%dT%H:%M:%S") << "Z\",";
+    struct tm tm_buf;
+    if (localtime_r(&time_t, &tm_buf)) {
+      oss << "\"timestamp\":\"" << std::put_time(&tm_buf, 
+                                                   "%Y-%m-%dT%H:%M:%S") << "Z\",";
+    } else {
+      oss << "\"timestamp\":\"invalid\",";
+    }
     oss << "\"user_id\":\"" << entry.user_id << "\",";
     oss << "\"action\":" << static_cast<int>(entry.action) << ",";
     oss << "\"resource\":\"" << entry.resource << "\",";
@@ -565,52 +650,61 @@ Status AuditLogger::ExportToFile(const std::string& filename,
 
 void AuditLogger::WriteLoop() {
   while (running_.load()) {
-    std::unique_lock<std::mutex> lock(queue_mutex_);
-    queue_cv_.wait_for(lock, std::chrono::seconds(1),
-        [this] { return !write_queue_.empty() || !running_.load(); });
-    
-    std::queue<AuditEntry> to_write;
-    std::swap(to_write, write_queue_);
-    lock.unlock();
-    
-    while (!to_write.empty()) {
-      auto& entry = to_write.front();
+    try {
+      std::unique_lock<std::mutex> lock(queue_mutex_);
+      queue_cv_.wait_for(lock, std::chrono::seconds(1),
+          [this] { return !write_queue_.empty() || !running_.load(); });
       
-      std::ostringstream oss;
-      auto time_t = std::chrono::system_clock::to_time_t(entry.timestamp);
+      std::queue<AuditEntry> to_write;
+      std::swap(to_write, write_queue_);
+      lock.unlock();
       
-      oss << "{";
-      oss << "\"entry_id\":" << entry.entry_id << ",";
-      oss << "\"timestamp\":\"" << std::put_time(std::localtime(&time_t), 
-                                                   "%Y-%m-%dT%H:%M:%S") << "Z\",";
-      oss << "\"user_id\":\"" << entry.user_id << "\",";
-      oss << "\"action\":" << static_cast<int>(entry.action) << ",";
-      oss << "\"resource\":\"" << entry.resource << "\",";
-      oss << "\"success\":" << (entry.success ? "true" : "false");
-      oss << "}";
-      
-      if (config_.log_to_console) {
-        std::cout << oss.str() << std::endl;
+      while (!to_write.empty()) {
+        auto& entry = to_write.front();
+        
+        std::ostringstream oss;
+        auto time_t = std::chrono::system_clock::to_time_t(entry.timestamp);
+        
+        oss << "{";
+        oss << "\"entry_id\":" << entry.entry_id << ",";
+        struct tm tm_buf;
+        if (localtime_r(&time_t, &tm_buf)) {
+          oss << "\"timestamp\":\"" << std::put_time(&tm_buf, 
+                                                       "%Y-%m-%dT%H:%M:%S") << "Z\",";
+        } else {
+          oss << "\"timestamp\":\"invalid\",";
+        }
+        oss << "\"user_id\":\"" << entry.user_id << "\",";
+        oss << "\"action\":" << static_cast<int>(entry.action) << ",";
+        oss << "\"resource\":\"" << entry.resource << "\",";
+        oss << "\"success\":" << (entry.success ? "true" : "false");
+        oss << "}";
+        
+        if (config_.log_to_console) {
+          std::cout << oss.str() << std::endl;
+        }
+        
+        if (log_file_.is_open()) {
+          log_file_ << oss.str() << std::endl;
+        }
+        
+        {
+          std::lock_guard<std::mutex> entries_lock(entries_mutex_);
+          entries_.push_back(entry);
+          
+          if (entries_.size() > config_.max_entries) {
+            entries_.erase(entries_.begin());
+          }
+        }
+        
+        to_write.pop();
       }
       
       if (log_file_.is_open()) {
-        log_file_ << oss.str() << std::endl;
+        log_file_.flush();
       }
-      
-      {
-        std::lock_guard<std::mutex> entries_lock(entries_mutex_);
-        entries_.push_back(entry);
-        
-        if (entries_.size() > config_.max_entries) {
-          entries_.erase(entries_.begin());
-        }
-      }
-      
-      to_write.pop();
-    }
-    
-    if (log_file_.is_open()) {
-      log_file_.flush();
+    } catch (...) {
+      // 日志写入异常不应导致后台线程崩溃
     }
   }
 }

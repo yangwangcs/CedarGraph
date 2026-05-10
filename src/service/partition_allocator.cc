@@ -2,7 +2,7 @@
 //
 // Licensed under the Apache License, Version 2.0
 
-#include "partition_allocator.h"
+#include "cedar/service/partition_allocator.h"
 
 #include <algorithm>
 #include <chrono>
@@ -256,8 +256,14 @@ Status PartitionAllocator::MigratePartition(PartitionID partition_id, NodeID new
   alloc.version++;
   
   // 更新节点统计
-  nodes_[old_leader].leader_count--;
-  nodes_[new_leader].leader_count++;
+  auto old_it = nodes_.find(old_leader);
+  if (old_it != nodes_.end()) {
+    old_it->second.leader_count--;
+  }
+  auto new_it = nodes_.find(new_leader);
+  if (new_it != nodes_.end()) {
+    new_it->second.leader_count++;
+  }
   
   std::cout << "[PartitionAllocator] Migrated partition " << partition_id 
             << " from node " << old_leader << " to node " << new_leader << std::endl;
@@ -286,17 +292,22 @@ std::vector<std::pair<PartitionID, NodeID>> PartitionAllocator::ComputeMigration
   size_t node_count = nodes_.size();
   size_t target_per_node = total_partitions / node_count;
   
+  // 预计算每个节点的分区数量和归属映射（O(allocations) 一次遍历）
+  std::unordered_map<uint32_t, size_t> node_partition_count;
+  std::unordered_map<uint32_t, std::vector<PartitionID>> node_to_partitions;
+  for (const auto& [part_id, alloc] : allocations_) {
+    node_partition_count[alloc.leader_node]++;
+    node_to_partitions[alloc.leader_node].push_back(part_id);
+  }
+
   // 找出过载和欠载的节点
-  std::vector<std::pair<uint32_t, size_t>> overloaded;  // node_id, count
-  std::vector<std::pair<uint32_t, size_t>> underloaded;
+  std::vector<std::pair<uint32_t, size_t>> overloaded;  // node_id, excess
+  std::vector<std::pair<uint32_t, size_t>> underloaded; // node_id, deficit
   
   for (const auto& [node_id, node] : nodes_) {
     if (!node.is_healthy) continue;
     
-    size_t count = 0;
-    for (const auto& [part_id, alloc] : allocations_) {
-      if (alloc.leader_node == node_id) count++;
-    }
+    size_t count = node_partition_count[node_id];
     
     if (count > target_per_node + 1) {
       overloaded.push_back({node_id, count - target_per_node});
@@ -305,21 +316,26 @@ std::vector<std::pair<PartitionID, NodeID>> PartitionAllocator::ComputeMigration
     }
   }
   
-  // 生成迁移计划
+  // 生成迁移计划：O(overloaded × underloaded × avg_partitions_per_node)
   for (auto& [from_node, excess] : overloaded) {
     for (auto& [to_node, deficit] : underloaded) {
       if (excess == 0 || deficit == 0) continue;
       
       size_t to_move = std::min(excess, deficit);
       
-      // 找到可以从 from_node 迁移的分区
-      for (const auto& [part_id, alloc] : allocations_) {
-        if (to_move == 0) break;
-        if (alloc.leader_node == from_node) {
-          migrations.push_back({part_id, to_node});
+      // 直接从 from_node 的分区列表中选取（O(avg_partitions_per_node)）
+      auto& from_partitions = node_to_partitions[from_node];
+      for (auto it = from_partitions.begin(); it != from_partitions.end() && to_move > 0;) {
+        // 确保该分区仍由 from_node 领导（可能已被前面的迁移改变）
+        auto alloc_it = allocations_.find(*it);
+        if (alloc_it != allocations_.end() && alloc_it->second.leader_node == from_node) {
+          migrations.push_back({*it, to_node});
           to_move--;
           excess--;
           deficit--;
+          it = from_partitions.erase(it);
+        } else {
+          ++it;
         }
       }
     }
@@ -424,12 +440,8 @@ uint32_t PartitionAllocator::SelectLeastLoadedNode() {
     if (!node.is_healthy) continue;
     
     double score = node.CalculateLoadScore();
-    // 考虑当前 leader 数量
-    size_t leader_count = 0;
-    for (const auto& [part_id, alloc] : allocations_) {
-      if (alloc.leader_node == node_id) leader_count++;
-    }
-    score += static_cast<double>(leader_count) * 0.01;  // 轻微偏好负载均衡
+    // 考虑当前 leader 数量（leader_count 在 AllocatePartition/MigratePartition 中维护）
+    score += static_cast<double>(node.leader_count) * 0.01;  // 轻微偏好负载均衡
     
     if (score < best_score) {
       best_score = score;
@@ -445,11 +457,7 @@ double PartitionAllocator::CalculateClusterLoadVariance() const {
   
   std::vector<double> loads;
   for (const auto& [node_id, node] : nodes_) {
-    size_t leader_count = 0;
-    for (const auto& [part_id, alloc] : allocations_) {
-      if (alloc.leader_node == node_id) leader_count++;
-    }
-    loads.push_back(static_cast<double>(leader_count));
+    loads.push_back(static_cast<double>(node.leader_count));
   }
   
   if (loads.empty()) return 0.0;

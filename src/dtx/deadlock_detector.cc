@@ -117,7 +117,7 @@ void WaitForGraph::RemoveTxn(TxnID txn_id) {
   nodes_.erase(txn_id);
 }
 
-DeadlockDetectionResult WaitForGraph::DetectDeadlock() {
+DeadlockDetectionResult WaitForGraph::DetectDeadlock(size_t max_cycle_size) {
   std::shared_lock<std::shared_mutex> lock(mutex_);
   
   std::unordered_set<TxnID> visited;
@@ -127,7 +127,7 @@ DeadlockDetectionResult WaitForGraph::DetectDeadlock() {
   
   for (TxnID node : nodes_) {
     if (visited.find(node) == visited.end()) {
-      if (FindCycle(node, visited, in_stack, path, cycle)) {
+      if (FindCycle(node, visited, in_stack, path, cycle, 0, max_cycle_size)) {
         DeadlockDetectionResult result;
         result.has_deadlock = true;
         result.cycle = cycle;
@@ -140,7 +140,7 @@ DeadlockDetectionResult WaitForGraph::DetectDeadlock() {
   return DeadlockDetectionResult{};
 }
 
-DeadlockDetectionResult WaitForGraph::DetectDeadlockForTxn(TxnID txn_id) {
+DeadlockDetectionResult WaitForGraph::DetectDeadlockForTxn(TxnID txn_id, size_t max_cycle_size) {
   std::shared_lock<std::shared_mutex> lock(mutex_);
   
   if (nodes_.find(txn_id) == nodes_.end()) {
@@ -152,7 +152,7 @@ DeadlockDetectionResult WaitForGraph::DetectDeadlockForTxn(TxnID txn_id) {
   std::vector<TxnID> path;
   std::vector<TxnID> cycle;
   
-  if (FindCycle(txn_id, visited, in_stack, path, cycle)) {
+  if (FindCycle(txn_id, visited, in_stack, path, cycle, 0, max_cycle_size)) {
     DeadlockDetectionResult result;
     result.has_deadlock = true;
     result.cycle = cycle;
@@ -167,7 +167,13 @@ bool WaitForGraph::FindCycle(TxnID start,
                               std::unordered_set<TxnID>& visited,
                               std::unordered_set<TxnID>& in_stack,
                               std::vector<TxnID>& path,
-                              std::vector<TxnID>& cycle) {
+                              std::vector<TxnID>& cycle,
+                              size_t depth,
+                              size_t max_depth) {
+  if (max_depth > 0 && depth >= max_depth) {
+    return false;  // 超过最大环深度限制，防止栈溢出
+  }
+  
   visited.insert(start);
   in_stack.insert(start);
   path.push_back(start);
@@ -185,7 +191,7 @@ bool WaitForGraph::FindCycle(TxnID start,
       }
       
       if (visited.find(neighbor) == visited.end()) {
-        if (FindCycle(neighbor, visited, in_stack, path, cycle)) {
+        if (FindCycle(neighbor, visited, in_stack, path, cycle, depth + 1, max_depth)) {
           return true;
         }
       }
@@ -254,10 +260,31 @@ size_t WaitForGraph::CleanupExpiredEdges(uint64_t timeout_ms) {
     }
   }
   
-  lock.unlock();
-  
+  // 在锁内直接移除，避免解锁期间新边被误删
   for (const auto& [waiter, holder] : edges_to_remove) {
-    RemoveEdge(waiter, holder);
+    auto out_it = outgoing_edges_.find(waiter);
+    if (out_it != outgoing_edges_.end()) {
+      auto& edges = out_it->second;
+      edges.erase(
+          std::remove_if(edges.begin(), edges.end(),
+              [holder](const WaitForEdge& e) { return e.holder == holder; }),
+          edges.end());
+      if (edges.empty()) {
+        outgoing_edges_.erase(out_it);
+      }
+    }
+    
+    auto in_it = incoming_edges_.find(holder);
+    if (in_it != incoming_edges_.end()) {
+      auto& edges = in_it->second;
+      edges.erase(
+          std::remove_if(edges.begin(), edges.end(),
+              [waiter](const WaitForEdge& e) { return e.waiter == waiter; }),
+          edges.end());
+      if (edges.empty()) {
+        incoming_edges_.erase(in_it);
+      }
+    }
   }
   
   return removed;
@@ -266,8 +293,13 @@ size_t WaitForGraph::CleanupExpiredEdges(uint64_t timeout_ms) {
 std::string WaitForGraph::ToString() const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
   
+  size_t edge_count = 0;
+  for (const auto& [id, edges] : outgoing_edges_) {
+    edge_count += edges.size();
+  }
+  
   std::ostringstream oss;
-  oss << "Wait-For Graph (" << nodes_.size() << " nodes, " << GetEdgeCount() << " edges):\n";
+  oss << "Wait-For Graph (" << nodes_.size() << " nodes, " << edge_count << " edges):\n";
   
   for (const auto& [waiter, edges] : outgoing_edges_) {
     oss << "  T" << waiter << " waits for: ";
@@ -299,30 +331,46 @@ Status DistributedDeadlockDetector::Initialize(const Config& config) {
   
   config_ = config;
   
-  // 启动检测线程
-  detection_thread_ = std::thread([this]() {
-    DetectionLoop();
-  });
-  
-  // 启动清理线程
-  cleanup_thread_ = std::thread([this]() {
-    CleanupLoop();
-  });
+  try {
+    // 启动检测线程
+    detection_thread_ = std::thread([this]() {
+      DetectionLoop();
+    });
+    
+    // 启动清理线程
+    cleanup_thread_ = std::thread([this]() {
+      CleanupLoop();
+    });
+  } catch (...) {
+    running_ = false;
+    if (detection_thread_.joinable()) {
+      detection_thread_.join();
+    }
+    throw;
+  }
   
   return Status::OK();
 }
 
-void DistributedDeadlockDetector::Shutdown() {
+void DistributedDeadlockDetector::Shutdown() noexcept {
   if (!running_.exchange(false)) {
     return;
   }
   
-  if (detection_thread_.joinable()) {
-    detection_thread_.join();
+  try {
+    if (detection_thread_.joinable()) {
+      detection_thread_.join();
+    }
+  } catch (...) {
+    // join() 理论上不应失败，但如果发生，避免异常逃逸
   }
   
-  if (cleanup_thread_.joinable()) {
-    cleanup_thread_.join();
+  try {
+    if (cleanup_thread_.joinable()) {
+      cleanup_thread_.join();
+    }
+  } catch (...) {
+    // join() 理论上不应失败，但如果发生，避免异常逃逸
   }
 }
 
@@ -340,12 +388,17 @@ void DistributedDeadlockDetector::RegisterWait(TxnID txn_id, TxnID holder,
   
   graph_->AddEdge(edge);
   
-  std::lock_guard<std::mutex> lock(stats_mutex_);
-  ++stats_.edges_added;
-  
-  // 立即检查此事务是否参与死锁
-  auto result = graph_->DetectDeadlockForTxn(txn_id);
-  if (result.has_deadlock) {
+  bool has_deadlock = false;
+  DeadlockDetectionResult result;
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    ++stats_.edges_added;
+    
+    // 立即检查此事务是否参与死锁
+    result = graph_->DetectDeadlockForTxn(txn_id, config_.max_cycle_size);
+    has_deadlock = result.has_deadlock;
+  }
+  if (has_deadlock) {
     HandleDeadlock(result);
   }
 }
@@ -363,6 +416,9 @@ void DistributedDeadlockDetector::UnregisterTxn(TxnID txn_id) {
   if (!running_) return;
   
   graph_->RemoveTxn(txn_id);
+  
+  std::lock_guard<std::mutex> lock(stats_mutex_);
+  ++stats_.edges_removed;
 }
 
 DeadlockDetectionResult DistributedDeadlockDetector::DetectNow() {
@@ -409,7 +465,7 @@ void DistributedDeadlockDetector::DetectionLoop() {
     if (!running_) break;
     
     // 执行死锁检测
-    auto result = graph_->DetectDeadlock();
+    auto result = graph_->DetectDeadlock(config_.max_cycle_size);
     
     {
       std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -447,15 +503,32 @@ void DistributedDeadlockDetector::CleanupLoop() {
 void DistributedDeadlockDetector::HandleDeadlock(const DeadlockDetectionResult& result) {
   if (!result.has_deadlock) return;
   
+  std::lock_guard<std::mutex> lock(handle_mutex_);
+  
+  TxnID victim = result.victim;
+  
   // 调用牺牲者处理回调
-  if (victim_handler_ && result.victim != 0) {
-    victim_handler_(result.victim);
-    
-    std::lock_guard<std::mutex> lock(stats_mutex_);
-    ++stats_.victims_aborted;
+  if (victim_handler_ && victim != 0) {
+    try {
+      victim_handler_(victim);
+      
+      std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+      ++stats_.victims_aborted;
+    } catch (...) {
+      // victim_handler_ 异常不应导致检测器崩溃
+    }
+  } else if (victim == 0 && !result.cycle.empty()) {
+    // No victim selected - log and attempt to break cycle by removing youngest
+    victim = *std::max_element(result.cycle.begin(), result.cycle.end());
   }
   
-  // 移除死锁环中的边
+  // 完全注销牺牲者事务，移除其所有等待边
+  // 这确保了等待图中不再包含该事务的任何边
+  if (victim != 0) {
+    graph_->RemoveTxn(victim);
+  }
+  
+  // 移除死锁环中的剩余边（如果还有）
   for (size_t i = 0; i < result.cycle.size(); ++i) {
     TxnID current = result.cycle[i];
     TxnID next = result.cycle[(i + 1) % result.cycle.size()];

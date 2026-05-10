@@ -2,7 +2,7 @@
 //
 // Licensed under the Apache License, Version 2.0
 
-#include "partition/strategies/static_hash_strategy.h"
+#include "cedar/partition/strategies/static_hash_strategy.h"
 
 #include <sstream>
 
@@ -15,6 +15,9 @@ StaticHashStrategy::StaticHashStrategy(uint32_t num_partitions)
 PartitionAssignment StaticHashStrategy::RouteVertex(uint64_t vertex_id) {
   route_count_.fetch_add(1, std::memory_order_relaxed);
   
+  if (num_partitions_ == 0) {
+    return PartitionAssignment(0, 0.0, "StaticHash");
+  }
   uint32_t partition_id = static_cast<uint32_t>(vertex_id % num_partitions_);
   return PartitionAssignment(partition_id, 1.0, "StaticHash");
 }

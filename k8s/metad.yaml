@@ -24,7 +24,7 @@ spec:
       - name: metad
         image: cedargraph:latest
         imagePullPolicy: IfNotPresent
-        command: ["/usr/local/bin/metad_server"]
+        command: ["/usr/local/bin/cedar-metad"]
         args:
         - "--config=/etc/cedar/metad.conf"
         env:

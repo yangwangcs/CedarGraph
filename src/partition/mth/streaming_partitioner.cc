@@ -4,8 +4,8 @@
 // 
 // Ported from subgraph2
 
-#include "partition/mth/streaming_partitioner.h"
-#include "partition/mth/op_type.h"
+#include "cedar/partition/mth/streaming_partitioner.h"
+#include "cedar/partition/mth/op_type.h"
 #include <cmath>
 #include <limits>
 

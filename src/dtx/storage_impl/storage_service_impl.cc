@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "cedar/dtx/storage_service_impl.h"
+#include "cedar/dtx/storage/partition_raft_manager.h"
 #include "cedar/dtx/monitoring.h"
 #include "cedar/storage/lsm_engine.h"
 
@@ -26,8 +27,9 @@ namespace dtx {
 // StorageServiceImpl Implementation
 // =============================================================================
 
-StorageServiceImpl::StorageServiceImpl(StoragePartitionManager* partition_manager)
-    : partition_manager_(partition_manager) {
+StorageServiceImpl::StorageServiceImpl(StoragePartitionManager* partition_manager,
+                                               PartitionRaftManager* raft_manager)
+    : partition_manager_(partition_manager), raft_manager_(raft_manager) {
   if (partition_manager_) {
     storage_interface_ = std::make_unique<cedar::storage::StorageInterface>(
         partition_manager_->GetSharedStorage());
@@ -201,7 +203,9 @@ cedar::storage::Descriptor StorageServiceImpl::DescriptorToProto(const Descripto
 grpc::Status StorageServiceImpl::Put(grpc::ServerContext* context,
                                       const cedar::storage::PutRequest* request,
                                       cedar::storage::PutResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   PartitionID pid = static_cast<PartitionID>(request->key().partition_id());
   auto* partition = partition_manager_->GetPartition(pid);
@@ -222,7 +226,45 @@ grpc::Status StorageServiceImpl::Put(grpc::ServerContext* context,
   Timestamp txn_version(request->txn_version().value());
   TxnID txn_id = request->txn_id();
   
-  // Execute put
+  // If braft replication is enabled, propose through Raft
+  if (raft_manager_) {
+    auto* raft_group = raft_manager_->GetRaftGroup(pid);
+    if (!raft_group) {
+      response->set_success(false);
+      response->set_error_msg("Raft group not found for partition: " + std::to_string(pid));
+      return grpc::Status(grpc::StatusCode::NOT_FOUND, "Raft group not found");
+    }
+    if (!raft_group->IsLeader()) {
+      auto leader_id = raft_group->GetLeaderId();
+      auto leader_addr = raft_group->GetLeaderAddress();
+      response->set_success(false);
+      if (leader_id.has_value() && leader_addr.has_value()) {
+        response->set_error_msg("Not leader, redirect to node " +
+                                std::to_string(leader_id.value()) + " at " + leader_addr.value());
+      } else if (leader_addr.has_value()) {
+        response->set_error_msg("Not leader, redirect to " + leader_addr.value());
+      } else {
+        response->set_error_msg("Not leader, leader unknown");
+      }
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader");
+    }
+    StorageLogEntry entry;
+    entry.type = StorageLogEntry::Type::kPut;
+    entry.key = key;
+    entry.descriptor = desc;
+    entry.txn_version = txn_version;
+    auto status = raft_group->Propose(entry);
+    if (status.ok()) {
+      response->set_success(true);
+      return grpc::Status::OK;
+    } else {
+      response->set_success(false);
+      response->set_error_msg(status.ToString());
+      return grpc::Status(grpc::StatusCode::INTERNAL, status.ToString());
+    }
+  }
+
+  // Direct write path (no replication or single-node mode)
   auto status = partition->Put(key, desc, txn_version, txn_id);
   
   if (status.ok()) {
@@ -235,10 +277,32 @@ grpc::Status StorageServiceImpl::Put(grpc::ServerContext* context,
   }
 }
 
+// Helper: check if this node is the leader for the partition.
+// If not leader, returns UNAVAILABLE with leader address hint.
+grpc::Status StorageServiceImpl::CheckReadLeader(PartitionID pid, std::string* leader_hint) {
+  if (!raft_manager_) {
+    return grpc::Status::OK;  // No raft = single node, always allow
+  }
+  auto* raft_group = raft_manager_->GetRaftGroup(pid);
+  if (!raft_group) {
+    return grpc::Status::OK;  // No raft group for this partition yet
+  }
+  if (raft_group->IsLeader() && raft_group->IsLeaseValid()) {
+    return grpc::Status::OK;
+  }
+  auto leader_addr = raft_group->GetLeaderAddress();
+  if (leader_addr.has_value() && leader_hint) {
+    *leader_hint = leader_addr.value();
+  }
+  return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader or lease expired");
+}
+
 grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
                                       const cedar::storage::GetRequest* request,
                                       cedar::storage::GetResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   PartitionID pid = static_cast<PartitionID>(request->key().partition_id());
   auto* partition = partition_manager_->GetPartition(pid);
@@ -248,6 +312,16 @@ grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
     response->set_found(false);
     response->set_error_msg("Partition not found: " + std::to_string(pid));
     return grpc::Status(grpc::StatusCode::NOT_FOUND, "Partition not found");
+  }
+
+  // Leader check for linearizable read
+  std::string leader_hint;
+  auto leader_status = CheckReadLeader(pid, &leader_hint);
+  if (!leader_status.ok()) {
+    response->set_success(false);
+    response->set_error_msg("Not leader, redirect to: " + leader_hint);
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                        "Not leader", leader_hint);
   }
   
   // Convert proto key to CedarKey
@@ -280,7 +354,9 @@ grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
 grpc::Status StorageServiceImpl::Delete(grpc::ServerContext* context,
                                          const cedar::storage::DeleteRequest* request,
                                          cedar::storage::DeleteResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   PartitionID pid = static_cast<PartitionID>(request->key().partition_id());
   auto* partition = partition_manager_->GetPartition(pid);
@@ -298,7 +374,44 @@ grpc::Status StorageServiceImpl::Delete(grpc::ServerContext* context,
   Timestamp txn_version(request->txn_version().value());
   TxnID txn_id = request->txn_id();
   
-  // Execute delete by writing an empty descriptor (tombstone)
+  // If braft replication is enabled, propose through Raft
+  if (raft_manager_) {
+    auto* raft_group = raft_manager_->GetRaftGroup(pid);
+    if (!raft_group) {
+      response->set_success(false);
+      response->set_error_msg("Raft group not found for partition: " + std::to_string(pid));
+      return grpc::Status(grpc::StatusCode::NOT_FOUND, "Raft group not found");
+    }
+    if (!raft_group->IsLeader()) {
+      auto leader_id = raft_group->GetLeaderId();
+      auto leader_addr = raft_group->GetLeaderAddress();
+      response->set_success(false);
+      if (leader_id.has_value() && leader_addr.has_value()) {
+        response->set_error_msg("Not leader, redirect to node " +
+                                std::to_string(leader_id.value()) + " at " + leader_addr.value());
+      } else if (leader_addr.has_value()) {
+        response->set_error_msg("Not leader, redirect to " + leader_addr.value());
+      } else {
+        response->set_error_msg("Not leader, leader unknown");
+      }
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader");
+    }
+    StorageLogEntry entry;
+    entry.type = StorageLogEntry::Type::kDelete;
+    entry.key = key;
+    entry.txn_version = txn_version;
+    auto status = raft_group->Propose(entry);
+    if (status.ok()) {
+      response->set_success(true);
+      return grpc::Status::OK;
+    } else {
+      response->set_success(false);
+      response->set_error_msg(status.ToString());
+      return grpc::Status(grpc::StatusCode::INTERNAL, status.ToString());
+    }
+  }
+
+  // Direct write path (no replication or single-node mode)
   Descriptor empty_desc;
   auto status = partition->Put(key, empty_desc, txn_version, txn_id);
   
@@ -315,7 +428,9 @@ grpc::Status StorageServiceImpl::Delete(grpc::ServerContext* context,
 grpc::Status StorageServiceImpl::Scan(grpc::ServerContext* context,
                                        const cedar::storage::ScanRequest* request,
                                        cedar::storage::ScanResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   (void)request;
   
   // TODO: Implement scan operation using CedarGraphStorage iterator
@@ -327,7 +442,20 @@ grpc::Status StorageServiceImpl::Scan(grpc::ServerContext* context,
 grpc::Status StorageServiceImpl::ScanNodeV2(grpc::ServerContext* context,
                                              const cedar::storage::ScanNodeRequestV2* request,
                                              cedar::storage::ScanResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+
+  // Leader check for linearizable read
+  PartitionID pid = static_cast<PartitionID>(request->partition_id());
+  std::string leader_hint;
+  auto leader_status = CheckReadLeader(pid, &leader_hint);
+  if (!leader_status.ok()) {
+    response->set_success(false);
+    response->set_error_msg("Not leader, redirect to: " + leader_hint);
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                        "Not leader", leader_hint);
+  }
 
   if (!storage_interface_) {
     response->set_success(false);
@@ -363,7 +491,20 @@ grpc::Status StorageServiceImpl::ScanNodeV2(grpc::ServerContext* context,
 grpc::Status StorageServiceImpl::ScanEdgeV2(grpc::ServerContext* context,
                                              const cedar::storage::ScanEdgeRequestV2* request,
                                              cedar::storage::ScanResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+
+  // Leader check for linearizable read
+  PartitionID pid = static_cast<PartitionID>(request->partition_id());
+  std::string leader_hint;
+  auto leader_status = CheckReadLeader(pid, &leader_hint);
+  if (!leader_status.ok()) {
+    response->set_success(false);
+    response->set_error_msg("Not leader, redirect to: " + leader_hint);
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                        "Not leader", leader_hint);
+  }
 
   if (!storage_interface_) {
     response->set_success(false);
@@ -423,13 +564,64 @@ grpc::Status StorageServiceImpl::ScanEdgeV2(grpc::ServerContext* context,
 grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
                                            const cedar::storage::BatchPutRequest* request,
                                            cedar::storage::BatchPutResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   Timestamp txn_version(request->txn_version().value());
   TxnID txn_id = request->txn_id();
   
   bool all_success = true;
-  
+
+  // If braft replication is enabled, propose through Raft
+  if (raft_manager_) {
+    for (const auto& item : request->items()) {
+      PartitionID pid = static_cast<PartitionID>(item.key().partition_id());
+      auto* raft_group = raft_manager_->GetRaftGroup(pid);
+      if (!raft_group) {
+        response->add_item_success(false);
+        all_success = false;
+        continue;
+      }
+      if (!raft_group->IsLeader()) {
+        response->add_item_success(false);
+        all_success = false;
+        auto leader_id = raft_group->GetLeaderId();
+        auto leader_addr = raft_group->GetLeaderAddress();
+        if (leader_id.has_value() && leader_addr.has_value()) {
+          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
+                                  ", redirect to node " + std::to_string(leader_id.value()) +
+                                  " at " + leader_addr.value());
+        } else if (leader_addr.has_value()) {
+          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
+                                  ", redirect to " + leader_addr.value());
+        } else {
+          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
+                                  ", leader unknown");
+        }
+        continue;
+      }
+      CedarKey key = ProtoToCedarKey(item.key());
+      Descriptor desc = ProtoToDescriptor(item.descriptor_(), key.column_id());
+      StorageLogEntry entry;
+      entry.type = StorageLogEntry::Type::kPut;
+      entry.key = key;
+      entry.descriptor = desc;
+      entry.txn_version = txn_version;
+      auto status = raft_group->Propose(entry);
+      response->add_item_success(status.ok());
+      if (!status.ok()) {
+        all_success = false;
+      }
+    }
+    response->set_success(all_success);
+    if (!all_success) {
+      response->set_error_msg("Some items failed to propose");
+    }
+    return grpc::Status::OK;
+  }
+
+  // Direct write path (no replication or single-node mode)
   for (const auto& item : request->items()) {
     PartitionID pid = static_cast<PartitionID>(item.key().partition_id());
     auto* partition = partition_manager_->GetPartition(pid);
@@ -461,7 +653,23 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
 grpc::Status StorageServiceImpl::BatchGet(grpc::ServerContext* context,
                                            const cedar::storage::BatchGetRequest* request,
                                            cedar::storage::BatchGetResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+
+  // Leader check: all keys must belong to partitions we lead
+  // For simplicity, check the first key's partition (typical use case)
+  if (!request->keys().empty()) {
+    PartitionID first_pid = static_cast<PartitionID>(request->keys(0).partition_id());
+    std::string leader_hint;
+    auto leader_status = CheckReadLeader(first_pid, &leader_hint);
+    if (!leader_status.ok()) {
+      response->set_success(false);
+      response->set_error_msg("Not leader, redirect to: " + leader_hint);
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                          "Not leader", leader_hint);
+    }
+  }
   
   // For BatchGet, we use max timestamp to get latest values
   Timestamp read_time = Timestamp::Max();
@@ -499,7 +707,9 @@ grpc::Status StorageServiceImpl::BatchGet(grpc::ServerContext* context,
 grpc::Status StorageServiceImpl::Prepare(grpc::ServerContext* context,
                                           const cedar::storage::PrepareRequest* request,
                                           cedar::storage::PrepareResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   TxnID txn_id = request->txn_id();
   Timestamp commit_ts(request->commit_ts());
@@ -514,6 +724,17 @@ grpc::Status StorageServiceImpl::Prepare(grpc::ServerContext* context,
   
   for (const auto& proto_key : request->write_set()) {
     write_set.push_back(ProtoToCedarKey(proto_key));
+  }
+  
+  // Convert write_descriptors
+  std::unordered_map<uint64_t, Descriptor> write_descriptors;
+  for (const auto& [key_hash, proto_desc] : request->write_descriptors()) {
+    // Proto Descriptor has bytes data, convert to native Descriptor
+    if (!proto_desc.data().empty() && proto_desc.data().size() == sizeof(uint64_t)) {
+      uint64_t raw;
+      std::memcpy(&raw, proto_desc.data().data(), sizeof(raw));
+      write_descriptors[key_hash] = Descriptor(raw);
+    }
   }
   
   // Collect all involved partitions from read_set and write_set
@@ -533,6 +754,8 @@ grpc::Status StorageServiceImpl::Prepare(grpc::ServerContext* context,
   
   bool all_prepared = true;
   std::string last_error;
+  std::vector<PartitionID> prepared_partitions;
+  
   for (PartitionID pid : involved_partitions) {
     auto* partition = partition_manager_->GetPartition(pid);
     if (!partition) {
@@ -540,40 +763,90 @@ grpc::Status StorageServiceImpl::Prepare(grpc::ServerContext* context,
       last_error = "Partition not found: " + std::to_string(pid);
       break;
     }
-    auto status = partition->Prepare(txn_id, read_set, write_set, commit_ts);
+    
+    // If braft replication is enabled, propose through Raft
+    if (raft_manager_) {
+      auto* raft_group = raft_manager_->GetRaftGroup(pid);
+      if (!raft_group) {
+        all_prepared = false;
+        last_error = "Raft group not found for partition: " + std::to_string(pid);
+        break;
+      }
+      if (!raft_group->IsLeader()) {
+        auto leader_id = raft_group->GetLeaderId();
+        auto leader_addr = raft_group->GetLeaderAddress();
+        response->set_prepared(false);
+        if (leader_id.has_value() && leader_addr.has_value()) {
+          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
+                                  ", redirect to node " + std::to_string(leader_id.value()) +
+                                  " at " + leader_addr.value());
+        } else {
+          response->set_error_msg("Not leader for partition " + std::to_string(pid));
+        }
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader");
+      }
+      StorageLogEntry entry;
+      entry.type = StorageLogEntry::Type::kPrepare;
+      entry.txn_id = txn_id;
+      entry.read_set = read_set;
+      entry.write_set = write_set;
+      entry.write_descriptors = write_descriptors;
+      entry.commit_ts = commit_ts;
+      auto status = raft_group->Propose(entry);
+      if (!status.ok()) {
+        all_prepared = false;
+        last_error = "Raft propose failed: " + status.ToString();
+        break;
+      }
+      prepared_partitions.push_back(pid);
+      continue;
+    }
+    
+    // Direct path (no replication or single-node mode)
+    auto status = partition->Prepare(txn_id, read_set, write_set, write_descriptors, commit_ts);
     if (!status.ok()) {
       all_prepared = false;
       last_error = status.ToString();
       break;
     }
+    prepared_partitions.push_back(pid);
   }
   
-  if (all_prepared) {
-    {
-      std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
-      txn_partitions_[txn_id] = std::move(involved_partitions);
+  if (!all_prepared) {
+    // Rollback already prepared partitions to avoid hanging prepared states
+    for (PartitionID pid : prepared_partitions) {
+      auto* partition = partition_manager_->GetPartition(pid);
+      if (partition) {
+        partition->Abort(txn_id);  // Best-effort rollback
+      }
     }
-    response->set_prepared(true);
-    response->set_prepared_ts(commit_ts.value());
-    return grpc::Status::OK;
-  } else {
     response->set_prepared(false);
     response->set_error_msg(last_error);
     return grpc::Status::OK;
   }
+  
+  {
+    std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+    txn_partitions_[txn_id] = std::move(involved_partitions);
+  }
+  response->set_prepared(true);
+  response->set_prepared_ts(commit_ts.value());
+  return grpc::Status::OK;
 }
 
 grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
                                          const cedar::storage::CommitRequest* request,
                                          cedar::storage::CommitResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   try {
     TxnID txn_id = request->txn_id();
     Timestamp commit_ts(request->commit_ts());
     
-    bool any_success = false;
-    std::string last_error;
+    bool all_committed = true;
+    std::vector<std::string> errors;
     
     std::set<PartitionID> involved_partitions;
     {
@@ -585,6 +858,18 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
     }
     
     if (involved_partitions.empty()) {
+      // Try to rebuild from prepared_txns_ after snapshot load or leader change
+      RebuildTxnPartitions();
+      {
+        std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+        auto it = txn_partitions_.find(txn_id);
+        if (it != txn_partitions_.end()) {
+          involved_partitions = it->second;
+        }
+      }
+    }
+    
+    if (involved_partitions.empty()) {
       // Fallback to all partitions if mapping missing
       involved_partitions.insert(partition_manager_->GetAllPartitions().begin(),
                                  partition_manager_->GetAllPartitions().end());
@@ -592,23 +877,67 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
     
     for (PartitionID pid : involved_partitions) {
       auto* partition = partition_manager_->GetPartition(pid);
-      if (partition) {
-        auto status = partition->Commit(txn_id, commit_ts);
-        if (status.ok()) {
-          any_success = true;
-        } else {
-          last_error = status.ToString();
+      if (!partition) {
+        all_committed = false;
+        errors.push_back("Partition not found: " + std::to_string(pid));
+        continue;  // Try remaining partitions
+      }
+      
+      // If braft replication is enabled, propose through Raft
+      if (raft_manager_) {
+        auto* raft_group = raft_manager_->GetRaftGroup(pid);
+        if (!raft_group) {
+          all_committed = false;
+          errors.push_back("Raft group not found for partition: " + std::to_string(pid));
+          continue;
         }
+        if (!raft_group->IsLeader()) {
+          auto leader_id = raft_group->GetLeaderId();
+          auto leader_addr = raft_group->GetLeaderAddress();
+          response->set_success(false);
+          if (leader_id.has_value() && leader_addr.has_value()) {
+            response->set_error_msg("Not leader for partition " + std::to_string(pid) +
+                                    ", redirect to node " + std::to_string(leader_id.value()) +
+                                    " at " + leader_addr.value());
+          } else {
+            response->set_error_msg("Not leader for partition " + std::to_string(pid));
+          }
+          return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader");
+        }
+        StorageLogEntry entry;
+        entry.type = StorageLogEntry::Type::kCommit;
+        entry.txn_id = txn_id;
+        entry.commit_ts = commit_ts;
+        auto status = raft_group->Propose(entry);
+        if (!status.ok()) {
+          all_committed = false;
+          errors.push_back("Raft propose failed for partition " + std::to_string(pid) +
+                           ": " + status.ToString());
+          continue;
+        }
+        continue;
+      }
+      
+      // Direct path (no replication or single-node mode)
+      auto status = partition->Commit(txn_id, commit_ts);
+      if (!status.ok()) {
+        all_committed = false;
+        errors.push_back("Partition " + std::to_string(pid) + ": " + status.ToString());
+        continue;  // Try remaining partitions
       }
     }
     
-    if (any_success) {
+    if (all_committed) {
       response->set_success(true);
       return grpc::Status::OK;
     } else {
       response->set_success(false);
-      response->set_error_msg(last_error.empty() ? "No partitions found" : last_error);
-      return grpc::Status(grpc::StatusCode::INTERNAL, last_error);
+      std::string error_msg = "Commit failed on one or more partitions: ";
+      for (const auto& e : errors) {
+        error_msg += e + "; ";
+      }
+      response->set_error_msg(error_msg);
+      return grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
     }
   } catch (const std::exception& e) {
     std::cerr << "[StorageServiceImpl::Commit] Exception: " << e.what() << std::endl;
@@ -623,10 +952,26 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
   }
 }
 
+void StorageServiceImpl::RebuildTxnPartitions() {
+  std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+  txn_partitions_.clear();
+  auto all_partitions = partition_manager_->GetAllPartitions();
+  for (PartitionID pid : all_partitions) {
+    auto* partition = partition_manager_->GetPartition(pid);
+    if (!partition) continue;
+    auto prepared_txns = partition->GetPreparedTransactions();
+    for (TxnID txn_id : prepared_txns) {
+      txn_partitions_[txn_id].insert(pid);
+    }
+  }
+}
+
 grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
                                         const cedar::storage::AbortRequest* request,
                                         cedar::storage::AbortResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   TxnID txn_id = request->txn_id();
   
@@ -643,19 +988,66 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
   }
   
   if (involved_partitions.empty()) {
+    RebuildTxnPartitions();
+    {
+      std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+      auto it = txn_partitions_.find(txn_id);
+      if (it != txn_partitions_.end()) {
+        involved_partitions = it->second;
+      }
+    }
+  }
+  
+  if (involved_partitions.empty()) {
     involved_partitions.insert(partition_manager_->GetAllPartitions().begin(),
                                partition_manager_->GetAllPartitions().end());
   }
   
   for (PartitionID pid : involved_partitions) {
     auto* partition = partition_manager_->GetPartition(pid);
-    if (partition) {
-      auto status = partition->Abort(txn_id);
+    if (!partition) {
+      last_error = "Partition not found: " + std::to_string(pid);
+      continue;
+    }
+    
+    // If braft replication is enabled, propose through Raft
+    if (raft_manager_) {
+      auto* raft_group = raft_manager_->GetRaftGroup(pid);
+      if (!raft_group) {
+        last_error = "Raft group not found for partition: " + std::to_string(pid);
+        continue;
+      }
+      if (!raft_group->IsLeader()) {
+        auto leader_id = raft_group->GetLeaderId();
+        auto leader_addr = raft_group->GetLeaderAddress();
+        response->set_success(false);
+        if (leader_id.has_value() && leader_addr.has_value()) {
+          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
+                                  ", redirect to node " + std::to_string(leader_id.value()) +
+                                  " at " + leader_addr.value());
+        } else {
+          response->set_error_msg("Not leader for partition " + std::to_string(pid));
+        }
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader");
+      }
+      StorageLogEntry entry;
+      entry.type = StorageLogEntry::Type::kAbort;
+      entry.txn_id = txn_id;
+      auto status = raft_group->Propose(entry);
       if (status.ok()) {
         any_success = true;
       } else {
-        last_error = status.ToString();
+        last_error = "Raft propose failed: " + status.ToString();
       }
+      continue;
+    }
+    
+    // Direct path (no replication or single-node mode)
+    auto status = partition->Abort(txn_id);
+    if (status.ok()) {
+      any_success = true;
+    } else {
+      last_error = status.ToString();
     }
   }
   
@@ -669,6 +1061,92 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
   }
 }
 
+grpc::Status StorageServiceImpl::Inquire(grpc::ServerContext* context,
+                                          const cedar::storage::InquireRequest* request,
+                                          cedar::storage::InquireResponse* response) {
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+  
+  TxnID txn_id = request->txn_id();
+  response->set_txn_id(txn_id);
+  
+  // Query all partitions for this transaction's state
+  bool found = false;
+  bool found_committed = false;
+  bool found_aborted = false;
+  bool found_prepared = false;
+  
+  std::set<PartitionID> involved_partitions;
+  {
+    std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+    auto it = txn_partitions_.find(txn_id);
+    if (it != txn_partitions_.end()) {
+      involved_partitions = it->second;
+    }
+  }
+  
+  if (involved_partitions.empty()) {
+    RebuildTxnPartitions();
+    {
+      std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+      auto it = txn_partitions_.find(txn_id);
+      if (it != txn_partitions_.end()) {
+        involved_partitions = it->second;
+      }
+    }
+  }
+  
+  if (involved_partitions.empty()) {
+    // Fallback: check all partitions
+    involved_partitions.insert(partition_manager_->GetAllPartitions().begin(),
+                               partition_manager_->GetAllPartitions().end());
+  }
+  
+  for (PartitionID pid : involved_partitions) {
+    auto* partition = partition_manager_->GetPartition(pid);
+    if (!partition) continue;
+    
+    DistributedTxnState partition_state;
+    auto status = partition->Inquire(txn_id, &partition_state);
+    if (status.ok()) {
+      found = true;
+      if (partition_state == DistributedTxnState::kCommitted) {
+        found_committed = true;
+      } else if (partition_state == DistributedTxnState::kAborted) {
+        found_aborted = true;
+      } else if (partition_state == DistributedTxnState::kPrepared) {
+        found_prepared = true;
+      }
+    }
+  }
+  
+  if (!found) {
+    response->set_state(cedar::storage::InquireResponse::UNKNOWN);
+    response->set_error_msg("Transaction not found on this node");
+    return grpc::Status::OK;
+  }
+  
+  // Detect inconsistency: both committed and aborted seen across partitions
+  if (found_committed && found_aborted) {
+    response->set_state(cedar::storage::InquireResponse::INCONSISTENT);
+    response->set_error_msg("Inconsistent state detected: transaction found both committed and aborted across partitions");
+    return grpc::Status::OK;
+  }
+  
+  if (found_committed) {
+    response->set_state(cedar::storage::InquireResponse::COMMITTED);
+  } else if (found_prepared) {
+    response->set_state(cedar::storage::InquireResponse::PREPARED);
+  } else if (found_aborted) {
+    response->set_state(cedar::storage::InquireResponse::ABORTED);
+  } else {
+    response->set_state(cedar::storage::InquireResponse::UNKNOWN);
+  }
+  
+  return grpc::Status::OK;
+}
+
 // =============================================================================
 // GCN Compute-Optimized APIs
 // =============================================================================
@@ -677,7 +1155,9 @@ grpc::Status StorageServiceImpl::GetRangeForCompute(
     grpc::ServerContext* context,
     const cedar::storage::GetRangeForComputeRequest* request,
     cedar::storage::GetRangeForComputeResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
 
   auto* storage = partition_manager_->GetSharedStorage();
   if (!storage) {
@@ -723,7 +1203,9 @@ grpc::Status StorageServiceImpl::GetCommittedVersion(
     grpc::ServerContext* context,
     const cedar::storage::GetCommittedVersionRequest* request,
     cedar::storage::GetCommittedVersionResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   (void)request;
 
   // Stub: no easy accessor for committed version yet
@@ -740,7 +1222,9 @@ grpc::Status StorageServiceImpl::GetCommittedVersion(
 grpc::Status StorageServiceImpl::GetPartitionInfo(grpc::ServerContext* context,
                                                    const cedar::storage::GetPartitionInfoRequest* request,
                                                    cedar::storage::GetPartitionInfoResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   PartitionID pid = static_cast<PartitionID>(request->partition_id());
   auto* partition = partition_manager_->GetPartition(pid);
@@ -753,13 +1237,24 @@ grpc::Status StorageServiceImpl::GetPartitionInfo(grpc::ServerContext* context,
   
   auto stats = partition->GetStats();
   
+  // Check Raft leader status
+  bool is_leader = true;
+  std::string raft_role = "LEADER";
+  if (raft_manager_) {
+    auto* raft_group = raft_manager_->GetRaftGroup(pid);
+    if (raft_group) {
+      is_leader = raft_group->IsLeader();
+      raft_role = is_leader ? "LEADER" : "FOLLOWER";
+    }
+  }
+  
   auto* info = response->mutable_info();
   info->set_partition_id(pid);
   info->set_key_count(stats.num_keys);
   info->set_data_size(stats.disk_usage_bytes);
-  info->set_qps(0);  // TODO: Track QPS
-  info->set_is_leader(true);  // TODO: Integrate with Raft
-  info->set_raft_role("LEADER");
+  info->set_qps(0);  // QPS tracking requires query counter instrumentation
+  info->set_is_leader(is_leader);
+  info->set_raft_role(raft_role);
   
   response->set_success(true);
   return grpc::Status::OK;
@@ -772,13 +1267,21 @@ grpc::Status StorageServiceImpl::GetPartitionInfo(grpc::ServerContext* context,
 grpc::Status StorageServiceImpl::Flush(grpc::ServerContext* context,
                                         const cedar::storage::FlushRequest* request,
                                         cedar::storage::FlushResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   auto status = partition_manager_->FlushAll();
   
   if (status.ok()) {
     response->set_success(true);
-    response->set_flushed_size(0);  // TODO: Track flushed size
+    // Estimate flushed size from partition stats (instrumentation needed for exact value)
+    uint64_t total_data = 0;
+    for (auto pid : partition_manager_->GetAllPartitions()) {
+      auto* part = partition_manager_->GetPartition(pid);
+      if (part) total_data += part->GetStats().disk_usage_bytes;
+    }
+    response->set_flushed_size(total_data);
     return grpc::Status::OK;
   } else {
     response->set_success(false);
@@ -794,7 +1297,9 @@ grpc::Status StorageServiceImpl::Flush(grpc::ServerContext* context,
 grpc::Status StorageServiceImpl::Heartbeat(grpc::ServerContext* context,
                                             grpc::ServerReaderWriter<cedar::storage::HeartbeatResponse,
                                                                      cedar::storage::HeartbeatRequest>* stream) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   cedar::storage::HeartbeatRequest request;
   

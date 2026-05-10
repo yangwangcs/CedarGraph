@@ -2,8 +2,10 @@
 // Execution Plan with Storage Layer Integration
 
 #include "cedar/cypher/execution_plan.h"
+#include "cedar/cypher/expression_evaluator.h"
 #include "cedar/graph/cedar_graph.h"
 #include "cedar/storage/cedar_graph_storage.h"
+#include <algorithm>
 #include <sstream>
 
 namespace cedar {
@@ -297,7 +299,11 @@ std::shared_ptr<Record> Expand::Next() {
       
       uint16_t edge_type = 0;  // Default edge type
       if (rel_type_) {
-        edge_type = static_cast<uint16_t>(std::stoi(*rel_type_));
+        try {
+          edge_type = static_cast<uint16_t>(std::stoi(*rel_type_));
+        } catch (...) {
+          edge_type = 0;
+        }
       }
       
       if (context_->gcn_traversal_callback) {
@@ -400,9 +406,10 @@ std::shared_ptr<Record> Filter::Next() {
 }
 
 bool Filter::EvaluatePredicate(const Record& record) {
-  // Simplified predicate evaluation
-  // In a full implementation, this would evaluate the expression tree
-  return true;
+  if (!predicate_) return true;
+  ExpressionEvaluator evaluator(context_);
+  auto result = evaluator.Evaluate(*predicate_, record);
+  return result.GetBool();
 }
 
 std::string Filter::GetDetails() const {
@@ -432,12 +439,18 @@ std::shared_ptr<Record> Project::Next() {
   
   // Create new record with projected values
   auto result = std::make_shared<Record>();
+  ExpressionEvaluator evaluator(context_);
   
   for (const auto& [name, expr] : projections_) {
-    // Simplified: just copy the variable value
-    auto val = record->Get(name);
-    if (val) {
-      result->Set(name, *val);
+    if (expr) {
+      auto val = evaluator.Evaluate(*expr, *record);
+      result->Set(name, val);
+    } else {
+      // Fallback: copy variable value by name
+      auto val = record->Get(name);
+      if (val) {
+        result->Set(name, *val);
+      }
     }
   }
   
@@ -460,45 +473,128 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
     return nullptr;
   }
   
-  // Build from clauses
-  std::shared_ptr<PhysicalOperator> root = nullptr;
+  // Collect clauses by type
+  std::shared_ptr<MatchClause> match_clause;
+  std::shared_ptr<WhereClause> where_clause;
+  std::shared_ptr<ReturnClause> return_clause;
+  std::shared_ptr<OrderByClause> order_by_clause;
+  std::shared_ptr<LimitClause> limit_clause;
+  std::shared_ptr<SkipClause> skip_clause;
   
   for (const auto& clause : stmt->clauses) {
     switch (clause->clause_type) {
       case ClauseType::MATCH:
-        root = BuildMatchPlan(
-            std::static_pointer_cast<MatchClause>(clause), 
-            temporal_clause);
-        break;
-      case ClauseType::RETURN:
-        // Add ProduceResults on top
-        {
-          auto return_clause = std::static_pointer_cast<ReturnClause>(clause);
-          std::vector<std::string> columns;
-          for (const auto& item : return_clause->items) {
-            columns.push_back(item.alias.value_or("column"));
-          }
-          auto produce = std::make_shared<ProduceResults>(columns);
-          if (root) {
-            produce->AddChild(root);
-          }
-          root = produce;
-        }
+        match_clause = std::static_pointer_cast<MatchClause>(clause);
         break;
       case ClauseType::WHERE:
-        // Add Filter operator
-        {
-          auto where_clause = std::static_pointer_cast<WhereClause>(clause);
-          if (where_clause->condition && root) {
-            auto filter = std::make_shared<Filter>(where_clause->condition);
-            filter->AddChild(root);
-            root = filter;
-          }
-        }
+        where_clause = std::static_pointer_cast<WhereClause>(clause);
+        break;
+      case ClauseType::RETURN:
+        return_clause = std::static_pointer_cast<ReturnClause>(clause);
+        break;
+      case ClauseType::ORDER_BY:
+        order_by_clause = std::static_pointer_cast<OrderByClause>(clause);
+        break;
+      case ClauseType::LIMIT:
+        limit_clause = std::static_pointer_cast<LimitClause>(clause);
+        break;
+      case ClauseType::SKIP:
+        skip_clause = std::static_pointer_cast<SkipClause>(clause);
         break;
       default:
         break;
     }
+  }
+  
+  // Build execution plan bottom-up
+  std::shared_ptr<PhysicalOperator> root = nullptr;
+  
+  // 1. MATCH → Scan/Expand
+  if (match_clause) {
+    root = BuildMatchPlan(match_clause, temporal_clause);
+  }
+  
+  // 2. WHERE → Filter
+  if (where_clause && where_clause->condition && root) {
+    auto filter = std::make_shared<Filter>(where_clause->condition);
+    filter->AddChild(root);
+    root = filter;
+  }
+  
+  // 3. ORDER BY → Sort
+  if (order_by_clause && !order_by_clause->items.empty() && root) {
+    std::vector<std::pair<std::shared_ptr<Expression>, bool>> sort_items;
+    for (const auto& item : order_by_clause->items) {
+      sort_items.push_back({item.expression, item.ascending});
+    }
+    auto sort = std::make_shared<Sort>(sort_items);
+    sort->AddChild(root);
+    root = sort;
+  }
+  
+  // 4. SKIP
+  if (skip_clause && skip_clause->expression && root) {
+    // Evaluate skip expression to get the count
+    // For simplicity, assume it's a literal integer
+    int64_t skip_count = 0;
+    if (auto lit = std::dynamic_pointer_cast<LiteralExpr>(skip_clause->expression)) {
+      if (lit->value.IsInt()) skip_count = lit->value.GetInt();
+    }
+    if (skip_count > 0) {
+      auto skip_op = std::make_shared<Skip>(static_cast<size_t>(skip_count));
+      skip_op->AddChild(root);
+      root = skip_op;
+    }
+  }
+  
+  // 5. LIMIT
+  if (limit_clause && limit_clause->expression && root) {
+    int64_t limit_count = 0;
+    if (auto lit = std::dynamic_pointer_cast<LiteralExpr>(limit_clause->expression)) {
+      if (lit->value.IsInt()) limit_count = lit->value.GetInt();
+    }
+    if (limit_count > 0) {
+      auto limit_op = std::make_shared<Limit>(static_cast<size_t>(limit_count));
+      limit_op->AddChild(root);
+      root = limit_op;
+    }
+  }
+  
+  // 6. RETURN → Project + Distinct (if needed) + ProduceResults
+  if (return_clause) {
+    std::vector<std::string> columns;
+    std::vector<std::pair<std::string, std::shared_ptr<Expression>>> projections;
+    
+    for (const auto& item : return_clause->items) {
+      std::string col_name = item.alias.value_or("column");
+      columns.push_back(col_name);
+      projections.push_back({col_name, item.expression});
+    }
+    
+    // Project operator
+    if (root) {
+      auto project = std::make_shared<Project>(projections);
+      project->AddChild(root);
+      root = project;
+    }
+    
+    // DISTINCT
+    if (return_clause->distinct && root) {
+      std::vector<std::shared_ptr<Expression>> distinct_keys;
+      for (const auto& item : return_clause->items) {
+        distinct_keys.push_back(item.expression);
+      }
+      auto distinct = std::make_shared<Distinct>(distinct_keys);
+      distinct->AddChild(root);
+      root = distinct;
+    }
+    
+    // ProduceResults
+    auto produce = std::make_shared<ProduceResults>(columns);
+    if (root) {
+      produce->AddChild(root);
+    }
+    root = produce;
   }
   
   return root;
@@ -583,6 +679,296 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildScanForPattern(
   }
   
   return nullptr;
+}
+
+// ============================================================================
+// Sort Implementation
+// ============================================================================
+
+Sort::Sort(std::vector<std::pair<std::shared_ptr<Expression>, bool>> sort_items)
+    : sort_items_(std::move(sort_items)) {}
+
+bool Sort::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  if (!children_.empty()) {
+    return children_[0]->Init(ctx);
+  }
+  return true;
+}
+
+std::shared_ptr<Record> Sort::Next() {
+  if (!sorted_) {
+    DoSort();
+    sorted_ = true;
+  }
+  
+  if (current_index_ < buffered_records_.size()) {
+    return buffered_records_[current_index_++];
+  }
+  return nullptr;
+}
+
+void Sort::DoSort() {
+  // Drain all records from child
+  while (auto record = children_[0]->Next()) {
+    buffered_records_.push_back(record);
+  }
+  
+  ExpressionEvaluator evaluator(context_);
+  
+  std::stable_sort(buffered_records_.begin(), buffered_records_.end(),
+    [&](const std::shared_ptr<Record>& a, const std::shared_ptr<Record>& b) {
+      for (const auto& [expr, ascending] : sort_items_) {
+        if (!expr) continue;
+        auto val_a = evaluator.Evaluate(*expr, *a);
+        auto val_b = evaluator.Evaluate(*expr, *b);
+        
+        if (val_a.IsNull() && val_b.IsNull()) continue;
+        if (val_a.IsNull()) return !ascending;
+        if (val_b.IsNull()) return ascending;
+        
+        if (val_a < val_b) return ascending;
+        if (val_a > val_b) return !ascending;
+      }
+      return false;
+    });
+}
+
+// ============================================================================
+// Limit Implementation
+// ============================================================================
+
+Limit::Limit(size_t limit) : limit_(limit) {}
+
+bool Limit::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  if (!children_.empty()) {
+    return children_[0]->Init(ctx);
+  }
+  return true;
+}
+
+std::shared_ptr<Record> Limit::Next() {
+  if (count_ >= limit_) {
+    return nullptr;
+  }
+  auto record = children_[0]->Next();
+  if (record) {
+    ++count_;
+  }
+  return record;
+}
+
+std::string Limit::GetDetails() const {
+  return std::to_string(limit_);
+}
+
+// ============================================================================
+// Skip Implementation
+// ============================================================================
+
+Skip::Skip(size_t skip) : skip_(skip) {}
+
+bool Skip::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  if (!children_.empty()) {
+    return children_[0]->Init(ctx);
+  }
+  return true;
+}
+
+std::shared_ptr<Record> Skip::Next() {
+  if (!initialized_) {
+    initialized_ = true;
+    for (size_t i = 0; i < skip_; ++i) {
+      if (!children_[0]->Next()) {
+        break;
+      }
+      ++skipped_;
+    }
+  }
+  return children_[0]->Next();
+}
+
+std::string Skip::GetDetails() const {
+  return std::to_string(skip_);
+}
+
+// ============================================================================
+// Distinct Implementation
+// ============================================================================
+
+Distinct::Distinct(std::vector<std::shared_ptr<Expression>> keys)
+    : keys_(std::move(keys)) {}
+
+bool Distinct::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  if (!children_.empty()) {
+    return children_[0]->Init(ctx);
+  }
+  return true;
+}
+
+std::shared_ptr<Record> Distinct::Next() {
+  ExpressionEvaluator evaluator(context_);
+  
+  while (auto record = children_[0]->Next()) {
+    size_t h = ComputeKeyHash(*record);
+    if (seen_hashes_.find(h) == seen_hashes_.end()) {
+      seen_hashes_.insert(h);
+      return record;
+    }
+  }
+  return nullptr;
+}
+
+size_t Distinct::ComputeKeyHash(const Record& record) {
+  ExpressionEvaluator evaluator(context_);
+  size_t h = 0;
+  for (const auto& expr : keys_) {
+    if (expr) {
+      auto val = evaluator.Evaluate(*expr, record);
+      h = h * 31 + val.Hash();
+    }
+  }
+  return h;
+}
+
+// ============================================================================
+// Aggregate Implementation
+// ============================================================================
+
+Aggregate::Aggregate(std::vector<AggregationItem> items)
+    : items_(std::move(items)) {}
+
+bool Aggregate::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  if (!children_.empty()) {
+    return children_[0]->Init(ctx);
+  }
+  return true;
+}
+
+std::shared_ptr<Record> Aggregate::Next() {
+  if (!aggregated_) {
+    DoAggregate();
+    aggregated_ = true;
+  }
+  
+  if (current_index_ < buffered_records_.size()) {
+    return buffered_records_[current_index_++];
+  }
+  return nullptr;
+}
+
+void Aggregate::DoAggregate() {
+  ExpressionEvaluator evaluator(context_);
+  
+  // Group records by group_by_key (if any)
+  std::map<std::string, std::vector<Record>> groups;
+  
+  while (auto record = children_[0]->Next()) {
+    std::string group_key;
+    for (const auto& item : items_) {
+      if (item.group_by_key.has_value()) {
+        auto val = record->Get(*item.group_by_key);
+        if (val) {
+          group_key += val->ToString() + "|";
+        }
+      }
+    }
+    groups[group_key].push_back(*record);
+  }
+  
+  // If no grouping, use a single empty-key group
+  if (groups.empty()) {
+    groups[""];  // Empty group
+  }
+  
+  // Compute aggregates per group
+  for (auto& [group_key, records] : groups) {
+    auto result = std::make_shared<Record>();
+    
+    for (const auto& item : items_) {
+      switch (item.func) {
+        case AggregationFunc::kCount: {
+          result->Set(item.output_name, Value(static_cast<int64_t>(records.size())));
+          break;
+        }
+        case AggregationFunc::kSum: {
+          int64_t int_sum = 0;
+          double float_sum = 0.0;
+          bool has_float = false;
+          for (const auto& r : records) {
+            if (item.expression) {
+              auto val = evaluator.Evaluate(*item.expression, r);
+              if (val.IsInt()) int_sum += val.GetInt();
+              else if (val.IsFloat()) { float_sum += val.GetFloat(); has_float = true; }
+            }
+          }
+          if (has_float) result->Set(item.output_name, Value(float_sum));
+          else result->Set(item.output_name, Value(int_sum));
+          break;
+        }
+        case AggregationFunc::kAvg: {
+          double sum = 0.0;
+          size_t count = 0;
+          for (const auto& r : records) {
+            if (item.expression) {
+              auto val = evaluator.Evaluate(*item.expression, r);
+              if (val.IsInt()) { sum += static_cast<double>(val.GetInt()); ++count; }
+              else if (val.IsFloat()) { sum += val.GetFloat(); ++count; }
+            }
+          }
+          if (count > 0) result->Set(item.output_name, Value(sum / count));
+          else result->Set(item.output_name, Value());
+          break;
+        }
+        case AggregationFunc::kMin: {
+          Value min_val;
+          bool first = true;
+          for (const auto& r : records) {
+            if (item.expression) {
+              auto val = evaluator.Evaluate(*item.expression, r);
+              if (first || val < min_val) {
+                min_val = val;
+                first = false;
+              }
+            }
+          }
+          result->Set(item.output_name, min_val);
+          break;
+        }
+        case AggregationFunc::kMax: {
+          Value max_val;
+          bool first = true;
+          for (const auto& r : records) {
+            if (item.expression) {
+              auto val = evaluator.Evaluate(*item.expression, r);
+              if (first || val > max_val) {
+                max_val = val;
+                first = false;
+              }
+            }
+          }
+          result->Set(item.output_name, max_val);
+          break;
+        }
+        case AggregationFunc::kCollect: {
+          std::vector<Value> collected;
+          for (const auto& r : records) {
+            if (item.expression) {
+              collected.push_back(evaluator.Evaluate(*item.expression, r));
+            }
+          }
+          result->Set(item.output_name, Value(collected));
+          break;
+        }
+      }
+    }
+    
+    buffered_records_.push_back(result);
+  }
 }
 
 }  // namespace cypher

@@ -16,7 +16,7 @@
 // Partition Migration Service Implementation
 // =============================================================================
 
-#include "src/service/partition_migration_service.h"
+#include "cedar/service/partition_migration_service.h"
 
 #include <chrono>
 #include <iomanip>
@@ -119,7 +119,9 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
     ::grpc::ServerContext* context,
     const ::cedar::migration::StartMigrationRequest* request,
     ::cedar::migration::StartMigrationResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   // Validate request
   std::string error_msg;
@@ -213,7 +215,9 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
     ::grpc::ServerContext* context,
     ::grpc::ServerReader<::cedar::migration::SyncDataRequest>* reader,
     ::cedar::migration::SyncDataResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   ::cedar::migration::SyncDataRequest request;
   uint64_t total_bytes_received = 0;
@@ -347,7 +351,9 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
     ::grpc::ServerContext* context,
     const ::cedar::migration::FinalizeMigrationRequest* request,
     ::cedar::migration::FinalizeMigrationResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   const std::string& migration_id = request->migration_id();
   
@@ -387,7 +393,7 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
         {
           std::lock_guard<std::mutex> stats_lock(stats_mutex_);
           ++stats_.total_migrations_failed;
-          --stats_.active_migrations;
+          if (stats_.active_migrations > 0) --stats_.active_migrations;
         }
         response->set_success(false);
         response->set_error_msg(task->error_msg);
@@ -400,7 +406,7 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
       {
         std::lock_guard<std::mutex> stats_lock(stats_mutex_);
         ++stats_.total_migrations_failed;
-        --stats_.active_migrations;
+        if (stats_.active_migrations > 0) --stats_.active_migrations;
       }
       response->set_success(false);
       response->set_error_msg(task->error_msg);
@@ -417,7 +423,7 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
     {
       std::lock_guard<std::mutex> stats_lock(stats_mutex_);
       ++stats_.total_migrations_completed;
-      --stats_.active_migrations;
+      if (stats_.active_migrations > 0) --stats_.active_migrations;
     }
     
     response->set_success(true);
@@ -437,7 +443,7 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
     {
       std::lock_guard<std::mutex> stats_lock(stats_mutex_);
       ++stats_.total_migrations_rolled_back;
-      --stats_.active_migrations;
+      if (stats_.active_migrations > 0) --stats_.active_migrations;
     }
     
     response->set_success(true);
@@ -451,7 +457,9 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
     ::grpc::ServerContext* context,
     const ::cedar::migration::GetMigrationStatusRequest* request,
     ::cedar::migration::GetMigrationStatusResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   const std::string& migration_id = request->migration_id();
   
@@ -511,7 +519,7 @@ bool PartitionMigrationServiceImpl::CancelMigration(
   {
     std::lock_guard<std::mutex> stats_lock(stats_mutex_);
     ++stats_.total_migrations_rolled_back;
-    --stats_.active_migrations;
+    if (stats_.active_migrations > 0) --stats_.active_migrations;
   }
   
   return true;
@@ -641,7 +649,7 @@ bool PartitionMigrationServiceImpl::UpdateTaskStatus(
     task->completed_at = std::chrono::system_clock::now();
     std::lock_guard<std::mutex> stats_lock(stats_mutex_);
     ++stats_.total_migrations_failed;
-    --stats_.active_migrations;
+    if (stats_.active_migrations > 0) --stats_.active_migrations;
   }
   
   return true;

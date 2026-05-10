@@ -74,7 +74,7 @@ struct PartitionWalEntry {
   uint32_t data_len;        // Payload length
   // Followed by: data[payload_len]
   
-  static constexpr size_t kHeaderSize = 21;  // Fixed header size
+  static constexpr size_t kHeaderSize = 27;  // 4+1+2+8+8+4 = Fixed header size
 };
 
 // Per-partition WAL writer

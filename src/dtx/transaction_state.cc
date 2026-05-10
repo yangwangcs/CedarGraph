@@ -15,8 +15,11 @@
 #include "cedar/dtx/transaction_state.h"
 
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <sys/uio.h>
+#include <unistd.h>
 
 namespace cedar {
 
@@ -33,74 +36,97 @@ class TransactionStateManager::TransactionWAL {
     wal_dir_ = wal_dir;
     // Ensure directory exists
     std::filesystem::create_directories(wal_dir);
-    
+
     wal_file_ = wal_dir + "/txn_state.wal";
-    log_.open(wal_file_, std::ios::app | std::ios::binary);
-    if (!log_.is_open()) {
+    // Use POSIX open for durable writes (enables fd-based fsync)
+    fd_ = ::open(wal_file_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd_ < 0) {
       return Status::IOError("TransactionWAL", "Failed to open WAL file");
     }
     return Status::OK();
   }
-  
+
   void Close() {
-    if (log_.is_open()) {
-      log_.close();
+    if (fd_ >= 0) {
+      ::close(fd_);
+      fd_ = -1;
     }
   }
-  
+
   Status Append(const std::string& data) {
-    if (!log_.is_open()) {
+    if (fd_ < 0) {
       return Status::IOError("TransactionWAL", "WAL not open");
     }
-    
+
     // Write length prefix + data
     uint32_t len = static_cast<uint32_t>(data.size());
-    log_.write(reinterpret_cast<const char*>(&len), sizeof(len));
-    log_.write(data.data(), data.size());
-    log_.flush();
-    
-    if (!log_.good()) {
+    struct iovec iov[2];
+    iov[0].iov_base = &len;
+    iov[0].iov_len = sizeof(len);
+    iov[1].iov_base = const_cast<char*>(data.data());
+    iov[1].iov_len = data.size();
+
+    ssize_t written = ::writev(fd_, iov, 2);
+    if (written < 0 || static_cast<size_t>(written) != sizeof(len) + data.size()) {
       return Status::IOError("TransactionWAL", "Write failed");
     }
+    // Ensure WAL durability on disk before returning
+    if (::fsync(fd_) < 0) {
+      return Status::IOError("TransactionWAL", "fsync failed");
+    }
     return Status::OK();
   }
-  
+
   Status Sync() {
-    if (!log_.is_open()) {
+    if (fd_ < 0) {
       return Status::IOError("TransactionWAL", "WAL not open");
     }
-    log_.flush();
+    #ifdef __APPLE__
+      if (fcntl(fd_, F_FULLFSYNC) < 0) {
+        return Status::IOError("TransactionWAL", "F_FULLFSYNC failed");
+      }
+    #else
+      if (fsync(fd_) < 0) {
+        return Status::IOError("TransactionWAL", "fsync failed");
+      }
+    #endif
     return Status::OK();
   }
-  
+
   Status Replay(const std::function<bool(const std::string& record)>& callback) {
-    std::ifstream input(wal_file_, std::ios::binary);
-    if (!input.is_open()) {
+    int replay_fd = ::open(wal_file_.c_str(), O_RDONLY);
+    if (replay_fd < 0) {
       return Status::OK();  // No WAL file yet
     }
-    
-    while (input.good()) {
+
+    while (true) {
       uint32_t len;
-      input.read(reinterpret_cast<char*>(&len), sizeof(len));
-      if (!input.good()) break;
-      
+      ssize_t n = ::read(replay_fd, &len, sizeof(len));
+      if (n <= 0) break;  // EOF or error
+      if (n != sizeof(len)) {
+        ::close(replay_fd);
+        return Status::Corruption("TransactionWAL", "Incomplete length record");
+      }
+
       std::string data(len, '\0');
-      input.read(&data[0], len);
-      if (!input.good()) {
+      n = ::read(replay_fd, &data[0], len);
+      if (n < 0 || static_cast<size_t>(n) != len) {
+        ::close(replay_fd);
         return Status::Corruption("TransactionWAL", "Incomplete record");
       }
-      
+
       if (!callback(data)) {
         break;
       }
     }
+    ::close(replay_fd);
     return Status::OK();
   }
-  
+
  private:
   std::string wal_dir_;
   std::string wal_file_;
-  std::ofstream log_;
+  int fd_ = -1;
 };
 
 // TransactionRecord serialization
@@ -360,8 +386,10 @@ Status TransactionStateManager::RecoverFromWAL(const std::string& wal_dir) {
     TransactionRecord record;
     Status s = TransactionRecord::Deserialize(record_data, &record);
     if (!s.ok()) {
-      // Log error but continue recovery
-      return true;
+      // WAL record deserialization failed - this is a critical error.
+      // Do not continue recovery as subsequent records may be misaligned.
+      // The caller should check the returned status and handle accordingly.
+      return false;
     }
     
     transactions_[record.txn_id] = std::move(record);

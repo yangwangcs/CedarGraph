@@ -2,8 +2,8 @@
 //
 // Licensed under the Apache License, Version 2.0
 
-#include "partition/strategies/mth_stream_strategy.h"
-#include "partition/mth/op_type.h"
+#include "cedar/partition/strategies/mth_stream_strategy.h"
+#include "cedar/partition/mth/op_type.h"
 #include <sstream>
 
 namespace cedar {

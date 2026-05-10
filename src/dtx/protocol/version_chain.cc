@@ -25,6 +25,16 @@ namespace dtx {
 // VersionChainHead 实现
 // =============================================================================
 
+VersionChainHead::~VersionChainHead() {
+  std::unique_lock<std::shared_mutex> lock(chain_mutex_);
+  VersionChainNode* node = latest.load(std::memory_order_relaxed);
+  while (node) {
+    VersionChainNode* next = node->next.load(std::memory_order_relaxed);
+    delete node;
+    node = next;
+  }
+}
+
 VersionChainNode* VersionChainHead::GetLatestVisible() const {
   VersionChainNode* node = latest.load(std::memory_order_acquire);
   
@@ -54,6 +64,8 @@ VersionChainNode* VersionChainHead::GetVersion(uint64_t target_version) const {
 
 bool VersionChainHead::InsertVersion(VersionChainNode* new_node) {
   if (!new_node) return false;
+  
+  std::unique_lock<std::shared_mutex> lock(chain_mutex_);
   
   VersionChainNode* expected = latest.load(std::memory_order_relaxed);
   new_node->next.store(expected, std::memory_order_relaxed);
@@ -116,6 +128,7 @@ Status VersionChainIndex::ReadVersion(const CedarKey& key,
     return Status::NotFound("VersionChainIndex", "Key not found");
   }
   
+  std::shared_lock<std::shared_mutex> chain_lock(head->chain_mutex_);
   head->EnterRead();
   *node = head->GetVersion(version);
   head->ExitRead();
@@ -134,6 +147,7 @@ Status VersionChainIndex::ReadLatestVisible(const CedarKey& key,
     return Status::NotFound("VersionChainIndex", "Key not found");
   }
   
+  std::shared_lock<std::shared_mutex> chain_lock(head->chain_mutex_);
   head->EnterRead();
   *node = head->GetLatestVisible();
   head->ExitRead();
@@ -176,7 +190,11 @@ ValidationResult VersionChainIndex::FastValidate(const CedarKey& key,
     return ValidationResult::kValid;
   }
   
-  return ValidateWithHead(head, read_version, commit_ts);
+  std::shared_lock<std::shared_mutex> chain_lock(head->chain_mutex_);
+  head->EnterRead();
+  auto result = ValidateWithHead(head, read_version, commit_ts);
+  head->ExitRead();
+  return result;
 }
 
 ValidationResult VersionChainIndex::FullValidate(const CedarKey& key,
@@ -195,6 +213,7 @@ ValidationResult VersionChainIndex::FullValidate(const CedarKey& key,
   }
   
   // 需要遍历版本链
+  std::shared_lock<std::shared_mutex> chain_lock(head->chain_mutex_);
   head->EnterRead();
   VersionChainNode* node = head->latest.load(std::memory_order_acquire);
   
@@ -289,7 +308,15 @@ void VersionChainIndex::RunGC(Timestamp global_safe_ts) {
   std::unique_lock<std::shared_mutex> lock(index_mutex_);
   
   for (auto& [key, head] : index_) {
-    // 如果有活跃读取者，跳过
+    // 如果有活跃读取者，跳过（保守策略）
+    if (head->reader_count.load(std::memory_order_relaxed) > 0) {
+      continue;
+    }
+    
+    // 获取链表结构锁，阻止新的读者进入链表遍历
+    std::unique_lock<std::shared_mutex> chain_lock(head->chain_mutex_);
+    
+    // 双重检查：获取锁后再次确认没有读者
     if (head->reader_count.load(std::memory_order_relaxed) > 0) {
       continue;
     }
@@ -328,7 +355,7 @@ void VersionChainIndex::RunGC(Timestamp global_safe_ts) {
         // 减少链长度
         head->chain_length.fetch_sub(1, std::memory_order_relaxed);
         
-        // 删除节点（实际实现可能需要延迟删除）
+        // 删除节点（现在安全，因为 chain_mutex_ 阻止了读者遍历）
         delete current;
         
         if (prev) {
@@ -359,6 +386,7 @@ VersionChainIndex::GCStats VersionChainIndex::GetGCStats() const {
 
 void CrossShardVersionView::AddShardView(PartitionID pid,
                                           const std::vector<VersionInfo>& versions) {
+  std::lock_guard<std::mutex> lock(mutex_);
   shard_views_[pid] = versions;
 }
 
@@ -366,8 +394,7 @@ bool CrossShardVersionView::GlobalValidate(
     const std::vector<std::pair<CedarKey, uint64_t>>& read_set,
     Timestamp commit_ts) {
   
-  // 简化的全局验证：检查所有分片的视图
-  // 实际实现需要更复杂的逻辑
+  std::lock_guard<std::mutex> lock(mutex_);
   
   for (const auto& [key, read_version] : read_set) {
     bool found = false;
@@ -392,6 +419,8 @@ bool CrossShardVersionView::GlobalValidate(
 }
 
 Timestamp CrossShardVersionView::ComputeGlobalSafeTimestamp() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  
   Timestamp min_ts = Timestamp::Max();
   
   for (const auto& [_, versions] : shard_views_) {
@@ -406,6 +435,7 @@ Timestamp CrossShardVersionView::ComputeGlobalSafeTimestamp() const {
 }
 
 void CrossShardVersionView::Clear() {
+  std::lock_guard<std::mutex> lock(mutex_);
   shard_views_.clear();
 }
 

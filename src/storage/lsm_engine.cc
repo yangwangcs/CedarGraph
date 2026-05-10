@@ -3,6 +3,8 @@
 #include "cedar/storage/lsm_engine.h"
 #include "cedar/query/cedar_scan.h"
 #include "cedar/storage/compaction_merger.h"
+#include "cedar/storage/temporal_bloom_filter.h"
+#include "cedar/storage/auto_blob_storage.h"
 #include "cedar/sst/zone_columnar_format.h"
 #include "cedar/sst/zone_columnar_reader.h"
 #include "cedar/sst/zone_columnar_builder.h"
@@ -63,6 +65,10 @@ LsmEngine::LsmEngine(const std::string& db_path,
 
 LsmEngine::~LsmEngine() {
   Close();
+  // Wait for any pending async flush to prevent UAF
+  if (flush_future_.valid()) {
+    flush_future_.wait();
+  }
 }
 
 Status LsmEngine::Open() {
@@ -121,6 +127,16 @@ Status LsmEngine::Open() {
                         options_.skeleton_cache_entries_per_shard);
   }
   
+  // ========== Initialize Phase 4c: ParallelQueryEngine ==========
+  if (options_.enable_parallel_query) {
+    ParallelQueryConfig pq_config;
+    pq_config.num_threads = options_.parallel_query_threads;
+    pq_config.max_concurrent_columns = options_.parallel_query_max_columns;
+    pq_config.parallel_threshold = options_.parallel_query_threshold;
+    pq_config.timeout_ms = options_.parallel_query_timeout_ms;
+    parallel_engine_ = std::make_unique<ParallelQueryEngine>(this, pq_config);
+  }
+  
   opened_ = true;
   
   return Status::OK();
@@ -162,17 +178,39 @@ Status LsmEngine::Close() {
     std::cout << "[LsmEngine::Close] All flushes completed" << std::endl;
   }
 
-  if (imm_) {
-    std::cout << "[LsmEngine::Close] Flushing imm_" << std::endl;
-    FlushMemTable(imm_.get());
-    imm_.reset();
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    if (imm_) {
+      std::cout << "[LsmEngine::Close] Flushing imm_" << std::endl;
+      auto* imm = imm_.get();
+      lock.unlock();
+      FlushMemTable(imm);
+      lock.lock();
+      imm_.reset();
+    }
+
+    if (mem_ && !mem_->IsEmpty()) {
+      std::cout << "[LsmEngine::Close] Flushing mem_" << std::endl;
+      auto* mem = mem_.get();
+      lock.unlock();
+      FlushMemTable(mem);
+      lock.lock();
+    } else {
+      std::cout << "[LsmEngine::Close] mem_ is empty or null" << std::endl;
+    }
   }
 
-  if (mem_ && !mem_->IsEmpty()) {
-    std::cout << "[LsmEngine::Close] Flushing mem_" << std::endl;
-    FlushMemTable(mem_.get());
-  } else {
-    std::cout << "[LsmEngine::Close] mem_ is empty or null" << std::endl;
+  // Flush any accumulated entries (accumulated flush mode)
+  if (options_.enable_accumulated_flush && !accumulated_entries_.empty()) {
+    std::cout << "[LsmEngine::Close] Flushing accumulated entries" << std::endl;
+    FlushAccumulated();
+  }
+
+  // 同步并关闭 WAL，确保所有已提交数据持久化
+  if (wal_writer_) {
+    std::cout << "[LsmEngine::Close] Closing WAL" << std::endl;
+    wal_writer_->Close();
+    wal_writer_.reset();
   }
 
   opened_ = false;
@@ -186,7 +224,18 @@ Status LsmEngine::Put(const CedarKey& key, const Descriptor& descriptor, Timesta
 
   {
     std::unique_lock<std::shared_mutex> lock(mutex_);
+    
+    // 先写 WAL，确保持久化成功后再修改 memtable
+    if (wal_writer_) {
+      Status wal_status = wal_writer_->WritePut(key, descriptor, txn_version);
+      if (!wal_status.ok()) {
+        return wal_status;
+      }
+    }
+    
     mem_->Put(key, descriptor, txn_version);
+    
+    InvalidateQueryCache(key.entity_id());
     
     if (!disable_column_tracking_) {
       TrackColumnId(key.entity_id(), key.column_id());
@@ -217,7 +266,18 @@ Status LsmEngine::Delete(const CedarKey& key, Timestamp txn_version) {
   }
   {
     std::unique_lock<std::shared_mutex> lock(mutex_);
+    
+    // 先写 WAL，确保持久化成功后再修改 memtable
+    if (wal_writer_) {
+      Status wal_status = wal_writer_->WriteDelete(key, txn_version);
+      if (!wal_status.ok()) {
+        return wal_status;
+      }
+    }
+    
     mem_->Put(key, Descriptor(), txn_version);
+    
+    InvalidateQueryCache(key.entity_id());
     if (!disable_column_tracking_) {
       TrackColumnId(key.entity_id(), key.column_id());
     }
@@ -383,11 +443,22 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     return std::nullopt;
   }
 
+  // Check query cache first
+  if (query_cache_) {
+    auto cached = query_cache_->Get(entity_id, column_id, timestamp.value());
+    if (cached.has_value()) {
+      return cached.value();
+    }
+  }
+
   std::shared_lock<std::shared_mutex> lock(mutex_);
 
   // 1. Query MemTable (hot data)
   auto desc = mem_->GetAtTime(entity_id, entity_type, column_id, timestamp);
   if (desc.has_value()) {
+    if (query_cache_) {
+      query_cache_->Put(entity_id, column_id, timestamp.value(), desc);
+    }
     return desc;
   }
 
@@ -395,6 +466,9 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
   if (imm_) {
     desc = imm_->GetAtTime(entity_id, entity_type, column_id, timestamp);
     if (desc.has_value()) {
+      if (query_cache_) {
+        query_cache_->Put(entity_id, column_id, timestamp.value(), desc);
+      }
       return desc;
     }
   }
@@ -402,6 +476,9 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
   // 3. Query Accumulated Buffer (for accumulated flush mode)
   auto accumulated = QueryAccumulatedBuffer(entity_id, entity_type, column_id, timestamp);
   if (accumulated.has_value()) {
+    if (query_cache_) {
+      query_cache_->Put(entity_id, column_id, timestamp.value(), accumulated->second);
+    }
     return accumulated->second;
   }
   
@@ -419,6 +496,15 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
       if (entity_id < file_meta.min_entity_id || 
           entity_id > file_meta.max_entity_id) {
         continue;
+      }
+      
+      // Temporal Bloom Filter 检查
+      if (!file_meta.temporal_filter_metadata.empty()) {
+        auto filter_opt = TemporalBloomFilter::Deserialize(file_meta.temporal_filter_metadata);
+        if (filter_opt.has_value() && 
+            !filter_opt.value().MayContain(entity_id)) {
+          continue;
+        }
       }
       
       // 使用缓存的 Reader
@@ -492,11 +578,18 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     // 找到指定时间的版本（<= timestamp 的最新版本）
     for (const auto& [key, descriptor] : all_entries) {
       if (key.timestamp().value() <= timestamp.value()) {
+        if (query_cache_) {
+          query_cache_->Put(entity_id, column_id, timestamp.value(), descriptor);
+        }
         return descriptor;
       }
     }
   }
   
+  // Cache the negative result to avoid repeated SST scans
+  if (query_cache_) {
+    query_cache_->Put(entity_id, column_id, timestamp.value(), std::nullopt);
+  }
   return std::nullopt;
 }
 
@@ -765,6 +858,15 @@ std::vector<MemTableEntry> LsmEngine::GetRangeLimit(uint64_t entity_id,
         continue;
       }
       
+      // Temporal Bloom Filter 检查: 快速排除不包含该 entity 时间范围的文件
+      if (!file_meta.temporal_filter_metadata.empty()) {
+        auto filter_opt = TemporalBloomFilter::Deserialize(file_meta.temporal_filter_metadata);
+        if (filter_opt.has_value() && 
+            !filter_opt.value().MayExistInRange(entity_id, start, end)) {
+          continue;  // 该文件肯定不包含目标数据
+        }
+      }
+      
       // 计算时间范围重叠度（用于排序）
       uint64_t overlap_start = std::max(file_meta.min_timestamp, start.value());
       uint64_t overlap_end = std::min(file_meta.max_timestamp, end.value());
@@ -934,6 +1036,7 @@ LsmEngine::BatchGetRangeOptimized(const std::vector<uint64_t>& entity_ids,
     
     // 过滤时间范围相关的文件
     std::vector<ZoneSstMeta> relevant_files;
+    relevant_files.reserve(files.size());
     for (const auto& file_meta : files) {
       if (file_meta.max_timestamp < start.value() || 
           file_meta.min_timestamp > end.value()) {
@@ -1128,6 +1231,7 @@ std::vector<LsmEngine::TemporalVersion> LsmEngine::GetTemporalChain(uint64_t ent
   
   // First, get from MemTable (hot data)
   auto mem_entries = mem_->GetAll(entity_id, entity_type, column_id);
+  result.reserve(mem_entries.size());
   for (const auto& entry : mem_entries) {
     result.push_back({entry.timestamp, entry.descriptor, -1});
   }
@@ -1218,11 +1322,10 @@ void LsmEngine::MaybeScheduleFlush() {
   mem_ = std::make_unique<VSLMemTable>();
   
   VSLMemTable* imm = imm_.get();
-  lock.unlock();
   
-  // 使用 std::async 替代 detach()，旧 future 在覆盖时自动 join，
-  // 避免 detached thread 堆积导致 macOS 线程资源耗尽。
+  // 先增加计数再释放锁，避免 Close() 在计数为 0 时看到 imm_ 非空
   active_flush_count_.fetch_add(1);
+  lock.unlock();
   try {
     flush_future_ = std::async(std::launch::async, [this, imm]() {
       Status s = FlushMemTable(imm);
@@ -1408,6 +1511,7 @@ Status LsmEngine::FlushAccumulated() {
     zone_meta.entity_type = 0;
     zone_meta.path = filepath;
     zone_meta.blob_path = db_path_ + "/sst_" + std::to_string(file_number) + ".blob";
+    zone_meta.temporal_filter_metadata = builder->GetTemporalFilterData();
     
     compaction_engine_->AddSSTFile(zone_meta);
     compaction_engine_->ScheduleCompaction();
@@ -1484,6 +1588,7 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::pair<CedarKey, Descriptor>>
   meta.level = 0;
   meta.column_id = UINT16_MAX;  // 跨 Column ID
   meta.entity_type = 0;         // 混合 Entity Type
+  meta.temporal_filter_metadata = builder->GetTemporalFilterData();
   
   {
     std::lock_guard<std::shared_mutex> lock(mutex_);
@@ -1519,6 +1624,7 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::pair<CedarKey, Descriptor>>
 }
 
 LsmEngine::Stats LsmEngine::GetStats() const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   Stats stats;
   stats.memtable_size = mem_->size();
   if (imm_) {
@@ -1592,6 +1698,7 @@ Status LsmEngine::ReplayWAL(uint64_t start_sequence) {
   }
 
   std::vector<uint64_t> file_numbers;
+  file_numbers.reserve(wal_files.size());
   for (const auto& f : wal_files) {
     uint64_t num = 0;
     if (sscanf(f.c_str(), "%lu.wal", &num) == 1) {
@@ -1612,13 +1719,32 @@ Status LsmEngine::ReplayWAL(uint64_t start_sequence) {
 
     WalBatch batch;
     uint64_t sequence = 0;
-    while (reader.ReadNextRecord(&batch, &sequence).ok()) {
-      for (const auto& op : batch.ops()) {
-        if (op.type == WalRecordType::kPut) {
-          mem_->Put(op.key, op.descriptor, op.txn_version);
-        } else if (op.type == WalRecordType::kDelete) {
-          mem_->Put(op.key, Descriptor(), op.txn_version);
+    while (true) {
+      auto status = reader.ReadNextRecord(&batch, &sequence);
+      if (status.ok()) {
+        for (const auto& op : batch.ops()) {
+          if (op.type == WalRecordType::kPut) {
+            mem_->Put(op.key, op.descriptor, op.txn_version);
+          } else if (op.type == WalRecordType::kDelete) {
+            mem_->Put(op.key, Descriptor(), op.txn_version);
+          }
         }
+      } else if (status.IsCorruption()) {
+        // Log corruption and attempt to continue with next record
+        std::cerr << "[WAL WARNING] corruption in " << path
+                  << " at sequence " << sequence
+                  << ": " << status.ToString()
+                  << ". Skipping record and attempting to continue." << std::endl;
+        continue;
+      } else if (status.IsNotFound()) {
+        // End of file
+        break;
+      } else {
+        // IO error or other fatal error - stop replay but don't fail startup
+        std::cerr << "[WAL ERROR] replay error in " << path
+                  << ": " << status.ToString()
+                  << ". Stopping WAL replay for this file." << std::endl;
+        break;
       }
     }
   }
@@ -1754,6 +1880,35 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
     return results;
   }
   
+  // Fast path: SkeletonCache for EdgeOut (structure-only, no hydration trigger)
+  // NOTE: We do NOT call HydrateVertex here to avoid infinite recursion,
+  // since HydrateVertex calls ScanEdgesWithFolding.
+  if (edge_direction == EntityType::EdgeOut && skeleton_cache_) {
+    auto [cached_edges, base_ts] = skeleton_cache_->ScanOutEdgesSafe(vertex_id);
+    if (cached_edges.has_value()) {
+      for (const auto& edge : cached_edges.value()) {
+        // Edge type filter
+        if (edge_type != 0xFFFF && edge.bits.label_id != (edge_type & 0x7F)) {
+          continue;
+        }
+        // Snapshot timestamp filter
+        uint64_t edge_ts = base_ts + edge.bits.timestamp_offset;
+        if (edge_ts > snapshot_ts.value()) {
+          continue;
+        }
+        // Skip deleted edges
+        if (edge.IsDeleted()) {
+          continue;
+        }
+        // Reconstruct CedarKey; Descriptor is empty (SkeletonCache stores no properties)
+        CedarKey key = edge.ToCedarKey(vertex_id, base_ts);
+        results.push_back({edge.dst_id, key.timestamp(), Descriptor(),
+                          static_cast<uint16_t>(edge.bits.label_id), key});
+      }
+      return results;
+    }
+  }
+  
   // Get all column IDs (edge types) for this entity
   std::vector<uint16_t> column_ids;
   if (edge_type == 0xFFFF) {  // kAllLabels
@@ -1771,6 +1926,7 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
     CedarKey key;
   };
   std::vector<TempEntry> all_entries;
+  all_entries.reserve(column_ids.size() * 8);  // heuristic pre-allocation
   
   // Query each edge type
   for (uint16_t col_id : column_ids) {
@@ -1812,6 +1968,21 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
         
         all_entries.push_back({entry.dst_id.value(), entry.timestamp,
                               entry.descriptor, col_id, key});
+      }
+    }
+    
+    // Query Accumulated Buffer (for accumulated flush mode)
+    if (!accumulated_entries_.empty()) {
+      std::lock_guard<std::mutex> lock(accumulated_mutex_);
+      for (const auto& [key, descriptor] : accumulated_entries_) {
+        if (key.entity_id() != vertex_id) continue;
+        if (key.entity_type() != edge_direction) continue;
+        if (key.column_id() != col_id) continue;
+        if (key.timestamp().value() > snapshot_ts.value()) continue;
+        if (key.IsDelete()) continue;
+        
+        all_entries.push_back({key.target_id(), key.timestamp(),
+                              descriptor, col_id, key});
       }
     }
     
@@ -2014,6 +2185,7 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
   meta.level = 0;
   meta.column_id = column_id;
   meta.entity_type = entity_type;
+  meta.temporal_filter_metadata = builder->GetTemporalFilterData();
 
   {
     std::lock_guard<std::shared_mutex> lock(mutex_);
@@ -2035,6 +2207,7 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
     zone_meta.entity_type = entity_type;
     zone_meta.path = filepath;
     zone_meta.blob_path = db_path_ + "/sst_" + std::to_string(file_number) + ".blob";
+    zone_meta.temporal_filter_metadata = builder->GetTemporalFilterData();
     
     Status cs = compaction_engine_->AddSSTFile(zone_meta);
     if (!cs.ok()) {
@@ -2066,6 +2239,7 @@ Status LsmEngine::DoCompaction(int level, const std::vector<SSTFileMeta>& inputs
   
   // 打开所有输入 SST
   std::vector<std::shared_ptr<SstReader>> readers;
+  readers.reserve(inputs.size());
   for (const auto& input : inputs) {
     std::string input_path = SstFilePath(input.file_number);
     auto reader = std::make_shared<SstReader>(input_path);
@@ -2078,6 +2252,7 @@ Status LsmEngine::DoCompaction(int level, const std::vector<SSTFileMeta>& inputs
   
   // 准备 reader 指针向量
   std::vector<SstReader*> reader_ptrs;
+  reader_ptrs.reserve(readers.size());
   for (auto& r : readers) {
     reader_ptrs.push_back(r.get());
   }
@@ -2155,9 +2330,11 @@ Status LsmEngine::DoCompaction(int level, const std::vector<SSTFileMeta>& inputs
     env_->RemoveFile(old_path);
   }
   
-  // 更新 Compaction Engine
+  // 更新 Compaction Engine: remove input files, add output file
   if (compaction_engine_) {
-    compaction_engine_->RemoveSSTFile(output_meta->file_number);
+    for (const auto& input : inputs) {
+      compaction_engine_->RemoveSSTFile(input.file_number);
+    }
     compaction_engine_->AddSSTFile(*output_meta);
   }
   
@@ -2221,14 +2398,14 @@ void LsmEngine::QuerySSTFiles(uint64_t entity_id, EntityType entity_type,
 }
 
 void LsmEngine::GetEntriesFromSst(uint64_t entity_id, EntityType entity_type,
-                                  uint16_t column_id, 
+                                  uint16_t column_id,
                                   std::vector<std::pair<CedarKey, Descriptor>>* results) {
   if (!results || levels_.empty()) {
     return;
   }
   
   // OPTIMIZATION: Use column-based file index to quickly find candidate files
-  std::vector<SSTFileMeta*> candidates = GetCandidateFiles(entity_id, entity_type, column_id);
+  std::vector<uint64_t> candidates = GetCandidateFiles(entity_id, entity_type, column_id);
   
   // If index returns empty, fall back to building from levels
   if (candidates.empty()) {
@@ -2238,29 +2415,26 @@ void LsmEngine::GetEntriesFromSst(uint64_t entity_id, EntityType entity_type,
         if (entity_id >= meta.min_entity_id && entity_id <= meta.max_entity_id &&
             column_id == meta.column_id &&
             static_cast<uint8_t>(entity_type) == meta.entity_type) {
-          candidates.push_back(const_cast<SSTFileMeta*>(&meta));
+          candidates.push_back(meta.file_number);
         }
       }
     }
   }
   
-  // OPTIMIZATION: If too many candidates, limit to first 20 files
-  // For temporal data, recent files (lower file numbers) are more likely to contain the data
-  // But for point query, we need all files that might contain the entity
-  // So we use Bloom Filter to quickly skip files
+  // OPTIMIZATION: If too many candidates, limit to first 50 files
   size_t max_files_to_check = 50;
   if (candidates.size() > max_files_to_check) {
     // Sort by file_number (newest first)
-    std::sort(candidates.begin(), candidates.end(), 
-      [](SSTFileMeta* a, SSTFileMeta* b) {
-        return a->file_number > b->file_number;
+    std::sort(candidates.begin(), candidates.end(),
+      [](uint64_t a, uint64_t b) {
+        return a > b;
       });
     candidates.resize(max_files_to_check);
   }
   
   // Query candidate files
-  for (SSTFileMeta* meta : candidates) {
-    std::string filepath = SstFilePath(meta->file_number);
+  for (uint64_t file_number : candidates) {
+    std::string filepath = SstFilePath(file_number);
     
     // ========== 使用 SstReader（新格式）==========
     SstReader reader(filepath);
@@ -2316,8 +2490,13 @@ Status LsmEngine::LoadSstFiles() {
       if (number_str.empty() || !std::all_of(number_str.begin(), number_str.end(), ::isdigit)) {
         continue;
       }
-      uint64_t file_number = std::stoull(number_str);
-      next_file_number_ = std::max(next_file_number_.load(), file_number + 1);
+      uint64_t file_number = 0;
+      try {
+        file_number = std::stoull(number_str);
+        next_file_number_ = std::max(next_file_number_.load(), file_number + 1);
+      } catch (...) {
+        continue;
+      }
 
       uint64_t file_size = entry.file_size();
 
@@ -2344,6 +2523,7 @@ Status LsmEngine::LoadSstFiles() {
       meta.column_id = reader.ColumnId();
       // entity_type from header
       meta.entity_type = reader.GetEntityType();
+      meta.temporal_filter_metadata = reader.GetTemporalFilterData();
 
       levels_[0].push_back(meta);
     }
@@ -2383,21 +2563,26 @@ void LsmEngine::BuildColumnFileIndex() {
   // Iterate through all levels and files
   for (int level = 0; level < static_cast<int>(levels_.size()); ++level) {
     for (auto& meta : levels_[level]) {
-      // Group by column_id
-      column_file_index_[meta.column_id].push_back(&meta);
+      // Group by column_id, store lightweight copies
+      ColumnIndexEntry entry;
+      entry.file_number = meta.file_number;
+      entry.min_entity_id = meta.min_entity_id;
+      entry.max_entity_id = meta.max_entity_id;
+      entry.entity_type = meta.entity_type;
+      column_file_index_[meta.column_id].push_back(entry);
     }
   }
   
   // Sort each column's files by min_entity_id for binary search
   for (auto& [col_id, files] : column_file_index_) {
-    std::sort(files.begin(), files.end(), [](SSTFileMeta* a, SSTFileMeta* b) {
-      return a->min_entity_id < b->min_entity_id;
+    std::sort(files.begin(), files.end(), [](const ColumnIndexEntry& a, const ColumnIndexEntry& b) {
+      return a.min_entity_id < b.min_entity_id;
     });
   }
 }
 
-std::vector<SSTFileMeta*> LsmEngine::GetCandidateFiles(uint64_t entity_id, 
-                                                           EntityType entity_type, 
+std::vector<uint64_t> LsmEngine::GetCandidateFiles(uint64_t entity_id,
+                                                           EntityType entity_type,
                                                            uint16_t column_id) const {
   std::shared_lock<std::shared_mutex> lock(column_index_mutex_);
   
@@ -2407,16 +2592,16 @@ std::vector<SSTFileMeta*> LsmEngine::GetCandidateFiles(uint64_t entity_id,
   }
   
   const auto& files = it->second;
-  std::vector<SSTFileMeta*> candidates;
+  std::vector<uint64_t> candidates;
   
   // Use binary search to find files that might contain entity_id
   // Files are sorted by min_entity_id
-  for (SSTFileMeta* meta : files) {
+  for (const ColumnIndexEntry& entry : files) {
     // Quick range check: entity_id must be within [min_entity_id, max_entity_id]
-    if (entity_id >= meta->min_entity_id && entity_id <= meta->max_entity_id) {
+    if (entity_id >= entry.min_entity_id && entity_id <= entry.max_entity_id) {
       // Additional check: entity_type must match
-      if (static_cast<uint8_t>(entity_type) == meta->entity_type) {
-        candidates.push_back(meta);
+      if (static_cast<uint8_t>(entity_type) == entry.entity_type) {
+        candidates.push_back(entry.file_number);
       }
     }
     // Early termination: if file's min_entity_id > entity_id, no need to check further
@@ -2475,6 +2660,7 @@ void LsmEngine::MigrateExistingSstFiles() {
       zone_meta.entity_type = old_meta.entity_type;
       zone_meta.path = SstFilePath(old_meta.file_number);
       zone_meta.blob_path = db_path_ + "/sst_" + std::to_string(old_meta.file_number) + ".blob";
+      zone_meta.temporal_filter_metadata = old_meta.temporal_filter_metadata;
       
       // 静默添加，不触发 Compaction
       compaction_engine_->AddSSTFile(zone_meta);
@@ -2498,6 +2684,8 @@ Status LsmEngine::CompactAll() {
   
   // 重新启动自动 Compaction 线程
   auto_compaction_enabled_.store(true);
+  delete auto_compaction_thread_;  // Clean up old thread object after join
+  auto_compaction_thread_ = nullptr;
   auto_compaction_thread_ = new std::thread(&LsmEngine::AutoCompactionThread, this);
   
   return s;
@@ -2855,6 +3043,94 @@ size_t LsmEngine::GetSkeletonCacheMemoryUsage() const {
     return 0;
   }
   return skeleton_cache_->MemoryUsage();
+}
+
+// ========== Phase 4c: BlobFileManager Implementation ==========
+
+void LsmEngine::SetBlobFileManager(BlobFileManager* blob_mgr) {
+  blob_manager_ = blob_mgr;
+}
+
+void LsmEngine::SetAutoBlobStorage(AutoBlobStorage* auto_blob) {
+  auto_blob_storage_ = auto_blob;
+}
+
+Status LsmEngine::PutString(uint64_t entity_id, uint16_t col_id, const std::string& value) {
+  if (auto_blob_storage_) {
+    return auto_blob_storage_->PutString(entity_id, col_id, value);
+  }
+  // Fallback: try inline short string
+  auto desc_opt = Descriptor::InlineShortStr(col_id, Slice(value));
+  if (!desc_opt.has_value()) {
+    return Status::InvalidArgument("LsmEngine", 
+        "value too long for InlineShortStr and blob storage not enabled");
+  }
+  CedarKey key = CedarKey::Vertex(entity_id, col_id, Timestamp(0));
+  return Put(key, *desc_opt, Timestamp(0));
+}
+
+std::optional<std::string> LsmEngine::GetString(uint64_t entity_id, uint16_t col_id) {
+  if (auto_blob_storage_) {
+    return auto_blob_storage_->GetString(entity_id, col_id);
+  }
+  // Fallback: try to read as inline short string
+  CedarKey key = CedarKey::Vertex(entity_id, col_id, Timestamp(0));
+  auto desc = Get(key);
+  if (!desc.has_value()) {
+    return std::nullopt;
+  }
+  if (desc->GetKind() == EntryKind::InlineShortStr) {
+    return desc->AsInlineShortStr();
+  }
+  if (desc->GetKind() == EntryKind::InlineInt) {
+    auto val = desc->AsInlineInt();
+    if (val.has_value()) {
+      return std::to_string(*val);
+    }
+  }
+  return std::nullopt;
+}
+
+// ========== Phase 4c: ParallelQueryEngine Implementation ==========
+
+std::vector<ColumnQueryResult> LsmEngine::QueryColumnsParallel(
+    uint64_t entity_id,
+    const std::vector<uint16_t>& column_ids,
+    EntityType entity_type,
+    Timestamp timestamp) {
+  if (!parallel_engine_) {
+    // Fallback to serial execution
+    std::vector<ColumnQueryResult> results;
+    results.reserve(column_ids.size());
+    for (uint16_t col_id : column_ids) {
+      CedarKey key;
+      if (entity_type == EntityType::Vertex) {
+        key = CedarKey::Vertex(entity_id, col_id, timestamp);
+      } else if (entity_type == EntityType::EdgeOut) {
+        key = CedarKey::EdgeOut(entity_id, col_id, EdgeTypeId(col_id), timestamp);
+      } else {
+        key = CedarKey::EdgeIn(entity_id, col_id, EdgeTypeId(col_id), timestamp);
+      }
+      auto value = Get(key);
+      ColumnQueryResult result;
+      result.column_id = col_id;
+      result.value = value;
+      result.status = Status::OK();
+      results.push_back(std::move(result));
+    }
+    return results;
+  }
+  
+  return parallel_engine_->QueryColumns(entity_id, column_ids,
+                                        static_cast<uint8_t>(entity_type),
+                                        timestamp);
+}
+
+ThreadPoolQueryExecutor::Stats LsmEngine::GetParallelQueryStats() const {
+  if (!parallel_engine_) {
+    return ThreadPoolQueryExecutor::Stats();
+  }
+  return parallel_engine_->GetStats();
 }
 
 }  // namespace cedar

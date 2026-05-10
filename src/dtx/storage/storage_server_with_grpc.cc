@@ -49,12 +49,9 @@ std::atomic<bool> g_running{true};
 std::unique_ptr<grpc::Server> g_grpc_server;
 
 void SignalHandler(int signal) {
+  // Async-signal-safe: only touch std::atomic<bool>
   if (signal == SIGINT || signal == SIGTERM) {
-    std::cout << "\nShutting down storaged..." << std::endl;
     g_running = false;
-    if (g_grpc_server) {
-      g_grpc_server->Shutdown();
-    }
   }
 }
 
@@ -185,7 +182,8 @@ std::string SerializeDescriptor(const cedar::Descriptor& desc) {
 // Deserialize bytes to cedar::Descriptor with column_id
 cedar::Descriptor DeserializeDescriptor(const std::string& data, uint16_t column_id) {
   if (data.size() >= sizeof(int32_t)) {
-    int32_t value = *reinterpret_cast<const int32_t*>(data.data());
+    int32_t value;
+    std::memcpy(&value, data.data(), sizeof(value));
     return cedar::Descriptor(cedar::EntryKind::InlineInt, column_id, value, sizeof(int32_t));
   }
   return cedar::Descriptor();
@@ -237,7 +235,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status Put(grpc::ServerContext* context,
                    const cedar::storage::PutRequest* request,
                    cedar::storage::PutResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     // Extract partition_id from key
     cedar::CedarKey key = ConvertProtoKey(request->key());
@@ -254,6 +252,11 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
         return grpc::Status::OK;
       }
       partition = partition_manager_->GetPartition(pid);
+      if (!partition) {
+        response->set_success(false);
+        response->set_error_msg("Partition creation race: partition still not found");
+        return grpc::Status::OK;
+      }
     }
     
     // Create descriptor from proto data with correct column_id
@@ -280,7 +283,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status Get(grpc::ServerContext* context,
                    const cedar::storage::GetRequest* request,
                    cedar::storage::GetResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     cedar::CedarKey key = ConvertProtoKey(request->key());
     PartitionID pid = key.part_id();
@@ -315,7 +318,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status Delete(grpc::ServerContext* context,
                       const cedar::storage::DeleteRequest* request,
                       cedar::storage::DeleteResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     cedar::CedarKey key = ConvertProtoKey(request->key());
     PartitionID pid = key.part_id();
@@ -346,7 +349,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status Scan(grpc::ServerContext* context,
                     const cedar::storage::ScanRequest* request,
                     cedar::storage::ScanResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     (void)request;
     
     // Note: Full scan not implemented in this version
@@ -359,7 +362,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status ScanNodeV2(grpc::ServerContext* context,
                           const cedar::storage::ScanNodeRequestV2* request,
                           cedar::storage::ScanResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     if (!storage_interface_) {
       response->set_success(false);
@@ -395,7 +398,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status ScanEdgeV2(grpc::ServerContext* context,
                           const cedar::storage::ScanEdgeRequestV2* request,
                           cedar::storage::ScanResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     if (!storage_interface_) {
       response->set_success(false);
@@ -452,7 +455,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status BatchPut(grpc::ServerContext* context,
                         const cedar::storage::BatchPutRequest* request,
                         cedar::storage::BatchPutResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     bool all_success = true;
     
@@ -469,6 +472,11 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
           continue;
         }
         partition = partition_manager_->GetPartition(pid);
+        if (!partition) {
+          response->add_item_success(false);
+          all_success = false;
+          continue;
+        }
       }
       
       cedar::Descriptor desc;
@@ -494,7 +502,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status BatchGet(grpc::ServerContext* context,
                         const cedar::storage::BatchGetRequest* request,
                         cedar::storage::BatchGetResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     for (const auto& proto_key : request->keys()) {
       cedar::CedarKey key = ConvertProtoKey(proto_key);
@@ -528,7 +536,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status Prepare(grpc::ServerContext* context,
                        const cedar::storage::PrepareRequest* request,
                        cedar::storage::PrepareResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     TxnID txn_id = request->txn_id();
     Timestamp commit_ts(request->commit_ts());
@@ -576,6 +584,11 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
           break;
         }
         partition = partition_manager_->GetPartition(pid);
+        if (!partition) {
+          all_prepared = false;
+          error_msg = "Partition creation race: partition still not found";
+          break;
+        }
       }
       
       // Filter keys for this partition
@@ -594,7 +607,8 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       }
       
       // Call Prepare on partition
-      Status status = partition->Prepare(txn_id, partition_reads, partition_writes, commit_ts);
+      std::unordered_map<uint64_t, Descriptor> write_descriptors;
+      Status status = partition->Prepare(txn_id, partition_reads, partition_writes, write_descriptors, commit_ts);
       if (!status.ok()) {
         all_prepared = false;
         error_msg = status.ToString();
@@ -624,7 +638,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status Commit(grpc::ServerContext* context,
                       const cedar::storage::CommitRequest* request,
                       cedar::storage::CommitResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     TxnID txn_id = request->txn_id();
     Timestamp commit_ts(request->commit_ts());
@@ -689,7 +703,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status Abort(grpc::ServerContext* context,
                      const cedar::storage::AbortRequest* request,
                      cedar::storage::AbortResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     TxnID txn_id = request->txn_id();
     
@@ -752,7 +766,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status GetPartitionInfo(grpc::ServerContext* context,
                                 const cedar::storage::GetPartitionInfoRequest* request,
                                 cedar::storage::GetPartitionInfoResponse* response) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     PartitionID pid = request->partition_id();
     PartitionStorage* partition = partition_manager_->GetPartition(pid);
@@ -781,7 +795,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status Heartbeat(grpc::ServerContext* context,
                          grpc::ServerReaderWriter<cedar::storage::HeartbeatResponse,
                                                   cedar::storage::HeartbeatRequest>* stream) override {
-    (void)context;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
     
     cedar::storage::HeartbeatRequest request;
     while (stream->Read(&request)) {
@@ -951,7 +965,8 @@ int main(int argc, char* argv[]) {
   StorageServiceImpl grpc_service(partition_manager.get());
   
   grpc::ServerBuilder builder;
-  builder.AddListeningPort(config.bind_address, grpc::InsecureServerCredentials());
+  auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv();
+  builder.AddListeningPort(config.bind_address, server_creds);
   builder.RegisterService(&grpc_service);
   
   // Set thread pool size
@@ -973,23 +988,28 @@ int main(int argc, char* argv[]) {
     while (g_running) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
       ticks++;
-      
+
       auto* storage = partition_manager->GetSharedStorage();
       if (!storage) continue;
-      
+
       // Periodic flush every 5 seconds
       if (ticks % 5 == 0) {
         storage->ForceFlush();
       }
-      
+
       if (ticks % 10 == 0) {
         auto stats = storage->GetStats();
         std::cout << "[Stats] partitions=" << partition_manager->GetPartitionCount()
-                  << " memtable=" << stats.memtable_size / 1000 
+                  << " memtable=" << stats.memtable_size / 1000
                   << "KB sst=" << stats.sst_count
                   << " data=" << (stats.sst_size / 1024 / 1024) << "MB"
                   << std::endl;
       }
+    }
+    // Signal received: shutdown gRPC server to unblock Wait()
+    std::cout << "\nShutting down storaged..." << std::endl;
+    if (g_grpc_server) {
+      g_grpc_server->Shutdown();
     }
   });
   

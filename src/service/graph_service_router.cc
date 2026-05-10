@@ -2,7 +2,7 @@
 //
 // Licensed under the Apache License, Version 2.0
 
-#include "graph_service_router.h"
+#include "cedar/service/graph_service_router.h"
 
 #include <algorithm>
 #include <chrono>
@@ -30,13 +30,16 @@ GraphServiceRouter::~GraphServiceRouter() {
 Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
                                          const std::string& gcn_server_addr) {
   // 连接到 MetaD
-  auto channel = grpc::CreateChannel(meta_server_addr, grpc::InsecureChannelCredentials());
+  auto meta_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls_config_);
+  if (!meta_creds) meta_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  auto channel = grpc::CreateChannel(meta_server_addr, meta_creds);
   meta_stub_ = MetaService::NewStub(channel);
   
   // 测试连接
   GetAliveNodesRequest request;
   GetAliveNodesResponse response;
   grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
   auto status = meta_stub_->GetAliveNodes(&context, request, &response);
   
   if (!status.ok()) {
@@ -49,7 +52,9 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   if (!gcn_server_addr.empty()) {
     std::lock_guard<std::mutex> lock(gcn_mutex_);
     gcn_server_addr_ = gcn_server_addr;
-    auto gcn_channel = grpc::CreateChannel(gcn_server_addr, grpc::InsecureChannelCredentials());
+    auto gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls_config_);
+    if (!gcn_creds) gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+    auto gcn_channel = grpc::CreateChannel(gcn_server_addr, gcn_creds);
     gcn_stub_ = cedar::gcn::GcnService::NewStub(gcn_channel);
     std::cout << "[GraphD] Connected to GCN at " << gcn_server_addr << std::endl;
   }
@@ -65,6 +70,13 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   query_cache_ = std::make_unique<cedar::query::QueryCache>(cache_config);
   
   std::cout << "[GraphD] Query cache initialized" << std::endl;
+
+  // 初始化 2PC 分布式事务引擎
+  auto s = Initialize2PCEngine();
+  if (!s.ok()) {
+    std::cerr << "[GraphD] Failed to initialize 2PC engine: " << s.ToString() << std::endl;
+    // Non-fatal: continue without distributed transaction support
+  }
   
   return Status::OK();
 }
@@ -74,6 +86,16 @@ Status GraphServiceRouter::Start() {
   
   // 启动分区映射刷新线程
   refresh_thread_ = std::thread(&GraphServiceRouter::PartitionMapRefreshLoop, this);
+
+  // 恢复未完成的分布式事务
+  if (txn_recovery_manager_) {
+    auto recovery_result = txn_recovery_manager_->RecoverAllPendingTransactions();
+    if (!recovery_result.ok()) {
+      std::cerr << "[GraphD] Transaction recovery warning: " << recovery_result.ToString() << std::endl;
+    } else {
+      std::cout << "[GraphD] Transaction recovery completed" << std::endl;
+    }
+  }
   
   std::cout << "[GraphD] Router started" << std::endl;
   return Status::OK();
@@ -87,6 +109,8 @@ Status GraphServiceRouter::Stop() {
   if (refresh_thread_.joinable()) {
     refresh_thread_.join();
   }
+
+  Shutdown2PCEngine();
   
   std::cout << "[GraphD] Router stopped" << std::endl;
   return Status::OK();
@@ -97,7 +121,9 @@ Status GraphServiceRouter::Stop() {
 grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
                                               const ExecuteQueryRequest* request,
                                               ExecuteQueryResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   auto start_time = std::chrono::steady_clock::now();
   stats_.total_queries++;
@@ -138,17 +164,226 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   static std::atomic<uint64_t> query_counter{0};
   response->set_query_id(std::to_string(++query_counter));
   
-  // 执行查询
   ResultSet result_set;
-  if (route_ctx.target_partitions.empty()) {
-    // 无特定分区，广播到所有分区或执行元数据查询
-    // 简化：返回空结果
-    result_set.set_total_rows(0);
-  } else {
-    // 执行分区查询并聚合结果
-    for (uint32_t part_id : route_ctx.target_partitions) {
-      ExecutePartitionQuery(request->query(), part_id, &result_set);
+  
+  // 检测写操作（简化：关键词匹配）
+  if (IsWriteQuery(request->query())) {
+    std::shared_lock<std::shared_mutex> engine_lock(engine_mutex_);
+    if (!two_pc_engine_) {
+      stats_.failed_queries++;
+      response->set_success(false);
+      response->set_error_msg("Write operations require distributed transaction engine, which is not initialized");
+      return grpc::Status::OK;
     }
+    // 构建简化的 write_set（使用 route_ctx 中的 entity_ids）
+    std::vector<::cedar::CedarKey> read_set;
+    std::vector<::cedar::CedarKey> write_set;
+    auto now_ts = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    for (uint64_t entity_id : route_ctx.entity_ids) {
+      write_set.emplace_back(entity_id, ::cedar::EntityType::Vertex, 0,
+                             ::cedar::Timestamp(now_ts), 0, 0, 0,
+                             CalculatePartition(entity_id));
+    }
+    
+    // 检查是否在显式事务中
+    std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
+    if (!txn_id_str.empty()) {
+      // 显式事务模式：累积 write_set 到事务上下文
+      {
+        std::lock_guard<std::mutex> lock(active_txns_mutex_);
+        auto it = active_transactions_.find(txn_id_str);
+        if (it == active_transactions_.end()) {
+          stats_.failed_queries++;
+          response->set_success(false);
+          response->set_error_msg("Transaction not found: " + txn_id_str);
+          return grpc::Status::OK;
+        }
+        it->second.write_set.insert(it->second.write_set.end(),
+                                     write_set.begin(), write_set.end());
+        it->second.has_writes = true;
+      }
+      result_set.set_total_rows(static_cast<int32_t>(route_ctx.entity_ids.size()));
+    } else {
+      // 自动事务模式（autocommit）：立即执行 2PC
+      auto txn_id = next_txn_id_.fetch_add(1);
+      auto write_status = two_pc_engine_->Execute2PC(txn_id, read_set, write_set,
+                                                      ::cedar::Timestamp(now_ts));
+      if (!write_status.ok()) {
+        stats_.failed_queries++;
+        response->set_success(false);
+        response->set_error_msg("Distributed write failed: " + write_status.ToString());
+        return grpc::Status::OK;
+      }
+      result_set.set_total_rows(static_cast<int32_t>(route_ctx.entity_ids.size()));
+    }
+  } else {
+    // 执行查询
+    if (route_ctx.target_partitions.empty()) {
+      // 无特定分区：SCAN / AGGREGATE 需要广播到所有已知分区
+      if (route_ctx.query_type == QueryType::SCAN ||
+          route_ctx.query_type == QueryType::AGGREGATE) {
+        std::shared_lock<std::shared_mutex> lock(partition_map_mutex_);
+        for (const auto& [part_id, _route] : partition_cache_) {
+          route_ctx.target_partitions.push_back(part_id);
+        }
+      }
+      
+      if (route_ctx.target_partitions.empty()) {
+        // 无已知分区，返回空结果
+        result_set.set_total_rows(0);
+      } else {
+        for (uint32_t part_id : route_ctx.target_partitions) {
+          ExecutePartitionQuery(request->query(), part_id, route_ctx, &result_set);
+        }
+      }
+    } else {
+      // 执行分区查询并聚合结果
+      for (uint32_t part_id : route_ctx.target_partitions) {
+        ExecutePartitionQuery(request->query(), part_id, route_ctx, &result_set);
+      }
+    }
+    
+    // 读查询 read_set 累积（显式事务模式）
+    std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
+    if (!txn_id_str.empty() && !route_ctx.entity_ids.empty()) {
+      std::lock_guard<std::mutex> lock(active_txns_mutex_);
+      auto it = active_transactions_.find(txn_id_str);
+      if (it != active_transactions_.end()) {
+        auto now_ts = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        for (uint64_t entity_id : route_ctx.entity_ids) {
+          it->second.read_set.emplace_back(entity_id, ::cedar::EntityType::Vertex, 0,
+                                           ::cedar::Timestamp(now_ts), 0, 0, 0,
+                                           CalculatePartition(entity_id));
+        }
+      }
+    }
+  }
+  
+  // ========================================================================
+  // 后处理：聚合、排序、分页（跨分区结果统一处理）
+  // ========================================================================
+  if (route_ctx.has_aggregate && result_set.rows_size() > 0) {
+    // 计算聚合值，替换为多行 → 单行
+    cedar::query::ResultSet aggregated;
+    auto* agg_row = aggregated.add_rows();
+    auto* agg_val = agg_row->add_values();
+    
+    const std::string& func = route_ctx.aggregate_function;
+    
+    if (func == "count") {
+      agg_val->set_int_val(result_set.rows_size());
+    } else if (func == "sum" || func == "avg") {
+      double total = 0.0;
+      int64_t count = 0;
+      for (const auto& row : result_set.rows()) {
+        if (row.values_size() > 0) {
+          const auto& v = row.values(0);
+          if (v.value_type_case() == cedar::query::Value::kIntVal) {
+            total += static_cast<double>(v.int_val());
+            count++;
+          } else if (v.value_type_case() == cedar::query::Value::kFloatVal) {
+            total += v.float_val();
+            count++;
+          }
+        }
+      }
+      if (func == "avg" && count > 0) {
+        agg_val->set_float_val(total / static_cast<double>(count));
+      } else {
+        agg_val->set_float_val(total);
+      }
+    } else if (func == "min" || func == "max") {
+      bool first = true;
+      double best = 0.0;
+      for (const auto& row : result_set.rows()) {
+        if (row.values_size() > 0) {
+          const auto& v = row.values(0);
+          double val = 0.0;
+          bool has_val = false;
+          if (v.value_type_case() == cedar::query::Value::kIntVal) {
+            val = static_cast<double>(v.int_val());
+            has_val = true;
+          } else if (v.value_type_case() == cedar::query::Value::kFloatVal) {
+            val = v.float_val();
+            has_val = true;
+          }
+          if (has_val) {
+            if (first) {
+              best = val;
+              first = false;
+            } else if (func == "min" && val < best) {
+              best = val;
+            } else if (func == "max" && val > best) {
+              best = val;
+            }
+          }
+        }
+      }
+      if (!first) {
+        agg_val->set_float_val(best);
+      } else {
+        agg_val->mutable_null_val();
+      }
+    }
+    
+    if (!route_ctx.return_columns.empty()) {
+      aggregated.add_columns(route_ctx.return_columns[0]);
+    }
+    aggregated.set_total_rows(1);
+    result_set = std::move(aggregated);
+  }
+  
+  // ORDER BY 后处理
+  if (route_ctx.has_order_by && result_set.rows_size() > 1) {
+    auto& rows = *result_set.mutable_rows();
+    std::sort(rows.begin(), rows.end(),
+      [&route_ctx](const cedar::query::Row& a, const cedar::query::Row& b) {
+        if (a.values_size() == 0 || b.values_size() == 0) return false;
+        const auto& av = a.values(0);
+        const auto& bv = b.values(0);
+        bool less = false;
+        // 简单比较：优先 int，其次 float，其次 string
+        if (av.value_type_case() == cedar::query::Value::kIntVal &&
+            bv.value_type_case() == cedar::query::Value::kIntVal) {
+          less = av.int_val() < bv.int_val();
+        } else if (av.value_type_case() == cedar::query::Value::kFloatVal &&
+                   bv.value_type_case() == cedar::query::Value::kFloatVal) {
+          less = av.float_val() < bv.float_val();
+        } else if (av.value_type_case() == cedar::query::Value::kStringVal &&
+                   bv.value_type_case() == cedar::query::Value::kStringVal) {
+          less = av.string_val() < bv.string_val();
+        }
+        return route_ctx.order_ascending ? less : !less;
+      });
+  }
+  
+  // LIMIT / SKIP 后处理
+  if (route_ctx.has_limit || route_ctx.skip > 0) {
+    auto& rows = *result_set.mutable_rows();
+    int64_t start = route_ctx.skip;
+    if (start < 0) start = 0;
+    if (start >= static_cast<int64_t>(rows.size())) {
+      rows.Clear();
+    } else {
+      int64_t end = rows.size();
+      if (route_ctx.has_limit && route_ctx.limit >= 0) {
+        end = std::min(end, start + route_ctx.limit);
+      }
+      if (start > 0 || end < static_cast<int64_t>(rows.size())) {
+        std::vector<cedar::query::Row> sliced;
+        sliced.reserve(end - start);
+        for (int64_t i = start; i < end; ++i) {
+          sliced.push_back(std::move(rows[i]));
+        }
+        rows.Clear();
+        for (auto& r : sliced) {
+          *rows.Add() = std::move(r);
+        }
+      }
+    }
+    result_set.set_total_rows(static_cast<int32_t>(rows.size()));
   }
   
   // 填充响应
@@ -182,9 +417,37 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
     std::stringstream plan;
     plan << "Execution Plan:\n";
     plan << "  Query: " << request->query().substr(0, 50) << "...\n";
+    
+    const char* type_str = "SCAN";
+    switch (route_ctx.query_type) {
+      case QueryType::POINT_LOOKUP: type_str = "POINT_LOOKUP"; break;
+      case QueryType::SCAN: type_str = "SCAN"; break;
+      case QueryType::NEIGHBOR_TRAVERSAL: type_str = "NEIGHBOR_TRAVERSAL"; break;
+      case QueryType::AGGREGATE: type_str = "AGGREGATE"; break;
+    }
+    plan << "  Query Type: " << type_str << "\n";
     plan << "  Target Partitions: " << route_ctx.target_partitions.size() << "\n";
     for (auto part_id : route_ctx.target_partitions) {
       plan << "    - Partition " << part_id << "\n";
+    }
+    if (route_ctx.query_type == QueryType::NEIGHBOR_TRAVERSAL) {
+      plan << "  Traversal: start_node=" << route_ctx.start_node_id
+           << ", hops=" << route_ctx.hops
+           << ", edge_type=" << route_ctx.edge_type << "\n";
+    }
+    if (route_ctx.has_aggregate) {
+      plan << "  Aggregate: " << route_ctx.aggregate_function
+           << "(" << (route_ctx.aggregate_column.empty() ? "*" : route_ctx.aggregate_column)
+           << ")\n";
+    }
+    if (route_ctx.has_order_by) {
+      plan << "  Order By: " << route_ctx.order_by_column
+           << " " << (route_ctx.order_ascending ? "ASC" : "DESC") << "\n";
+    }
+    if (route_ctx.has_limit) {
+      plan << "  Limit: " << route_ctx.limit;
+      if (route_ctx.skip > 0) plan << " OFFSET " << route_ctx.skip;
+      plan << "\n";
     }
     response->set_execution_plan(plan.str());
   }
@@ -200,8 +463,10 @@ std::shared_ptr<cedar::gcn::GcnService::Stub> GraphServiceRouter::GetGcnStub() {
 grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
                                           const TraverseRequest* request,
                                           TraverseResponse* response) {
-  (void)context;
-  
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+
   // 优先路由到 GCN（本地图计算节点）
   auto gcn_stub = GetGcnStub();
   if (gcn_stub) {
@@ -215,6 +480,7 @@ grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
     
     cedar::gcn::TraversalResponse gcn_response;
     grpc::ClientContext client_context;
+    client_context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
     auto grpc_status = gcn_stub->Traverse(&client_context, gcn_request, &gcn_response);
     
     if (grpc_status.ok() && gcn_response.success()) {
@@ -264,6 +530,7 @@ grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
   
   ScanResponse scan_response;
   grpc::ClientContext client_context;
+  client_context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
   auto grpc_status = stub->Scan(&client_context, scan_request, &scan_response);
   
   if (!grpc_status.ok()) {
@@ -293,8 +560,10 @@ grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
 grpc::Status GraphServiceRouter::TemporalQuery(grpc::ServerContext* context,
                                                const TemporalQueryRequest* request,
                                                TemporalQueryResponse* response) {
-  (void)context;
-  
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+
   // 计算实体分区
   uint32_t partition_id = CalculatePartition(request->entity_id());
   
@@ -343,6 +612,7 @@ grpc::Status GraphServiceRouter::TemporalQuery(grpc::ServerContext* context,
   
   ScanResponse scan_response;
   grpc::ClientContext client_context;
+  client_context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
   auto status = stub->Scan(&client_context, scan_request, &scan_response);
   
   if (!status.ok() || !scan_response.success()) {
@@ -368,13 +638,16 @@ grpc::Status GraphServiceRouter::TemporalQuery(grpc::ServerContext* context,
 grpc::Status GraphServiceRouter::Health(grpc::ServerContext* context,
                                         const HealthRequest* request,
                                         HealthResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   (void)request;
   
   // 检查 MetaD 连接
   GetAliveNodesRequest meta_request;
   GetAliveNodesResponse meta_response;
   grpc::ClientContext meta_context;
+  meta_context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
   auto meta_status = meta_stub_->GetAliveNodes(&meta_context, meta_request, &meta_response);
   
   bool meta_healthy = meta_status.ok();
@@ -396,7 +669,9 @@ grpc::Status GraphServiceRouter::Health(grpc::ServerContext* context,
 grpc::Status GraphServiceRouter::GetStats(grpc::ServerContext* context,
                                           const QueryStatsRequest* request,
                                           QueryStatsResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   (void)request;
   
   uint64_t total = stats_.total_queries.load();
@@ -421,7 +696,9 @@ grpc::Status GraphServiceRouter::GetStats(grpc::ServerContext* context,
 grpc::Status GraphServiceRouter::StreamQuery(grpc::ServerContext* context,
                                              const StreamQueryRequest* request,
                                              grpc::ServerWriter<StreamQueryResponse>* writer) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   (void)request;
   (void)writer;
   // TODO: 实现流式查询
@@ -431,7 +708,9 @@ grpc::Status GraphServiceRouter::StreamQuery(grpc::ServerContext* context,
 grpc::Status GraphServiceRouter::BatchQuery(grpc::ServerContext* context,
                                             const BatchQueryRequest* request,
                                             BatchQueryResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   
   for (const auto& item : request->queries()) {
     auto* result = response->add_results();
@@ -463,7 +742,9 @@ grpc::Status GraphServiceRouter::BatchQuery(grpc::ServerContext* context,
 grpc::Status GraphServiceRouter::GetSchema(grpc::ServerContext* context,
                                            const GetSchemaRequest* request,
                                            GetSchemaResponse* response) {
-  (void)context;
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
   (void)request;
   // TODO: 从 MetaD 获取 Schema
   response->set_success(true);
@@ -482,12 +763,10 @@ Status GraphServiceRouter::ParseQueryForRouting(const std::string& query,
     return Status::InvalidArgument("Parse error: " + parser.GetError());
   }
   
-  // 检查是否有 ID 直接查找
-  // 简单启发式：从 WHERE id(n) = xxx 中提取 ID
+  // 保留原有的正则启发式提取（兜底）
   std::regex id_pattern(R"(id\s*\(\s*\w+\s*\)\s*=\s*(\d+))", std::regex::icase);
   std::smatch match;
   std::string::const_iterator search_start(query.cbegin());
-  
   while (std::regex_search(search_start, query.cend(), match, id_pattern)) {
     uint64_t entity_id = std::stoull(match[1].str());
     route_ctx->entity_ids.push_back(entity_id);
@@ -495,14 +774,195 @@ Status GraphServiceRouter::ParseQueryForRouting(const std::string& query,
     search_start = match.suffix().first;
   }
   
-  // 如果没有找到特定 ID，可能需要广播到所有分区
-  // 简化：如果 target_partitions 为空，后续处理为全部分区
+  // ==========================================================================
+  // Cypher AST 分析 - 识别查询模式、聚合、排序、分页
+  // ==========================================================================
+  bool has_match = false;
+  bool has_where_id_filter = false;
+  
+  for (const auto& clause : stmt->clauses) {
+    if (!clause) continue;
+    
+    switch (clause->clause_type) {
+      // ---- MATCH 子句分析 ----
+      case cypher::ClauseType::MATCH: {
+        has_match = true;
+        auto* match_clause = static_cast<cypher::MatchClause*>(clause.get());
+        
+        for (const auto& pattern : match_clause->patterns) {
+          if (pattern.elements.empty()) continue;
+          
+          // 分析路径模式的第一个元素
+          // 单节点模式: [(n)] → SCAN
+          // 邻域模式: [(n), -[e]->, (m)] → NEIGHBOR_TRAVERSAL
+          if (pattern.elements.size() >= 3) {
+            // 多元素路径 → 邻域遍历
+            route_ctx->query_type = QueryType::NEIGHBOR_TRAVERSAL;
+            
+            // 提取关系信息
+            for (size_t i = 1; i < pattern.elements.size(); i += 2) {
+              if (std::holds_alternative<cypher::RelationshipPattern>(pattern.elements[i])) {
+                auto& rel = std::get<cypher::RelationshipPattern>(pattern.elements[i]);
+                route_ctx->direction = rel.direction;
+                if (!rel.types.empty()) {
+                  // 将第一个边类型字符串 hash 为 uint32_t（简化）
+                  route_ctx->edge_type = std::hash<std::string>{}(rel.types[0]) & 0xFFFFFFFF;
+                }
+                // 计算跳数（min_hops/max_hops 默认为 1）
+                if (rel.max_hops.has_value()) {
+                  route_ctx->hops = static_cast<uint32_t>(rel.max_hops.value());
+                } else if (rel.min_hops.has_value()) {
+                  route_ctx->hops = static_cast<uint32_t>(rel.min_hops.value());
+                }
+              }
+            }
+          }
+        }
+        break;
+      }
+      
+      // ---- WHERE 子句分析 ----
+      case cypher::ClauseType::WHERE: {
+        auto* where_clause = static_cast<cypher::WhereClause*>(clause.get());
+        if (where_clause->condition) {
+          // 检查是否是 id(n) = xxx 的比较
+          if (where_clause->condition->expr_type == cypher::ExprType::COMPARISON) {
+            auto* cmp = static_cast<cypher::ComparisonExpr*>(where_clause->condition.get());
+            if (cmp->op == cypher::ComparisonExpr::EQ) {
+              has_where_id_filter = true;
+              // 已经通过正则提取了 entity_ids
+              if (!route_ctx->entity_ids.empty()) {
+                route_ctx->start_node_id = route_ctx->entity_ids[0];
+              }
+            }
+          }
+        }
+        break;
+      }
+      
+      // ---- RETURN 子句分析 ----
+      case cypher::ClauseType::RETURN: {
+        auto* return_clause = static_cast<cypher::ReturnClause*>(clause.get());
+        route_ctx->return_all = return_clause->all;
+        
+        for (const auto& item : return_clause->items) {
+          if (!item.expression) continue;
+          
+          if (item.expression->expr_type == cypher::ExprType::FUNCTION_CALL) {
+            auto* func = static_cast<cypher::FunctionCallExpr*>(item.expression.get());
+            std::string func_name = func->name;
+            // 统一转小写比较
+            std::transform(func_name.begin(), func_name.end(), func_name.begin(), ::tolower);
+            
+            if (func_name == "count" || func_name == "sum" || 
+                func_name == "avg" || func_name == "min" || func_name == "max") {
+              route_ctx->has_aggregate = true;
+              route_ctx->aggregate_function = func_name;
+              route_ctx->query_type = QueryType::AGGREGATE;
+              
+              // 提取聚合列（如果有参数）
+              if (!func->arguments.empty()) {
+                auto& arg = func->arguments[0];
+                if (arg->expr_type == cypher::ExprType::VARIABLE) {
+                  route_ctx->aggregate_column = 
+                      static_cast<cypher::VariableExpr*>(arg.get())->name;
+                } else if (arg->expr_type == cypher::ExprType::PROPERTY) {
+                  route_ctx->aggregate_column = 
+                      static_cast<cypher::PropertyExpr*>(arg.get())->property;
+                }
+              }
+            }
+            
+            // 列别名
+            if (item.alias.has_value()) {
+              route_ctx->return_columns.push_back(item.alias.value());
+            } else {
+              route_ctx->return_columns.push_back(func_name + "(...)");
+            }
+          } else if (item.expression->expr_type == cypher::ExprType::VARIABLE) {
+            route_ctx->return_columns.push_back(
+                static_cast<cypher::VariableExpr*>(item.expression.get())->name);
+          } else if (item.expression->expr_type == cypher::ExprType::PROPERTY) {
+            route_ctx->return_columns.push_back(
+                static_cast<cypher::PropertyExpr*>(item.expression.get())->property);
+          }
+        }
+        break;
+      }
+      
+      // ---- ORDER BY 子句分析 ----
+      case cypher::ClauseType::ORDER_BY: {
+        auto* order_clause = static_cast<cypher::OrderByClause*>(clause.get());
+        route_ctx->has_order_by = true;
+        if (!order_clause->items.empty()) {
+          auto& first = order_clause->items[0];
+          if (first.expression) {
+            if (first.expression->expr_type == cypher::ExprType::VARIABLE) {
+              route_ctx->order_by_column = 
+                  static_cast<cypher::VariableExpr*>(first.expression.get())->name;
+            } else if (first.expression->expr_type == cypher::ExprType::PROPERTY) {
+              route_ctx->order_by_column = 
+                  static_cast<cypher::PropertyExpr*>(first.expression.get())->property;
+            }
+          }
+          route_ctx->order_ascending = first.ascending;
+        }
+        break;
+      }
+      
+      // ---- LIMIT 子句分析 ----
+      case cypher::ClauseType::LIMIT: {
+        auto* limit_clause = static_cast<cypher::LimitClause*>(clause.get());
+        route_ctx->has_limit = true;
+        if (limit_clause->expression && 
+            limit_clause->expression->expr_type == cypher::ExprType::LITERAL) {
+          auto* lit = static_cast<cypher::LiteralExpr*>(limit_clause->expression.get());
+          if (lit->value.IsInt()) {
+            route_ctx->limit = lit->value.GetInt();
+          } else if (lit->value.IsFloat()) {
+            route_ctx->limit = static_cast<int64_t>(lit->value.GetFloat());
+          }
+        }
+        break;
+      }
+      
+      // ---- SKIP 子句分析 ----
+      case cypher::ClauseType::SKIP: {
+        auto* skip_clause = static_cast<cypher::SkipClause*>(clause.get());
+        if (skip_clause->expression && 
+            skip_clause->expression->expr_type == cypher::ExprType::LITERAL) {
+          auto* lit = static_cast<cypher::LiteralExpr*>(skip_clause->expression.get());
+          if (lit->value.IsInt()) {
+            route_ctx->skip = lit->value.GetInt();
+          } else if (lit->value.IsFloat()) {
+            route_ctx->skip = static_cast<int64_t>(lit->value.GetFloat());
+          }
+        }
+        break;
+      }
+      
+      default:
+        break;
+    }
+  }
+  
+  // ---- 确定查询类型 ----
+  if (route_ctx->has_aggregate) {
+    route_ctx->query_type = QueryType::AGGREGATE;
+  } else if (route_ctx->query_type == QueryType::NEIGHBOR_TRAVERSAL) {
+    // 已经是邻域遍历
+  } else if (has_where_id_filter && !route_ctx->entity_ids.empty()) {
+    route_ctx->query_type = QueryType::POINT_LOOKUP;
+  } else {
+    route_ctx->query_type = QueryType::SCAN;
+  }
+  
+  // 如果没有找到特定 ID 的目标分区，后续处理为全部分区
   
   // 检查时态约束
   auto temporal_clause = parser.GetTemporalClause();
   if (temporal_clause) {
     route_ctx->has_temporal_constraint = true;
-    // TODO: 提取具体时态约束
   }
   
   return Status::OK();
@@ -527,7 +987,7 @@ uint32_t GraphServiceRouter::CalculatePartition(uint64_t entity_id) {
 StatusOr<PartitionRoute> GraphServiceRouter::GetPartitionRoute(uint32_t partition_id) {
   // 先查缓存
   {
-    std::lock_guard<std::mutex> lock(partition_map_mutex_);
+    std::shared_lock<std::shared_mutex> lock(partition_map_mutex_);
     auto it = partition_cache_.find(partition_id);
     if (it != partition_cache_.end()) {
       return it->second;
@@ -541,6 +1001,7 @@ StatusOr<PartitionRoute> GraphServiceRouter::GetPartitionRoute(uint32_t partitio
   
   GetPartitionAssignmentResponse response;
   grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
   auto status = meta_stub_->GetPartitionAssignment(&context, request, &response);
   
   if (!status.ok()) {
@@ -554,61 +1015,426 @@ StatusOr<PartitionRoute> GraphServiceRouter::GetPartitionRoute(uint32_t partitio
   // 构建路由信息
   PartitionRoute route;
   route.partition_id = partition_id;
-  
+
   const auto& assignment = response.assignment();
-  // leader_node 是 uint32，需要转换为地址
-  // TODO: 从 MetaD 获取节点地址映射
-  route.leader_node = "127.0.0.1:" + std::to_string(9779 + assignment.leader_node() % 3);
-  
+  auto leader_addr = GetNodeAddress(assignment.leader_node());
+  if (!leader_addr.ok()) {
+    return leader_addr.status();
+  }
+  route.leader_node = leader_addr.value();
+
   for (uint32_t replica : assignment.follower_nodes()) {
-    route.replicas.push_back("127.0.0.1:" + std::to_string(9779 + replica % 3));
+    auto replica_addr = GetNodeAddress(replica);
+    if (!replica_addr.ok()) {
+      return replica_addr.status();
+    }
+    route.replicas.push_back(replica_addr.value());
   }
   
   // 更新缓存
   {
-    std::lock_guard<std::mutex> lock(partition_map_mutex_);
+    std::unique_lock<std::shared_mutex> lock(partition_map_mutex_);
     partition_cache_[partition_id] = route;
   }
   
   return route;
 }
 
-std::shared_ptr<cedar::storage::StorageService::Stub> 
+std::shared_ptr<cedar::storage::StorageService::Stub>
 GraphServiceRouter::GetStorageStub(const std::string& node_addr) {
-  std::lock_guard<std::mutex> lock(stubs_mutex_);
-  
-  auto it = storage_stubs_.find(node_addr);
-  if (it != storage_stubs_.end()) {
-    return it->second;
+  // Fast path: read-only lookup with shared lock
+  {
+    std::shared_lock<std::shared_mutex> lock(stubs_mutex_);
+    auto it = storage_stubs_.find(node_addr);
+    if (it != storage_stubs_.end()) {
+      auto ch_it = storage_channels_.find(node_addr);
+      if (ch_it == storage_channels_.end() ||
+          ch_it->second->GetState(false) != GRPC_CHANNEL_TRANSIENT_FAILURE) {
+        return it->second;
+      }
+      // Channel in TRANSIENT_FAILURE: fall through to recreate
+    }
   }
-  
-  // 创建新连接
-  auto channel = grpc::CreateChannel(node_addr, grpc::InsecureChannelCredentials());
+
+  // Slow path: create connection without holding the lock
+  auto storage_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls_config_);
+  if (!storage_creds) storage_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  auto channel = grpc::CreateChannel(node_addr, storage_creds);
   std::shared_ptr<cedar::storage::StorageService::Stub> stub(
       cedar::storage::StorageService::NewStub(channel).release());
+
+  // Insert with exclusive lock
+  std::unique_lock<std::shared_mutex> lock(stubs_mutex_);
+  auto it = storage_stubs_.find(node_addr);
+  if (it != storage_stubs_.end()) {
+    return it->second;  // Another thread created it first
+  }
   storage_stubs_[node_addr] = stub;
+  storage_channels_[node_addr] = channel;
+  lock.unlock();  // Release lock before blocking I/O
+  
+  // 同步创建 StorageClient 供 2PC 引擎使用 (在锁外执行阻塞I/O)
+  {
+    std::shared_lock<std::shared_mutex> engine_lock(engine_mutex_);
+    if (two_pc_engine_) {
+      auto client = std::make_shared<cedar::dtx::StorageClient>();
+      cedar::dtx::StorageClient::ClientConfig client_config;
+      client_config.server_address = node_addr;
+      client_config.tls = tls_config_;
+      auto s = client->Initialize(client_config);
+      if (s.ok()) {
+        two_pc_engine_->AddClient(client);
+        storage_clients_.push_back(client);
+      } else {
+        std::cerr << "[GraphD] Failed to create StorageClient for 2PC: " << node_addr
+                  << " - " << s.ToString() << std::endl;
+      }
+    }
+  }
   
   return stub;
 }
 
-Status GraphServiceRouter::ExecutePartitionQuery(const std::string& query,
-                                                 uint32_t partition_id,
-                                                 cedar::query::ResultSet* result) {
-  (void)query;
-  // TODO: 实现实际的分区查询执行
-  // 1. 获取分区路由
-  // 2. 发送查询到 StorageD
-  // 3. 聚合结果
-  
-  result->set_total_rows(result->total_rows() + 0);  // 占位
+StatusOr<std::string> GraphServiceRouter::GetNodeAddress(uint32_t node_id) {
+  // Fast path: check local cache
+  {
+    std::shared_lock<std::shared_mutex> lock(node_map_mutex_);
+    auto it = node_address_cache_.find(node_id);
+    if (it != node_address_cache_.end()) {
+      return it->second;
+    }
+  }
+
+  // Slow path: fetch from MetaD
+  if (meta_stub_) {
+    cedar::meta::GetAliveNodesRequest req;
+    cedar::meta::GetAliveNodesResponse resp;
+    grpc::ClientContext ctx;
+    ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+    auto status = meta_stub_->GetAliveNodes(&ctx, req, &resp);
+    if (status.ok() && resp.success()) {
+      std::unique_lock<std::shared_mutex> lock(node_map_mutex_);
+      for (const auto& node : resp.nodes()) {
+        node_address_cache_[node.node_id()] = node.address();
+      }
+      auto it = node_address_cache_.find(node_id);
+      if (it != node_address_cache_.end()) {
+        return it->second;
+      }
+    }
+  }
+
+  return Status::IOError("Node address unknown and MetaD unreachable");
+}
+
+namespace {
+
+// Helper: Convert Cedar Descriptor to query Value protobuf
+void DescriptorToQueryValue(const cedar::Descriptor& desc,
+                            cedar::query::Value* out) {
+  switch (desc.GetKind()) {
+    case cedar::EntryKind::InlineInt: {
+      auto v = desc.AsInlineInt();
+      if (v.has_value()) {
+        out->set_int_val(v.value());
+      } else {
+        out->mutable_null_val();
+      }
+      break;
+    }
+    case cedar::EntryKind::InlineFloat: {
+      auto v = desc.AsInlineFloat();
+      if (v.has_value()) {
+        out->set_float_val(v.value());
+      } else {
+        out->mutable_null_val();
+      }
+      break;
+    }
+    case cedar::EntryKind::InlineShortStr: {
+      out->set_string_val(desc.AsInlineShortStr());
+      break;
+    }
+    case cedar::EntryKind::Tombstone: {
+      out->mutable_null_val();
+      break;
+    }
+    default: {
+      // ExternalRef, EdgeRef, Metadata -> expose raw bytes
+      uint64_t raw = desc.AsRaw();
+      out->set_bytes_val(std::string(reinterpret_cast<const char*>(&raw), sizeof(raw)));
+      break;
+    }
+  }
+}
+
+}  // namespace
+
+Status GraphServiceRouter::ExecutePartitionQuery(
+    const std::string& query,
+    uint32_t partition_id,
+    const QueryRouteContext& route_ctx,
+    cedar::query::ResultSet* result) {
+  // Get partition route
+  auto route_result = GetPartitionRoute(partition_id);
+  if (!route_result.ok()) {
+    std::cerr << "[GraphD] Failed to get route for partition " << partition_id
+              << ": " << route_result.status().ToString() << std::endl;
+    return route_result.status();
+  }
+  auto route = route_result.ValueOrDie();
+
+  // Get storage stub
+  auto stub = GetStorageStub(route.leader_node);
+  if (!stub) {
+    std::cerr << "[GraphD] Failed to get storage stub for partition " << partition_id
+              << " at " << route.leader_node << std::endl;
+    return Status::IOError("Failed to connect to storage node");
+  }
+
+  size_t rows_added = 0;
+
+  switch (route_ctx.query_type) {
+    // ========================================================================
+    // POINT_LOOKUP: 单点精确查询
+    // ========================================================================
+    case QueryType::POINT_LOOKUP: {
+      for (uint64_t entity_id : route_ctx.entity_ids) {
+        if (CalculatePartition(entity_id) != partition_id) {
+          continue;
+        }
+
+        cedar::storage::GetRequest get_req;
+        auto* key = get_req.mutable_key();
+        key->set_entity_id(entity_id);
+        key->set_partition_id(partition_id);
+        key->set_timestamp(UINT64_MAX);
+
+        cedar::storage::GetResponse get_resp;
+        grpc::ClientContext ctx;
+        ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+        auto grpc_status = stub->Get(&ctx, get_req, &get_resp);
+
+        if (!grpc_status.ok() || !get_resp.success() || !get_resp.found()) {
+          continue;
+        }
+
+        auto* row = result->add_rows();
+        auto* val = row->add_values();
+        const std::string& data = get_resp.descriptor_().data();
+        if (data.size() >= sizeof(uint64_t)) {
+          uint64_t raw;
+          std::memcpy(&raw, data.data(), sizeof(uint64_t));
+          cedar::Descriptor desc(raw);
+          DescriptorToQueryValue(desc, val);
+        } else {
+          val->mutable_null_val();
+        }
+        rows_added++;
+      }
+      break;
+    }
+
+    // ========================================================================
+    // SCAN: 全分区扫描
+    // ========================================================================
+    case QueryType::SCAN: {
+      cedar::storage::ScanNodeRequestV2 scan_req;
+      scan_req.set_node_id(0);  // scan all nodes
+      scan_req.set_start_time(0);
+      scan_req.set_end_time(UINT64_MAX);
+      scan_req.set_partition_id(partition_id);
+
+      cedar::storage::ScanResponse scan_resp;
+      grpc::ClientContext ctx;
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+      auto grpc_status = stub->ScanNodeV2(&ctx, scan_req, &scan_resp);
+
+      if (grpc_status.ok() && scan_resp.success()) {
+        for (const auto& item : scan_resp.items()) {
+          auto* row = result->add_rows();
+          auto* val = row->add_values();
+          const std::string& data = item.descriptor_().data();
+          if (data.size() >= sizeof(uint64_t)) {
+            uint64_t raw;
+            std::memcpy(&raw, data.data(), sizeof(uint64_t));
+            cedar::Descriptor desc(raw);
+            DescriptorToQueryValue(desc, val);
+          } else {
+            val->mutable_null_val();
+          }
+          rows_added++;
+        }
+      }
+      break;
+    }
+
+    // ========================================================================
+    // NEIGHBOR_TRAVERSAL: 邻域遍历
+    // ========================================================================
+    case QueryType::NEIGHBOR_TRAVERSAL: {
+      uint64_t start_id = route_ctx.start_node_id;
+      if (start_id == 0 && !route_ctx.entity_ids.empty()) {
+        start_id = route_ctx.entity_ids[0];
+      }
+      if (start_id == 0 || CalculatePartition(start_id) != partition_id) {
+        break;  // 起始节点不在此分区
+      }
+
+      // 调用 ScanEdgeV2 获取邻域边
+      cedar::storage::ScanEdgeRequestV2 edge_req;
+      edge_req.set_node_id(start_id);
+      edge_req.set_edge_type(route_ctx.edge_type);
+      edge_req.set_direction(static_cast<cedar::storage::Direction>(route_ctx.direction));
+      edge_req.set_start_time(0);
+      edge_req.set_end_time(UINT64_MAX);
+      edge_req.set_partition_id(partition_id);
+
+      cedar::storage::ScanResponse edge_resp;
+      grpc::ClientContext ctx;
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+      auto grpc_status = stub->ScanEdgeV2(&ctx, edge_req, &edge_resp);
+
+      if (!grpc_status.ok() || !edge_resp.success()) {
+        std::cerr << "[GraphD] ScanEdgeV2 failed for partition " << partition_id
+                  << ": " << grpc_status.error_message() << std::endl;
+        break;
+      }
+
+      // 对每个邻接边，获取目标节点
+      for (const auto& item : edge_resp.items()) {
+        uint64_t neighbor_id = 0;
+        const std::string& data = item.descriptor_().data();
+        if (data.size() >= sizeof(uint64_t)) {
+          std::memcpy(&neighbor_id, data.data(), sizeof(uint64_t));
+        }
+        if (neighbor_id == 0) continue;
+
+        cedar::storage::GetRequest get_req;
+        auto* key = get_req.mutable_key();
+        key->set_entity_id(neighbor_id);
+        key->set_partition_id(partition_id);
+        key->set_timestamp(UINT64_MAX);
+
+        cedar::storage::GetResponse get_resp;
+        grpc::ClientContext get_ctx;
+        get_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+        auto get_status = stub->Get(&get_ctx, get_req, &get_resp);
+
+        if (get_status.ok() && get_resp.success() && get_resp.found()) {
+          auto* row = result->add_rows();
+          auto* val = row->add_values();
+          const std::string& ndata = get_resp.descriptor_().data();
+          if (ndata.size() >= sizeof(uint64_t)) {
+            uint64_t raw;
+            std::memcpy(&raw, ndata.data(), sizeof(uint64_t));
+            cedar::Descriptor desc(raw);
+            DescriptorToQueryValue(desc, val);
+          } else {
+            val->mutable_null_val();
+          }
+          rows_added++;
+        }
+      }
+      break;
+    }
+
+    // ========================================================================
+    // AGGREGATE: 聚合查询 - 返回原始行，由上层计算聚合
+    // ========================================================================
+    case QueryType::AGGREGATE: {
+      // 聚合查询的数据收集策略：先 SCAN 收集所有原始行
+      cedar::storage::ScanNodeRequestV2 scan_req;
+      scan_req.set_node_id(0);
+      scan_req.set_start_time(0);
+      scan_req.set_end_time(UINT64_MAX);
+      scan_req.set_partition_id(partition_id);
+
+      cedar::storage::ScanResponse scan_resp;
+      grpc::ClientContext ctx;
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+      auto grpc_status = stub->ScanNodeV2(&ctx, scan_req, &scan_resp);
+
+      if (grpc_status.ok() && scan_resp.success()) {
+        for (const auto& item : scan_resp.items()) {
+          auto* row = result->add_rows();
+          auto* val = row->add_values();
+          const std::string& data = item.descriptor_().data();
+          if (data.size() >= sizeof(uint64_t)) {
+            uint64_t raw;
+            std::memcpy(&raw, data.data(), sizeof(uint64_t));
+            cedar::Descriptor desc(raw);
+            DescriptorToQueryValue(desc, val);
+          } else {
+            val->mutable_null_val();
+          }
+          rows_added++;
+        }
+      }
+      break;
+    }
+  }
+
+  result->set_total_rows(result->total_rows() + static_cast<int32_t>(rows_added));
   return Status::OK();
 }
 
 void GraphServiceRouter::RefreshPartitionMap() {
-  // TODO: 从 MetaD 批量获取分区映射
-  // GetSpacePartitionMapRequest request;
-  // request.set_space_name("default");
-  // ...
+  if (!meta_stub_) {
+    return;
+  }
+
+  cedar::meta::GetSpacePartitionMapRequest request;
+  request.set_space_name("default");
+
+  cedar::meta::GetSpacePartitionMapResponse response;
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+
+  auto status = meta_stub_->GetSpacePartitionMap(&context, request, &response);
+  if (!status.ok()) {
+    std::cerr << "[GraphServiceRouter] Failed to refresh partition map: "
+              << status.error_message() << std::endl;
+    return;
+  }
+
+  if (!response.success()) {
+    std::cerr << "[GraphServiceRouter] MetaD returned error: "
+              << response.error_msg() << std::endl;
+    return;
+  }
+
+  const auto& partition_map = response.partition_map();
+
+  std::unordered_map<uint32_t, PartitionRoute> new_cache;
+  for (const auto& entry : partition_map.assignments()) {
+    const auto& assignment = entry.second;
+    PartitionRoute route;
+    route.partition_id = entry.first;
+    auto leader = GetNodeAddress(assignment.leader_node());
+    if (!leader.ok()) {
+      std::cerr << "[GraphServiceRouter] Failed to resolve leader node "
+                << assignment.leader_node() << " for partition " << entry.first
+                << ": " << leader.status().ToString() << std::endl;
+      continue;
+    }
+    route.leader_node = leader.value();
+    for (uint32_t replica : assignment.follower_nodes()) {
+      auto addr = GetNodeAddress(replica);
+      if (!addr.ok()) {
+        std::cerr << "[GraphServiceRouter] Failed to resolve replica node "
+                  << replica << " for partition " << entry.first
+                  << ": " << addr.status().ToString() << std::endl;
+        continue;
+      }
+      route.replicas.push_back(addr.value());
+    }
+    new_cache[entry.first] = std::move(route);
+  }
+
+  std::unique_lock<std::shared_mutex> lock(partition_map_mutex_);
+  partition_cache_.swap(new_cache);
+  partition_cache_version_ = partition_map.version();
 }
 
 void GraphServiceRouter::PartitionMapRefreshLoop() {
@@ -620,6 +1446,298 @@ void GraphServiceRouter::PartitionMapRefreshLoop() {
     
     RefreshPartitionMap();
   }
+}
+
+// ========== 2PC 分布式事务引擎 ==========
+
+Status GraphServiceRouter::Initialize2PCEngine() {
+  // 1. 创建 StorageClient 连接池
+  // 优先基于当前已缓存的 storage stubs
+  {
+    std::shared_lock<std::shared_mutex> lock(stubs_mutex_);
+    for (const auto& [addr, stub] : storage_stubs_) {
+      (void)stub;
+      auto client = std::make_shared<cedar::dtx::StorageClient>();
+      cedar::dtx::StorageClient::ClientConfig client_config;
+      client_config.server_address = addr;
+      client_config.tls = tls_config_;
+      auto s = client->Initialize(client_config);
+      if (!s.ok()) {
+        std::cerr << "[GraphD] Failed to create StorageClient for " << addr
+                  << ": " << s.ToString() << std::endl;
+        continue;
+      }
+      storage_clients_.push_back(client);
+      std::cout << "[GraphD] StorageClient connected to " << addr << std::endl;
+    }
+  }
+  
+  // 如果 stubs 为空，尝试从 MetaD 获取所有存活节点
+  if (storage_clients_.empty() && meta_stub_) {
+    GetAliveNodesRequest request;
+    GetAliveNodesResponse response;
+    grpc::ClientContext ctx;
+    ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+    auto status = meta_stub_->GetAliveNodes(&ctx, request, &response);
+    if (status.ok() && response.success()) {
+      for (const auto& node : response.nodes()) {
+        if (node.state() == "ONLINE") {
+          auto client = std::make_shared<cedar::dtx::StorageClient>();
+          cedar::dtx::StorageClient::ClientConfig client_config;
+          client_config.server_address = node.address();
+          client_config.tls = tls_config_;
+          auto s = client->Initialize(client_config);
+          if (!s.ok()) {
+            std::cerr << "[GraphD] Failed to create StorageClient for " << node.address()
+                      << ": " << s.ToString() << std::endl;
+            continue;
+          }
+          storage_clients_.push_back(client);
+          std::cout << "[GraphD] StorageClient connected to " << node.address() << std::endl;
+        }
+      }
+    }
+  }
+  
+  if (storage_clients_.empty()) {
+    std::cout << "[GraphD] No storage clients available, 2PC engine not initialized" << std::endl;
+    return Status::OK();  // Non-fatal
+  }
+  
+  // 2. 初始化 TransactionStateManager（WAL）
+  txn_state_manager_ = std::make_unique<cedar::TransactionStateManager>();
+  auto s = txn_state_manager_->Initialize(txn_wal_dir_);
+  if (!s.ok()) {
+    std::cerr << "[GraphD] Failed to initialize TransactionStateManager: " << s.ToString() << std::endl;
+    txn_state_manager_.reset();
+    storage_clients_.clear();
+    return s;
+  }
+  
+  // 3. 初始化 TransactionRecoveryManager
+  txn_recovery_manager_ = std::make_unique<cedar::TransactionRecoveryManager>();
+  s = txn_recovery_manager_->Initialize(txn_state_manager_.get());
+  if (!s.ok()) {
+    std::cerr << "[GraphD] Failed to initialize TransactionRecoveryManager: " << s.ToString() << std::endl;
+    txn_recovery_manager_.reset();
+    txn_state_manager_->Shutdown();
+    txn_state_manager_.reset();
+    storage_clients_.clear();
+    return s;
+  }
+  
+  // 4. 初始化 TransactionTimeoutManager
+  txn_timeout_manager_ = std::make_unique<cedar::TransactionTimeoutManager>();
+  cedar::TimeoutConfig timeout_config;
+  txn_timeout_manager_->Initialize(timeout_config, txn_recovery_manager_.get());
+  
+  // 5. 初始化 Optimized2PCEngine
+  {
+    cedar::dtx::TwoPCConfig two_pc_config;
+    std::unique_lock<std::shared_mutex> lock(engine_mutex_);
+    two_pc_engine_ = std::make_unique<cedar::dtx::Optimized2PCEngine>(two_pc_config);
+    s = two_pc_engine_->Initialize(storage_clients_);
+    if (!s.ok()) {
+      std::cerr << "[GraphD] Failed to initialize Optimized2PCEngine: " << s.ToString() << std::endl;
+      two_pc_engine_.reset();
+    } else {
+      two_pc_engine_->SetStateManager(txn_state_manager_.get());
+      two_pc_engine_->SetRecoveryManager(txn_recovery_manager_.get());
+      two_pc_engine_->SetTimeoutManager(txn_timeout_manager_.get());
+    }
+  }
+  if (!s.ok()) {
+    txn_timeout_manager_->Shutdown();
+    txn_timeout_manager_.reset();
+    txn_recovery_manager_->Shutdown();
+    txn_recovery_manager_.reset();
+    txn_state_manager_->Shutdown();
+    txn_state_manager_.reset();
+    storage_clients_.clear();
+    return s;
+  }
+  
+  std::cout << "[GraphD] 2PC engine initialized with " << storage_clients_.size()
+            << " storage clients" << std::endl;
+  return Status::OK();
+}
+
+void GraphServiceRouter::Shutdown2PCEngine() {
+  // 注意：Optimized2PCEngine 的析构函数会调用 timeout_manager_ 和 recovery_manager_ 的 Shutdown()
+  // 所以先 reset engine，避免 double shutdown
+  {
+    std::unique_lock<std::shared_mutex> lock(engine_mutex_);
+    if (two_pc_engine_) {
+      two_pc_engine_.reset();
+    }
+  }
+  if (txn_timeout_manager_) {
+    txn_timeout_manager_.reset();
+  }
+  if (txn_recovery_manager_) {
+    txn_recovery_manager_.reset();
+  }
+  if (txn_state_manager_) {
+    txn_state_manager_->Shutdown();
+    txn_state_manager_.reset();
+  }
+  storage_clients_.clear();
+}
+
+grpc::Status GraphServiceRouter::BeginTransaction(grpc::ServerContext* context,
+                                                    const cedargrpc::BeginTransactionRequest* request,
+                                                    cedargrpc::Transaction* response) {
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+  (void)request;
+  
+  auto txn_id = next_txn_id_.fetch_add(1);
+  std::string txn_id_str = std::to_string(txn_id);
+  
+  {
+    std::lock_guard<std::mutex> lock(active_txns_mutex_);
+    ActiveTransaction txn_ctx;
+    txn_ctx.txn_id = txn_id;
+    active_transactions_[txn_id_str] = std::move(txn_ctx);
+  }
+  
+  response->set_txn_id(txn_id_str);
+  response->set_isolation_level(request->isolation_level());
+  response->set_start_time(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
+  response->set_committed(false);
+  
+  if (txn_state_manager_) {
+    txn_state_manager_->CreateTransaction(txn_id, std::vector<uint16_t>{});
+  }
+  
+  std::cout << "[GraphD] BeginTransaction: " << txn_id << std::endl;
+  return grpc::Status::OK;
+}
+
+grpc::Status GraphServiceRouter::Commit(grpc::ServerContext* context,
+                                        const cedargrpc::CommitRequest* request,
+                                        cedargrpc::GrpcStatus* response) {
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+  
+  std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
+  
+  ActiveTransaction txn_ctx;
+  {
+    std::lock_guard<std::mutex> lock(active_txns_mutex_);
+    auto it = active_transactions_.find(txn_id_str);
+    if (it == active_transactions_.end()) {
+      response->set_ok(false);
+      response->set_message("Transaction not found: " + txn_id_str);
+      return grpc::Status::OK;
+    }
+    txn_ctx = std::move(it->second);
+    active_transactions_.erase(it);
+  }
+  
+  // 执行 2PC 提交（如果事务有累积的 write_set）
+  {
+    std::shared_lock<std::shared_mutex> lock(engine_mutex_);
+    if (two_pc_engine_ && txn_ctx.has_writes) {
+      auto now_ts = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      auto s = two_pc_engine_->Execute2PC(txn_ctx.txn_id, txn_ctx.read_set,
+                                           txn_ctx.write_set,
+                                           ::cedar::Timestamp(now_ts));
+      if (!s.ok()) {
+        response->set_ok(false);
+        response->set_message("2PC commit failed: " + s.ToString());
+        return grpc::Status::OK;
+      }
+    }
+  }
+  
+  if (txn_state_manager_) {
+    txn_state_manager_->UpdateState(txn_ctx.txn_id, cedar::TxnState::kCommitted);
+  }
+  
+  response->set_ok(true);
+  std::cout << "[GraphD] Commit: " << txn_id_str << " (keys=" << txn_ctx.write_set.size() << ")" << std::endl;
+  return grpc::Status::OK;
+}
+
+grpc::Status GraphServiceRouter::Rollback(grpc::ServerContext* context,
+                                          const cedargrpc::RollbackRequest* request,
+                                          cedargrpc::GrpcStatus* response) {
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+  
+  std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
+  
+  {
+    std::lock_guard<std::mutex> lock(active_txns_mutex_);
+    auto it = active_transactions_.find(txn_id_str);
+    if (it == active_transactions_.end()) {
+      response->set_ok(false);
+      response->set_message("Transaction not found: " + txn_id_str);
+      return grpc::Status::OK;
+    }
+    active_transactions_.erase(it);
+  }
+  
+  if (txn_state_manager_) {
+    auto txn_id = std::stoull(txn_id_str);
+    txn_state_manager_->UpdateState(txn_id, cedar::TxnState::kAborted);
+  }
+  
+  response->set_ok(true);
+  std::cout << "[GraphD] Rollback: " << txn_id_str << std::endl;
+  return grpc::Status::OK;
+}
+
+bool GraphServiceRouter::IsWriteQuery(const std::string& query) const {
+  // 1. 尝试 AST 解析精确检测（CREATE / SET / DELETE）
+  cypher::CypherParser parser(query);
+  auto stmt = parser.ParseStatement();
+  if (stmt) {
+    for (const auto& clause : stmt->clauses) {
+      switch (clause->clause_type) {
+        case cypher::ClauseType::CREATE:
+        case cypher::ClauseType::SET:
+        case cypher::ClauseType::DELETE:
+          return true;
+        default:
+          break;
+      }
+    }
+    // AST 未检测到写子句，但 MERGE/REMOVE 尚未被解析器支持
+    // 回退到关键词检测以覆盖 MERGE/REMOVE
+  }
+  
+  // 2. 关键词 fallback（覆盖 MERGE/REMOVE 以及 AST 解析失败的场景）
+  std::string lower_query = query;
+  std::transform(lower_query.begin(), lower_query.end(), lower_query.begin(), ::tolower);
+  return lower_query.find("merge") != std::string::npos ||
+         lower_query.find("remove") != std::string::npos;
+}
+
+Status GraphServiceRouter::ExecuteDistributedWrite(
+    const std::vector<::cedar::CedarKey>& read_set,
+    const std::vector<::cedar::CedarKey>& write_set) {
+  std::shared_lock<std::shared_mutex> lock(engine_mutex_);
+  if (!two_pc_engine_) {
+    return Status::InvalidArgument("2PC engine not initialized");
+  }
+  if (write_set.empty()) {
+    return Status::OK();
+  }
+  
+  auto txn_id = next_txn_id_.fetch_add(1);
+  auto now_ts = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  
+  return two_pc_engine_->Execute2PC(txn_id, read_set, write_set,
+                                     ::cedar::Timestamp(now_ts));
 }
 
 std::string GraphServiceRouter::GenerateQueryFingerprint(const std::string& query) {

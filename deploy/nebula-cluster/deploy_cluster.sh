@@ -31,7 +31,7 @@ GRAPHD_PORT=9669
 STORAGED_PORTS=(9779 9780 9781)
 
 # Build directory
-BUILD_DIR="${BUILD_DIR:-/Users/wangyang/Desktop/CedarGraph-Core/build}"
+BUILD_DIR="${BUILD_DIR:-$(pwd)/build}"
 
 echo -e "${BLUE}============================================${NC}"
 echo -e "${BLUE}  CedarGraph Nebula-Style Deployment${NC}"

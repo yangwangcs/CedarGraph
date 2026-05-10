@@ -16,10 +16,13 @@
 #include "cedar/dtx/monitoring.h"
 
 #include <chrono>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <sys/uio.h>
+#include <unistd.h>
 
 namespace cedar {
 namespace dtx {
@@ -112,79 +115,113 @@ StatusOr<Descriptor> PartitionStorage::Get(const CedarKey& key, Timestamp read_t
 }
 
 Status PartitionStorage::Prepare(TxnID txn_id, const std::vector<CedarKey>& reads,
-                                 const std::vector<CedarKey>& writes, Timestamp commit_ts) {
+                                 const std::vector<CedarKey>& writes,
+                                 const std::unordered_map<uint64_t, Descriptor>& write_descriptors,
+                                 Timestamp commit_ts) {
   if (!shared_storage_) {
     return Status::IOError("Storage not initialized");
   }
   
   std::unique_lock<std::shared_mutex> lock(txn_mutex_);
   
-  // Basic OCC: check write-write conflicts with other prepared transactions
-  for (const auto& [other_txn_id, other_state] : prepared_txns_) {
-    if (other_txn_id == txn_id) continue;
-    for (const auto& key : writes) {
-      for (const auto& other_key : other_state.write_set) {
-        if (key.entity_id() == other_key.entity_id() &&
-            key.column_id() == other_key.column_id() &&
-            key.entity_type() == other_key.entity_type()) {
-          return Status::IOError("Write conflict detected");
+  // Check if transaction already exists
+  if (prepared_txns_.find(txn_id) != prepared_txns_.end()) {
+    return Status::InvalidArgument("Transaction already prepared: " + std::to_string(txn_id));
+  }
+  
+  // Conflict detection: check if any write conflicts with existing prepared transactions
+  for (const auto& [existing_txn_id, existing_state] : prepared_txns_) {
+    if (existing_state.status != DistributedTxnState::kPrepared) {
+      continue;
+    }
+    
+    // Check write-write conflicts
+    for (const auto& write_key : writes) {
+      for (const auto& existing_write : existing_state.write_set) {
+        if (write_key.entity_id() == existing_write.entity_id() &&
+            write_key.column_id() == existing_write.column_id()) {
+          return Status::Busy("Write-write conflict with txn " + std::to_string(existing_txn_id));
         }
       }
     }
   }
   
-  // Record prepared transaction
   PreparedTxnState state;
   state.txn_id = txn_id;
   state.read_set = reads;
   state.write_set = writes;
+  state.write_descriptors = write_descriptors;
   state.commit_ts = commit_ts;
-  state.status = DistributedTxnState::kPreparing;
-  
+  state.status = DistributedTxnState::kPrepared;
   prepared_txns_[txn_id] = std::move(state);
   
-  // Write to WAL for durability
+  // Write WAL for durability
   WriteTxnWAL(txn_id, "PREPARE");
   
   return Status::OK();
 }
 
 Status PartitionStorage::Commit(TxnID txn_id, Timestamp commit_ts) {
+  if (!shared_storage_) {
+    return Status::IOError("Storage not initialized");
+  }
+  
+  if (is_readonly_.load()) {
+    return Status::InvalidArgument("Partition is read-only");
+  }
+  
   std::unique_lock<std::shared_mutex> lock(txn_mutex_);
   
   auto it = prepared_txns_.find(txn_id);
   if (it == prepared_txns_.end()) {
-    return Status::NotFound("Transaction not prepared");
+    return Status::NotFound("Transaction not found: " + std::to_string(txn_id));
   }
   
-  PreparedTxnState& state = it->second;
-  state.status = DistributedTxnState::kCommitting;
+  auto& state = it->second;
+  if (state.status != DistributedTxnState::kPrepared) {
+    return Status::InvalidArgument("Transaction not in prepared state: " + std::to_string(txn_id));
+  }
   
-  // Copy write set before unlocking to avoid iterator invalidation
-  std::vector<CedarKey> write_set_copy = state.write_set;
-  state.status = DistributedTxnState::kCommitting;
-  
-  // Apply all buffered writes
-  for (const auto& key : write_set_copy) {
-    // Create a descriptor for the write
-    Descriptor desc = Descriptor(static_cast<uint64_t>(commit_ts));
+  // Apply all writes directly to shared_storage_ to avoid recursive mutex deadlock.
+  // We already hold txn_mutex_, so calling Put() (which also locks txn_mutex_)
+  // would deadlock because std::shared_mutex does not support recursive write locks.
+  for (const auto& key : state.write_set) {
+    // Verify the key belongs to this partition
+    if (ExtractPartitionId(key) != partition_id_) {
+      continue;  // Skip keys not belonging to this partition
+    }
     
-    // Write to shared storage
-    lock.unlock();
-    Status s = Put(key, desc, commit_ts, txn_id);
-    lock.lock();
+    // Use the original descriptor from the prepared state, not a timestamp placeholder
+    Descriptor desc;
+    uint64_t key_hash = static_cast<uint64_t>(cedar::dtx::CedarKeyHash{}(key));
+    auto desc_it = state.write_descriptors.find(key_hash);
+    if (desc_it != state.write_descriptors.end()) {
+      desc = desc_it->second;
+    }
+    // If no descriptor found, fall back to an empty descriptor (should not happen)
+    
+    CedarKey storage_key = InjectPartitionId(key);
+    Status s = shared_storage_->Put(
+        storage_key.entity_id(),
+        storage_key.timestamp().value(),
+        desc,
+        commit_ts
+    );
     
     if (!s.ok()) {
-      state.status = DistributedTxnState::kAborted;
-      return s;
+      // Partial commit within a partition is unrecoverable in 2PC.
+      // Log the error and return it so the coordinator can initiate recovery.
+      return Status::IOError("Write failed during commit: " + s.ToString());
     }
   }
   
   state.status = DistributedTxnState::kCommitted;
-  prepared_txns_.erase(it);
   
-  // Write to WAL
+  // Write WAL
   WriteTxnWAL(txn_id, "COMMIT");
+  
+  // Remove from prepared transactions after successful commit
+  prepared_txns_.erase(it);
   
   return Status::OK();
 }
@@ -194,15 +231,29 @@ Status PartitionStorage::Abort(TxnID txn_id) {
   
   auto it = prepared_txns_.find(txn_id);
   if (it == prepared_txns_.end()) {
-    return Status::NotFound("Transaction not found");
+    return Status::NotFound("Transaction not found: " + std::to_string(txn_id));
   }
   
   it->second.status = DistributedTxnState::kAborted;
-  prepared_txns_.erase(it);
   
-  // Write to WAL
+  // Write WAL
   WriteTxnWAL(txn_id, "ABORT");
   
+  // Remove from prepared transactions
+  prepared_txns_.erase(it);
+  
+  return Status::OK();
+}
+
+Status PartitionStorage::Inquire(TxnID txn_id, DistributedTxnState* state) {
+  std::shared_lock<std::shared_mutex> lock(txn_mutex_);
+  
+  auto it = prepared_txns_.find(txn_id);
+  if (it == prepared_txns_.end()) {
+    return Status::NotFound("Transaction not found: " + std::to_string(txn_id));
+  }
+  
+  *state = it->second.status;
   return Status::OK();
 }
 
@@ -211,7 +262,7 @@ bool PartitionStorage::IsReadOnly() const {
 }
 
 void PartitionStorage::SetReadOnly(bool readonly) {
-  is_readonly_ = readonly;
+  is_readonly_.store(readonly);
 }
 
 PartitionStorage::StorageStats PartitionStorage::GetStats() const {
@@ -255,16 +306,328 @@ std::vector<TxnID> PartitionStorage::GetPreparedTransactions() const {
   return txns;
 }
 
+// =============================================================================
+// Snapshot Support - Serialize/Deserialize Prepared Transaction State
+// =============================================================================
+
+// Binary format:
+// [ magic: 4 ] = "CTSN"
+// [ version: 4 ] = 1
+// [ num_txns: 4 ]
+// for each txn:
+//   [ txn_id: 8 ]
+//   [ commit_ts: 8 ]
+//   [ status: 4 ]
+//   [ num_reads: 4 ]
+//   for each read: [ CedarKey raw: 32 ]
+//   [ num_writes: 4 ]
+//   for each write: [ CedarKey raw: 32 ]
+//   [ num_descriptors: 4 ]
+//   for each descriptor: [ key_hash: 8 ][ descriptor_raw: 8 ]
+
+static constexpr char kTxnSnapshotMagic[] = "CTSN";
+static constexpr uint32_t kTxnSnapshotVersion = 1;
+
+Status PartitionStorage::SavePreparedTxns(const std::string& path) const {
+  std::ofstream file(path, std::ios::binary);
+  if (!file) {
+    return Status::IOError("Failed to open snapshot file for writing: " + path);
+  }
+
+  // Write magic
+  file.write(kTxnSnapshotMagic, 4);
+  if (!file) return Status::IOError("Failed to write magic");
+
+  // Write version
+  uint32_t version = kTxnSnapshotVersion;
+  file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+  if (!file) return Status::IOError("Failed to write version");
+
+  std::shared_lock<std::shared_mutex> lock(txn_mutex_);
+
+  // Write transaction count
+  uint32_t num_txns = static_cast<uint32_t>(prepared_txns_.size());
+  file.write(reinterpret_cast<const char*>(&num_txns), sizeof(num_txns));
+  if (!file) return Status::IOError("Failed to write txn count");
+
+  for (const auto& [txn_id, state] : prepared_txns_) {
+    // txn_id
+    uint64_t tid = txn_id;
+    file.write(reinterpret_cast<const char*>(&tid), sizeof(tid));
+    if (!file) return Status::IOError("Failed to write txn_id");
+
+    // commit_ts
+    uint64_t cts = state.commit_ts.value();
+    file.write(reinterpret_cast<const char*>(&cts), sizeof(cts));
+    if (!file) return Status::IOError("Failed to write commit_ts");
+
+    // status
+    uint32_t st = static_cast<uint32_t>(state.status);
+    file.write(reinterpret_cast<const char*>(&st), sizeof(st));
+    if (!file) return Status::IOError("Failed to write status");
+
+    // read_set
+    uint32_t num_reads = static_cast<uint32_t>(state.read_set.size());
+    file.write(reinterpret_cast<const char*>(&num_reads), sizeof(num_reads));
+    if (!file) return Status::IOError("Failed to write read count");
+    for (const auto& key : state.read_set) {
+      // CedarKey is a POD-like struct of 32 bytes
+      file.write(reinterpret_cast<const char*>(&key), sizeof(key));
+      if (!file) return Status::IOError("Failed to write read key");
+    }
+
+    // write_set
+    uint32_t num_writes = static_cast<uint32_t>(state.write_set.size());
+    file.write(reinterpret_cast<const char*>(&num_writes), sizeof(num_writes));
+    if (!file) return Status::IOError("Failed to write write count");
+    for (const auto& key : state.write_set) {
+      file.write(reinterpret_cast<const char*>(&key), sizeof(key));
+      if (!file) return Status::IOError("Failed to write write key");
+    }
+
+    // write_descriptors
+    uint32_t num_descs = static_cast<uint32_t>(state.write_descriptors.size());
+    file.write(reinterpret_cast<const char*>(&num_descs), sizeof(num_descs));
+    if (!file) return Status::IOError("Failed to write descriptor count");
+    for (const auto& [key_hash, desc] : state.write_descriptors) {
+      file.write(reinterpret_cast<const char*>(&key_hash), sizeof(key_hash));
+      if (!file) return Status::IOError("Failed to write key_hash");
+      uint64_t desc_raw = desc.AsRaw();
+      file.write(reinterpret_cast<const char*>(&desc_raw), sizeof(desc_raw));
+      if (!file) return Status::IOError("Failed to write descriptor raw");
+    }
+  }
+
+  file.flush();
+  return Status::OK();
+}
+
+Status PartitionStorage::LoadPreparedTxns(const std::string& path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return Status::IOError("Failed to open snapshot file for reading: " + path);
+  }
+
+  // Read magic
+  char magic[4];
+  file.read(magic, 4);
+  if (!file || memcmp(magic, kTxnSnapshotMagic, 4) != 0) {
+    return Status::InvalidArgument("Invalid snapshot file magic");
+  }
+
+  // Read version
+  uint32_t version;
+  file.read(reinterpret_cast<char*>(&version), sizeof(version));
+  if (!file || version != kTxnSnapshotVersion) {
+    return Status::InvalidArgument("Unsupported snapshot version: " + std::to_string(version));
+  }
+
+  // Read transaction count
+  uint32_t num_txns;
+  file.read(reinterpret_cast<char*>(&num_txns), sizeof(num_txns));
+  if (!file) return Status::IOError("Failed to read txn count");
+
+  std::unique_lock<std::shared_mutex> lock(txn_mutex_);
+  prepared_txns_.clear();
+
+  for (uint32_t i = 0; i < num_txns; ++i) {
+    PreparedTxnState state;
+
+    // txn_id
+    uint64_t txn_id;
+    file.read(reinterpret_cast<char*>(&txn_id), sizeof(txn_id));
+    if (!file) return Status::IOError("Failed to read txn_id");
+    state.txn_id = txn_id;
+
+    // commit_ts
+    uint64_t cts;
+    file.read(reinterpret_cast<char*>(&cts), sizeof(cts));
+    if (!file) return Status::IOError("Failed to read commit_ts");
+    state.commit_ts = Timestamp(cts);
+
+    // status
+    uint32_t st;
+    file.read(reinterpret_cast<char*>(&st), sizeof(st));
+    if (!file) return Status::IOError("Failed to read status");
+    state.status = static_cast<DistributedTxnState>(st);
+
+    // read_set
+    uint32_t num_reads;
+    file.read(reinterpret_cast<char*>(&num_reads), sizeof(num_reads));
+    if (!file) return Status::IOError("Failed to read read count");
+    state.read_set.reserve(num_reads);
+    for (uint32_t r = 0; r < num_reads; ++r) {
+      CedarKey key;
+      file.read(reinterpret_cast<char*>(&key), sizeof(key));
+      if (!file) return Status::IOError("Failed to read read key");
+      state.read_set.push_back(key);
+    }
+
+    // write_set
+    uint32_t num_writes;
+    file.read(reinterpret_cast<char*>(&num_writes), sizeof(num_writes));
+    if (!file) return Status::IOError("Failed to read write count");
+    state.write_set.reserve(num_writes);
+    for (uint32_t w = 0; w < num_writes; ++w) {
+      CedarKey key;
+      file.read(reinterpret_cast<char*>(&key), sizeof(key));
+      if (!file) return Status::IOError("Failed to read write key");
+      state.write_set.push_back(key);
+    }
+
+    // write_descriptors
+    uint32_t num_descs;
+    file.read(reinterpret_cast<char*>(&num_descs), sizeof(num_descs));
+    if (!file) return Status::IOError("Failed to read descriptor count");
+    for (uint32_t d = 0; d < num_descs; ++d) {
+      uint64_t key_hash;
+      file.read(reinterpret_cast<char*>(&key_hash), sizeof(key_hash));
+      if (!file) return Status::IOError("Failed to read key_hash");
+      uint64_t desc_raw;
+      file.read(reinterpret_cast<char*>(&desc_raw), sizeof(desc_raw));
+      if (!file) return Status::IOError("Failed to read descriptor raw");
+      state.write_descriptors[key_hash] = Descriptor(desc_raw);
+    }
+
+    prepared_txns_[txn_id] = std::move(state);
+  }
+
+  return Status::OK();
+}
+
+std::string PartitionStorage::GetDataRoot() const {
+  return manager_ ? manager_->GetDataRoot() : "/tmp/cedar_storage";
+}
+
+Status PartitionStorage::RecoverFromWAL() {
+  std::string wal_dir = manager_ ? manager_->GetDataRoot() + "/wal" : "/tmp/cedar_wal";
+  std::string wal_path = wal_dir + "/partition_" + std::to_string(partition_id_) + "_wal.log";
+  
+  if (!std::filesystem::exists(wal_path)) {
+    return Status::OK();  // No WAL to recover
+  }
+  
+  int fd = ::open(wal_path.c_str(), O_RDONLY);
+  if (fd < 0) {
+    return Status::IOError("RecoverFromWAL", "Failed to open WAL file");
+  }
+  
+  struct stat st;
+  if (fstat(fd, &st) < 0 || st.st_size == 0) {
+    ::close(fd);
+    return Status::OK();
+  }
+  
+  std::string wal_data(st.st_size, '\0');
+  ssize_t n = ::read(fd, &wal_data[0], st.st_size);
+  ::close(fd);
+  if (n != st.st_size) {
+    return Status::IOError("RecoverFromWAL", "Failed to read complete WAL");
+  }
+  
+  // Parse WAL records: [timestamp:8][txn_id:8][op_len:4][operation]
+  size_t pos = 0;
+  std::unordered_map<TxnID, std::string> last_op_for_txn;
+  
+  while (pos + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint32_t) <= static_cast<size_t>(st.st_size)) {
+    uint64_t ts, txn_id;
+    uint32_t op_len;
+    
+    std::memcpy(&ts, &wal_data[pos], sizeof(ts));
+    pos += sizeof(ts);
+    std::memcpy(&txn_id, &wal_data[pos], sizeof(txn_id));
+    pos += sizeof(txn_id);
+    std::memcpy(&op_len, &wal_data[pos], sizeof(op_len));
+    pos += sizeof(op_len);
+    
+    if (pos + op_len > static_cast<size_t>(st.st_size)) {
+      std::cerr << "[PartitionStorage] Corrupt WAL record at offset " << (pos - sizeof(ts) - sizeof(txn_id) - sizeof(op_len))
+                << " for partition " << partition_id_ << std::endl;
+      break;
+    }
+    
+    std::string op = wal_data.substr(pos, op_len);
+    pos += op_len;
+    
+    last_op_for_txn[txn_id] = op;
+  }
+  
+  // Apply recovered operations
+  size_t recovered_commits = 0;
+  size_t recovered_aborts = 0;
+  
+  for (const auto& [txn_id, op] : last_op_for_txn) {
+    if (op == "COMMIT") {
+      // Best-effort: if transaction is still prepared, complete it
+      auto s = Commit(txn_id, Timestamp::Max());
+      if (s.ok() || s.IsNotFound()) {
+        recovered_commits++;
+      }
+    } else if (op == "ABORT") {
+      auto s = Abort(txn_id);
+      if (s.ok() || s.IsNotFound()) {
+        recovered_aborts++;
+      }
+    }
+    // PREPARE records cannot be fully recovered because WAL does not store
+    // read/write sets. They are handled by snapshot LoadPreparedTxns instead.
+  }
+  
+  if (recovered_commits > 0 || recovered_aborts > 0) {
+    std::cout << "[PartitionStorage] Recovered " << recovered_commits << " commits and "
+              << recovered_aborts << " aborts from WAL for partition " << partition_id_ << std::endl;
+  }
+  
+  return Status::OK();
+}
+
 Status PartitionStorage::WriteTxnWAL(uint64_t txn_id, const std::string& operation) {
   std::string wal_dir = manager_ ? manager_->GetDataRoot() + "/wal" : "/tmp/cedar_wal";
-  std::string wal_path = wal_dir + "/partition_" + std::to_string(partition_id_) + "_wal.txt";
+  std::string wal_path = wal_dir + "/partition_" + std::to_string(partition_id_) + "_wal.log";
   std::filesystem::create_directories(wal_dir);
-  std::ofstream wal(wal_path, std::ios::app);
-  if (wal.is_open()) {
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
-    wal << time_t << " " << txn_id << " " << operation << "\n";
+  
+  // Use POSIX open for durable writes with O_APPEND
+  int fd = ::open(wal_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+  if (fd < 0) {
+    return Status::IOError("WriteTxnWAL", "Failed to open WAL file");
   }
+  
+  // Format: [timestamp:8][txn_id:8][op_len:4][operation]
+  auto now = std::chrono::system_clock::now();
+  uint64_t ts = static_cast<uint64_t>(std::chrono::system_clock::to_time_t(now));
+  uint64_t tid = txn_id;
+  uint32_t op_len = static_cast<uint32_t>(operation.size());
+  
+  struct iovec iov[4];
+  iov[0].iov_base = &ts;
+  iov[0].iov_len = sizeof(ts);
+  iov[1].iov_base = &tid;
+  iov[1].iov_len = sizeof(tid);
+  iov[2].iov_base = &op_len;
+  iov[2].iov_len = sizeof(op_len);
+  iov[3].iov_base = const_cast<char*>(operation.data());
+  iov[3].iov_len = operation.size();
+  
+  ssize_t written = ::writev(fd, iov, 4);
+  if (written < 0 || static_cast<size_t>(written) != sizeof(ts) + sizeof(tid) + sizeof(op_len) + operation.size()) {
+    ::close(fd);
+    return Status::IOError("WriteTxnWAL", "Partial write");
+  }
+  
+  // Sync to disk
+  #ifdef __APPLE__
+    if (::fcntl(fd, F_FULLFSYNC) < 0) {
+      ::close(fd);
+      return Status::IOError("WriteTxnWAL", "F_FULLFSYNC failed");
+    }
+  #else
+    if (::fsync(fd) < 0) {
+      ::close(fd);
+      return Status::IOError("WriteTxnWAL", "fsync failed");
+    }
+  #endif
+  
+  ::close(fd);
   return Status::OK();
 }
 

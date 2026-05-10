@@ -23,6 +23,8 @@
 #include <mutex>
 #include <atomic>
 
+#include "cedar/core/threading.h"
+
 #include "cedar/graph/pushdown_predicate.h"
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
@@ -69,7 +71,7 @@ class SharedIOContext {
   // 获取缓存的 Block
   // 如果不存在或已过期，返回 nullptr
   std::shared_ptr<CachedBlock> GetBlock(
-      const std::string& file_path, size_t block_idx);
+      const std::string& file_path, size_t block_idx) const;
   
   // 添加 Block 到缓存
   void CacheBlock(const std::string& file_path, size_t block_idx,
@@ -130,8 +132,8 @@ class SharedIOContext {
   
   // 统计
   mutable std::mutex stats_mutex_;
-  size_t cache_hits_ = 0;
-  size_t cache_misses_ = 0;
+  mutable size_t cache_hits_ = 0;
+  mutable size_t cache_misses_ = 0;
 };
 
 // 图语义层 - 核心类
@@ -140,6 +142,9 @@ class GraphSemanticLayer {
  public:
   explicit GraphSemanticLayer(CedarGraphStorage* storage);
   ~GraphSemanticLayer();
+
+  // 获取内部线程池（用于外部批量操作复用）
+  ThreadPool* GetThreadPool() const { return thread_pool_.get(); }
 
   // 禁止拷贝
   GraphSemanticLayer(const GraphSemanticLayer&) = delete;
@@ -220,6 +225,7 @@ class GraphSemanticLayer {
       SharedIOContext* shared_io);
 
   CedarGraphStorage* storage_;
+  std::unique_ptr<ThreadPool> thread_pool_;
   
   // 配置
   std::atomic<bool> enable_prefetch_{true};

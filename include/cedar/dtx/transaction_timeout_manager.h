@@ -113,6 +113,7 @@ class TransactionTimeoutManager {
   
   TimeoutConfig config_;
   TimeoutCallback* callback_ = nullptr;
+  mutable std::mutex callback_mutex_;
   
   mutable std::mutex mutex_;
   std::map<dtx::TxnID, TransactionTimeoutInfo> transactions_;

@@ -184,7 +184,11 @@ class PartitionMigrator {
   Status RetryMigration(uint64_t migration_id);
   
   // Bulk operations
-  Status SubmitRebalancePlan(const std::vector<std::tuple<PartitionID, NodeID, NodeID>>& plan);
+  Status SubmitRebalancePlan(const std::vector<std::tuple<PartitionID, NodeID, NodeID>>& plan) {
+    (void)plan;
+    return Status::NotSupported(
+        "Rebalance plan submission is not yet production-ready.");
+  }
   
   // Statistics
   struct Stats {
@@ -272,6 +276,7 @@ class RebalancePlanner {
   double CalculateLoadVariance() const;
 
  private:
+  mutable std::mutex mutex_;
   std::vector<NodeLoad> node_loads_;
   std::map<PartitionID, NodeID> partition_distribution_;
   

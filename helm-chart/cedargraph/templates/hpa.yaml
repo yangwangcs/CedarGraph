@@ -1,0 +1,59 @@
+{{- if .Values.autoscaling.graphd.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-graphd
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: graphd
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "cedargraph.fullname" . }}-graphd
+  minReplicas: {{ .Values.autoscaling.graphd.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.graphd.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.graphd.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.graphd.targetMemoryUtilizationPercentage }}
+---
+{{- end }}
+{{- if .Values.autoscaling.storaged.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-storaged
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storaged
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: {{ include "cedargraph.fullname" . }}-storaged
+  minReplicas: {{ .Values.autoscaling.storaged.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.storaged.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.storaged.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.storaged.targetMemoryUtilizationPercentage }}
+{{- end }}
