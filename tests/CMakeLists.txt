@@ -15,7 +15,6 @@ set(CEDAR_TEST_LIBS
     cedar
     cedar_graph
     cedar_cypher
-    cedar_compression
     ${GTEST_MAIN_TARGET}
     pthread
 )
