@@ -310,7 +310,7 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
 
     auto s = executor_->ExecuteStreaming(
         request->query(), parameters, &ctx,
-        [&writer, &current_batch, &batch_index, &rows_in_current_batch](
+        [&writer, &current_batch, &batch_index, &rows_in_current_batch, request](
             const cedar::cypher::Record& record) -> bool {
           auto* row = current_batch.mutable_batch()->add_rows();
           RecordToRow(record, row);
