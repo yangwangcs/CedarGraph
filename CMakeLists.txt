@@ -65,6 +65,10 @@ add_custom_command(
            ${PROTO_OUT_DIR}/metad_admin.grpc.pb.cc ${PROTO_OUT_DIR}/metad_admin.grpc.pb.h
            ${PROTO_OUT_DIR}/meta_service.pb.cc ${PROTO_OUT_DIR}/meta_service.pb.h
            ${PROTO_OUT_DIR}/meta_service.grpc.pb.cc ${PROTO_OUT_DIR}/meta_service.grpc.pb.h
+           ${PROTO_OUT_DIR}/query_service.pb.cc ${PROTO_OUT_DIR}/query_service.pb.h
+           ${PROTO_OUT_DIR}/query_service.grpc.pb.cc ${PROTO_OUT_DIR}/query_service.grpc.pb.h
+           ${PROTO_OUT_DIR}/storage_service.pb.cc ${PROTO_OUT_DIR}/storage_service.pb.h
+           ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc ${PROTO_OUT_DIR}/storage_service.grpc.pb.h
            ${PROTO_OUT_DIR}/migration_service.pb.cc ${PROTO_OUT_DIR}/migration_service.pb.h
            ${PROTO_OUT_DIR}/migration_service.grpc.pb.cc ${PROTO_OUT_DIR}/migration_service.grpc.pb.h
            ${PROTO_OUT_DIR}/dtx_protocol.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.pb.h
@@ -92,6 +96,8 @@ add_custom_target(generate_proto ALL
             ${PROTO_OUT_DIR}/meta_service.grpc.pb.cc ${PROTO_OUT_DIR}/meta_service.grpc.pb.h
             ${PROTO_OUT_DIR}/query_service.pb.cc ${PROTO_OUT_DIR}/query_service.pb.h
             ${PROTO_OUT_DIR}/query_service.grpc.pb.cc ${PROTO_OUT_DIR}/query_service.grpc.pb.h
+            ${PROTO_OUT_DIR}/storage_service.pb.cc ${PROTO_OUT_DIR}/storage_service.pb.h
+            ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc ${PROTO_OUT_DIR}/storage_service.grpc.pb.h
             ${PROTO_OUT_DIR}/migration_service.pb.cc ${PROTO_OUT_DIR}/migration_service.pb.h
             ${PROTO_OUT_DIR}/migration_service.grpc.pb.cc ${PROTO_OUT_DIR}/migration_service.grpc.pb.h
             ${PROTO_OUT_DIR}/dtx_protocol.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.pb.h
