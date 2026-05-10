@@ -56,64 +56,10 @@ struct MetaCommand {
 };
 
 // =============================================================================
-// In-Memory Metadata Store
-// =============================================================================
-
-class MetadataStore {
- public:
-  MetadataStore() = default;
-  
-  // Schema operations
-  Status CreateSpace(const SpaceDef& space);
-  Status DropSpace(const std::string& space_name);
-  StatusOr<SpaceDef> GetSpace(const std::string& space_name) const;
-  std::vector<std::string> ListSpaces() const;
-  
-  // Partition operations
-  Status UpdatePartitionAssignment(const std::string& space_name,
-                                    PartitionID partition_id,
-                                    const PartitionAssignment& assignment);
-  StatusOr<PartitionAssignment> GetPartitionAssignment(
-      const std::string& space_name, PartitionID partition_id) const;
-  StatusOr<SpacePartitionMap> GetSpacePartitionMap(
-      const std::string& space_name) const;
-  
-  // Node operations
-  Status RegisterNode(const NodeInfo& info);
-  Status UpdateNodeStatus(const NodeStatus& status);
-  StatusOr<NodeInfo> GetNode(NodeID node_id) const;
-  std::vector<NodeInfo> GetAliveNodes(uint64_t timeout_sec) const;
-  std::vector<NodeInfo> GetAllNodes() const;
-  
-  // Serialization for snapshot
-  std::string Serialize() const;
-  Status Deserialize(const std::string& data);
-  
-  // Get current version
-  uint64_t GetVersion() const { return version_; }
-
- private:
-  mutable std::shared_mutex mutex_;
-  
-  // Schema
-  std::unordered_map<std::string, SpaceDef> spaces_;
-  
-  // Partition mappings
-  std::unordered_map<std::string, SpacePartitionMap> partition_maps_;
-  
-  // Node information
-  std::unordered_map<NodeID, NodeInfo> nodes_;
-  std::unordered_map<NodeID, NodeStatus> node_statuses_;
-  
-  // Version counter for optimistic concurrency
-  std::atomic<uint64_t> version_{0};
-};
-
-// =============================================================================
 // Metadata Service (Raft-aware wrapper - to be reimplemented with braft)
 // =============================================================================
-// NOTE: The old RaftMetaService has been removed along with the custom raft
-// layer. MetadataStore and MetaCommand are retained for future braft-based
+// NOTE: The old RaftMetaService and MetadataStore have been removed along with
+// the custom raft layer. MetaCommand is retained for future braft-based
 // reimplementation.
 // =============================================================================
 
