@@ -4,6 +4,7 @@
 #ifndef CEDAR_CYPHER_EXPRESSION_EVALUATOR_H_
 #define CEDAR_CYPHER_EXPRESSION_EVALUATOR_H_
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -35,6 +36,16 @@ class ExpressionEvaluator {
    * @return The evaluated value
    */
   Value Evaluate(const Expression& expr, const Record& record);
+
+  /**
+   * @brief Build a predicate function from an expression for filtering records
+   * @param expr The expression to evaluate (must return bool-ish)
+   * @param params Optional parameter values for parameterized queries
+   * @return A function that evaluates the expression against a record
+   */
+  static std::function<bool(const Record&)> BuildPredicate(
+      const Expression* expr,
+      const std::unordered_map<std::string, Value>& params = {});
 
   /**
    * @brief Set parameter values for parameterized queries

@@ -14,6 +14,20 @@ namespace cypher {
 ExpressionEvaluator::ExpressionEvaluator(const ExecutionContext* context)
     : context_(context) {}
 
+std::function<bool(const Record&)> ExpressionEvaluator::BuildPredicate(
+    const Expression* expr,
+    const std::unordered_map<std::string, Value>& params) {
+  if (!expr) {
+    return [](const Record&) { return true; };
+  }
+  return [expr, params](const Record& record) -> bool {
+    ExpressionEvaluator evaluator(nullptr);
+    evaluator.SetParameters(params);
+    Value result = evaluator.Evaluate(*expr, record);
+    return result.GetBool();
+  };
+}
+
 Value ExpressionEvaluator::Evaluate(const Expression& expr, const Record& record) {
   switch (expr.expr_type) {
     case ExprType::LITERAL:

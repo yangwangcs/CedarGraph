@@ -12,6 +12,7 @@
 // 包含 Cypher parser 和 AST 头文件
 #include "cedar/cypher/parser.h"
 #include "cedar/cypher/ast.h"
+#include "cedar/cypher/expression_evaluator.h"
 
 namespace cedar {
 namespace queryd {
@@ -229,45 +230,86 @@ class NodeClientImpl : public QueryStorageClient::NodeClient {
       const std::string& query_fragment,
       const std::unordered_map<std::string, cypher::Value>& parameters,
       cypher::ResultSet* result) override {
-    (void)parameters;
     if (!result) {
       return Status::InvalidArgument("result pointer is null");
     }
 
-    // Parse the query fragment to determine operation type
+    // Parse the query fragment
     cypher::CypherParser parser(query_fragment);
     auto stmt = parser.ParseStatement();
     if (!stmt) {
       return Status::InvalidArgument("Failed to parse sub-query: " + parser.GetError());
     }
 
-    // Determine query type from AST
-    bool is_match = false;
-    bool has_return = false;
-    std::string entity_alias;
-    uint16_t edge_type = 0;
-    cypher::Direction direction = cypher::Direction::OUTGOING;
+    // Only support MATCH...RETURN (with optional WHERE) for now
+    if (stmt->clauses.empty() ||
+        stmt->clauses[0]->clause_type != cypher::ClauseType::MATCH) {
+      return Status::NotSupported(
+          "ExecuteSubQuery only supports MATCH...RETURN");
+    }
 
-    for (const auto& clause : stmt->clauses) {
-      if (clause->clause_type == cypher::ClauseType::MATCH) {
-        is_match = true;
-        auto* match = static_cast<cypher::MatchClause*>(clause.get());
-        if (!match->patterns.empty() && !match->patterns[0].elements.empty()) {
-          // First element in the path pattern should be a NodePattern
-          if (auto* node_pattern = std::get_if<cypher::NodePattern>(&match->patterns[0].elements[0])) {
-            entity_alias = node_pattern->variable;
-          }
+    auto* match = static_cast<cypher::MatchClause*>(stmt->clauses[0].get());
+
+    // Reject relationship traversals - only single node scans are supported
+    for (const auto& pattern : match->patterns) {
+      for (const auto& element : pattern.elements) {
+        if (std::holds_alternative<cypher::RelationshipPattern>(element)) {
+          return Status::NotSupported(
+              "ExecuteSubQuery does not support relationship traversals yet");
         }
-      } else if (clause->clause_type == cypher::ClauseType::RETURN) {
-        has_return = true;
       }
     }
 
-    if (!is_match || !has_return) {
+    // Reject OPTIONAL MATCH
+    if (match->optional) {
+      return Status::NotSupported(
+          "ExecuteSubQuery does not support OPTIONAL MATCH");
+    }
+
+    bool has_return = false;
+    std::function<bool(const cypher::Record&)> filter;
+
+    for (size_t i = 1; i < stmt->clauses.size(); ++i) {
+      const auto& clause = stmt->clauses[i];
+      switch (clause->clause_type) {
+        case cypher::ClauseType::WHERE: {
+          auto* where = static_cast<cypher::WhereClause*>(clause.get());
+          filter = cypher::ExpressionEvaluator::BuildPredicate(
+              where->condition.get(), parameters);
+          break;
+        }
+        case cypher::ClauseType::RETURN:
+          has_return = true;
+          break;
+        case cypher::ClauseType::ORDER_BY:
+        case cypher::ClauseType::LIMIT:
+        case cypher::ClauseType::SKIP:
+          // Silently ignore for now - they don't affect correctness
+          break;
+        case cypher::ClauseType::CREATE:
+        case cypher::ClauseType::SET:
+        case cypher::ClauseType::DELETE:
+          return Status::NotSupported(
+              "ExecuteSubQuery does not support write clauses");
+        default:
+          return Status::NotSupported(
+              "ExecuteSubQuery does not support clause type");
+      }
+    }
+
+    if (!has_return) {
       return Status::NotSupported("Only MATCH...RETURN sub-queries are supported");
     }
 
-    // For now, implement a full partition scan (node_id = 0 means all nodes)
+    // Extract entity alias from first node pattern
+    std::string entity_alias;
+    if (!match->patterns.empty() && !match->patterns[0].elements.empty()) {
+      if (auto* node_pattern = std::get_if<cypher::NodePattern>(&match->patterns[0].elements[0])) {
+        entity_alias = node_pattern->variable;
+      }
+    }
+
+    // Full partition scan (node_id = 0 means all nodes)
     // This is the minimal viable implementation for cross-partition queries.
     std::vector<std::pair<Timestamp, Descriptor>> versions;
     Status s = client_->ScanNode(0, Timestamp::Max(), &versions);
@@ -275,7 +317,7 @@ class NodeClientImpl : public QueryStorageClient::NodeClient {
       return s;
     }
 
-    // Convert scan results to cypher::ResultSet records
+    // Convert scan results to cypher::ResultSet records and apply filter
     for (const auto& [ts, desc] : versions) {
       (void)ts;
       cypher::Record record;
@@ -284,6 +326,12 @@ class NodeClientImpl : public QueryStorageClient::NodeClient {
         node.id = desc.AsRaw();
         record.values[entity_alias] = cypher::Value(std::move(node));
       }
+
+      // Apply WHERE filter
+      if (filter && !filter(record)) {
+        continue;
+      }
+
       result->records.push_back(std::move(record));
     }
 
