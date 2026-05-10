@@ -1,8 +1,5 @@
 # Cypher Query Engine Tests
 
-# Include main test configuration
-include(${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt)
-
 # WHERE Clause Test
 add_executable(test_where_clause
     test_where_clause.cc
@@ -16,3 +13,10 @@ add_executable(test_parameterized_query
 )
 target_link_libraries(test_parameterized_query cedar cedar_cypher gtest pthread)
 gtest_discover_tests(test_parameterized_query)
+
+# Parser Test
+add_executable(test_parser
+    test_parser.cc
+)
+target_link_libraries(test_parser cedar cedar_cypher gtest pthread)
+gtest_discover_tests(test_parser)

@@ -396,12 +396,33 @@ PathPattern CypherParser::ParsePattern() {
         }
       }
       
-      // Properties (simplified)
+      // Properties
       SkipWhitespaceAndComments();
       if (MatchSymbol('{')) {
-        // Skip properties for now
         while (!IsAtEnd() && Peek() != '}') {
-          Advance();
+          SkipWhitespaceAndComments();
+          std::string prop_name = ParseIdentifier();
+          if (prop_name.empty()) {
+            error_ = "Expected property name in {";
+            break;
+          }
+          SkipWhitespaceAndComments();
+          if (!MatchSymbol(':')) {
+            error_ = "Expected ':' after property name";
+            break;
+          }
+          auto expr = ParseExpression();
+          if (!expr) {
+            error_ = "Expected expression after ':' in property";
+            break;
+          }
+          node.properties[prop_name] = std::move(expr);
+          SkipWhitespaceAndComments();
+          if (Peek() == ',') {
+            Advance();
+          } else {
+            break;
+          }
         }
         ExpectSymbol('}');
       }

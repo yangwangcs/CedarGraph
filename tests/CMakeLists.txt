@@ -33,6 +33,9 @@ macro(add_cedar_test TEST_NAME)
     gtest_discover_tests(${TEST_NAME})
 endmacro()
 
+# Cypher tests
+add_subdirectory(cypher)
+
 # Core tests
 add_cedar_test(test_cedar_key)
 add_cedar_test(test_descriptor)
