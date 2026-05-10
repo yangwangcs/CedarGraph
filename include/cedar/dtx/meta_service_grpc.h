@@ -20,7 +20,9 @@
 #define CEDAR_DTX_META_SERVICE_GRPC_H_
 
 #include <grpcpp/grpcpp.h>
+#include <atomic>
 #include <memory>
+#include <thread>
 
 #include "cedar/dtx/meta_service.h"
 #include "meta_service.grpc.pb.h"
@@ -119,7 +121,7 @@ private:
 class MetaServiceGrpcClient : public MetaServiceClient {
 public:
     MetaServiceGrpcClient();
-    ~MetaServiceGrpcClient() override = default;
+    ~MetaServiceGrpcClient() override;
     
     // 连接到 MetaD 集群
     Status Connect(const std::vector<std::string>& meta_addresses) override;
@@ -153,6 +155,10 @@ private:
     
     // 处理连接失败，尝试其他节点
     Status TryReconnect();
+    
+    std::thread health_monitor_thread_;
+    std::atomic<bool> health_monitor_running_{false};
+    void HealthMonitorLoop();
     
     std::vector<std::string> meta_addresses_;
     std::atomic<size_t> current_index_{0};

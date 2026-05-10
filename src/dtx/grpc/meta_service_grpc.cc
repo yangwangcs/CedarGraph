@@ -2,6 +2,7 @@
 
 #include "cedar/dtx/raft/grpc_tls.h"
 #include <grpcpp/grpcpp.h>
+#include <iostream>
 
 namespace cedar {
 namespace dtx {
@@ -202,15 +203,55 @@ void MetaServiceGrpcServer::Wait() {
 
 MetaServiceGrpcClient::MetaServiceGrpcClient() = default;
 
+MetaServiceGrpcClient::~MetaServiceGrpcClient() {
+    health_monitor_running_.store(false);
+    if (health_monitor_thread_.joinable()) {
+        health_monitor_thread_.join();
+    }
+}
+
 Status MetaServiceGrpcClient::Connect(const std::vector<std::string>& meta_addresses) {
+    // Stop existing monitor if any
+    if (health_monitor_running_.exchange(false)) {
+        if (health_monitor_thread_.joinable()) {
+            health_monitor_thread_.join();
+        }
+    }
+
     std::unique_lock<std::shared_mutex> lock(stub_mutex_);
     meta_addresses_ = meta_addresses;
-    current_index_ = 0;
-    if (!meta_addresses_.empty()) {
-        channel_ = grpc::CreateChannel(meta_addresses_[0], cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv());
-        stub_ = cedar::meta::MetaService::NewStub(channel_);
+
+    if (meta_addresses_.empty()) {
+        return Status::InvalidArgument("No meta addresses provided");
     }
-    return Status::OK();
+
+    // Try each address until one responds to GetAliveNodes
+    for (size_t i = 0; i < meta_addresses_.size(); ++i) {
+        current_index_ = i;
+        channel_ = grpc::CreateChannel(
+            meta_addresses_[i],
+            cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv());
+        stub_ = cedar::meta::MetaService::NewStub(channel_);
+
+        cedar::meta::GetAliveNodesRequest req;
+        cedar::meta::GetAliveNodesResponse resp;
+        grpc::ClientContext ctx;
+        ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
+        auto status = stub_->GetAliveNodes(&ctx, req, &resp);
+        if (status.ok() && resp.success()) {
+            lock.unlock();
+            // Start background health monitor
+            health_monitor_running_ = true;
+            health_monitor_thread_ = std::thread(&MetaServiceGrpcClient::HealthMonitorLoop, this);
+            return Status::OK();
+        }
+    }
+
+    // None responded — keep the last stub so TryReconnect can cycle
+    lock.unlock();
+    health_monitor_running_ = true;
+    health_monitor_thread_ = std::thread(&MetaServiceGrpcClient::HealthMonitorLoop, this);
+    return Status::IOError("All MetaD nodes unreachable at connect time");
 }
 
 StatusOr<NodeID> MetaServiceGrpcClient::GetPartitionLeader(const std::string& space_name, 
@@ -467,6 +508,32 @@ Status MetaServiceGrpcClient::TryReconnect() {
         }
     }
     return Status::IOError("All meta nodes unreachable");
+}
+
+void MetaServiceGrpcClient::HealthMonitorLoop() {
+    while (health_monitor_running_.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        if (!health_monitor_running_.load()) break;
+
+        auto stub = GetStub();
+        if (!stub) continue;
+
+        cedar::meta::GetAliveNodesRequest req;
+        cedar::meta::GetAliveNodesResponse resp;
+        grpc::ClientContext ctx;
+        ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
+        auto status = stub->GetAliveNodes(&ctx, req, &resp);
+
+        if (!status.ok() || !resp.success()) {
+            std::cerr << "[MetaServiceGrpcClient] Health check failed, triggering reconnect"
+                      << std::endl;
+            auto reconnect = TryReconnect();
+            if (!reconnect.ok()) {
+                std::cerr << "[MetaServiceGrpcClient] Reconnect failed: "
+                          << reconnect.ToString() << std::endl;
+            }
+        }
+    }
 }
 
 } // namespace dtx
