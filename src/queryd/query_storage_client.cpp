@@ -9,6 +9,10 @@
 // 包含 dtx StorageClient 头文件
 #include "cedar/dtx/storage_service_impl.h"
 
+// 包含 Cypher parser 和 AST 头文件
+#include "cedar/cypher/parser.h"
+#include "cedar/cypher/ast.h"
+
 namespace cedar {
 namespace queryd {
 
@@ -121,13 +125,10 @@ Status QueryStorageClient::ScanNode(
     uint64_t node_id,
     Timestamp as_of_time,
     std::vector<std::pair<Timestamp, Descriptor>>* versions) {
-  (void)node_id;
-  (void)as_of_time;
-  (void)versions;
-  
-  // TODO: Implement using gRPC to storage node
-  // This would require a Scan method on StorageService
-  return Status::NotSupported("ScanNode not yet implemented");
+  if (use_base_client_ && base_client_) {
+    return base_client_->ScanNodeV2(node_id, Timestamp::Min(), as_of_time, versions);
+  }
+  return Status::NotSupported("Independent mode not implemented, use SetBaseClient");
 }
 
 Status QueryStorageClient::ScanOutEdges(
@@ -135,13 +136,12 @@ Status QueryStorageClient::ScanOutEdges(
     uint16_t edge_type,
     Timestamp as_of_time,
     std::vector<EdgeScanEntry>* edges) {
-  (void)node_id;
-  (void)edge_type;
-  (void)as_of_time;
-  (void)edges;
-  
-  // TODO: Implement using gRPC to storage node
-  return Status::NotSupported("ScanOutEdges not yet implemented");
+  if (use_base_client_ && base_client_) {
+    return base_client_->ScanEdgeV2(
+        node_id, edge_type, cedar::storage::Direction::OUTGOING,
+        Timestamp::Min(), as_of_time, edges);
+  }
+  return Status::NotSupported("Independent mode not implemented, use SetBaseClient");
 }
 
 Status QueryStorageClient::ScanInEdges(
@@ -149,13 +149,12 @@ Status QueryStorageClient::ScanInEdges(
     uint16_t edge_type,
     Timestamp as_of_time,
     std::vector<EdgeScanEntry>* edges) {
-  (void)node_id;
-  (void)edge_type;
-  (void)as_of_time;
-  (void)edges;
-  
-  // TODO: Implement using gRPC to storage node
-  return Status::NotSupported("ScanInEdges not yet implemented");
+  if (use_base_client_ && base_client_) {
+    return base_client_->ScanEdgeV2(
+        node_id, edge_type, cedar::storage::Direction::INCOMING,
+        Timestamp::Min(), as_of_time, edges);
+  }
+  return Status::NotSupported("Independent mode not implemented, use SetBaseClient");
 }
 
 Status QueryStorageClient::GetAtTime(uint64_t entity_id,
@@ -225,6 +224,71 @@ class NodeClientImpl : public QueryStorageClient::NodeClient {
     (void)start_ts;
     // Bridge to ScanNode using end_ts as the as-of-time
     return client_->ScanNode(entity_id, end_ts, results);
+  }
+
+  Status ExecuteSubQuery(
+      const std::string& query_fragment,
+      const std::unordered_map<std::string, cypher::Value>& parameters,
+      cypher::ResultSet* result) override {
+    (void)parameters;
+    if (!result) {
+      return Status::InvalidArgument("result pointer is null");
+    }
+
+    // Parse the query fragment to determine operation type
+    cypher::CypherParser parser(query_fragment);
+    auto stmt = parser.ParseStatement();
+    if (!stmt) {
+      return Status::InvalidArgument("Failed to parse sub-query: " + parser.GetError());
+    }
+
+    // Determine query type from AST
+    bool is_match = false;
+    bool has_return = false;
+    std::string entity_alias;
+    uint16_t edge_type = 0;
+    cypher::Direction direction = cypher::Direction::OUTGOING;
+
+    for (const auto& clause : stmt->clauses) {
+      if (clause->clause_type == cypher::ClauseType::MATCH) {
+        is_match = true;
+        auto* match = static_cast<cypher::MatchClause*>(clause.get());
+        if (!match->patterns.empty() && !match->patterns[0].elements.empty()) {
+          // First element in the path pattern should be a NodePattern
+          if (auto* node_pattern = std::get_if<cypher::NodePattern>(&match->patterns[0].elements[0])) {
+            entity_alias = node_pattern->variable;
+          }
+        }
+      } else if (clause->clause_type == cypher::ClauseType::RETURN) {
+        has_return = true;
+      }
+    }
+
+    if (!is_match || !has_return) {
+      return Status::NotSupported("Only MATCH...RETURN sub-queries are supported");
+    }
+
+    // For now, implement a full partition scan (node_id = 0 means all nodes)
+    // This is the minimal viable implementation for cross-partition queries.
+    std::vector<std::pair<Timestamp, Descriptor>> versions;
+    Status s = client_->ScanNode(0, Timestamp::Max(), &versions);
+    if (!s.ok()) {
+      return s;
+    }
+
+    // Convert scan results to cypher::ResultSet records
+    for (const auto& [ts, desc] : versions) {
+      (void)ts;
+      cypher::Record record;
+      if (!entity_alias.empty()) {
+        cypher::Node node;
+        node.id = desc.AsRaw();
+        record.values[entity_alias] = cypher::Value(std::move(node));
+      }
+      result->records.push_back(std::move(record));
+    }
+
+    return Status::OK();
   }
 
  private:

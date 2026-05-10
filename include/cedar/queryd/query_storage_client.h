@@ -134,6 +134,12 @@ class QueryStorageClient {
                               Timestamp start_ts,
                               Timestamp end_ts,
                               std::vector<std::pair<Timestamp, Descriptor>>* results) = 0;
+
+    // NEW: Execute a sub-query fragment on this storage node
+    virtual Status ExecuteSubQuery(
+        const std::string& query_fragment,
+        const std::unordered_map<std::string, cypher::Value>& parameters,
+        cypher::ResultSet* result) = 0;
   };
   
   std::shared_ptr<NodeClient> GetNodeClient(uint32_t partition_id);
