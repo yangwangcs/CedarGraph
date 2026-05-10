@@ -227,7 +227,6 @@ class Optimized2PCEngine {
   
   // Pipeline worker
   void PipelineWorkerLoop();
-  void ProcessPipelineBatch();
   
   // Adaptive tuning worker
   void AdaptiveTuningLoop();
