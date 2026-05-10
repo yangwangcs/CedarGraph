@@ -302,6 +302,7 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
     int32_t batch_index = 0;
     constexpr size_t kRowsPerBatch = 50;
     size_t rows_in_current_batch = 0;
+    bool client_disconnected = false;
     cedar::query::StreamQueryResponse current_batch;
     current_batch.set_success(true);
     current_batch.set_query_id(request->query_id());
@@ -310,7 +311,8 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
 
     auto s = executor_->ExecuteStreaming(
         request->query(), parameters, &ctx,
-        [&writer, &current_batch, &batch_index, &rows_in_current_batch, request](
+        [&writer, &current_batch, &batch_index, &rows_in_current_batch,
+         &client_disconnected, request](
             const cedar::cypher::Record& record) -> bool {
           auto* row = current_batch.mutable_batch()->add_rows();
           RecordToRow(record, row);
@@ -318,6 +320,7 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
 
           if (rows_in_current_batch >= kRowsPerBatch) {
             if (!writer->Write(current_batch)) {
+              client_disconnected = true;
               return false;  // Client disconnected
             }
             batch_index++;
@@ -331,23 +334,27 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
           return true;
         });
 
-    // Send final (possibly partial) batch
-    if (rows_in_current_batch > 0 || batch_index == 0) {
+    // Send final batch (partial or empty terminal for exact multiples)
+    if (!client_disconnected && !context->IsCancelled()) {
       current_batch.set_has_more(false);
       current_batch.set_progress_percent(100);
-      writer->Write(current_batch);
+      if (!writer->Write(current_batch)) {
+        client_disconnected = true;
+      }
     }
 
     // Send EOF marker
-    cedar::query::StreamQueryResponse final_response;
-    final_response.set_success(s.ok());
-    final_response.set_has_more(false);
-    final_response.set_query_id(request->query_id());
-    final_response.set_progress_percent(100);
-    if (!s.ok()) {
-      final_response.set_error_msg(s.ToString());
+    if (!client_disconnected && !context->IsCancelled()) {
+      cedar::query::StreamQueryResponse final_response;
+      final_response.set_success(s.ok());
+      final_response.set_has_more(false);
+      final_response.set_query_id(request->query_id());
+      final_response.set_progress_percent(100);
+      if (!s.ok()) {
+        final_response.set_error_msg(s.ToString());
+      }
+      writer->Write(final_response);
     }
-    writer->Write(final_response);
     return grpc::Status::OK;
   }
 

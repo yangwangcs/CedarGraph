@@ -347,15 +347,23 @@ void MetaServiceNodeClient::HeartbeatLoop(
       
       if (!status.ok()) {
         consecutive_failures++;
-        std::cerr << "Heartbeat failed (" << consecutive_failures << "): " 
+        std::cerr << "Heartbeat failed (" << consecutive_failures << "): "
                   << status.ToString() << std::endl;
-        
-        // Re-register if too many consecutive failures
+
+        // Try failover to another MetaD node if too many consecutive failures
         if (consecutive_failures >= 3) {
-          std::cerr << "Too many heartbeat failures, re-registering..." << std::endl;
-          auto reg_status = RegisterNode();
-          if (reg_status.ok()) {
+          std::cerr << "Too many heartbeat failures, trying next MetaD node..." << std::endl;
+          auto failover = TryNextMetaAddress();
+          if (failover.ok()) {
             consecutive_failures = 0;
+            std::cerr << "Failover to MetaD node succeeded" << std::endl;
+          } else {
+            std::cerr << "Failover failed: " << failover.ToString() << std::endl;
+            // As last resort, try re-registering with current node
+            auto reg_status = RegisterNode();
+            if (reg_status.ok()) {
+              consecutive_failures = 0;
+            }
           }
         }
       } else {

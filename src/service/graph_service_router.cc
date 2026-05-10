@@ -107,13 +107,18 @@ Status GraphServiceRouter::Stop() {
   if (!running_.exchange(false)) {
     return Status::OK();
   }
-  
+
   if (refresh_thread_.joinable()) {
     refresh_thread_.join();
   }
 
   Shutdown2PCEngine();
-  
+
+  // Stop MetaD client health monitor
+  if (meta_client_) {
+    meta_client_.reset();
+  }
+
   std::cout << "[GraphD] Router stopped" << std::endl;
   return Status::OK();
 }
@@ -720,34 +725,47 @@ grpc::Status GraphServiceRouter::StreamQuery(grpc::ServerContext* context,
     StreamQueryResponse error_response;
     error_response.set_success(false);
     error_response.set_error_msg(exec_response.error_msg());
-    writer->Write(error_response);
+    if (!writer->Write(error_response)) {
+      return grpc::Status(grpc::StatusCode::INTERNAL, "Stream write failed");
+    }
     return grpc::Status::OK;
   }
-  
+
   // Stream result rows in batches
   const auto& result_set = exec_response.result_set();
   constexpr size_t kBatchSize = 100;
-  size_t total_rows = static_cast<size_t>(result_set.total_rows());
-  
+  size_t total_rows = static_cast<size_t>(result_set.rows_size());
+
   for (size_t offset = 0; offset < total_rows; offset += kBatchSize) {
     StreamQueryResponse batch;
     batch.set_success(true);
     batch.set_query_id(request->query_id());
     batch.set_batch_index(static_cast<int32_t>(offset / kBatchSize));
     batch.set_has_more(offset + kBatchSize < total_rows);
-    
+
     size_t end = std::min(offset + kBatchSize, total_rows);
     for (size_t i = offset; i < end; ++i) {
-      if (i < static_cast<size_t>(result_set.rows_size())) {
-        *batch.mutable_batch()->add_rows() = result_set.rows(i);
-      }
+      *batch.mutable_batch()->add_rows() = result_set.rows(i);
     }
-    
+
     if (!writer->Write(batch)) {
       return grpc::Status(grpc::StatusCode::INTERNAL, "Stream write failed");
     }
   }
-  
+
+  // Send terminal empty batch for zero-row results or to mark stream end
+  if (total_rows == 0) {
+    StreamQueryResponse empty_batch;
+    empty_batch.set_success(true);
+    empty_batch.set_query_id(request->query_id());
+    empty_batch.set_batch_index(0);
+    empty_batch.set_has_more(false);
+    empty_batch.set_progress_percent(100);
+    if (!writer->Write(empty_batch)) {
+      return grpc::Status(grpc::StatusCode::INTERNAL, "Stream write failed");
+    }
+  }
+
   return grpc::Status();
 }
 
