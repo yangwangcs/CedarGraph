@@ -791,10 +791,57 @@ grpc::Status GraphServiceRouter::GetSchema(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
-  (void)request;
-  // Schema fetching requires MetaD Schema API extension.
-  // For now, return an empty success response.
-  response->set_success(true);
+
+  if (!meta_client_) {
+    response->set_success(false);
+    response->set_error_msg("MetaD client not initialized");
+    return grpc::Status::OK;
+  }
+
+  cedar::meta::GetSchemaRequest meta_req;
+  meta_req.set_space_name("default");  // TODO: multi-space support
+  for (const auto& label : request->labels()) {
+    meta_req.add_labels(label);
+  }
+
+  cedar::meta::GetSchemaResponse meta_resp;
+  grpc::ClientContext meta_ctx;
+  meta_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+  auto stub = meta_client_->GetStub();
+  if (!stub) {
+    response->set_success(false);
+    response->set_error_msg("No MetaD connection");
+    return grpc::Status::OK;
+  }
+
+  auto status = stub->GetSchema(&meta_ctx, meta_req, &meta_resp);
+  if (!status.ok()) {
+    response->set_success(false);
+    response->set_error_msg("MetaD schema query failed: " + status.error_message());
+    return grpc::Status::OK;
+  }
+
+  response->set_success(meta_resp.success());
+  if (!meta_resp.success()) {
+    response->set_error_msg(meta_resp.error_msg());
+    return grpc::Status::OK;
+  }
+
+  for (const auto& proto_label : meta_resp.labels()) {
+    auto* out = response->add_labels();
+    out->set_name(proto_label.name());
+    for (const auto& proto_prop : proto_label.properties()) {
+      auto* out_prop = out->add_properties();
+      out_prop->set_name(proto_prop.name());
+      out_prop->set_type(proto_prop.type());
+      out_prop->set_nullable(proto_prop.nullable());
+      out_prop->set_indexed(proto_prop.indexed());
+    }
+    for (const auto& idx : proto_label.indexes()) {
+      out->add_indexes(idx);
+    }
+  }
   return grpc::Status::OK;
 }
 
