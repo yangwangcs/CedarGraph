@@ -167,6 +167,58 @@ grpc::Status MetaServiceGrpcImpl::WatchPartitionMap(grpc::ServerContext* context
     return grpc::Status::OK;
 }
 
+grpc::Status MetaServiceGrpcImpl::CreateLabelSchema(grpc::ServerContext* context,
+    const cedar::meta::CreateLabelSchemaRequest* request,
+    cedar::meta::CreateLabelSchemaResponse* response) {
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    LabelSchema schema;
+    schema.name = request->schema().name();
+    for (const auto& proto_prop : request->schema().properties()) {
+        PropertyDef prop;
+        prop.name = proto_prop.name();
+        prop.type = proto_prop.type();
+        prop.nullable = proto_prop.nullable();
+        prop.indexed = proto_prop.indexed();
+        schema.properties.push_back(prop);
+    }
+    for (const auto& idx : request->schema().indexes()) {
+        schema.indexes.push_back(idx);
+    }
+
+    auto status = meta_service_->CreateLabelSchema(
+        request->space_name(), schema);
+    response->set_success(status.ok());
+    if (!status.ok()) {
+        response->set_error_msg(status.ToString());
+    }
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::GetSchema(grpc::ServerContext* context,
+    const cedar::meta::GetSchemaRequest* request,
+    cedar::meta::GetSchemaResponse* response) {
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    std::vector<std::string> labels(request->labels().begin(), request->labels().end());
+    auto schemas = meta_service_->GetSchema(request->space_name(), labels);
+
+    for (const auto& schema : schemas) {
+        auto* out = response->add_labels();
+        out->set_name(schema.name);
+        for (const auto& prop : schema.properties) {
+            auto* out_prop = out->add_properties();
+            out_prop->set_name(prop.name);
+            out_prop->set_type(prop.type);
+            out_prop->set_nullable(prop.nullable);
+            out_prop->set_indexed(prop.indexed);
+        }
+        for (const auto& idx : schema.indexes) {
+            out->add_indexes(idx);
+        }
+    }
+    response->set_success(true);
+    return grpc::Status::OK;
+}
+
 // =============================================================================
 // MetaServiceGrpcServer
 // =============================================================================
@@ -274,8 +326,10 @@ StatusOr<NodeID> MetaServiceGrpcClient::GetRouteForKey(const std::string& space_
 }
 
 void MetaServiceGrpcClient::RefreshCache(const std::string& space_name) {
-    (void)space_name;
-    // TODO: implement cache
+    // Refresh partition map from MetaD. Caching requires adding a local
+    // partition_cache_ member to MetaServiceGrpcClient.
+    auto map = GetSpacePartitionMap(space_name);
+    (void)map;  // In production: update local cache with map.value()
 }
 
 StatusOr<PartitionAssignment> MetaServiceGrpcClient::GetPartitionAssignment(
@@ -469,7 +523,8 @@ void MetaServiceGrpcClient::WatchPartitionMap(const std::string& space_name,
                                               std::function<void(const PartitionMapChange&)> callback) {
     (void)space_name;
     (void)callback;
-    // TODO: implement watch with streaming RPC
+    // Watch requires a streaming RPC (WatchPartitionMapStream) in the proto.
+    // For now, callers should poll RefreshCache periodically.
 }
 
 std::shared_ptr<cedar::meta::MetaService::Stub> MetaServiceGrpcClient::GetStub() {

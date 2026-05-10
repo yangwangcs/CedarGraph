@@ -297,6 +297,12 @@ public:
     std::vector<NodeInfo> GetAliveNodes() const;
     std::vector<NodeInfo> GetAllNodes() const;
     
+    // ===== Schema 管理 =====
+    
+    Status CreateLabelSchema(const std::string& space_name, const LabelSchema& schema);
+    std::vector<LabelSchema> GetSchema(const std::string& space_name,
+                                        const std::vector<std::string>& labels) const;
+    
     // ===== 订阅/通知 =====
     
     using PartitionChangeCallback = std::function<void(const PartitionMapChange&)>;

@@ -77,6 +77,15 @@ public:
                                    const cedar::meta::WatchPartitionMapRequest* request,
                                    grpc::ServerWriter<cedar::meta::PartitionMapChange>* writer) override;
 
+    // Schema 管理
+    grpc::Status CreateLabelSchema(grpc::ServerContext* context,
+                                   const cedar::meta::CreateLabelSchemaRequest* request,
+                                   cedar::meta::CreateLabelSchemaResponse* response) override;
+
+    grpc::Status GetSchema(grpc::ServerContext* context,
+                           const cedar::meta::GetSchemaRequest* request,
+                           cedar::meta::GetSchemaResponse* response) override;
+
 private:
     MetadataService* meta_service_;
     

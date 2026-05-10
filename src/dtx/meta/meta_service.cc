@@ -895,6 +895,15 @@ std::vector<NodeInfo> MetadataService::GetAllNodes() const {
     return state_machine_.GetAllNodes();
 }
 
+Status MetadataService::CreateLabelSchema(const std::string& space_name, const LabelSchema& schema) {
+    return state_machine_.CreateLabelSchema(space_name, schema);
+}
+
+std::vector<LabelSchema> MetadataService::GetSchema(const std::string& space_name,
+                                                     const std::vector<std::string>& labels) const {
+    return state_machine_.GetSchema(space_name, labels);
+}
+
 bool MetadataService::IsLeader() const {
     return raft_node_ && raft_node_->IsLeader();
 }
