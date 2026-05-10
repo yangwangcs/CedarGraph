@@ -1,5 +1,6 @@
 #include "cedar/dtx/coordinator_integration.h"
 #include "cedar/dtx/meta_service_grpc.h"
+#include "cedar/dtx/storage_service_impl.h"
 #include "cedar/types/descriptor.h"
 
 namespace cedar {
@@ -193,11 +194,34 @@ StatusOr<TxnID> IntegratedCoordinator::BeginTransaction(const DistributedTxnOpti
 StatusOr<Descriptor> IntegratedCoordinator::Read(TxnID txn_id, const CedarKey& key) {
     auto ctx = GetTxnContext(txn_id);
     if (!ctx) return Status::NotFound("Transaction not found");
-    auto partition_result = RouteKeyToPartition(key);
-    if (!partition_result.ok()) return partition_result.status();
+
+    // Route to the partition leader for this key
     auto route_result = GetKeyRoute(key);
-    if (!route_result.ok()) return route_result.status();
-    return Descriptor();  // placeholder
+    if (!route_result.ok()) {
+        return route_result.status();
+    }
+    auto route = route_result.value();
+
+    // Track partition participation and read set
+    ctx->AddParticipant(route.partition_id);
+    ctx->AddToReadSet(key);
+
+    // Get leader node info for storage client connection
+    auto node_result = meta_client_->GetNode(route.leader_node);
+    if (!node_result.ok()) {
+        return node_result.status();
+    }
+
+    // Create storage client and execute read from leader
+    StorageClient client;
+    StorageClient::ClientConfig client_config;
+    client_config.server_address = node_result.value().address;
+    auto status = client.Initialize(client_config);
+    if (!status.ok()) {
+        return status;
+    }
+
+    return client.Get(key, Timestamp::Now());
 }
 
 Status IntegratedCoordinator::Write(TxnID txn_id, const CedarKey& key, const Descriptor& value) {
