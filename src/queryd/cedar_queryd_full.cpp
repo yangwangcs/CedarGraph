@@ -143,6 +143,49 @@ static bool IsWriteQuery(const std::string& query) {
 }
 
 // QueryService 实现类 - 委托给 DistributedExecutor
+static cedar::query::Value ConvertToProtoValue(const cedar::cypher::Value& value) {
+  cedar::query::Value proto;
+  switch (value.Type()) {
+    case cedar::cypher::ValueType::kNull:
+      proto.mutable_null_val();
+      break;
+    case cedar::cypher::ValueType::kBool:
+      proto.set_bool_val(value.GetBool());
+      break;
+    case cedar::cypher::ValueType::kInt:
+    case cedar::cypher::ValueType::kTimestamp:
+      proto.set_int_val(value.GetInt());
+      break;
+    case cedar::cypher::ValueType::kFloat:
+      proto.set_float_val(value.GetFloat());
+      break;
+    case cedar::cypher::ValueType::kString:
+      proto.set_string_val(value.GetString());
+      break;
+    case cedar::cypher::ValueType::kList:
+      for (const auto& item : value.GetList()) {
+        *proto.mutable_list_val()->add_items() = ConvertToProtoValue(item);
+      }
+      break;
+    case cedar::cypher::ValueType::kMap:
+      for (const auto& [k, v] : value.GetMap()) {
+        (*proto.mutable_map_val()->mutable_items())[k] = ConvertToProtoValue(v);
+      }
+      break;
+    default:
+      proto.set_string_val(value.ToString());
+      break;
+  }
+  return proto;
+}
+
+static void RecordToRow(const cedar::cypher::Record& record, cedar::query::Row* out_row) {
+  for (const auto& [key, value] : record.values) {
+    (void)key;
+    *out_row->add_values() = ConvertToProtoValue(value);
+  }
+}
+
 class QueryServiceImpl final : public cedar::query::QueryService::Service {
  public:
   explicit QueryServiceImpl(cedar::queryd::DistributedExecutor* executor,
@@ -252,27 +295,58 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
                           const cedar::query::StreamQueryRequest* request,
                           grpc::ServerWriter<cedar::query::StreamQueryResponse>* writer) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+
     cedar::queryd::DistributedExecutionContext ctx;
     std::unordered_map<std::string, cedar::cypher::Value> parameters;
 
+    int32_t batch_index = 0;
+    constexpr size_t kRowsPerBatch = 50;
+    size_t rows_in_current_batch = 0;
+    cedar::query::StreamQueryResponse current_batch;
+    current_batch.set_success(true);
+    current_batch.set_query_id(request->query_id());
+    current_batch.set_batch_index(batch_index);
+    current_batch.set_has_more(true);
+
     auto s = executor_->ExecuteStreaming(
         request->query(), parameters, &ctx,
-        [&writer](const cedar::cypher::Record& record) -> bool {
-          (void)record;
-          cedar::query::StreamQueryResponse response;
-          response.set_success(true);
-          response.set_has_more(false);
-          response.set_cursor_id("stream-cursor");
-          response.set_progress_percent(100);
-          writer->Write(response);
+        [&writer, &current_batch, &batch_index, &rows_in_current_batch](
+            const cedar::cypher::Record& record) -> bool {
+          auto* row = current_batch.mutable_batch()->add_rows();
+          RecordToRow(record, row);
+          rows_in_current_batch++;
+
+          if (rows_in_current_batch >= kRowsPerBatch) {
+            if (!writer->Write(current_batch)) {
+              return false;  // Client disconnected
+            }
+            batch_index++;
+            current_batch.Clear();
+            current_batch.set_success(true);
+            current_batch.set_query_id(request->query_id());
+            current_batch.set_batch_index(batch_index);
+            current_batch.set_has_more(true);
+            rows_in_current_batch = 0;
+          }
           return true;
         });
 
+    // Send final (possibly partial) batch
+    if (rows_in_current_batch > 0 || batch_index == 0) {
+      current_batch.set_has_more(false);
+      current_batch.set_progress_percent(100);
+      writer->Write(current_batch);
+    }
+
+    // Send EOF marker
     cedar::query::StreamQueryResponse final_response;
     final_response.set_success(s.ok());
     final_response.set_has_more(false);
-    final_response.set_cursor_id("stream-cursor");
+    final_response.set_query_id(request->query_id());
     final_response.set_progress_percent(100);
+    if (!s.ok()) {
+      final_response.set_error_msg(s.ToString());
+    }
     writer->Write(final_response);
     return grpc::Status::OK;
   }
