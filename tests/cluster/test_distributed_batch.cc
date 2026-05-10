@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <gtest/gtest.h>
 #include <chrono>
 #include <filesystem>
+#include <gtest/gtest.h>
+#include <unistd.h>
 #include "cedar/storage/cedar_graph_storage.h"
 
 using namespace cedar;
@@ -22,20 +23,23 @@ using namespace cedar;
 class DistributedBatchTest : public ::testing::Test {
  protected:
   CedarGraphStorage* storage_ = nullptr;
-  std::string test_dir_ = "/tmp/test_batch";
-  
+  std::string test_dir_;
+
   void SetUp() override {
+    test_dir_ = "/tmp/test_batch_" + std::to_string(getpid()) + "_" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+
     // Clean up any previous test data
     std::filesystem::remove_all(test_dir_);
-    
+
     CedarOptions options;
     options.create_if_missing = true;
     options.distributed_mode = false;  // Single-node mode test
-    
+
     Status s = CedarGraphStorage::Open(options, test_dir_, &storage_);
     ASSERT_TRUE(s.ok()) << "Failed to open storage: " << s.ToString();
   }
-  
+
   void TearDown() override {
     if (storage_) {
       delete storage_;
@@ -52,10 +56,10 @@ TEST_F(DistributedBatchTest, BatchWriteReturnsSuccess) {
     Descriptor desc = Descriptor::InlineInt(0, i);
     items.emplace_back(1000 + i, EntityType::Vertex, 1, desc, Timestamp(i + 1));
   }
-  
+
   Status s = storage_->BatchWrite(items);
   ASSERT_TRUE(s.ok()) << "BatchWrite failed: " << s.ToString();
-  
+
   // Force flush to ensure data is persisted
   s = storage_->ForceFlush();
   ASSERT_TRUE(s.ok()) << "ForceFlush failed: " << s.ToString();
@@ -65,25 +69,25 @@ TEST_F(DistributedBatchTest, BatchWriteLargeDataset) {
   std::vector<CedarGraphStorage::BatchWriteItem> items;
   const int count = 1000;
   items.reserve(count);
-  
+
   for (int i = 0; i < count; i++) {
     Descriptor desc = Descriptor::InlineInt(0, i);
     items.emplace_back(2000 + i, EntityType::Vertex, 1, desc, Timestamp(i + 1));
   }
-  
+
   auto start = std::chrono::steady_clock::now();
   Status s = storage_->BatchWrite(items, 100);
   auto end = std::chrono::steady_clock::now();
-  
+
   ASSERT_TRUE(s.ok()) << "BatchWrite failed: " << s.ToString();
-  
+
   // Force flush
   s = storage_->ForceFlush();
   ASSERT_TRUE(s.ok()) << "ForceFlush failed: " << s.ToString();
-  
+
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
   std::cout << "BatchWrite " << count << " items in " << duration.count() << "ms" << std::endl;
-  
+
   // Verify throughput (at least 100 TPS)
   double tps = count * 1000.0 / std::max(duration.count(), static_cast<int64_t>(1));
   EXPECT_GT(tps, 100.0) << "Write throughput too low: " << tps << " TPS";
@@ -101,11 +105,11 @@ TEST_F(DistributedBatchTest, BatchWriteWithBatchSize) {
     Descriptor desc = Descriptor::InlineInt(0, i * 10);
     items.emplace_back(3000 + i, EntityType::Vertex, 1, desc, Timestamp(i + 1));
   }
-  
+
   // Use smaller batch size
   Status s = storage_->BatchWrite(items, 50);
   ASSERT_TRUE(s.ok()) << "BatchWrite with custom batch size failed: " << s.ToString();
-  
+
   // Force flush
   s = storage_->ForceFlush();
   ASSERT_TRUE(s.ok()) << "ForceFlush failed: " << s.ToString();
@@ -116,10 +120,10 @@ TEST_F(DistributedBatchTest, BatchWriteStaticProperties) {
   for (int i = 0; i < 50; i++) {
     items.emplace_back(4000 + i, Descriptor::InlineInt(0, i + 100));
   }
-  
+
   Status s = storage_->BatchPutStaticVertex(items, 1);
   ASSERT_TRUE(s.ok()) << "BatchPutStaticVertex failed: " << s.ToString();
-  
+
   // Force flush
   s = storage_->ForceFlush();
   ASSERT_TRUE(s.ok()) << "ForceFlush failed: " << s.ToString();
@@ -130,10 +134,10 @@ TEST_F(DistributedBatchTest, BatchWriteDynamicProperties) {
   for (int i = 0; i < 50; i++) {
     items.emplace_back(5000 + i, Timestamp(i + 1), Descriptor::InlineInt(0, i + 200));
   }
-  
+
   Status s = storage_->BatchPutDynamicVertex(items, 1);
   ASSERT_TRUE(s.ok()) << "BatchPutDynamicVertex failed: " << s.ToString();
-  
+
   // Force flush
   s = storage_->ForceFlush();
   ASSERT_TRUE(s.ok()) << "ForceFlush failed: " << s.ToString();
