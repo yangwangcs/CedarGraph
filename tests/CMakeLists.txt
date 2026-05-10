@@ -1,5 +1,8 @@
 include(GoogleTest)
 
+# Prevent flaky timeouts on slow performance tests under parallel ctest
+set(CTEST_TEST_TIMEOUT 60)
+
 if(GTest_FOUND)
     set(GTEST_TARGET GTest::gtest)
     set(GTEST_MAIN_TARGET GTest::gtest_main)
