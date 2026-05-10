@@ -18,6 +18,7 @@
 #include "cedar/dtx/transaction_recovery_manager.h"
 #include "cedar/dtx/transaction_timeout_manager.h"
 #include "cedar/dtx/transaction_metrics.h"
+#include "cedar/dtx/dtx_rpc_client.h"
 
 #include <algorithm>
 #include <chrono>
@@ -55,9 +56,9 @@ Status Optimized2PCEngine::Initialize(
     clients_ = clients;
   }
   
-  // Initialize recovery manager if set
+  // Wire RPC client to recovery manager if both are available
   if (recovery_manager_) {
-    // recovery_manager should already be initialized by caller
+    SyncRecoveryRpcClient();
   }
   
   // Initialize timeout manager if set
@@ -108,6 +109,12 @@ Status Optimized2PCEngine::Initialize(
   }
   
   return Status::OK();
+}
+
+void Optimized2PCEngine::SetRecoveryManager(
+    TransactionRecoveryManager* recovery_manager) {
+  recovery_manager_ = recovery_manager;
+  SyncRecoveryRpcClient();
 }
 
 void Optimized2PCEngine::Shutdown() noexcept {
@@ -986,16 +993,19 @@ std::vector<PartitionID> Optimized2PCEngine::GetPartitionIDs(
 
 void Optimized2PCEngine::AddClient(std::shared_ptr<StorageClient> client) {
   if (!client) return;
-  std::lock_guard<std::mutex> lock(clients_mutex_);
-  // Avoid duplicates by checking server address
-  for (const auto& existing : clients_) {
-    if (existing && existing->IsConnected() && client->IsConnected()) {
-      // Note: StorageClient doesn't expose address directly.
-      // In practice, caller should ensure uniqueness.
-      // For now, rely on GraphServiceRouter to avoid duplicate calls.
+  {
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    // Avoid duplicates by checking server address
+    for (const auto& existing : clients_) {
+      if (existing && existing->IsConnected() && client->IsConnected()) {
+        // Note: StorageClient doesn't expose address directly.
+        // In practice, caller should ensure uniqueness.
+        // For now, rely on GraphServiceRouter to avoid duplicate calls.
+      }
     }
+    clients_.push_back(std::move(client));
   }
-  clients_.push_back(std::move(client));
+  SyncRecoveryRpcClient();
 }
 
 void Optimized2PCEngine::RemoveClient(const std::string& server_address) {
@@ -1011,6 +1021,38 @@ void Optimized2PCEngine::RemoveClient(const std::string& server_address) {
 size_t Optimized2PCEngine::GetClientCount() const {
   std::lock_guard<std::mutex> lock(clients_mutex_);
   return clients_.size();
+}
+
+void Optimized2PCEngine::SyncRecoveryRpcClient() {
+  if (!recovery_manager_) {
+    return;
+  }
+  
+  std::lock_guard<std::mutex> lock(clients_mutex_);
+  if (clients_.empty()) {
+    return;
+  }
+  
+  if (!dtx_rpc_client_) {
+    dtx_rpc_client_ = std::make_shared<dtx::DTXRpcClient>(dtx::DTXRpcConfig{});
+  }
+  
+  for (size_t i = 0; i < clients_.size(); ++i) {
+    const auto& client = clients_[i];
+    if (!client) continue;
+    dtx_rpc_client_->AddParticipant(
+        static_cast<dtx::NodeID>(i), client->GetServerAddress());
+  }
+  
+  recovery_manager_->SetRpcClient(dtx_rpc_client_);
+  
+  // Use the same hash-based mapping as GetParticipants:
+  // partition -> client_index = pid % clients_.size()
+  recovery_manager_->SetPartitionResolver(
+      [num_clients = clients_.size()](dtx::PartitionID pid) -> dtx::NodeID {
+        if (num_clients == 0) return dtx::kInvalidNodeID;
+        return static_cast<dtx::NodeID>(pid % num_clients);
+      });
 }
 
 bool Optimized2PCEngine::WaitForPrepareQuorum(

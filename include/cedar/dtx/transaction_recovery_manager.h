@@ -61,6 +61,7 @@ class TransactionRecoveryManager : public TimeoutCallback {
   // Set RPC client and partition routing for recovery
   void SetRpcClient(std::shared_ptr<dtx::DTXRpcClient> rpc_client);
   void SetPartitionNodeMap(const std::unordered_map<dtx::PartitionID, dtx::NodeID>& mapping);
+  void SetPartitionResolver(std::function<dtx::NodeID(dtx::PartitionID)> resolver);
   
   // Start recovery for a transaction
   RecoveryResult StartRecovery(dtx::TxnID txn_id);
@@ -99,6 +100,7 @@ class TransactionRecoveryManager : public TimeoutCallback {
   mutable std::mutex deps_mutex_;
   std::shared_ptr<dtx::DTXRpcClient> rpc_client_;
   std::unordered_map<dtx::PartitionID, dtx::NodeID> partition_node_map_;
+  std::function<dtx::NodeID(dtx::PartitionID)> partition_resolver_;
   
   std::atomic<bool> running_{false};
   std::thread recovery_thread_;

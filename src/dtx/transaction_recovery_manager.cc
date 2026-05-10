@@ -54,6 +54,24 @@ void TransactionRecoveryManager::Shutdown() {
   }
 }
 
+void TransactionRecoveryManager::SetRpcClient(
+    std::shared_ptr<dtx::DTXRpcClient> rpc_client) {
+  std::lock_guard<std::mutex> lock(deps_mutex_);
+  rpc_client_ = std::move(rpc_client);
+}
+
+void TransactionRecoveryManager::SetPartitionNodeMap(
+    const std::unordered_map<dtx::PartitionID, dtx::NodeID>& mapping) {
+  std::lock_guard<std::mutex> lock(deps_mutex_);
+  partition_node_map_ = mapping;
+}
+
+void TransactionRecoveryManager::SetPartitionResolver(
+    std::function<dtx::NodeID(dtx::PartitionID)> resolver) {
+  std::lock_guard<std::mutex> lock(deps_mutex_);
+  partition_resolver_ = std::move(resolver);
+}
+
 RecoveryResult TransactionRecoveryManager::StartRecovery(dtx::TxnID txn_id) {
   RecoveryResult result;
   
@@ -279,10 +297,12 @@ Status TransactionRecoveryManager::SendCommitToParticipants(
     Timestamp commit_ts) {
   std::shared_ptr<dtx::DTXRpcClient> client;
   std::unordered_map<dtx::PartitionID, dtx::NodeID> node_map;
+  std::function<dtx::NodeID(dtx::PartitionID)> resolver;
   {
     std::lock_guard<std::mutex> lock(deps_mutex_);
     client = rpc_client_;
     node_map = partition_node_map_;
+    resolver = partition_resolver_;
   }
   if (!client) {
     return Status::IOError("TransactionRecoveryManager", "no RPC client");
@@ -292,14 +312,20 @@ Status TransactionRecoveryManager::SendCommitToParticipants(
   std::string last_error;
 
   for (dtx::PartitionID pid : participants) {
+    dtx::NodeID node_id = dtx::kInvalidNodeID;
     auto node_it = node_map.find(pid);
-    if (node_it == node_map.end()) {
+    if (node_it != node_map.end()) {
+      node_id = node_it->second;
+    } else if (resolver) {
+      node_id = resolver(pid);
+    }
+    if (node_id == dtx::kInvalidNodeID) {
       all_success = false;
       last_error = "no node mapping for partition " + std::to_string(pid);
       continue;  // Try remaining participants
     }
     cedar::dtx::CommitResponse response;
-    auto status = client->Commit(node_it->second, std::to_string(txn_id), "", commit_ts.value(), &response);
+    auto status = client->Commit(node_id, std::to_string(txn_id), "", commit_ts.value(), &response);
     if (!status.ok()) {
       all_success = false;
       last_error = status.ToString();
@@ -319,10 +345,12 @@ Status TransactionRecoveryManager::SendAbortToParticipants(
     const std::vector<dtx::PartitionID>& participants) {
   std::shared_ptr<dtx::DTXRpcClient> client;
   std::unordered_map<dtx::PartitionID, dtx::NodeID> node_map;
+  std::function<dtx::NodeID(dtx::PartitionID)> resolver;
   {
     std::lock_guard<std::mutex> lock(deps_mutex_);
     client = rpc_client_;
     node_map = partition_node_map_;
+    resolver = partition_resolver_;
   }
   if (!client) {
     return Status::IOError("TransactionRecoveryManager", "no RPC client");
@@ -332,14 +360,20 @@ Status TransactionRecoveryManager::SendAbortToParticipants(
   std::string last_error;
   
   for (dtx::PartitionID pid : participants) {
+    dtx::NodeID node_id = dtx::kInvalidNodeID;
     auto node_it = node_map.find(pid);
-    if (node_it == node_map.end()) {
+    if (node_it != node_map.end()) {
+      node_id = node_it->second;
+    } else if (resolver) {
+      node_id = resolver(pid);
+    }
+    if (node_id == dtx::kInvalidNodeID) {
       all_success = false;
       last_error = "no node mapping for partition " + std::to_string(pid);
       continue;  // Try remaining participants
     }
     cedar::dtx::AbortResponse response;
-    auto status = client->Abort(node_it->second, std::to_string(txn_id), "", "recovery", &response);
+    auto status = client->Abort(node_id, std::to_string(txn_id), "", "recovery", &response);
     if (!status.ok()) {
       all_success = false;
       last_error = status.ToString();
@@ -358,22 +392,30 @@ Status TransactionRecoveryManager::InquireParticipant(dtx::PartitionID pid,
                                                        dtx::TxnID txn_id) {
   std::shared_ptr<dtx::DTXRpcClient> client;
   std::unordered_map<dtx::PartitionID, dtx::NodeID> node_map;
+  std::function<dtx::NodeID(dtx::PartitionID)> resolver;
   {
     std::lock_guard<std::mutex> lock(deps_mutex_);
     client = rpc_client_;
     node_map = partition_node_map_;
+    resolver = partition_resolver_;
   }
   if (!client) {
     return Status::IOError("TransactionRecoveryManager", "no RPC client");
   }
   
+  dtx::NodeID node_id = dtx::kInvalidNodeID;
   auto node_it = node_map.find(pid);
-  if (node_it == node_map.end()) {
+  if (node_it != node_map.end()) {
+    node_id = node_it->second;
+  } else if (resolver) {
+    node_id = resolver(pid);
+  }
+  if (node_id == dtx::kInvalidNodeID) {
     return Status::NotFound("TransactionRecoveryManager", "no node mapping for partition " + std::to_string(pid));
   }
   
   cedar::dtx::InquireResponse response;
-  auto status = client->Inquire(node_it->second, std::to_string(txn_id), &response);
+  auto status = client->Inquire(node_id, std::to_string(txn_id), &response);
   return status;
 }
 

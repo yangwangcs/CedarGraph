@@ -46,6 +46,7 @@ namespace dtx {
 // Forward declarations
 class StorageClient;
 class RaftGroup;
+class DTXRpcClient;
 
 // =============================================================================
 // Transaction Context for 2PC
@@ -167,7 +168,7 @@ class Optimized2PCEngine {
   void SetStateManager(TransactionStateManager* state_manager) { state_manager_ = state_manager; }
   
   // Set recovery manager for coordinator crash recovery
-  void SetRecoveryManager(TransactionRecoveryManager* recovery_manager) { recovery_manager_ = recovery_manager; }
+  void SetRecoveryManager(TransactionRecoveryManager* recovery_manager);
   
   // Set timeout manager for transaction timeout tracking
   void SetTimeoutManager(TransactionTimeoutManager* timeout_manager) { timeout_manager_ = timeout_manager; }
@@ -241,6 +242,7 @@ class Optimized2PCEngine {
                             std::vector<std::future<bool>>& futures);
   bool WaitForCommitQuorum(const std::shared_ptr<TransactionContext>& ctx,
                            std::vector<std::future<bool>>& futures);
+  void SyncRecoveryRpcClient();
   
   // Configuration
   TwoPCConfig config_;
@@ -279,6 +281,9 @@ class Optimized2PCEngine {
   
   // Transaction recovery manager for coordinator crash recovery
   TransactionRecoveryManager* recovery_manager_ = nullptr;
+  
+  // DTX RPC client for recovery manager
+  std::shared_ptr<dtx::DTXRpcClient> dtx_rpc_client_;
   
   // Transaction timeout manager for timeout tracking
   TransactionTimeoutManager* timeout_manager_ = nullptr;

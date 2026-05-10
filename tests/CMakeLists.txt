@@ -63,6 +63,10 @@ add_cedar_test(test_temporal_minimal)
 add_cedar_test(test_driver_transaction)
 
 # DTX tests (in subdirectories)
+add_executable(test_2pc_recovery dtx/test_2pc_recovery.cpp)
+target_link_libraries(test_2pc_recovery ${CEDAR_TEST_LIBS} glog)
+gtest_discover_tests(test_2pc_recovery)
+
 add_executable(test_meta_service dtx/unit/test_meta_service.cc)
 target_link_libraries(test_meta_service ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_meta_service)
