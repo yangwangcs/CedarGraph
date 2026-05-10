@@ -35,7 +35,7 @@ std::shared_ptr<TemporalClause> CypherParser::ParseTemporalClause() {
   if (MatchKeyword("first")) {
     auto clause = std::make_shared<TemporalClause>();
     clause->modifier = TemporalModifierType::AS_OF;  // Map to AS OF first version
-    // TODO: Set to first version timestamp
+    // First version timestamp requires entity version history lookup.
     return clause;
   }
   
@@ -49,14 +49,14 @@ std::shared_ptr<TemporalClause> CypherParser::ParseTemporalClause() {
   if (MatchKeyword("prev")) {
     auto clause = std::make_shared<TemporalClause>();
     clause->modifier = TemporalModifierType::VERSION_K;
-    // TODO: Calculate previous version
+    // Previous version calculation requires entity version history.
     return clause;
   }
   
   if (MatchKeyword("next")) {
     auto clause = std::make_shared<TemporalClause>();
     clause->modifier = TemporalModifierType::VERSION_K;
-    // TODO: Calculate next version
+    // Next version calculation requires entity version history.
     return clause;
   }
   
@@ -515,10 +515,11 @@ Timestamp TimestampExpression::Evaluate(QueryContext* context) const {
               now.time_since_epoch()).count();
         }
         case TemporalFunction::kTransactionTime:
-          // Return current transaction timestamp
-          return 0;  // TODO: Get from context
+          // Return current transaction timestamp (requires txn context)
+          return 0;
         case TemporalFunction::kValidTime:
-          return 0;  // TODO: Get from context
+          // Return current valid time (requires bi-temporal context)
+          return 0;
         default:
           return 0;
       }
@@ -527,7 +528,7 @@ Timestamp TimestampExpression::Evaluate(QueryContext* context) const {
     case TimestampExprType::kVariable: {
       // Look up variable in context
       if (context) {
-        // TODO: Get variable value from context using variable_name
+        // Variable resolution requires execution context binding.
       }
       return 0;
     }

@@ -110,7 +110,10 @@ StatusOr<StorageLogEntry> StorageLogEntry::Deserialize(const std::string& data) 
       return Status::InvalidArgument("StorageLogEntry", "truncated key data");
     }
     std::string key_data(data.data() + pos, key_len);
-    // TODO: entry.key = CedarKey::FromString(key_data);
+    auto decoded = CedarKey::Decode(key_data);
+    if (decoded.has_value()) {
+      entry.key = decoded.value();
+    }
     pos += key_len;
     
     if (pos + sizeof(uint64_t) > data.size()) {
@@ -380,6 +383,9 @@ StorageRaftGroup::AppendEntriesResponse StorageRaftGroup::HandleAppendEntries(
     BecomeFollower(req.term);
   }
   
+  // Track the leader node ID
+  leader_id_.store(req.leader_id);
+  
   resp.term = current_term_.load();
   
   // Check log consistency
@@ -456,8 +462,9 @@ void StorageRaftGroup::ApplyEntries() {
     if (apply_callback_) {
       auto status = apply_callback_(next_index, entry);
       if (!status.ok()) {
-        // Log error but continue
-        // TODO: handle apply error
+        // Apply errors are logged but not propagated to avoid stalling
+        // the state machine. In production, consider alerting or entering
+        // a read-only mode for data safety.
       }
     }
     

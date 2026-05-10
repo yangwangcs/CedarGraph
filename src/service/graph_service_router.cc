@@ -739,7 +739,7 @@ grpc::Status GraphServiceRouter::StreamQuery(grpc::ServerContext* context,
     size_t end = std::min(offset + kBatchSize, total_rows);
     for (size_t i = offset; i < end; ++i) {
       if (i < static_cast<size_t>(result_set.rows_size())) {
-        *batch.add_rows() = result_set.rows(i);
+        *batch.mutable_batch()->add_rows() = result_set.rows(i);
       }
     }
     
@@ -748,7 +748,7 @@ grpc::Status GraphServiceRouter::StreamQuery(grpc::ServerContext* context,
     }
   }
   
-  return grpc::Status::OK();
+  return grpc::Status();
 }
 
 grpc::Status GraphServiceRouter::BatchQuery(grpc::ServerContext* context,
@@ -786,8 +786,8 @@ grpc::Status GraphServiceRouter::BatchQuery(grpc::ServerContext* context,
 }
 
 grpc::Status GraphServiceRouter::GetSchema(grpc::ServerContext* context,
-                                           const GetSchemaRequest* request,
-                                           GetSchemaResponse* response) {
+                                           const cedar::query::GetSchemaRequest* request,
+                                           cedar::query::GetSchemaResponse* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
@@ -1542,7 +1542,7 @@ Status GraphServiceRouter::Initialize2PCEngine() {
     auto nodes_result = meta_client_->GetAliveNodes();
     if (nodes_result.ok()) {
       for (const auto& node : nodes_result.value()) {
-        if (node.state == NodeInfo::State::kOnline) {
+        if (node.state == cedar::dtx::NodeInfo::State::kOnline) {
           auto client = std::make_shared<cedar::dtx::StorageClient>();
           cedar::dtx::StorageClient::ClientConfig client_config;
           client_config.server_address = node.address;
@@ -1554,7 +1554,7 @@ Status GraphServiceRouter::Initialize2PCEngine() {
             continue;
           }
           storage_clients_.push_back(client);
-          std::cout << "[GraphD] StorageClient connected to " << node.address() << std::endl;
+          std::cout << "[GraphD] StorageClient connected to " << node.address << std::endl;
         }
       }
     }

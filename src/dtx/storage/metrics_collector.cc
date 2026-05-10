@@ -24,6 +24,8 @@
 #include <iostream>
 #include <sstream>
 
+#include <curl/curl.h>
+
 #include "cedar/core/status.h"
 
 namespace cedar {
@@ -218,9 +220,39 @@ void NetworkSink::SendLoop() {
       std::swap(to_send, buffer_);
     }
     
-    // TODO: 实现实际的 HTTP/网络发送逻辑
-    while (!to_send.empty()) {
-      to_send.pop();
+    // Send logs via HTTP POST to the configured endpoint
+    if (!config_.endpoint.empty() && !to_send.empty()) {
+      CURL* curl = curl_easy_init();
+      if (curl) {
+        std::string url = "http://" + config_.endpoint;
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 5000L);
+        
+        struct curl_slist* headers = nullptr;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        
+        while (!to_send.empty()) {
+          const auto& entry = to_send.front();
+          std::string payload = entry.ToJson();
+          curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+          curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, payload.length());
+          
+          CURLcode res = curl_easy_perform(curl);
+          if (res != CURLE_OK) {
+            // Silently drop on failure to avoid blocking
+          }
+          to_send.pop();
+        }
+        
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+      }
+    } else {
+      while (!to_send.empty()) {
+        to_send.pop();
+      }
     }
   }
 }
@@ -434,8 +466,50 @@ void LogNotifier::Notify(const Alert& alert) {
 WebhookNotifier::WebhookNotifier(const Config& config) : config_(config) {}
 
 void WebhookNotifier::Notify(const Alert& alert) {
-  // TODO: 实现 HTTP POST 请求发送告警
-  (void)alert;
+  if (config_.url.empty()) return;
+  
+  CURL* curl = curl_easy_init();
+  if (!curl) return;
+  
+  // Build JSON payload
+  std::ostringstream oss;
+  oss << "{";
+  oss << "\"alert_id\":" << alert.alert_id << ",";
+  oss << "\"rule_name\":\"" << alert.rule_name << "\",";
+  oss << "\"severity\":\"" << static_cast<int>(alert.severity) << "\",";
+  oss << "\"message\":\"" << alert.message << "\",";
+  oss << "\"resolved\":" << (alert.is_resolved ? "true" : "false");
+  if (!alert.labels.empty()) {
+    oss << ",\"labels\":{";
+    bool first = true;
+    for (const auto& [k, v] : alert.labels) {
+      if (!first) oss << ",";
+      first = false;
+      oss << "\"" << k << "\":\"" << v << "\"";
+    }
+    oss << "}";
+  }
+  oss << "}";
+  std::string payload = oss.str();
+  
+  curl_easy_setopt(curl, CURLOPT_URL, config_.url.c_str());
+  curl_easy_setopt(curl, CURLOPT_POST, 1L);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, payload.length());
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, config_.timeout.count());
+  
+  struct curl_slist* headers = nullptr;
+  headers = curl_slist_append(headers, "Content-Type: application/json");
+  for (const auto& [key, value] : config_.headers) {
+    std::string header = key + ": " + value;
+    headers = curl_slist_append(headers, header.c_str());
+  }
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  
+  curl_easy_perform(curl);
+  
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
 }
 
 // =============================================================================
@@ -573,8 +647,46 @@ void AlertManager::EvaluationLoop() {
     
     if (!running_.load()) break;
     
-    // TODO: 评估告警规则
-    // 这里可以实现基于指标的告警评估
+    if (!metric_provider_) continue;
+    
+    std::lock_guard<std::mutex> lock(rules_mutex_);
+    for (const auto& [name, rule] : rules_) {
+      double value = metric_provider_(rule.condition_metric);
+      bool triggered = false;
+      
+      if (rule.comparison == ">") {
+        triggered = value > rule.threshold;
+      } else if (rule.comparison == ">=") {
+        triggered = value >= rule.threshold;
+      } else if (rule.comparison == "<") {
+        triggered = value < rule.threshold;
+      } else if (rule.comparison == "<=") {
+        triggered = value <= rule.threshold;
+      } else if (rule.comparison == "==") {
+        triggered = value == rule.threshold;
+      }
+      
+      // Check if already active
+      bool already_active = false;
+      {
+        std::lock_guard<std::mutex> alert_lock(alerts_mutex_);
+        for (uint64_t id : active_alerts_) {
+          auto it = alerts_.find(id);
+          if (it != alerts_.end() && it->second.rule_name == name) {
+            already_active = true;
+            if (!triggered) {
+              // Auto-resolve if condition is no longer met
+              ResolveAlert(id);
+            }
+            break;
+          }
+        }
+      }
+      
+      if (triggered && !already_active) {
+        FireAlert(name);
+      }
+    }
   }
 }
 

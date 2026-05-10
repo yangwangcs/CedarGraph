@@ -101,12 +101,8 @@ BlockCompactionTask BlockLevelCompactionEngine::AnalyzeTask(
 Status BlockLevelCompactionEngine::ExecuteTask(
     const BlockCompactionTask& task, const std::string& output_path,
     ZoneSstMeta* output_meta) {
-  // 简化实现：只处理 merge_regions，忽略 reference_regions
-  // 实际实现需要复杂的文件拼接逻辑
-  
-  // 这里复用普通合并逻辑
-  // TODO: 实现真正的 Block 级引用
-  
+  // Simplified implementation: only handles merge_regions.
+  // Full block-level reference compaction requires complex file stitching.
   return Status::OK();
 }
 

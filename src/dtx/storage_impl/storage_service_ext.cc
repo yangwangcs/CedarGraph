@@ -268,16 +268,29 @@ std::vector<std::pair<CedarKey, Descriptor>> PartitionRangeScanner::Scan(
 void PartitionRangeScanner::ScanWithCallback(
     const PartitionScanOptions& options,
     std::function<bool(const CedarKey&, const Descriptor&)> callback) {
-  // TODO: Implement using CedarGraphStorage's scan API
-  // This would involve:
-  // 1. Constructing key bounds with partition_id prefix
-  // 2. Iterating through MemTable and SST files
-  // 3. Filtering by entity_id, timestamp, column_id ranges
-  // 4. Calling callback for matching entries
-  
-  // Placeholder implementation
-  (void)options;
-  (void)callback;
+  // Simplified implementation: iterate entity IDs in range and scan each.
+  // For production, this should use a low-level storage iterator.
+  size_t count = 0;
+  for (uint64_t eid = options.start_entity_id;
+       eid <= options.end_entity_id && count < options.limit;
+       ++eid) {
+    auto versions = storage_->Scan(eid, options.start_time, options.end_time);
+    for (const auto& [ts, desc] : versions) {
+      CedarKey key;
+      key.SetPartId(options.partition_id);
+      key.SetEntityId(eid);
+      key.SetTimestamp(ts);
+      key.SetTargetId(0);
+      key.SetColumnId(options.column_id == 0xFFFF ? 0 : options.column_id);
+      
+      if (!callback(key, desc)) {
+        return;
+      }
+      if (++count >= options.limit) {
+        return;
+      }
+    }
+  }
 }
 
 // =============================================================================
@@ -291,8 +304,40 @@ PartitionSstStats PartitionStatsCollector::CollectStats(PartitionID pid) {
   PartitionSstStats stats;
   stats.partition_id = pid;
   
-  // TODO: Scan SST files and collect metadata for keys with matching part_id
-  // This requires iterating through SST files and checking key ranges
+  // Scan partition data to collect statistics
+  PartitionRangeScanner scanner(storage_);
+  PartitionScanOptions options;
+  options.partition_id = pid;
+  options.start_entity_id = 0;
+  options.end_entity_id = UINT64_MAX;
+  options.limit = 100000;  // Sample limit for performance
+  
+  size_t sampled = 0;
+  scanner.ScanWithCallback(options, [&](const CedarKey& key, const Descriptor& desc) {
+    stats.total_keys++;
+    stats.total_size_bytes += sizeof(CedarKey) + sizeof(Descriptor);
+    if (desc.GetKind() == EntryKind::Tombstone) {
+      stats.tombstone_count++;
+      stats.tombstone_size_bytes += sizeof(Descriptor);
+    }
+    uint64_t eid = key.entity_id();
+    if (eid < stats.min_entity_id) stats.min_entity_id = eid;
+    if (eid > stats.max_entity_id) stats.max_entity_id = eid;
+    Timestamp ts = key.timestamp();
+    if (stats.min_timestamp.value() == 0 || ts.value() < stats.min_timestamp.value()) {
+      stats.min_timestamp = ts;
+    }
+    if (ts.value() > stats.max_timestamp.value()) {
+      stats.max_timestamp = ts;
+    }
+    sampled++;
+    return true;
+  });
+  
+  // Get global SST stats
+  auto global_stats = storage_->GetStats();
+  stats.sst_file_count = global_stats.sst_count;
+  stats.sst_total_size = global_stats.sst_size;
   
   stats.last_update_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count();
@@ -309,7 +354,16 @@ PartitionSstStats PartitionStatsCollector::CollectStats(PartitionID pid) {
 std::unordered_map<PartitionID, PartitionSstStats> PartitionStatsCollector::CollectAllStats() {
   std::unordered_map<PartitionID, PartitionSstStats> all_stats;
   
-  // TODO: Iterate through all SST files and aggregate stats by partition_id
+  // Collect stats for all cached partitions
+  {
+    std::shared_lock<std::shared_mutex> lock(cache_mutex_);
+    for (const auto& [pid, stats] : cached_stats_) {
+      all_stats[pid] = stats;
+    }
+  }
+  
+  // Note: Without a partition directory, we cannot discover all partitions.
+  // The caller should trigger CollectStats for each known partition.
   
   {
     std::unique_lock<std::shared_mutex> lock(cache_mutex_);
@@ -425,11 +479,24 @@ PartitionCompactionScheduler::GetCompactionPriorities() {
   
   std::vector<PartitionCompactionPriority> priorities;
   
+  // Try to get stats collector from manager (expected to be ExtendedPartitionManager)
+  PartitionStatsCollector* stats_collector = nullptr;
+  if (manager_) {
+    auto* ext_mgr = reinterpret_cast<ExtendedPartitionManager*>(manager_);
+    stats_collector = ext_mgr->GetStatsCollector();
+  }
+  
   for (const auto& [pid, priority] : pending_compactions_) {
     PartitionCompactionPriority p;
     p.partition_id = pid;
     p.priority_score = priority;
-    // TODO: Fill in estimated_size and tombstone_ratio from stats collector
+    if (stats_collector) {
+      auto stats = stats_collector->GetCachedStats(pid);
+      p.estimated_size_bytes = stats.total_size_bytes;
+      if (stats.total_keys > 0) {
+        p.tombstone_ratio = (stats.tombstone_count * 100) / stats.total_keys;
+      }
+    }
     priorities.push_back(p);
   }
   
@@ -593,9 +660,12 @@ ExtendedPartitionManager::ScanPartitionRange(const PartitionScanOptions& options
     results.reserve(keys.size());
     
     for (const auto& key : keys) {
-      // TODO: Fetch actual values from storage
-      // This is a placeholder - real implementation would Get() each key
-      results.emplace_back(key, Descriptor());
+      // Fetch actual values from storage
+      auto desc = range_scanner_->GetStorage()->Get(
+          key.entity_id(), key.timestamp().value());
+      if (desc.has_value()) {
+        results.emplace_back(key, desc.value());
+      }
     }
     
     return results;

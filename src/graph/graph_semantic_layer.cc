@@ -185,6 +185,11 @@ GraphSemanticLayer::GraphSemanticLayer(CedarGraphStorage* storage)
 
 GraphSemanticLayer::~GraphSemanticLayer() = default;
 
+void GraphSemanticLayer::ClearCache() {
+  std::lock_guard<std::mutex> lock(cache_mutex_);
+  neighbor_cache_.clear();
+}
+
 std::vector<BatchNeighborResult> GraphSemanticLayer::BatchGetNeighbors(
     const std::vector<uint64_t>& vertex_ids,
     uint16_t edge_type,

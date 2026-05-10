@@ -58,6 +58,11 @@ add_cedar_test(test_temporal_minimal)
 # add_cedar_test(test_skeleton_cache_bare_perf)
 # add_cedar_test(test_rw_performance)
 add_cedar_test(test_driver_transaction)
+
+# DTX tests (in subdirectories)
+add_executable(test_meta_service dtx/unit/test_meta_service.cc)
+target_link_libraries(test_meta_service ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_meta_service)
 # add_cedar_test(test_sst_capacity_analysis)
 # add_cedar_test(test_auto_compaction_file_based)
 # add_cedar_test(test_sst_structure_analysis)
@@ -270,3 +275,13 @@ add_executable(test_storage_backfill gcn/test_storage_backfill.cc)
 target_link_libraries(test_storage_backfill cedar_gcn cedar_graph ${GTEST_MAIN_TARGET})
 target_link_directories(test_storage_backfill PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_storage_backfill)
+
+add_executable(test_graph_service_router
+    service/test_graph_service_router.cc
+    ../src/service/graph_service_router.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
+)
+target_link_libraries(test_graph_service_router cedar cedar_cypher cedar_queryd gRPC::grpc++ ${GTEST_MAIN_TARGET})
+target_link_directories(test_graph_service_router PRIVATE /opt/homebrew/lib)
+gtest_discover_tests(test_graph_service_router)

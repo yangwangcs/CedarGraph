@@ -192,6 +192,9 @@ class PartitionRangeScanner {
   // Get key bounds for partition (for constructing scan ranges)
   static std::pair<CedarKey, CedarKey> GetPartitionKeyBounds(PartitionID pid);
   
+  // Access underlying storage
+  ::cedar::CedarGraphStorage* GetStorage() const { return storage_; }
+  
   // Check if key belongs to partition
   static bool KeyBelongsToPartition(const CedarKey& key, PartitionID pid);
 

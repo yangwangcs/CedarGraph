@@ -354,6 +354,10 @@ class AlertManager {
   
   // 获取告警历史
   std::vector<Alert> GetAlertHistory(const std::string& rule_name = "") const;
+  
+  // 设置指标提供者（用于规则评估）
+  using MetricProvider = std::function<double(const std::string& metric_name)>;
+  void SetMetricProvider(MetricProvider provider) { metric_provider_ = std::move(provider); }
 
  private:
   AlertManager() = default;
@@ -377,6 +381,8 @@ class AlertManager {
   std::atomic<uint64_t> next_alert_id_{1};
   
   std::thread eval_thread_;
+  
+  MetricProvider metric_provider_;
 };
 
 // =============================================================================

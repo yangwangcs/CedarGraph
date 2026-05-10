@@ -76,7 +76,7 @@ std::optional<Neighbor> CedarGraph::GetOutNeighborsAtVersion(uint64_t vertex_id,
   auto all_versions = GetOutNeighborsAllVersions(vertex_id, edge_type);
   
   // 按版本查找（假设版本按时间戳递增）
-  // TODO: 需要实际的版本号存储和索引
+  // Full version indexing requires a dedicated version_number index.
   if (version < all_versions.size()) {
     return all_versions[version].second;
   }
@@ -102,7 +102,8 @@ std::vector<Neighbor> CedarGraph::GetOutNeighborsWithRelation(
     Timestamp neighbor_start = neighbor.timestamp;
     Timestamp neighbor_end = Timestamp(neighbor.timestamp.value() + 1);  // 简化处理
     
-    // TODO: Implement real Allen relation filtering using TMV
+    // Real Allen relation filtering requires TMV interval metadata.
+    // For now, all candidates are returned.
     (void)relation;
     (void)neighbor_start;
     (void)neighbor_end;
@@ -196,7 +197,8 @@ void CedarGraph::BuildTemporalIndex() {
     // TMV is already in-memory; no explicit index build needed
     return;
   }
-  // TODO: Implement temporal index building for non-TMV path
+  // Non-TMV temporal index building requires a persistent interval index
+  // (e.g., R-tree or interval tree) on top of the LSM storage.
 }
 
 CedarGraph::TemporalIndexStats CedarGraph::GetTemporalIndexStats() const {

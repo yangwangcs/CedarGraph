@@ -327,9 +327,8 @@ grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
   // Convert proto key to CedarKey
   CedarKey key = ProtoToCedarKey(request->key());
   
-  // For Get, we use max timestamp to get latest value
-  // TODO: Support reading at specific timestamp
-  Timestamp read_time = Timestamp::Max();
+  // Use the timestamp from the request key; default to Max for latest value
+  Timestamp read_time = key.timestamp().value() > 0 ? key.timestamp() : Timestamp::Max();
   
   // Execute get
   auto result = partition->Get(key, read_time);
@@ -431,12 +430,46 @@ grpc::Status StorageServiceImpl::Scan(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
-  (void)request;
-  
-  // TODO: Implement scan operation using CedarGraphStorage iterator
-  response->set_success(false);
-  response->set_error_msg("Scan not fully implemented");
-  return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "Scan not fully implemented");
+
+  // Leader check for linearizable read
+  PartitionID pid = static_cast<PartitionID>(request->partition_id());
+  std::string leader_hint;
+  auto leader_status = CheckReadLeader(pid, &leader_hint);
+  if (!leader_status.ok()) {
+    response->set_success(false);
+    response->set_error_msg("Not leader, redirect to: " + leader_hint);
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                        "Not leader", leader_hint);
+  }
+
+  if (!storage_interface_) {
+    response->set_success(false);
+    response->set_error_msg("Storage interface not initialized");
+    return grpc::Status::OK;
+  }
+
+  std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
+  Status s = storage_interface_->ScanVertices(
+      request->entity_id(),
+      cedar::Timestamp(request->start_time()),
+      cedar::Timestamp(request->end_time()),
+      {},  // no predicates for legacy Scan
+      &results);
+
+  if (!s.ok()) {
+    response->set_success(false);
+    response->set_error_msg(s.ToString());
+    return grpc::Status::OK;
+  }
+
+  for (const auto& [ts, desc] : results) {
+    auto* item = response->add_items();
+    item->set_timestamp(ts.value());
+    item->mutable_descriptor_()->set_data(SerializeDescriptorSimple(desc));
+  }
+
+  response->set_success(true);
+  return grpc::Status::OK;
 }
 
 grpc::Status StorageServiceImpl::ScanNodeV2(grpc::ServerContext* context,

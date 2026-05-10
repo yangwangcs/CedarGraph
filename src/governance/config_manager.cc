@@ -654,7 +654,8 @@ Status ConfigManager::Validate(const std::string& schema_path) {
   }
   file.close();
 
-  // TODO: Implement JSON Schema validation
+  // JSON Schema validation requires a JSON Schema library (e.g., nlohmann/json-schema).
+  // For now, schema file existence is the only check.
   return Status::OK();
 }
 

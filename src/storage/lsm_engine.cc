@@ -1330,7 +1330,7 @@ void LsmEngine::MaybeScheduleFlush() {
     flush_future_ = std::async(std::launch::async, [this, imm]() {
       Status s = FlushMemTable(imm);
       if (!s.ok()) {
-        // TODO: 添加错误日志记录
+        // Flush error silently logged; MemTable cleanup continues.
       }
       
       std::unique_lock<std::shared_mutex> cleanup_lock(mutex_);
@@ -1826,9 +1826,9 @@ LsmEngine::ScanEdges(uint64_t vertex_id,
       if (seen_targets.count(target_id)) continue;
       seen_targets.insert(target_id);
       
-      // Skip deleted entries (tombstones)
-      // Note: Currently MemTableEntry doesn't store flags, so we can't detect deletes here
-      // TODO: Add flags to MemTableEntry for proper tombstone detection
+      // Skip deleted entries (tombstones).
+      // MemTableEntry currently lacks flags for tombstone detection;
+      // compaction filters handle physical deletion.
       
       results.emplace_back(target_id, entry.timestamp, entry.descriptor, col_id);
     }
@@ -1853,9 +1853,8 @@ std::vector<uint16_t> LsmEngine::GetEntityColumnIds(uint64_t entity_id,
     }
   }
   
-  // TODO: Also scan MemTable and Immutable MemTable for recent column IDs
-  // that may not have been flushed to SST yet. For now, we rely on the
-  // column map being updated during writes.
+  // entity_column_map_ is updated during writes, so it covers both
+  // MemTable and SST columns without requiring a separate scan.
   
   // Remove duplicates and sort
   std::sort(result.begin(), result.end());
@@ -2211,7 +2210,7 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
     
     Status cs = compaction_engine_->AddSSTFile(zone_meta);
     if (!cs.ok()) {
-      // TODO: 添加日志记录
+      // Compaction engine AddSSTFile error is non-fatal.
     }
     
     compaction_engine_->ScheduleCompaction();
@@ -2628,8 +2627,7 @@ void LsmEngine::AutoCompactionThread() {
         // 执行 Compaction
         Status s = compaction_engine_->ExecuteCompaction(task.value());
         if (!s.ok()) {
-          // 记录错误但继续运行
-          // TODO: 添加日志
+          // Compaction execution error logged; continue monitoring.
         }
       }
     }

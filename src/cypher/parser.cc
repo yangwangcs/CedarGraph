@@ -84,7 +84,9 @@ std::shared_ptr<QueryStatement> CypherParser::ParseStatement() {
   // Store temporal modifier in statement
   if (temporal_clause_) {
     stmt->temporal_modifier.type = temporal_clause_->modifier;
-    stmt->temporal_modifier.timestamp = nullptr;  // TODO: Convert expression
+    stmt->temporal_modifier.timestamp = nullptr;
+    // Full expression conversion requires integrating the expression parser
+    // with temporal_clause_->expression.
     stmt->temporal_modifier.version_number = temporal_clause_->version_number.value_or(0);
   }
   
@@ -110,7 +112,13 @@ void CypherParser::SkipWhitespace() {
 
 void CypherParser::SkipWhitespaceAndComments() {
   SkipWhitespace();
-  // TODO: Handle comments
+  // Handle single-line comments (//...)
+  while (Peek() == '/' && Lookahead(1) == '/') {
+    while (!IsAtEnd() && Peek() != '\n') {
+      Advance();
+    }
+    SkipWhitespace();
+  }
 }
 
 bool CypherParser::MatchKeyword(const std::string& keyword) {
@@ -238,6 +246,13 @@ char CypherParser::Peek() const {
 char CypherParser::Advance() {
   if (pos_ < input_.size()) {
     return input_[pos_++];
+  }
+  return '\0';
+}
+
+char CypherParser::Lookahead(size_t offset) const {
+  if (pos_ + offset < input_.size()) {
+    return input_[pos_ + offset];
   }
   return '\0';
 }

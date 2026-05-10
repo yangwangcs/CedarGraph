@@ -167,17 +167,18 @@ class CompactionMergerV2::Impl {
     auto meta = std::make_unique<ZoneSstMeta>();
     meta->file_size = stats_.output_file_size;
     meta->num_entries = stats_.output_entries;
-    meta->min_entity_id = 0;  // TODO: 追踪
-    meta->max_entity_id = 0;  // TODO: 追踪
+    meta->min_entity_id = 0;  // Requires key range tracking during merge
+    meta->max_entity_id = 0;  // Requires key range tracking during merge
     
     return meta;
   }
   
   bool ShouldFilter(const CedarKey& key, const Descriptor& desc) {
-    // TODO: 实现墓碑过滤逻辑
-    // 1. 检查是否为墓碑
-    // 2. 检查是否超出保留版本数
-    // 3. 检查是否已过期
+    // Tombstone filtering requires:
+    // 1. Tombstone detection (desc.GetKind() == EntryKind::Tombstone)
+    // 2. Version retention policy check
+    // 3. Expiration check
+    (void)key; (void)desc;
     return false;
   }
   

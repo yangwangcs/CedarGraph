@@ -67,9 +67,37 @@ int64_t ParseDuration(const std::string& duration_str) {
   int64_t microseconds = 0;
   
   // Check for ISO 8601 duration format (P...)
-  if (duration_str.empty() || duration_str[0] == 'P') {
-    // TODO: Implement full ISO 8601 duration parsing
-    return 0;
+  if (!duration_str.empty() && duration_str[0] == 'P') {
+    // Parse ISO 8601 duration: P[n]Y[n]M[n]DT[n]H[n]M[n]S
+    int64_t years = 0, months = 0, days = 0, hours = 0, minutes = 0, seconds = 0;
+    size_t i = 1;
+    int64_t value = 0;
+    bool in_time = false;
+    while (i < duration_str.size()) {
+      char c = duration_str[i];
+      if (std::isdigit(c)) {
+        value = value * 10 + (c - '0');
+      } else if (c == 'T') {
+        in_time = true;
+        value = 0;
+      } else if (c == 'Y') {
+        years = value; value = 0;
+      } else if (c == 'M') {
+        if (in_time) { minutes = value; } else { months = value; }
+        value = 0;
+      } else if (c == 'D') {
+        days = value; value = 0;
+      } else if (c == 'H') {
+        hours = value; value = 0;
+      } else if (c == 'S') {
+        seconds = value; value = 0;
+      }
+      ++i;
+    }
+    // Approximate conversion to microseconds
+    microseconds = ((years * 365 + months * 30 + days) * 24 + hours) * 3600;
+    microseconds = (microseconds + minutes * 60 + seconds) * 1000000;
+    return microseconds;
   }
   
   // Parse simple format like "1d2h30m10s"

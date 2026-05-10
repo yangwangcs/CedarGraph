@@ -464,9 +464,12 @@ LeaderRebalancer::GetCurrentDistribution() const {
   for (const auto& [pid, group] : raft_groups_) {
     if (!group) continue;
     
-    // In real implementation, we would get the actual leader node
-    // For now, just count leaders
-    NodeID leader_node = 0;  // TODO: Get from group
+    NodeID leader_node = group->GetLeaderId();
+    if (leader_node == 0 && group->IsLeader()) {
+      // Fallback: if we are the leader but don't know our own ID,
+      // use a sentinel value for local counting.
+      leader_node = 1;
+    }
     
     if (distribution.count(leader_node) == 0) {
       distribution[leader_node].node_id = leader_node;

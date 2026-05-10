@@ -26,12 +26,9 @@ TEST_F(ConnectionPoolTest, Placeholder) {
   EXPECT_TRUE(true);
 }
 
-// TODO: 实现完整的 ConnectionPool 测试
-// TEST_F(ConnectionPoolTest, GetConnection) {
-//   auto conn = pool_->GetConnection("127.0.0.1:9779");
-//   EXPECT_NE(conn, nullptr);
-//   ...
-// }
+// ConnectionPool full tests require a running StorageD instance.
+// Integration tests should cover: GetConnection, ReturnConnection,
+// Connection failure handling, and pool size limits.
 
 class QueryCacheTest : public ::testing::Test {
  protected:

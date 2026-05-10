@@ -32,8 +32,8 @@ std::vector<uint64_t> LocalComputeThread::ExecuteBFS(uint64_t root,
       continue;
     }
 
-    // TODO: SIMD optimization — batch-check valid_from <= query_time < valid_to
-    // for 2 edges per iteration using AVX2.
+    // SIMD optimization opportunity: batch-check valid_from <= query_time < valid_to
+    // for 2 edges per iteration using AVX2 (future performance work).
     auto edges = engine->ScanAtTime(vertex, Direction::kOut, query_time);
 
     for (const auto& edge : edges) {
@@ -72,8 +72,8 @@ std::vector<uint64_t> LocalComputeThread::ExecuteDFS(uint64_t root,
       continue;
     }
 
-    // TODO: SIMD optimization — batch-check valid_from <= query_time < valid_to
-    // for 2 edges per iteration using AVX2.
+    // SIMD optimization opportunity: batch-check valid_from <= query_time < valid_to
+    // for 2 edges per iteration using AVX2 (future performance work).
     auto edges = engine->ScanAtTime(vertex, Direction::kOut, query_time);
 
     for (const auto& edge : edges) {

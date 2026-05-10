@@ -335,7 +335,105 @@ cypher::ResultSet ResultMerger::MergeAggregate(
     const std::vector<std::pair<std::string, std::string>>& aggregations) {
   
   cypher::ResultSet merged;
-  // TODO: Implement aggregation merge
+  
+  // Collect all records from all partitions
+  std::vector<cypher::Record> all_records;
+  for (const auto& r : results) {
+    if (r.status.ok()) {
+      all_records.insert(all_records.end(), r.result.records.begin(), r.result.records.end());
+    }
+  }
+  
+  if (all_records.empty()) {
+    return merged;
+  }
+  
+  // Build group key for a record
+  auto make_group_key = [&group_keys](const cypher::Record& rec) -> std::string {
+    std::string key;
+    for (const auto& gk : group_keys) {
+      auto it = rec.values.find(gk);
+      if (it != rec.values.end()) {
+        key += it->second.ToString() + "\x01";
+      } else {
+        key += "\x01";
+      }
+    }
+    return key;
+  };
+  
+  // Group records
+  std::map<std::string, std::vector<const cypher::Record*>> groups;
+  for (const auto& rec : all_records) {
+    groups[make_group_key(rec)].push_back(&rec);
+  }
+  
+  // Process each group
+  for (const auto& [group_key, group_records] : groups) {
+    cypher::Record aggregated_rec;
+    
+    // Copy group key values from first record
+    for (const auto& gk : group_keys) {
+      auto it = group_records[0]->values.find(gk);
+      if (it != group_records[0]->values.end()) {
+        aggregated_rec.values[gk] = it->second;
+      }
+    }
+    
+    // Apply aggregations
+    for (const auto& [func, col] : aggregations) {
+      if (func == "count") {
+        aggregated_rec.values[col] = cypher::Value(static_cast<int64_t>(group_records.size()));
+      } else if (func == "sum" || func == "avg") {
+        double total = 0.0;
+        int64_t count = 0;
+        for (const auto* rec : group_records) {
+          auto it = rec->values.find(col);
+          if (it != rec->values.end() && it->second.IsNumeric()) {
+            if (it->second.IsInt()) {
+              total += static_cast<double>(it->second.GetInt());
+            } else if (it->second.IsFloat()) {
+              total += it->second.GetFloat();
+            }
+            count++;
+          }
+        }
+        if (func == "avg" && count > 0) {
+          aggregated_rec.values[col] = cypher::Value(total / static_cast<double>(count));
+        } else {
+          aggregated_rec.values[col] = cypher::Value(total);
+        }
+      } else if (func == "min" || func == "max") {
+        bool first = true;
+        double best = 0.0;
+        for (const auto* rec : group_records) {
+          auto it = rec->values.find(col);
+          if (it != rec->values.end() && it->second.IsNumeric()) {
+            double val = 0.0;
+            if (it->second.IsInt()) {
+              val = static_cast<double>(it->second.GetInt());
+            } else if (it->second.IsFloat()) {
+              val = it->second.GetFloat();
+            }
+            if (first) {
+              best = val;
+              first = false;
+            } else if (func == "min" && val < best) {
+              best = val;
+            } else if (func == "max" && val > best) {
+              best = val;
+            }
+          }
+        }
+        if (!first) {
+          aggregated_rec.values[col] = cypher::Value(best);
+        }
+      }
+    }
+    
+    merged.records.push_back(std::move(aggregated_rec));
+  }
+  
   return merged;
 }
 
@@ -495,9 +593,73 @@ Status DistributedExecutor::Traverse(
     return TraverseOptimized(start_node_id, edge_types, max_depth, paths);
   }
   
-  // General traversal
-  // TODO: Implement BFS/DFS traversal
-  return Status::NotSupported("General traversal not yet implemented");
+  // General BFS traversal supporting all directions
+  std::queue<std::pair<uint64_t, std::unique_ptr<cypher::Path>>> queue;
+  
+  auto start_path = std::make_unique<cypher::Path>();
+  cypher::Node start_node;
+  start_node.id = start_node_id;
+  start_path->elements.push_back(start_node);
+  queue.push({start_node_id, std::move(start_path)});
+  
+  uint32_t visited = 0;
+  const uint32_t kMaxVisited = 10000;
+  
+  while (!queue.empty() && visited < kMaxVisited) {
+    auto [current_id, current_path] = std::move(queue.front());
+    queue.pop();
+    
+    if (current_path->Length() >= max_depth) {
+      paths->push_back(std::move(current_path));
+      continue;
+    }
+    
+    // Scan edges based on direction
+    std::vector<EdgeScanEntry> all_edges;
+    for (uint16_t et : edge_types) {
+      if (direction == cypher::Direction::OUTGOING || 
+          direction == cypher::Direction::BOTH) {
+        std::vector<EdgeScanEntry> out_edges;
+        Status s = storage_client_->ScanOutEdges(current_id, et, as_of_ts, &out_edges);
+        if (s.ok()) {
+          all_edges.insert(all_edges.end(), out_edges.begin(), out_edges.end());
+        }
+      }
+      if (direction == cypher::Direction::INCOMING || 
+          direction == cypher::Direction::BOTH) {
+        std::vector<EdgeScanEntry> in_edges;
+        Status s = storage_client_->ScanInEdges(current_id, et, as_of_ts, &in_edges);
+        if (s.ok()) {
+          all_edges.insert(all_edges.end(), in_edges.begin(), in_edges.end());
+        }
+      }
+    }
+    
+    // Limit branch factor
+    if (all_edges.size() > max_branch && max_branch > 0) {
+      all_edges.resize(max_branch);
+    }
+    
+    for (const auto& edge : all_edges) {
+      auto new_path = std::make_unique<cypher::Path>(*current_path);
+      cypher::Relationship rel;
+      rel.id = edge.key.entity_id() ^ edge.target_id ^ edge.edge_type;
+      rel.start_id = current_id;
+      rel.end_id = edge.target_id;
+      rel.type = std::to_string(edge.edge_type);
+      new_path->elements.push_back(rel);
+      
+      cypher::Node target_node;
+      target_node.id = edge.target_id;
+      new_path->elements.push_back(target_node);
+      
+      queue.push({edge.target_id, std::move(new_path)});
+    }
+    
+    visited++;
+  }
+  
+  return Status::OK();
 }
 
 Status DistributedExecutor::TemporalQuery(
@@ -535,8 +697,8 @@ Status DistributedExecutor::TemporalQuery(
   for (const auto& [ts, desc] : results) {
     cypher::VersionedEntity ve;
     ve.timestamp = ts;
-    ve.is_deleted = false;  // TODO: Check delete flag
-    // TODO: Parse descriptor properties
+    ve.is_deleted = (desc.GetKind() == cedar::EntryKind::Tombstone);
+    // Descriptor properties parsing requires storage layer access for ExternalRef entries
     versions->push_back(std::move(ve));
   }
   
@@ -577,8 +739,8 @@ Status DistributedExecutor::GetEntityAtTime(
   
   // Results are in descending order, first element is the version at timestamp
   entity->timestamp = results[0].first;
-  entity->is_deleted = false;
-  // TODO: Parse descriptor properties
+  entity->is_deleted = (results[0].second.GetKind() == cedar::EntryKind::Tombstone);
+  // Descriptor properties parsing requires storage layer access for ExternalRef entries
   
   return Status::OK();
 }
@@ -715,7 +877,9 @@ Status DistributedExecutor::TraverseOptimized(
   
   // Start node
   auto start_path = std::make_unique<cypher::Path>();
-  // TODO: Add start node to path
+  cypher::Node start_node;
+  start_node.id = start_node_id;
+  start_path->elements.push_back(start_node);
   queue.push({start_node_id, std::move(start_path)});
   
   uint32_t visited = 0;
@@ -740,8 +904,17 @@ Status DistributedExecutor::TraverseOptimized(
     
     for (const auto& edge : edges) {
       auto new_path = std::make_unique<cypher::Path>(*current_path);
-      // TODO: Add edge and target node to path
-      // new_path length is managed by elements vector
+      // Add edge and target node to path
+      cypher::Relationship rel;
+      rel.id = edge.key.entity_id() ^ edge.target_id ^ edge.edge_type;
+      rel.start_id = current_id;
+      rel.end_id = edge.target_id;
+      rel.type = std::to_string(edge.edge_type);
+      new_path->elements.push_back(rel);
+      
+      cypher::Node target_node;
+      target_node.id = edge.target_id;
+      new_path->elements.push_back(target_node);
       
       queue.push({edge.target_id, std::move(new_path)});
     }

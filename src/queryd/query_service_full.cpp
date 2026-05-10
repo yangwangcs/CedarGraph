@@ -364,10 +364,14 @@ class QueryServiceImpl::Impl {
         proto.set_string_val(value.GetString());
         break;
       case cypher::ValueType::kList:
-        // TODO: Convert list
+        for (const auto& item : value.GetList()) {
+          *proto.mutable_list_val()->add_items() = ConvertToProtoValue(item);
+        }
         break;
       case cypher::ValueType::kMap:
-        // TODO: Convert map
+        for (const auto& [k, v] : value.GetMap()) {
+          (*proto.mutable_map_val()->mutable_items())[k] = ConvertToProtoValue(v);
+        }
         break;
       default:
         proto.mutable_null_val();

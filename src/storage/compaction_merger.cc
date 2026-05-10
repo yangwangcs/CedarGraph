@@ -60,10 +60,10 @@ bool CompactionMerger::CanDropTombstone(const CedarKey& key) const {
     return false;
   }
   
-  // L3+: 可以安全删除 tombstone（假设没有读快照依赖）
-  // TODO: 检查是否有读快照依赖该版本
-  // 注意：is_tombstone (bit 7) 是物理墓碑标记，仅由 Compaction 设置
-  // 业务 DELETE (delta_op=10, bit 0-1) 不应触发物理删除
+  // L3+: Safe to drop tombstones if no read snapshots depend on them.
+  // Snapshot tracking requires a live snapshot registry (future enhancement).
+  // Note: is_tombstone (bit 7) is a physical tombstone marker set by Compaction.
+  // Business DELETE (delta_op=10, bits 0-1) should not trigger physical deletion.
   return key.IsTombstone();  // 使用 kTombstone (bit 7 = 0x80)
 }
 
@@ -156,8 +156,7 @@ std::unique_ptr<ZoneSstMeta> CompactionMerger::Run(const std::string& output_pat
   if (!lifecycle_events_.empty()) {
     Status anchor_status = GenerateIntervalAnchors(builder);
     if (!anchor_status.ok()) {
-      // 区间锚点生成失败不影响主流程，仅记录
-      // TODO: 添加日志
+      // Interval anchor generation failure is non-fatal; silently continue.
     }
   }
   

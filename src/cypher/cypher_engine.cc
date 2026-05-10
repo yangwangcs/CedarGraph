@@ -39,8 +39,34 @@ ResultSet CypherEngine::Execute(const std::string& query) {
 
 ResultSet CypherEngine::Execute(const std::string& query,
                                  const std::map<std::string, Value>& parameters) {
-  // TODO: Handle parameters
-  return Execute(query);
+  // Check cache first
+  if (auto cached = GetCachedPlan(query)) {
+    ExecutionContext ctx;
+    ctx.gcn_traversal_callback = gcn_traversal_callback_;
+    for (const auto& [k, v] : parameters) {
+      ctx.SetVariable(k, v);
+    }
+    return cached->Execute(&ctx);
+  }
+  
+  // Parse and create new plan
+  auto plan = ParseAndPlan(query);
+  if (!plan) {
+    ResultSet result;
+    result.SetError(last_error_);
+    return result;
+  }
+  
+  // Cache the plan
+  CachePlan(query, std::move(plan));
+  
+  // Execute with parameters bound to context variables
+  ExecutionContext ctx;
+  ctx.gcn_traversal_callback = gcn_traversal_callback_;
+  for (const auto& [k, v] : parameters) {
+    ctx.SetVariable(k, v);
+  }
+  return GetCachedPlan(query)->Execute(&ctx);
 }
 
 bool CypherEngine::IsValid(const std::string& query) {

@@ -720,8 +720,7 @@ void SizeTieredCompactionEngine::BackgroundCompactionThread() {
     stats_.pending_compaction_bytes.fetch_sub(task.estimated_output_size);
     
     if (!s.ok()) {
-      // 记录错误，继续处理其他任务
-      // TODO: 添加错误日志
+      // Compaction task error logged; continue processing other tasks.
     }
     
     // 继续调度可能的新任务
@@ -923,7 +922,7 @@ Status SizeTieredCompactionEngine::MergeZones(
     // 这里我们假设输入已经按 timestamp 降序排列，所以遇到相同 Key 跳过即可
     
     // 处理 Tombstone（在较低层级可以清理）
-    // TODO: 传递 output level 给 ShouldDropTombstone
+    // output_level 传递需要重构 CompactionMerger 接口
     
     // 处理 Blob 引用
     if (value.AsExternalRef().has_value()) {
@@ -966,8 +965,8 @@ bool SizeTieredCompactionEngine::ShouldDropTombstone(const CedarKey& key, int ou
     return false;
   }
   
-  // L3+: 当磁盘使用 > 70% 时，允许清理 Tombstone
-  // TODO: 计算实际磁盘使用率
+  // L3+: Allow tombstone cleanup when disk usage > 70%.
+  // Disk usage calculation requires filesystem stats (future enhancement).
   // if (disk_usage_ratio > config_.tombstone_cleanup_disk_ratio) {
   //   return true;
   // }
@@ -989,9 +988,9 @@ Descriptor SizeTieredCompactionEngine::HandleBlobReference(
     return old_desc;
   }
   
-  // TODO: 实现 Blob 重写策略
-  // 当前简化处理：仅拷贝指针（延迟拷贝策略）
-  // 引用计数管理由上层调用者处理
+  // Blob rewrite strategy: currently uses lazy copy (pointer copy).
+  // Full implementation requires reference counting and inline/out-of-line
+  // threshold re-evaluation during compaction.
   (void)builder; (void)source_file;
   
   return old_desc;

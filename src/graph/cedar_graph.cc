@@ -336,7 +336,7 @@ void CedarGraph::GetCacheStats(size_t* cache_size, double* hit_rate) const {
 
 void CedarGraph::ClearCache() {
   if (semantic_layer_) {
-    // TODO: Implement ClearCache
+    semantic_layer_->ClearCache();
   }
 }
 

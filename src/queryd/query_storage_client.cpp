@@ -35,8 +35,6 @@ void QueryStorageClient::SetBaseClient(
 }
 
 Status QueryStorageClient::Init(const std::string& meta_service_address) {
-  // TODO: Connect to meta service and discover storage nodes
-  // For now, just validate the address format
   if (meta_service_address.empty()) {
     return Status::InvalidArgument("Meta service address is empty");
   }
@@ -47,8 +45,9 @@ Status QueryStorageClient::Init(const std::string& meta_service_address) {
     return Status::InvalidArgument("Invalid meta service address format, expected host:port");
   }
   
-  // Store for later use
-  // meta_service_address_ = meta_service_address;
+  // Node discovery requires a MetaD gRPC client (MetaServiceGrpcClient).
+  // For now, callers should use RegisterNode() to manually register partitions,
+  // or integrate with MetaServiceGrpcClient at a higher layer.
   
   return Status::OK();
 }

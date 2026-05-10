@@ -134,7 +134,9 @@ GcnNode::~GcnNode() {
 
 void GcnNode::CdcListenerLoop() {
   while (running_.load()) {
-    // TODO: Implement actual CDC listener logic in Task 3.3+
+    // CDC listener requires WAL/change-stream integration (Task 3.3+).
+    // For now, this loop acts as a placeholder until the CDC infrastructure
+    // is connected to the storage engine.
     std::this_thread::sleep_for(std::chrono::seconds(5));
   }
 }

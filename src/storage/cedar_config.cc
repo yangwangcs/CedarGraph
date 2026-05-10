@@ -438,10 +438,29 @@ void CedarConfig::Dump() const {
 // ============================================================================
 
 void CedarConfig::MergeFrom(const CedarConfig& other) {
-  // 简单实现：逐个字段覆盖非默认值
-  // 实际应用中可以更智能地合并
-  (void)other;
-  // TODO: 实现完整的合并逻辑
+  // Merge non-default values from other into this config.
+  CedarConfig defaults;
+  
+  // DB options
+  if (other.db.create_if_missing != defaults.db.create_if_missing) db.create_if_missing = other.db.create_if_missing;
+  if (other.db.error_if_exists != defaults.db.error_if_exists) db.error_if_exists = other.db.error_if_exists;
+  if (other.db.paranoid_checks != defaults.db.paranoid_checks) db.paranoid_checks = other.db.paranoid_checks;
+  if (other.db.memtable_threshold != defaults.db.memtable_threshold) db.memtable_threshold = other.db.memtable_threshold;
+  if (other.db.write_buffer_size != defaults.db.write_buffer_size) db.write_buffer_size = other.db.write_buffer_size;
+  if (other.db.column_id != defaults.db.column_id) db.column_id = other.db.column_id;
+  if (other.db.enable_bloom_filter != defaults.db.enable_bloom_filter) db.enable_bloom_filter = other.db.enable_bloom_filter;
+  if (other.db.bloom_bits_per_key != defaults.db.bloom_bits_per_key) db.bloom_bits_per_key = other.db.bloom_bits_per_key;
+  if (other.db.verify_checksums != defaults.db.verify_checksums) db.verify_checksums = other.db.verify_checksums;
+  
+  // LSM options
+  if (other.lsm.min_files_for_compaction != defaults.lsm.min_files_for_compaction) lsm.min_files_for_compaction = other.lsm.min_files_for_compaction;
+  if (other.lsm.min_size_for_compaction != defaults.lsm.min_size_for_compaction) lsm.min_size_for_compaction = other.lsm.min_size_for_compaction;
+  if (other.lsm.target_file_size != defaults.lsm.target_file_size) lsm.target_file_size = other.lsm.target_file_size;
+  if (other.lsm.max_levels != defaults.lsm.max_levels) lsm.max_levels = other.lsm.max_levels;
+  if (other.lsm.level_size_multiplier != defaults.lsm.level_size_multiplier) lsm.level_size_multiplier = other.lsm.level_size_multiplier;
+  if (other.lsm.level0_file_num_compaction_trigger != defaults.lsm.level0_file_num_compaction_trigger) lsm.level0_file_num_compaction_trigger = other.lsm.level0_file_num_compaction_trigger;
+  if (other.lsm.level0_slowdown_writes_trigger != defaults.lsm.level0_slowdown_writes_trigger) lsm.level0_slowdown_writes_trigger = other.lsm.level0_slowdown_writes_trigger;
+  if (other.lsm.level0_stop_writes_trigger != defaults.lsm.level0_stop_writes_trigger) lsm.level0_stop_writes_trigger = other.lsm.level0_stop_writes_trigger;
 }
 
 // ============================================================================
@@ -509,9 +528,10 @@ void CedarConfigManager::RegisterCallback(ConfigChangeCallback callback) {
 }
 
 Status CedarConfigManager::ApplyToEngine(class LsmEngine* engine) {
-  // 应用配置到引擎
+  // Apply runtime config changes to LsmEngine.
+  // LsmEngine currently does not support dynamic reconfiguration;
+  // changes require engine restart.
   (void)engine;
-  // TODO: 实现配置应用逻辑
   return Status::OK();
 }
 

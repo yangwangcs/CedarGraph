@@ -14,6 +14,9 @@
 
 #include "cedar/dtx/security.h"
 
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
 #include <thread>
 #include <fstream>
 
@@ -48,14 +51,47 @@ Status TLSContext::Initialize(const TLSConfig& config) {
     return Status::OK();
   }
   
-  // TODO: Initialize OpenSSL SSL_CTX
+  // Initialize OpenSSL SSL_CTX
+  const SSL_METHOD* method = TLS_server_method();
+  SSL_CTX* ctx = SSL_CTX_new(method);
+  if (!ctx) {
+    return Status::IOError("Failed to create SSL_CTX");
+  }
   
+  // Load certificate and private key
+  if (!config_.cert_file.empty()) {
+    if (SSL_CTX_use_certificate_file(ctx, config_.cert_file.c_str(), SSL_FILETYPE_PEM) <= 0) {
+      SSL_CTX_free(ctx);
+      return Status::IOError("Failed to load certificate: " + config_.cert_file);
+    }
+  }
+  if (!config_.key_file.empty()) {
+    if (SSL_CTX_use_PrivateKey_file(ctx, config_.key_file.c_str(), SSL_FILETYPE_PEM) <= 0) {
+      SSL_CTX_free(ctx);
+      return Status::IOError("Failed to load private key: " + config_.key_file);
+    }
+  }
+  if (!config_.ca_file.empty()) {
+    if (SSL_CTX_load_verify_locations(ctx, config_.ca_file.c_str(), nullptr) <= 0) {
+      SSL_CTX_free(ctx);
+      return Status::IOError("Failed to load CA file: " + config_.ca_file);
+    }
+    if (config_.verify_client) {
+      SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+    }
+  }
+  
+  ssl_context_ = ctx;
   enabled_ = true;
   return Status::OK();
 }
 
 void TLSContext::Shutdown() {
   enabled_ = false;
+  if (ssl_context_) {
+    SSL_CTX_free(static_cast<SSL_CTX*>(ssl_context_));
+    ssl_context_ = nullptr;
+  }
 }
 
 // =============================================================================

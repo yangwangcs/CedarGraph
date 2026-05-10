@@ -71,7 +71,45 @@ bool DataBalanceStrategy::NeedsRebalance(const ClusterLoadReport& report) {
 BalancePlan DataBalanceStrategy::GeneratePlan(const ClusterLoadReport& report) {
     BalancePlan plan;
     plan.space_name = report.space_name;
-    // TODO: implement
+    
+    if (report.node_loads.size() < 2) return plan;
+    
+    // Calculate average data size per node
+    uint64_t total_data = 0;
+    for (const auto& node : report.node_loads) {
+        total_data += node.total_data_size;
+    }
+    uint64_t avg_data = total_data / report.node_loads.size();
+    
+    // Find overloaded and underloaded nodes
+    std::vector<NodeID> overloaded_nodes;
+    std::vector<NodeID> underloaded_nodes;
+    
+    for (const auto& node : report.node_loads) {
+        if (avg_data > 0 && node.total_data_size > avg_data * kImbalanceRatio) {
+            overloaded_nodes.push_back(node.node_id);
+        } else if (avg_data > 0 && node.total_data_size < avg_data / kImbalanceRatio) {
+            underloaded_nodes.push_back(node.node_id);
+        }
+    }
+    
+    // Generate migration tasks from overloaded to underloaded nodes.
+    // Since partition_loads doesn't contain node_id, we generate a single
+    // representative task per node pair with a sentinel partition_id.
+    // The executor will resolve the actual partition at runtime.
+    size_t over_idx = 0, under_idx = 0;
+    while (over_idx < overloaded_nodes.size() && under_idx < underloaded_nodes.size()) {
+        BalanceTask task;
+        task.type = BalanceTaskType::kMigratePartition;
+        task.partition_id = kInvalidPartitionID;  // Resolved at execution time
+        task.source_node = overloaded_nodes[over_idx];
+        task.target_node = underloaded_nodes[under_idx];
+        task.reason = "Data imbalance: migrate partition to balance data size";
+        plan.tasks.push_back(task);
+        over_idx++;
+        under_idx++;
+    }
+    
     return plan;
 }
 
@@ -94,7 +132,43 @@ bool QpsBalanceStrategy::NeedsRebalance(const ClusterLoadReport& report) {
 BalancePlan QpsBalanceStrategy::GeneratePlan(const ClusterLoadReport& report) {
     BalancePlan plan;
     plan.space_name = report.space_name;
-    // TODO: implement
+    
+    if (report.node_loads.size() < 2) return plan;
+    
+    // Calculate average QPS per node
+    uint64_t total_qps = 0;
+    for (const auto& node : report.node_loads) {
+        total_qps += node.total_qps;
+    }
+    uint64_t avg_qps = total_qps / report.node_loads.size();
+    
+    // Find overloaded and underloaded nodes
+    std::vector<NodeID> overloaded_nodes;
+    std::vector<NodeID> underloaded_nodes;
+    
+    for (const auto& node : report.node_loads) {
+        if (avg_qps > 0 && node.total_qps > avg_qps * kImbalanceRatio) {
+            overloaded_nodes.push_back(node.node_id);
+        } else if (avg_qps > 0 && node.total_qps < avg_qps / kImbalanceRatio) {
+            underloaded_nodes.push_back(node.node_id);
+        }
+    }
+    
+    // Generate leader transfer tasks from overloaded to underloaded nodes.
+    // partition_id is resolved at execution time since partition_loads lacks node_id.
+    size_t over_idx = 0, under_idx = 0;
+    while (over_idx < overloaded_nodes.size() && under_idx < underloaded_nodes.size()) {
+        BalanceTask task;
+        task.type = BalanceTaskType::kTransferLeader;
+        task.partition_id = kInvalidPartitionID;  // Resolved at execution time
+        task.source_node = overloaded_nodes[over_idx];
+        task.target_node = underloaded_nodes[under_idx];
+        task.reason = "QPS imbalance: transfer leader to balance query load";
+        plan.tasks.push_back(task);
+        over_idx++;
+        under_idx++;
+    }
+    
     return plan;
 }
 
@@ -340,11 +414,27 @@ StatusOr<ClusterLoadReport> LoadBalancer::CollectLoadReport(const std::string& s
     // Get all alive nodes
     auto nodes = meta_service_->GetAliveNodes();
     
+    // Get partition map to compute leader/partition counts per node
+    auto partition_map_or = meta_service_->GetSpacePartitionMap(space_name);
+    
     // For each node, collect load info
     for (const auto& node : nodes) {
         NodeLoad node_load;
         node_load.node_id = node.node_id;
-        // TODO: get actual load from node
+        
+        // Calculate leader and partition counts from partition map
+        if (partition_map_or.ok()) {
+            const auto& partition_map = partition_map_or.value();
+            for (const auto& [pid, assignment] : partition_map.assignments) {
+                if (assignment.IsReplicaOn(node.node_id)) {
+                    node_load.partition_count++;
+                    if (assignment.IsLeaderOn(node.node_id)) {
+                        node_load.leader_count++;
+                    }
+                }
+            }
+        }
+        
         report.node_loads.push_back(node_load);
     }
     

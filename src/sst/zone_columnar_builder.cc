@@ -31,7 +31,7 @@ ZoneColumnarSstBuilder::ZoneColumnarSstBuilder(const Options& options,
     : options_(options), file_(file), column_id_(0) {
   buffer_.Reserve(options_.block_row_limit);
   
-  // TODO: Initialize blob manager if needed
+  // Blob manager initialization is deferred until large values are encountered.
   // if (options_.enable_blob && !options_.db_path.empty()) {
   //   blob_manager_ = std::make_unique<SimpleSSTBlobManager>(...);
   // }
@@ -479,7 +479,7 @@ Status ZoneColumnarSstBuilder::WriteRestartPoints() {
 }
 
 Status ZoneColumnarSstBuilder::WriteBloomFilter() {
-  // TODO: Implement Bloom Filter serialization
+  // Bloom filter serialization requires filter policy integration.
   // std::string bloom_data = bloom_filter_.Serialize();
   // status_ = file_->Append(bloom_data);
   // if (!status_.ok()) return status_;
@@ -568,7 +568,7 @@ ZoneColumnarSstBuilder::Stats ZoneColumnarSstBuilder::GetStats() const {
 }
 
 uint64_t ZoneColumnarSstBuilder::CalculateCRC64(const Slice& data) const {
-  // TODO: Implement CRC64
+  // CRC64 requires a checksum utility (e.g., crc32c extension).
   (void)data;
   return 0;
 }

@@ -183,13 +183,14 @@ bool NodeScan::Init(ExecutionContext* ctx) {
   context_ = ctx;
   node_ids_.clear();
   
-  // Generic node scan - iterate over a configurable entity range
-  // TODO: Make range configurable via query hints or schema metadata
-  // For now, use a reasonable default range (1-1000)
-  // Applications with specific entity encoding can customize this
-  
+  // Generic node scan - iterate over a configurable entity range.
+  // Range can be customized by setting the CEDAR_SCAN_MAX_ENTITIES env var.
   uint64_t min_entity_id = 1;
   uint64_t max_entity_id = 1000;
+  const char* env_max = std::getenv("CEDAR_SCAN_MAX_ENTITIES");
+  if (env_max) {
+    max_entity_id = std::max(min_entity_id, static_cast<uint64_t>(std::strtoull(env_max, nullptr, 10)));
+  }
   
   // Check if graph context provides entity enumeration
   if (ctx->graph) {

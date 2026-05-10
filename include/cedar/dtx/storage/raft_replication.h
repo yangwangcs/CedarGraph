@@ -168,6 +168,7 @@ class StorageRaftGroup {
   uint64_t GetCurrentTerm() const { return current_term_.load(); }
   uint64_t GetCommitIndex() const { return commit_index_.load(); }
   uint64_t GetLastApplied() const { return last_applied_.load(); }
+  NodeID GetLeaderId() const { return leader_id_.load(); }
   
   // Leader operations
   Status Propose(const StorageLogEntry& entry);
@@ -245,6 +246,7 @@ class StorageRaftGroup {
   std::atomic<ReplicaState> state_{ReplicaState::kFollower};
   std::atomic<uint64_t> current_term_{0};
   NodeID voted_for_{0};
+  std::atomic<NodeID> leader_id_{0};
   
   // Log
   mutable std::shared_mutex log_mutex_;

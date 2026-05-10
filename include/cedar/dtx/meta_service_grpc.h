@@ -160,9 +160,10 @@ public:
     void WatchPartitionMap(const std::string& space_name,
                           std::function<void(const PartitionMapChange&)> callback) override;
 
-private:
     // 获取可用的 stub
     std::shared_ptr<cedar::meta::MetaService::Stub> GetStub();
+
+private:
     
     // 处理连接失败，尝试其他节点
     Status TryReconnect();

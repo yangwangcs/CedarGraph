@@ -197,6 +197,9 @@ class GraphSemanticLayer {
   
   // 设置是否启用预读
   void EnablePrefetch(bool enable) { enable_prefetch_ = enable; }
+
+  // 清空缓存
+  void ClearCache();
   
   // 设置是否启用 Block 缓存
   void EnableBlockCache(bool enable) { enable_block_cache_ = enable; }

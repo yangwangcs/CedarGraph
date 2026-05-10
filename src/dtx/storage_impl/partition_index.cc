@@ -34,9 +34,8 @@ Status PartitionIndex::BuildIndex() {
   
   Clear();
   
-  // TODO: Scan all SST files and extract partition metadata
-  // This would iterate through all SST files in the storage,
-  // sample keys to determine entity ranges per partition
+  // Full rebuild requires scanning all SST files and sampling keys
+  // to determine entity ranges per partition.
   
   return Status::OK();
 }
@@ -274,7 +273,7 @@ std::vector<CedarKey> PartitionQueryEngine::ScanPartitionKeys(
   // 1. Get MemTable data (real-time)
   auto memtable_stats = tracker_->GetStats(pid);
   if (memtable_stats.key_count > 0) {
-    // TODO: Scan MemTable for this partition's keys
+    // MemTable scan requires MemTable iterator access.
     // This requires iterating MemTable and filtering by part_id
   }
   
@@ -284,7 +283,7 @@ std::vector<CedarKey> PartitionQueryEngine::ScanPartitionKeys(
     auto range = index_->GetPartitionRange(pid);
     if (range.Contains(start_entity) || range.Contains(end_entity) ||
         (start_entity <= range.min_entity_id && end_entity >= range.max_entity_id)) {
-      // TODO: Scan this SST file for keys in entity range
+      // SST file scan requires SST iterator integration.
       // This requires SST reader to support filtering by part_id
     }
   }

@@ -422,7 +422,8 @@ Status ManifestManager::Initialize(bool create_if_missing) {
     }
     
     manifest_filename_ = db_path_ + "/" + manifest_name;
-    // TODO: 打开并读取 Manifest 文件
+    // Manifest file reading requires version state reconstruction
+    // from edit records (not yet implemented).
     
   } else if (create_if_missing) {
     // 创建新的 Manifest
@@ -581,7 +582,7 @@ Status ManifestManager::ApplyEdit(const ManifestEdit& edit,
   }
   
   // 应用编辑到版本
-  // TODO: 创建新版本
+  // Full version creation requires VersionSet management.
   
   return Status::OK();
 }
@@ -794,8 +795,8 @@ Status ManifestManager::ArchiveOldManifests(size_t keep_count) {
         std::string dst = archive_dir + "/" + 
                          std::filesystem::path(src).filename().string() + ".gz";
         
-        // TODO: 实现 gzip 压缩
-        // 暂时直接移动文件
+        // gzip compression requires zlib integration.
+        // For now, archive by renaming the file.
         std::filesystem::rename(src, dst);
       } catch (...) {
         // 忽略归档错误
@@ -838,7 +839,8 @@ Status ManifestManager::CompactManifest() {
     return s;
   }
   
-  // TODO: 写入当前的完整版本状态（而不是所有编辑记录）
+  // Writing full version state (instead of all edit records)
+  // requires VersionSet snapshot serialization.
   
   // 同步并关闭
   s = new_file->Sync();

@@ -449,13 +449,14 @@ DistributedValidationCoordinator::DistributedValidationCoordinator(DTxRpcClient*
 ValidationResult DistributedValidationCoordinator::CoordinateValidation(
     const DistributedTxnContext& ctx) {
   
-  // TODO: 实现跨分片协调验证
-  // 1. 收集所有参与分片
-  // 2. 并行发送验证请求
-  // 3. 收集结果
-  // 4. 汇总决策
-  
-  // 临时实现：假设全部有效
+  // Cross-shard validation requires:
+  // 1. Collect all participating partitions from ctx.GetParticipants()
+  // 2. Map PartitionIDs to NodeIDs via PartitionManager
+  // 3. Send validation requests to each node via DTxRpcClient
+  // 4. Aggregate results (all must agree for kValid)
+  //
+  // For now, assume valid until full coordination is wired.
+  (void)ctx;
   return ValidationResult::kValid;
 }
 

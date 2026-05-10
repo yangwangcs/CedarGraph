@@ -89,6 +89,7 @@ class CypherParser {
   bool IsAtEnd() const;
   char Peek() const;
   char Advance();
+  char Lookahead(size_t offset) const;
   
   // ==========================================================================
   // Clause parsers

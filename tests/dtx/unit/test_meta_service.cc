@@ -64,6 +64,75 @@ TEST_F(MetaServiceTest, GetPartitionAssignmentNotFound) {
     EXPECT_FALSE(result.ok());
 }
 
+TEST_F(MetaServiceTest, CreateAndGetSchema) {
+    SpaceDef space;
+    space.name = "test_space";
+    space.partition_num = 8;
+    space.replica_factor = 1;
+    EXPECT_TRUE(meta_service_.CreateSpace(space).ok());
+
+    LabelSchema schema;
+    schema.name = "Person";
+    schema.properties.push_back({"name", "STRING", true, true});
+    schema.properties.push_back({"age", "INT", false, false});
+    schema.indexes.push_back("name");
+
+    EXPECT_TRUE(meta_service_.CreateLabelSchema("test_space", schema).ok());
+
+    auto result = meta_service_.GetSchema("test_space", {});
+    EXPECT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].name, "Person");
+    EXPECT_EQ(result[0].properties.size(), 2);
+    EXPECT_EQ(result[0].properties[0].name, "name");
+}
+
+TEST_F(MetaServiceTest, GetSchemaFilteredByLabel) {
+    SpaceDef space;
+    space.name = "test_space";
+    space.partition_num = 8;
+    space.replica_factor = 1;
+    meta_service_.CreateSpace(space);
+
+    LabelSchema s1; s1.name = "A";
+    LabelSchema s2; s2.name = "B";
+    meta_service_.CreateLabelSchema("test_space", s1);
+    meta_service_.CreateLabelSchema("test_space", s2);
+
+    auto result = meta_service_.GetSchema("test_space", {"B"});
+    EXPECT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].name, "B");
+}
+
+TEST_F(MetaServiceTest, SchemaSurvivesSnapshotRoundtrip) {
+    SpaceDef space;
+    space.name = "snap_space";
+    space.partition_num = 4;
+    space.replica_factor = 1;
+    meta_service_.CreateSpace(space);
+
+    LabelSchema schema;
+    schema.name = "Car";
+    schema.properties.push_back({"model", "STRING", true, false});
+    meta_service_.CreateLabelSchema("snap_space", schema);
+
+    auto snapshot_data = meta_service_.SerializeState();
+    EXPECT_FALSE(snapshot_data.empty());
+
+    MetadataService restored;
+    MetaServiceConfig config;
+    config.node_id = 2;
+    config.listen_address = "127.0.0.1:2380";
+    config.advertise_address = "127.0.0.1:2380";
+    EXPECT_TRUE(restored.Initialize(config).ok());
+    EXPECT_TRUE(restored.DeserializeState(snapshot_data));
+
+    auto schemas = restored.GetSchema("snap_space", {});
+    EXPECT_EQ(schemas.size(), 1);
+    EXPECT_EQ(schemas[0].name, "Car");
+    EXPECT_EQ(schemas[0].properties[0].type, "STRING");
+    restored.Shutdown();
+}
+
 TEST(MetaServiceClientTest, Connect) {
     MetaServiceClient client;
     std::vector<std::string> addresses = {"127.0.0.1:2379"};

@@ -258,7 +258,7 @@ class ZoneColumnarSstBuilder {
   // Entity Index
   std::unordered_map<uint64_t, std::vector<uint32_t>> entity_index_;
   
-  // Blob 管理器 (TODO: 实现)
+  // Blob manager for large values (optional, not yet integrated)
   // std::unique_ptr<SimpleSSTBlobManager> blob_manager_;
   
   // 列 ID 和实体类型 (兼容 V1)
