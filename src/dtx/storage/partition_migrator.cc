@@ -269,27 +269,22 @@ Status PartitionMigrator::PrepareSource(MigrationTask& task) {
 }
 
 Status PartitionMigrator::CopyData(MigrationTask& task) {
-  // Simulate data copy with progress updates
-  // In a full implementation this would transfer SST files and WAL
-  task.migrated_keys = task.total_keys / 2;
-  task.migrated_bytes = task.total_bytes / 2;
-  return Status::OK();
+  (void)task;
+  return Status::NotSupported(
+      "PartitionMigrator::CopyData requires full SST scan + network send implementation. "
+      "See docs/PRODUCTION_READINESS_AUDIT_2026-04-28.md for roadmap.");
 }
 
 Status PartitionMigrator::CatchUp(MigrationTask& task) {
-  // Simulate catch-up: copy remaining data
-  task.migrated_keys = task.total_keys;
-  task.migrated_bytes = task.total_bytes;
-  return Status::OK();
+  (void)task;
+  return Status::NotSupported(
+      "PartitionMigrator::CatchUp requires WAL tailing + delta replay implementation.");
 }
 
 Status PartitionMigrator::SwitchTraffic(MigrationTask& task) {
-  // Switch traffic from source to target
-  // In a full implementation this would:
-  // - Update partition assignment in MetaD
-  // - Redirect reads to new location
-  // - Wait for in-flight writes to complete
-  return Status::OK();
+  (void)task;
+  return Status::NotSupported(
+      "SwitchTraffic requires MetaD atomic partition assignment update");
 }
 
 Status PartitionMigrator::VerifyConsistency(MigrationTask& task) {
@@ -315,23 +310,15 @@ Status PartitionMigrator::VerifyConsistency(MigrationTask& task) {
 }
 
 Status PartitionMigrator::CompleteMigration(MigrationTask& task) {
-  // Complete migration and update metadata
-  task.completed_at = std::chrono::system_clock::now();
-  // In a full implementation this would:
-  // - Clean up source data (optional)
-  // - Update metadata
-  // - Resume normal operations
-  return Status::OK();
+  (void)task;
+  return Status::NotSupported(
+      "CompleteMigration requires source data cleanup + MetaD confirmation");
 }
 
 Status PartitionMigrator::RollbackMigration(MigrationTask& task) {
-  // Rollback migration to source
-  // In a full implementation this would:
-  // - Revert traffic to source
-  // - Clean up partial data on target
-  task.state = MigrationState::kRolledBack;
-  task.completed_at = std::chrono::system_clock::now();
-  return Status::OK();
+  (void)task;
+  return Status::NotSupported(
+      "RollbackMigration requires traffic revert + data cleanup");
 }
 
 Status PartitionMigrator::CalculateChecksum(PartitionID pid, 
