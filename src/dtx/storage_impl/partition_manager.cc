@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "cedar/dtx/storage_service_impl.h"
+#include "cedar/dtx/failover_manager.h"
+#include "cedar/dtx/storage/partition_raft_manager.h"
 #include "cedar/dtx/monitoring.h"
 #include <filesystem>
 #include <fstream>
@@ -55,6 +57,22 @@ Status StoragePartitionManager::Initialize(const PartitionConfig& config) {
   }
   
   shared_storage_.reset(storage);
+  
+  // Register failover handlers if both managers are configured
+  if (failover_manager_ && raft_manager_) {
+    failover_manager_->RegisterSwitchLeaderHandler(
+        [this](PartitionID pid, NodeID target) -> Status {
+          auto raft_node = raft_manager_->GetRaftGroup(pid);
+          if (!raft_node) return Status::NotFound("Raft group not found");
+          return raft_node->TransferLeadershipTo(target);
+        });
+    failover_manager_->RegisterPromoteReplicaHandler(
+        [this](PartitionID pid, NodeID target) -> Status {
+          auto raft_node = raft_manager_->GetRaftGroup(pid);
+          if (!raft_node) return Status::NotFound("Raft group not found");
+          return raft_node->TransferLeadershipTo(target);
+        });
+  }
   
   initialized_ = true;
   return Status::OK();

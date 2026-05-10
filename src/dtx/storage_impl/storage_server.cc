@@ -14,6 +14,7 @@
 
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/dtx/storage/partition_raft_manager.h"
+#include "cedar/dtx/failover_manager.h"
 #include "cedar/dtx/monitoring.h"
 
 #include <csignal>
@@ -46,22 +47,25 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
   std::cout << "Initializing StorageServer (node_id=" << node_id_ 
             << ", address=" << config.listen_address << ")" << std::endl;
   
-  // Initialize partition manager
+  // Initialize braft partition replication manager first
+  // (needed by PartitionManager for failover handler registration)
+  raft_manager_ = std::make_unique<PartitionRaftManager>();
+  Status s = raft_manager_->Initialize(node_id_, config.data_root, config.listen_address);
+  if (!s.ok()) {
+    std::cerr << "Failed to initialize raft manager: " << s.ToString() << std::endl;
+    return s;
+  }
+  
+  // Initialize partition manager (registers failover handlers)
   StoragePartitionManager::PartitionConfig pm_config;
   pm_config.data_root = config.data_root;
   pm_config.max_partitions = config.max_partitions;
   
-  Status s = partition_manager_.Initialize(pm_config);
+  partition_manager_.SetRaftManager(raft_manager_.get());
+  partition_manager_.SetFailoverManager(GetGlobalFailoverManager());
+  s = partition_manager_.Initialize(pm_config);
   if (!s.ok()) {
     std::cerr << "Failed to initialize partition manager: " << s.ToString() << std::endl;
-    return s;
-  }
-  
-  // Initialize braft partition replication manager
-  raft_manager_ = std::make_unique<PartitionRaftManager>();
-  s = raft_manager_->Initialize(node_id_, config.data_root, config.listen_address);
-  if (!s.ok()) {
-    std::cerr << "Failed to initialize raft manager: " << s.ToString() << std::endl;
     return s;
   }
   

@@ -286,6 +286,13 @@ class ClusterFailoverManager {
   void RegisterRecoveryHandler(FailureType type,
       std::function<Status(const FailureEvent&)> handler);
   
+  // 注册 Leader 切换和副本提升处理器
+  using SwitchLeaderHandler = std::function<Status(PartitionID, NodeID)>;
+  using PromoteReplicaHandler = std::function<Status(PartitionID, NodeID)>;
+  
+  void RegisterSwitchLeaderHandler(SwitchLeaderHandler handler);
+  void RegisterPromoteReplicaHandler(PromoteReplicaHandler handler);
+  
   // 报告故障事件
   Status ReportFailure(const FailureEvent& event);
   
@@ -349,6 +356,12 @@ class ClusterFailoverManager {
   std::unordered_map<FailureType, 
                      std::function<Status(const FailureEvent&)>> handlers_;
   mutable std::mutex handlers_mutex_;
+  
+  // Leader 切换和副本提升处理器
+  SwitchLeaderHandler switch_leader_handler_;
+  PromoteReplicaHandler promote_replica_handler_;
+  mutable std::mutex switch_leader_mutex_;
+  mutable std::mutex promote_replica_mutex_;
   
   // 故障记录
   mutable std::mutex failures_mutex_;

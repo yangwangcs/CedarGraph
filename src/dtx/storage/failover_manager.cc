@@ -609,6 +609,16 @@ void ClusterFailoverManager::RegisterRecoveryHandler(
   handlers_[type] = std::move(handler);
 }
 
+void ClusterFailoverManager::RegisterSwitchLeaderHandler(SwitchLeaderHandler handler) {
+  std::lock_guard<std::mutex> lock(switch_leader_mutex_);
+  switch_leader_handler_ = std::move(handler);
+}
+
+void ClusterFailoverManager::RegisterPromoteReplicaHandler(PromoteReplicaHandler handler) {
+  std::lock_guard<std::mutex> lock(promote_replica_mutex_);
+  promote_replica_handler_ = std::move(handler);
+}
+
 Status ClusterFailoverManager::ReportFailure(const FailureEvent& event) {
   FailureEvent new_event = event;
   new_event.event_id = next_event_id_.fetch_add(1);
@@ -934,11 +944,27 @@ Status ClusterFailoverManager::ExecuteRecovery(const FailureEvent& event) {
     case RecoveryStrategy::kSwitchLeader: {
       std::cerr << "[ClusterFailoverManager] Leader switch requested for partition "
                 << event.partition_id << " to node " << event.node_id << std::endl;
+      SwitchLeaderHandler handler;
+      {
+        std::lock_guard<std::mutex> lock(switch_leader_mutex_);
+        handler = switch_leader_handler_;
+      }
+      if (handler) {
+        return handler(event.partition_id, event.node_id);
+      }
       return Status::IOError("No recovery handler registered for leader switch");
     }
     case RecoveryStrategy::kPromoteReplica: {
       std::cerr << "[ClusterFailoverManager] Replica promotion requested for partition "
                 << event.partition_id << " on node " << event.node_id << std::endl;
+      PromoteReplicaHandler handler;
+      {
+        std::lock_guard<std::mutex> lock(promote_replica_mutex_);
+        handler = promote_replica_handler_;
+      }
+      if (handler) {
+        return handler(event.partition_id, event.node_id);
+      }
       return Status::IOError("No recovery handler registered for replica promotion");
     }
     case RecoveryStrategy::kManualIntervention:

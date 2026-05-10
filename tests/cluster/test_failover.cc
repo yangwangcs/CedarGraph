@@ -19,10 +19,12 @@
 #include "cedar/storage/failover_manager.h"
 #include "cedar/storage/storage_health_monitor.h"
 #include "cedar/governance/health_checker.h"
+#include "cedar/dtx/failover_manager.h"
 
 using namespace cedar;
 using namespace cedar::storage;
 using namespace cedar::governance;
+using namespace cedar::dtx;
 
 class FailoverTest : public ::testing::Test {
  protected:
@@ -322,4 +324,137 @@ TEST_F(FailoverTest, NodeChangeCallback) {
   ASSERT_TRUE(s.ok());
   
   // Callback may be called during leader election
+}
+
+// =============================================================================
+// ClusterFailoverManager Tests
+// =============================================================================
+
+TEST(ClusterFailoverManagerTest, RegisterSwitchLeaderHandlerAndExecute) {
+  ClusterFailoverManager manager;
+  ClusterFailoverManager::Config config;
+  config.enable_auto_recovery = true;
+  Status s = manager.Initialize(config);
+  ASSERT_TRUE(s.ok());
+
+  bool handler_called = false;
+  PartitionID received_partition = 0;
+  NodeID received_node = 0;
+
+  manager.RegisterSwitchLeaderHandler(
+    [&](PartitionID pid, NodeID nid) -> Status {
+      handler_called = true;
+      received_partition = pid;
+      received_node = nid;
+      return Status::OK();
+    });
+
+  FailureEvent event;
+  event.type = FailureType::kNodeDown;
+  event.node_id = 7;
+  event.partition_id = 42;
+
+  s = manager.ReportFailure(event);
+  ASSERT_TRUE(s.ok());
+
+  auto active = manager.GetActiveFailures();
+  ASSERT_EQ(active.size(), 1);
+
+  s = manager.TriggerRecovery(active[0].event_id);
+  ASSERT_TRUE(s.ok());
+  EXPECT_TRUE(handler_called);
+  EXPECT_EQ(received_partition, 42);
+  EXPECT_EQ(received_node, 7);
+
+  manager.Shutdown();
+}
+
+TEST(ClusterFailoverManagerTest, SwitchLeaderFallbackToIOError) {
+  ClusterFailoverManager manager;
+  ClusterFailoverManager::Config config;
+  Status s = manager.Initialize(config);
+  ASSERT_TRUE(s.ok());
+
+  // No handler registered
+
+  FailureEvent event;
+  event.type = FailureType::kNodeDown;
+  event.node_id = 7;
+  event.partition_id = 42;
+
+  s = manager.ReportFailure(event);
+  ASSERT_TRUE(s.ok());
+
+  auto active = manager.GetActiveFailures();
+  ASSERT_EQ(active.size(), 1);
+
+  s = manager.TriggerRecovery(active[0].event_id);
+  EXPECT_FALSE(s.ok());
+  EXPECT_TRUE(s.IsIOError());
+
+  manager.Shutdown();
+}
+
+TEST(ClusterFailoverManagerTest, RegisterPromoteReplicaHandlerAndExecute) {
+  ClusterFailoverManager manager;
+  ClusterFailoverManager::Config config;
+  Status s = manager.Initialize(config);
+  ASSERT_TRUE(s.ok());
+
+  bool handler_called = false;
+  PartitionID received_partition = 0;
+  NodeID received_node = 0;
+
+  manager.RegisterPromoteReplicaHandler(
+    [&](PartitionID pid, NodeID nid) -> Status {
+      handler_called = true;
+      received_partition = pid;
+      received_node = nid;
+      return Status::OK();
+    });
+
+  FailureEvent event;
+  event.type = FailureType::kLeaderLost;
+  event.node_id = 99;
+  event.partition_id = 123;
+
+  s = manager.ReportFailure(event);
+  ASSERT_TRUE(s.ok());
+
+  auto active = manager.GetActiveFailures();
+  ASSERT_EQ(active.size(), 1);
+
+  s = manager.TriggerRecovery(active[0].event_id);
+  ASSERT_TRUE(s.ok());
+  EXPECT_TRUE(handler_called);
+  EXPECT_EQ(received_partition, 123);
+  EXPECT_EQ(received_node, 99);
+
+  manager.Shutdown();
+}
+
+TEST(ClusterFailoverManagerTest, PromoteReplicaFallbackToIOError) {
+  ClusterFailoverManager manager;
+  ClusterFailoverManager::Config config;
+  Status s = manager.Initialize(config);
+  ASSERT_TRUE(s.ok());
+
+  // No handler registered
+
+  FailureEvent event;
+  event.type = FailureType::kLeaderLost;
+  event.node_id = 99;
+  event.partition_id = 123;
+
+  s = manager.ReportFailure(event);
+  ASSERT_TRUE(s.ok());
+
+  auto active = manager.GetActiveFailures();
+  ASSERT_EQ(active.size(), 1);
+
+  s = manager.TriggerRecovery(active[0].event_id);
+  EXPECT_FALSE(s.ok());
+  EXPECT_TRUE(s.IsIOError());
+
+  manager.Shutdown();
 }

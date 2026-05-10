@@ -69,6 +69,9 @@ class StoragePartitionManager;
 class StorageServiceImpl;
 class PartitionRaftManager;
 
+// Forward declaration for failover manager
+class ClusterFailoverManager;
+
 // =============================================================================
 // PartitionStorage - Logical partition view over shared LSM-Tree
 // Multiple partitions share one CedarGraphStorage instance
@@ -192,6 +195,10 @@ class StoragePartitionManager {
   size_t GetTotalDiskUsage() const;
   
   std::string GetDataRoot() const { return config_.data_root; }
+  
+  // Failover and Raft integration
+  void SetFailoverManager(ClusterFailoverManager* manager) { failover_manager_ = manager; }
+  void SetRaftManager(PartitionRaftManager* manager) { raft_manager_ = manager; }
 
  private:
   PartitionConfig config_;
@@ -199,6 +206,9 @@ class StoragePartitionManager {
   std::unordered_map<PartitionID, std::unique_ptr<PartitionStorage>> partitions_;
   mutable std::shared_mutex partitions_mutex_;
   std::atomic<bool> initialized_{false};
+  
+  ClusterFailoverManager* failover_manager_ = nullptr;
+  PartitionRaftManager* raft_manager_ = nullptr;
 };
 
 // =============================================================================

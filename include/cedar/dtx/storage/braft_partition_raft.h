@@ -128,6 +128,9 @@ class BraftPartitionNode {
   Status Propose(const StorageLogEntry& entry);
   StatusOr<uint64_t> ReadIndex(std::chrono::milliseconds timeout);
   Status WaitForApplied(uint64_t index, std::chrono::milliseconds timeout);
+  
+  // Transfer leadership to the specified node
+  Status TransferLeadershipTo(NodeID target_node_id);
 
   struct NodeStatus {
     bool is_leader;

@@ -756,6 +756,34 @@ class BraftPartitionNode::Impl {
     return Status::IOError("WaitForApplied timeout");
   }
 
+  Status TransferLeadershipTo(NodeID target_node_id) {
+    std::lock_guard<std::mutex> lock(node_mutex_);
+    if (!node_) return Status::IOError("Node not initialized");
+    
+    // Find peer address for target NodeID
+    std::string target_addr;
+    for (const auto& [addr, nid] : peer_node_ids_) {
+      if (nid == target_node_id) {
+        target_addr = addr;
+        break;
+      }
+    }
+    if (target_addr.empty()) {
+      return Status::NotFound("Target node not found in peer list");
+    }
+    
+    braft::PeerId peer_id;
+    if (peer_id.parse(target_addr) != 0) {
+      return Status::InvalidArgument("Invalid peer address: " + target_addr);
+    }
+    
+    int rc = node_->transfer_leadership_to(peer_id);
+    if (rc != 0) {
+      return Status::IOError("Failed to transfer leadership: " + std::string(berror(rc)));
+    }
+    return Status::OK();
+  }
+
   NodeStatus GetStatus() const {
     std::lock_guard<std::mutex> lock(node_mutex_);
     NodeStatus status{};
@@ -835,6 +863,10 @@ StatusOr<uint64_t> BraftPartitionNode::ReadIndex(
 Status BraftPartitionNode::WaitForApplied(uint64_t index,
                                            std::chrono::milliseconds timeout) {
   return impl_->WaitForApplied(index, timeout);
+}
+
+Status BraftPartitionNode::TransferLeadershipTo(NodeID target_node_id) {
+  return impl_->TransferLeadershipTo(target_node_id);
 }
 
 BraftPartitionNode::NodeStatus BraftPartitionNode::GetStatus() const {
