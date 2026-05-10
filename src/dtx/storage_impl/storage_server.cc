@@ -70,7 +70,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
   
   // Initialize MetaD client
   MetaServiceNodeClient::ClientConfig meta_config;
-  meta_config.metad_address = config.metad_address;
+  meta_config.SetMetaAddress(config.metad_address);
   meta_config.node_id = node_id_;
   meta_config.listen_address = config.listen_address;
   meta_config.data_root = config.data_root;

@@ -105,23 +105,30 @@ Status MetaServiceNodeClient::Initialize(const ClientConfig& config) {
   if (connected_.load()) {
     return Status::InvalidArgument("MetaServiceNodeClient already initialized");
   }
-  
+
   config_ = config;
-  
-  // Create gRPC channel to MetaD
+
+  if (config_.metad_addresses.empty()) {
+    return Status::InvalidArgument("No MetaD addresses provided");
+  }
+
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
   if (!creds) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
-  channel_ = grpc::CreateChannel(config_.metad_address, creds);
-  stub_ = cedar::meta::MetaService::NewStub(channel_);
-  
-  // Wait for channel to be ready
-  auto deadline = std::chrono::system_clock::now() + config_.registration_timeout;
-  if (!channel_->WaitForConnected(deadline)) {
-    return Status::IOError("Failed to connect to MetaD: " + config_.metad_address);
+
+  // Try each address until one connects
+  for (size_t i = 0; i < config_.metad_addresses.size(); ++i) {
+    channel_ = grpc::CreateChannel(config_.metad_addresses[i], creds);
+    stub_ = cedar::meta::MetaService::NewStub(channel_);
+
+    auto deadline = std::chrono::system_clock::now() + config_.registration_timeout;
+    if (channel_->WaitForConnected(deadline)) {
+      connected_ = true;
+      current_metad_index_ = i;
+      return Status::OK();
+    }
   }
-  
-  connected_ = true;
-  return Status::OK();
+
+  return Status::IOError("Failed to connect to any MetaD node");
 }
 
 void MetaServiceNodeClient::Shutdown() {
@@ -366,6 +373,34 @@ void MetaServiceNodeClient::HeartbeatLoop(
 
 bool MetaServiceNodeClient::IsConnected() const {
   return connected_.load() && !shutdown_.load();
+}
+
+Status MetaServiceNodeClient::TryNextMetaAddress() {
+  if (config_.metad_addresses.size() <= 1) {
+    return Status::IOError("No fallback MetaD addresses available");
+  }
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
+  if (!creds) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+
+  size_t start = (current_metad_index_ + 1) % config_.metad_addresses.size();
+  for (size_t i = 0; i < config_.metad_addresses.size(); ++i) {
+    size_t idx = (start + i) % config_.metad_addresses.size();
+    auto channel = grpc::CreateChannel(config_.metad_addresses[idx], creds);
+    auto stub = cedar::meta::MetaService::NewStub(channel);
+
+    cedar::meta::GetAliveNodesRequest req;
+    cedar::meta::GetAliveNodesResponse resp;
+    grpc::ClientContext ctx;
+    ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
+    auto status = stub->GetAliveNodes(&ctx, req, &resp);
+    if (status.ok() && resp.success()) {
+      channel_ = std::move(channel);
+      stub_ = std::move(stub);
+      current_metad_index_ = idx;
+      return Status::OK();
+    }
+  }
+  return Status::IOError("All MetaD nodes unreachable");
 }
 
 }  // namespace dtx

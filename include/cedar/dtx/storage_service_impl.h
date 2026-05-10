@@ -478,7 +478,7 @@ class StorageClientPool {
 class MetaServiceNodeClient {
  public:
   struct ClientConfig {
-    std::string metad_address;
+    std::vector<std::string> metad_addresses;
     NodeID node_id;
     std::string listen_address;
     std::string data_root;
@@ -486,6 +486,12 @@ class MetaServiceNodeClient {
     std::chrono::seconds heartbeat_interval{5};
     std::chrono::seconds registration_timeout{10};
     cedar::dtx::raft::TlsConfig tls;
+
+    // Backwards compatibility: single string is auto-converted
+    void SetMetaAddress(const std::string& addr) {
+      metad_addresses.clear();
+      metad_addresses.push_back(addr);
+    }
   };
 
   MetaServiceNodeClient();
@@ -530,6 +536,8 @@ class MetaServiceNodeClient {
   
   std::thread heartbeat_thread_;
   mutable std::mutex mutex_;
+  size_t current_metad_index_ = 0;
+  Status TryNextMetaAddress();
 };
 
 // =============================================================================
