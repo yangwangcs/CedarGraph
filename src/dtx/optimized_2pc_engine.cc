@@ -15,9 +15,13 @@
 #include "cedar/dtx/optimized_2pc_engine.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/dtx/transaction_state.h"
+#include "cedar/dtx/transaction_recovery_manager.h"
+#include "cedar/dtx/transaction_timeout_manager.h"
+#include "cedar/dtx/transaction_metrics.h"
 
 #include <algorithm>
 #include <chrono>
+#include <iostream>
 
 namespace cedar {
 namespace dtx {
@@ -44,15 +48,46 @@ Status Optimized2PCEngine::Initialize(
     return Status::InvalidArgument("Engine already initialized");
   }
   
-  clients_ = clients;
+  shutdown_.store(false);
+  
+  {
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    clients_ = clients;
+  }
+  
+  // Initialize recovery manager if set
+  if (recovery_manager_) {
+    // recovery_manager should already be initialized by caller
+  }
+  
+  // Initialize timeout manager if set
+  if (timeout_manager_ && recovery_manager_) {
+    cedar::TimeoutConfig timeout_config;
+    timeout_config.prepare_timeout = std::chrono::milliseconds(config_.prepare_timeout_ms);
+    timeout_config.commit_timeout = std::chrono::milliseconds(config_.commit_timeout_ms);
+    timeout_config.max_transaction_duration = std::chrono::milliseconds(
+        config_.prepare_timeout_ms + config_.commit_timeout_ms + 10000);
+    timeout_manager_->Initialize(timeout_config, recovery_manager_);
+  }
   
   // Start worker threads for parallel execution
   int num_workers = config_.parallel_threads > 0 ? config_.parallel_threads : 4;
   for (int i = 0; i < num_workers; ++i) {
     worker_threads_.emplace_back([this]() {
-      // Worker thread main loop
       while (!shutdown_.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::function<void()> task;
+        {
+          std::unique_lock<std::mutex> lock(task_mutex_);
+          task_cv_.wait_for(lock, std::chrono::milliseconds(100),
+                            [this]() { return !task_queue_.empty() || shutdown_.load(); });
+          if (shutdown_.load()) break;
+          if (task_queue_.empty()) continue;
+          task = std::move(task_queue_.front());
+          task_queue_.pop();
+        }
+        if (task) {
+          task();
+        }
       }
     });
   }
@@ -75,31 +110,48 @@ Status Optimized2PCEngine::Initialize(
   return Status::OK();
 }
 
-void Optimized2PCEngine::Shutdown() {
+void Optimized2PCEngine::Shutdown() noexcept {
   if (!running_.exchange(false)) {
     return;
   }
   
-  shutdown_ = true;
+  shutdown_.store(true);
   
   // Wake up all waiting threads
   pipeline_cv_.notify_all();
   batch_cv_.notify_all();
+  task_cv_.notify_all();
   
   // Join worker threads
   for (auto& t : worker_threads_) {
     if (t.joinable()) {
-      t.join();
+      try { t.join(); } catch (...) { std::cerr << "[2PC] Worker thread join exception" << std::endl; }
     }
   }
   
-  if (pipeline_thread_.joinable()) {
-    pipeline_thread_.join();
-  }
+  try {
+    if (pipeline_thread_.joinable()) {
+      pipeline_thread_.join();
+    }
+  } catch (...) { std::cerr << "[2PC] Pipeline thread join exception" << std::endl; }
   
-  if (tuning_thread_.joinable()) {
-    tuning_thread_.join();
-  }
+  try {
+    if (tuning_thread_.joinable()) {
+      tuning_thread_.join();
+    }
+  } catch (...) { std::cerr << "[2PC] Tuning thread join exception" << std::endl; }
+  
+  // Shutdown timeout and recovery managers
+  try {
+    if (timeout_manager_) {
+      timeout_manager_->Shutdown();
+    }
+  } catch (...) { std::cerr << "[2PC] Timeout manager shutdown exception" << std::endl; }
+  try {
+    if (recovery_manager_) {
+      recovery_manager_->Shutdown();
+    }
+  } catch (...) { std::cerr << "[2PC] Recovery manager shutdown exception" << std::endl; }
 }
 
 // =============================================================================
@@ -107,11 +159,37 @@ void Optimized2PCEngine::Shutdown() {
 // =============================================================================
 
 Status Optimized2PCEngine::Execute2PC(TxnID txn_id,
-                                       const std::vector<CedarKey>& read_set,
-                                       const std::vector<CedarKey>& write_set,
+                                       const std::vector<::cedar::CedarKey>& read_set,
+                                       const std::vector<::cedar::CedarKey>& write_set,
                                        Timestamp commit_ts) {
+  TXN_METRICS_START(txn_id, TxnType::kCrossTemporalRange);
   auto ctx = std::make_shared<TransactionContext>(
       txn_id, read_set, write_set, commit_ts);
+  
+  // Register transaction with timeout manager
+  struct TimeoutGuard {
+    TransactionTimeoutManager* mgr;
+    TxnID txn_id;
+    bool active = true;
+    ~TimeoutGuard() {
+      if (active && mgr) {
+        mgr->UnregisterTransaction(txn_id);
+      }
+    }
+    void Dismiss() { active = false; }
+  };
+  TimeoutGuard timeout_guard{timeout_manager_, txn_id, false};
+  if (timeout_manager_) {
+    auto pids = GetPartitionIDs(write_set);
+    timeout_manager_->RegisterTransaction(txn_id, pids);
+    timeout_guard.active = true;
+  }
+  
+  // Persist initial transaction state with correct participant list
+  if (state_manager_) {
+    auto pids = GetPartitionIDs(write_set);
+    state_manager_->CreateTransaction(txn_id, pids);
+  }
   
   // Select execution strategy
   TwoPCConfig::Strategy strategy;
@@ -120,33 +198,57 @@ Status Optimized2PCEngine::Execute2PC(TxnID txn_id,
     strategy = config_.strategy;
   }
   
+  Status result;
   switch (strategy) {
     case TwoPCConfig::Strategy::kSequential:
-      return ExecuteSequential2PC(ctx);
+      result = ExecuteSequential2PC(ctx);
+      break;
     case TwoPCConfig::Strategy::kParallel:
-      return ExecuteParallel2PC(ctx);
+      result = ExecuteParallel2PC(ctx);
+      break;
     case TwoPCConfig::Strategy::kPipelined:
-      return ExecutePipelined2PC(ctx);
+      result = ExecutePipelined2PC(ctx);
+      break;
     case TwoPCConfig::Strategy::kBatched:
-      return ExecuteBatched2PC(ctx);
+      result = ExecuteBatched2PC(ctx);
+      break;
     case TwoPCConfig::Strategy::kHybrid:
       // Auto-select based on workload characteristics
       if (write_set.size() > 10) {
-        return ExecuteBatched2PC(ctx);  // Large writes -> batch
+        result = ExecuteBatched2PC(ctx);  // Large writes -> batch
       } else if (stats_.current_throughput.load() > 10000) {
-        return ExecutePipelined2PC(ctx);  // High throughput -> pipeline
+        result = ExecutePipelined2PC(ctx);  // High throughput -> pipeline
       } else {
-        return ExecuteParallel2PC(ctx);  // Default -> parallel
+        result = ExecuteParallel2PC(ctx);  // Default -> parallel
       }
+      break;
     default:
-      return ExecuteParallel2PC(ctx);
+      result = ExecuteParallel2PC(ctx);
   }
+
+  // Record final metrics
+  auto end_time = std::chrono::steady_clock::now();
+  auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      end_time - ctx->start_time).count();
+  if (result.ok()) {
+    TXN_METRICS_COMMIT(txn_id, latency_us);
+  } else {
+    TXN_METRICS_ABORT(txn_id, latency_us, result.ToString());
+  }
+
+  // Unregister transaction from timeout manager
+  if (timeout_manager_) {
+    timeout_guard.Dismiss();
+    timeout_manager_->UnregisterTransaction(txn_id);
+  }
+
+  return result;
 }
 
 void Optimized2PCEngine::Execute2PCAsync(
     TxnID txn_id,
-    const std::vector<CedarKey>& read_set,
-    const std::vector<CedarKey>& write_set,
+    const std::vector<::cedar::CedarKey>& read_set,
+    const std::vector<::cedar::CedarKey>& write_set,
     Timestamp commit_ts,
     std::function<void(Status)> callback) {
   
@@ -154,80 +256,106 @@ void Optimized2PCEngine::Execute2PCAsync(
       txn_id, read_set, write_set, commit_ts);
   ctx->callback = callback;
   
-  // Submit to worker thread pool
-  std::thread([this, ctx]() {
-    auto status = Execute2PC(ctx->txn_id, ctx->read_set, 
-                             ctx->write_set, ctx->commit_ts);
-    if (ctx->callback) {
-      ctx->callback(status);
-    }
-  }).detach();
+  // Submit to internal task queue (processed by worker_threads_)
+  {
+    std::lock_guard<std::mutex> lock(task_mutex_);
+    task_queue_.push([this, ctx]() {
+      auto status = Execute2PC(ctx->txn_id, ctx->read_set,
+                               ctx->write_set, ctx->commit_ts);
+      if (ctx->callback) {
+        ctx->callback(status);
+      }
+    });
+  }
+  task_cv_.notify_one();
 }
 
 std::vector<Status> Optimized2PCEngine::Execute2PCBatch(
-    const std::vector<std::tuple<TxnID, std::vector<CedarKey>,
-                                 std::vector<CedarKey>, Timestamp>>& transactions) {
-  
-  std::vector<Status> results;
-  results.reserve(transactions.size());
-  
-  // Execute in parallel using thread pool
-  std::vector<std::future<Status>> futures;
-  futures.reserve(transactions.size());
-  
+    const std::vector<std::tuple<TxnID, std::vector<::cedar::CedarKey>,
+                                 std::vector<::cedar::CedarKey>, Timestamp>>& transactions) {
+  if (transactions.empty()) {
+    return {};
+  }
+
+  // 使用 shared_ptr 包装同步状态，避免 task_queue_.push 异常时栈变量被销毁导致 UAF
+  struct BatchSync {
+    std::vector<Status> results;
+    std::atomic<size_t> completed{0};
+    std::mutex done_mutex;
+    std::condition_variable done_cv;
+  };
+  auto sync = std::make_shared<BatchSync>();
+  sync->results.resize(transactions.size());
+
+  // 复制事务数据到 lambda 中，避免捕获 transactions 引用
+  std::vector<std::tuple<TxnID, std::vector<::cedar::CedarKey>,
+                         std::vector<::cedar::CedarKey>, Timestamp>> txn_copies;
+  txn_copies.reserve(transactions.size());
   for (const auto& txn : transactions) {
-    TxnID txn_id = std::get<0>(txn);
-    const auto& read_set = std::get<1>(txn);
-    const auto& write_set = std::get<2>(txn);
-    Timestamp commit_ts = std::get<3>(txn);
-    futures.push_back(std::async(std::launch::async, [this, txn_id, &read_set, 
-                                                      &write_set, commit_ts]() {
-      return Execute2PC(txn_id, read_set, write_set, commit_ts);
-    }));
+    txn_copies.push_back(txn);
   }
-  
-  // Collect results
-  for (auto& f : futures) {
-    results.push_back(f.get());
+
+  // Dispatch to internal worker thread pool to avoid std::async thread explosion
+  for (size_t i = 0; i < txn_copies.size(); ++i) {
+    auto txn = std::move(txn_copies[i]);
+    {
+      std::lock_guard<std::mutex> lock(task_mutex_);
+      task_queue_.push([this, sync, i, txn = std::move(txn)]() mutable {
+        sync->results[i] = Execute2PC(
+            std::get<0>(txn), std::get<1>(txn),
+            std::get<2>(txn), std::get<3>(txn));
+        size_t c = sync->completed.fetch_add(1) + 1;
+        if (c >= sync->results.size()) {
+          std::lock_guard<std::mutex> lock(sync->done_mutex);
+          sync->done_cv.notify_one();
+        }
+      });
+    }
+    task_cv_.notify_one();
   }
-  
-  return results;
+
+  // Wait for all tasks to complete
+  std::unique_lock<std::mutex> lock(sync->done_mutex);
+  sync->done_cv.wait(lock, [&sync]() {
+    return sync->completed.load() >= sync->results.size();
+  });
+
+  return std::move(sync->results);
 }
 
 Status Optimized2PCEngine::SubmitPipelined(
     TxnID txn_id,
-    const std::vector<CedarKey>& read_set,
-    const std::vector<CedarKey>& write_set,
+    const std::vector<::cedar::CedarKey>& read_set,
+    const std::vector<::cedar::CedarKey>& write_set,
     Timestamp commit_ts) {
-  
+
   auto ctx = std::make_shared<TransactionContext>(
       txn_id, read_set, write_set, commit_ts);
-  
+  auto done_promise = std::make_shared<std::promise<void>>();
+  ctx->done_promise = done_promise;
+  auto future = done_promise->get_future();
+
   // Add to pipeline queue
   {
     std::lock_guard<std::mutex> lock(pipeline_mutex_);
     pipeline_queue_.push(ctx);
   }
   pipeline_cv_.notify_one();
-  
-  // Wait for completion (synchronous for now)
-  while (ctx->state.load() != TransactionContext::State::kCommitted &&
-         ctx->state.load() != TransactionContext::State::kAborted) {
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
-    
-    // Check timeout
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - ctx->start_time).count();
-    if (elapsed > config_.prepare_timeout_ms + config_.commit_timeout_ms) {
-      ctx->state.store(TransactionContext::State::kAborted);
-      stats_.timeout_transactions++;
-      return Status::IOError("Transaction timeout");
+
+  // Wait for completion with timeout
+  auto timeout = std::chrono::milliseconds(
+      config_.prepare_timeout_ms + config_.commit_timeout_ms);
+  if (future.wait_for(timeout) == std::future_status::timeout) {
+    ctx->state.store(TransactionContext::State::kAborted);
+    if (state_manager_) {
+      state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
     }
+    stats_.timeout_transactions++;
+    return Status::IOError("Transaction timeout");
   }
-  
-  return ctx->state.load() == TransactionContext::State::kCommitted 
-         ? Status::OK() 
+
+  return ctx->state.load() == TransactionContext::State::kCommitted
+         ? Status::OK()
          : Status::IOError("Transaction aborted");
 }
 
@@ -242,7 +370,8 @@ Status Optimized2PCEngine::ExecuteSequential2PC(
   
   // Phase 1: Prepare (sequential RPC)
   ctx->state.store(TransactionContext::State::kPreparing);
-  
+  auto prepare_start = std::chrono::steady_clock::now();
+
   for (auto& client : participants) {
     // Real Prepare RPC call
     auto result = client->Prepare(
@@ -250,130 +379,207 @@ Status Optimized2PCEngine::ExecuteSequential2PC(
         ctx->read_set,
         ctx->write_set,
         ctx->commit_ts);
-    
+
     if (result.ok() && result.ValueOrDie()) {
       ctx->prepare_acks.fetch_add(1);
     } else {
       ctx->prepare_nacks.fetch_add(1);
     }
   }
-  
-  if (ctx->prepare_acks.load() < static_cast<int>(participants.size())) {
+
+  auto prepare_end = std::chrono::steady_clock::now();
+  auto prepare_latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      prepare_end - prepare_start).count();
+  bool prepare_success = ctx->prepare_acks.load() >= static_cast<int>(participants.size());
+  if (auto* metrics = GetGlobalTransactionMetrics()) {
+    metrics->RecordPreparePhase(ctx->txn_id, prepare_latency_us, prepare_success);
+  }
+
+  if (!prepare_success) {
     ctx->state.store(TransactionContext::State::kAborting);
-    
+
     // Abort participants that prepared
     for (auto& client : participants) {
-      client->Abort(ctx->txn_id);
+      auto abort_status = client->Abort(ctx->txn_id);
+      if (abort_status.ok()) {
+        ctx->abort_acks.fetch_add(1);
+      }
     }
-    
+
     stats_.aborted_transactions++;
     return Status::IOError("Prepare phase failed");
   }
-  
+
   ctx->state.store(TransactionContext::State::kPrepared);
   ctx->prepare_complete_time = std::chrono::steady_clock::now();
-  
+
   // Phase 2: Commit (sequential RPC)
   ctx->state.store(TransactionContext::State::kCommitting);
-  
+  auto commit_start = std::chrono::steady_clock::now();
+
   for (auto& client : participants) {
     // Real Commit RPC call
     auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
-    
+
     if (status.ok()) {
       ctx->commit_acks.fetch_add(1);
     }
   }
-  
-  if (ctx->commit_acks.load() == static_cast<int>(participants.size())) {
+
+  auto commit_end = std::chrono::steady_clock::now();
+  auto commit_latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      commit_end - commit_start).count();
+  bool commit_success = ctx->commit_acks.load() == static_cast<int>(participants.size());
+  if (auto* metrics = GetGlobalTransactionMetrics()) {
+    metrics->RecordCommitPhase(ctx->txn_id, commit_latency_us, commit_success);
+  }
+
+  if (commit_success) {
     ctx->state.store(TransactionContext::State::kCommitted);
     stats_.committed_transactions++;
-    
+
     auto end_time = std::chrono::steady_clock::now();
     auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
         end_time - ctx->start_time).count();
     stats_.RecordLatency(latency_us);
-    
+
     return Status::OK();
   } else {
-    ctx->state.store(TransactionContext::State::kAborted);
-    stats_.aborted_transactions++;
-    return Status::IOError("Commit phase failed");
+    // Once commit phase has started, we cannot abort. Some participants
+    // may have already committed. Leave state as kCommitting for recovery.
+    if (recovery_manager_) {
+      recovery_manager_->StartRecovery(ctx->txn_id);
+    }
+    return Status::IOError("Commit phase failed - recovery required");
   }
 }
 
 Status Optimized2PCEngine::ExecuteParallel2PC(
     const std::shared_ptr<TransactionContext>& ctx) {
-  
+
   auto participants = GetParticipants(ctx->write_set);
-  
+
   // Phase 1: Prepare (parallel RPC)
   ctx->state.store(TransactionContext::State::kPreparing);
-  
+  auto prepare_start = std::chrono::steady_clock::now();
+
+  // Phase 1: Prepare (parallel RPC via explicit threads)
   std::vector<std::future<bool>> prepare_futures;
+  std::vector<std::thread> prepare_threads;
   for (auto& client : participants) {
-    prepare_futures.push_back(std::async(std::launch::async, [&client, &ctx]() {
-      // Real Prepare RPC call
-      auto result = client->Prepare(
-          ctx->txn_id,
-          ctx->read_set,
-          ctx->write_set,
-          ctx->commit_ts);
-      
-      if (result.ok() && result.ValueOrDie()) {
-        ctx->prepare_acks.fetch_add(1);
-        return true;
-      } else {
+    auto p = std::make_shared<std::promise<bool>>();
+    auto f = p->get_future();
+    prepare_threads.emplace_back([client, ctx, p]() {
+      try {
+        auto result = client->Prepare(
+            ctx->txn_id,
+            ctx->read_set,
+            ctx->write_set,
+            ctx->commit_ts);
+        if (result.ok() && result.ValueOrDie()) {
+          ctx->prepare_acks.fetch_add(1);
+          p->set_value(true);
+        } else {
+          ctx->prepare_nacks.fetch_add(1);
+          p->set_value(false);
+        }
+      } catch (...) {
+        std::cerr << "[2PC] Prepare RPC exception for txn_id=" << ctx->txn_id << std::endl;
         ctx->prepare_nacks.fetch_add(1);
-        return false;
+        p->set_value(false);
       }
-    }));
+    });
+    prepare_futures.push_back(std::move(f));
   }
-  
-  // Wait for all prepares with timeout
+
   bool all_prepared = WaitForPrepareQuorum(ctx, prepare_futures);
-  
+
+  // Ensure all prepare threads complete before proceeding
+  for (auto& t : prepare_threads) {
+    if (t.joinable()) t.join();
+  }
+
+  auto prepare_end = std::chrono::steady_clock::now();
+  auto prepare_latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      prepare_end - prepare_start).count();
+  if (auto* metrics = GetGlobalTransactionMetrics()) {
+    metrics->RecordPreparePhase(ctx->txn_id, prepare_latency_us, all_prepared);
+  }
+
   if (!all_prepared) {
     ctx->state.store(TransactionContext::State::kAborting);
-    
+
     // Send Abort to participants that prepared successfully
+    std::vector<std::thread> abort_threads;
     for (auto& client : participants) {
-      std::thread([&client, &ctx]() {
-        client->Abort(ctx->txn_id);
-      }).detach();
+      abort_threads.emplace_back([client, ctx]() {
+        try {
+          auto abort_status = client->Abort(ctx->txn_id);
+          if (abort_status.ok()) {
+            ctx->abort_acks.fetch_add(1);
+          }
+        } catch (...) {
+          std::cerr << "[2PC] Abort RPC exception for txn_id=" << ctx->txn_id << std::endl;
+          // Abort 异常不应导致线程崩溃
+        }
+      });
     }
-    
+    for (auto& t : abort_threads) {
+      if (t.joinable()) t.join();
+    }
+
     stats_.aborted_transactions++;
     return Status::IOError("Prepare phase failed or timed out");
   }
-  
+
   ctx->state.store(TransactionContext::State::kPrepared);
   ctx->prepare_complete_time = std::chrono::steady_clock::now();
-  
+
   if (state_manager_) {
     state_manager_->UpdateState(ctx->txn_id, TxnState::kPrepared);
   }
-  
+
   // Phase 2: Commit (parallel RPC)
   ctx->state.store(TransactionContext::State::kCommitting);
-  
+  auto commit_start = std::chrono::steady_clock::now();
+
+  // Phase 2: Commit (parallel RPC via explicit threads)
   std::vector<std::future<bool>> commit_futures;
+  std::vector<std::thread> commit_threads;
   for (auto& client : participants) {
-    commit_futures.push_back(std::async(std::launch::async, [&client, &ctx]() {
-      // Real Commit RPC call
-      auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
-      
-      if (status.ok()) {
-        ctx->commit_acks.fetch_add(1);
-        return true;
-      } else {
-        return false;
+    auto p = std::make_shared<std::promise<bool>>();
+    auto f = p->get_future();
+    commit_threads.emplace_back([client, ctx, p]() {
+      try {
+        auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
+        if (status.ok()) {
+          ctx->commit_acks.fetch_add(1);
+          p->set_value(true);
+        } else {
+          p->set_value(false);
+        }
+      } catch (...) {
+        std::cerr << "[2PC] Commit RPC exception for txn_id=" << ctx->txn_id << std::endl;
+        p->set_value(false);
       }
-    }));
+    });
+    commit_futures.push_back(std::move(f));
   }
-  
+
   bool all_committed = WaitForCommitQuorum(ctx, commit_futures);
-  
+
+  // Ensure all commit threads complete before returning
+  for (auto& t : commit_threads) {
+    if (t.joinable()) t.join();
+  }
+
+  auto commit_end = std::chrono::steady_clock::now();
+  auto commit_latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      commit_end - commit_start).count();
+  if (auto* metrics = GetGlobalTransactionMetrics()) {
+    metrics->RecordCommitPhase(ctx->txn_id, commit_latency_us, all_committed);
+  }
+
   if (all_committed) {
     ctx->state.store(TransactionContext::State::kCommitted);
     if (state_manager_) {
@@ -389,9 +595,15 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
     
     return Status::OK();
   } else {
-    ctx->state.store(TransactionContext::State::kAborted);
-    stats_.aborted_transactions++;
-    return Status::IOError("Commit phase failed or timed out");
+    // Once commit phase has started, we cannot abort. Some participants
+    // may have already committed. Leave state as kCommitting for recovery.
+    if (state_manager_) {
+      state_manager_->UpdateState(ctx->txn_id, TxnState::kCommitting);
+    }
+    if (recovery_manager_) {
+      recovery_manager_->StartRecovery(ctx->txn_id);
+    }
+    return Status::IOError("Commit phase failed - recovery required");
   }
 }
 
@@ -408,30 +620,36 @@ Status Optimized2PCEngine::ExecuteBatched2PC(
   {
     std::lock_guard<std::mutex> lock(batch_mutex_);
     batch_buffer_.push_back(ctx);
-    
+
     // If batch is full or timeout, process it
     if (batch_buffer_.size() >= static_cast<size_t>(config_.batch_size)) {
       batch_cv_.notify_one();
     }
   }
-  
+
   // Wait for completion
+  // NOTE: Batched mode currently has no dedicated worker thread; the polling
+  // loop below will wait until the batch is processed by a worker thread or
+  // until timeout. Using 1ms sleep to avoid busy-wait CPU burn.
   while (ctx->state.load() != TransactionContext::State::kCommitted &&
          ctx->state.load() != TransactionContext::State::kAborted) {
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
-    
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - ctx->start_time).count();
     if (elapsed > config_.prepare_timeout_ms + config_.commit_timeout_ms) {
       ctx->state.store(TransactionContext::State::kAborted);
+      if (state_manager_) {
+        state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
+      }
       stats_.timeout_transactions++;
       return Status::IOError("Transaction timeout");
     }
   }
-  
-  return ctx->state.load() == TransactionContext::State::kCommitted 
-         ? Status::OK() 
+
+  return ctx->state.load() == TransactionContext::State::kCommitted
+         ? Status::OK()
          : Status::IOError("Transaction aborted");
 }
 
@@ -474,37 +692,72 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
         
         if (participants.empty()) {
           ctx->state.store(TransactionContext::State::kAborted);
+          if (state_manager_) {
+            state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
+          }
+          if (ctx->done_promise) {
+            ctx->done_promise->set_value();
+          }
           continue;
         }
         
         // Phase 1: Prepare all in parallel
         ctx->state.store(TransactionContext::State::kPreparing);
+        std::cerr << "[Optimized2PCEngine] PipelineWorkerLoop: Creating "
+                  << participants.size() << " prepare threads (thread churn overhead)"
+                  << std::endl;
         std::vector<std::future<bool>> prepare_results;
+        std::vector<std::thread> prepare_threads;
         for (auto& client : participants) {
-          prepare_results.push_back(std::async(std::launch::async, [&client, &ctx]() {
-            auto result = client->Prepare(ctx->txn_id, ctx->read_set, ctx->write_set, ctx->commit_ts);
-            if (result.ok() && result.ValueOrDie()) {
-              ctx->prepare_acks.fetch_add(1);
-              return true;
-            } else {
+          auto p = std::make_shared<std::promise<bool>>();
+          auto f = p->get_future();
+          prepare_threads.emplace_back([client, ctx, p]() {
+            try {
+              auto result = client->Prepare(ctx->txn_id, ctx->read_set, ctx->write_set, ctx->commit_ts);
+              if (result.ok() && result.ValueOrDie()) {
+                ctx->prepare_acks.fetch_add(1);
+                p->set_value(true);
+              } else {
+                ctx->prepare_nacks.fetch_add(1);
+                p->set_value(false);
+              }
+            } catch (...) {
+              std::cerr << "[2PC] Prepare RPC exception for txn_id=" << ctx->txn_id << std::endl;
               ctx->prepare_nacks.fetch_add(1);
-              return false;
+              p->set_value(false);
             }
-          }));
+          });
+          prepare_results.push_back(std::move(f));
         }
         
         for (auto& f : prepare_results) {
           f.get();
+        }
+        for (auto& t : prepare_threads) {
+          if (t.joinable()) t.join();
         }
         
         bool all_prepared = (ctx->prepare_acks.load() == static_cast<int>(participants.size()));
         if (!all_prepared) {
           ctx->state.store(TransactionContext::State::kAborting);
           for (auto& client : participants) {
-            client->Abort(ctx->txn_id);
+            try {
+              auto abort_status = client->Abort(ctx->txn_id);
+              if (abort_status.ok()) {
+                ctx->abort_acks.fetch_add(1);
+              }
+            } catch (...) {
+              std::cerr << "[2PC] Abort RPC exception for txn_id=" << ctx->txn_id << std::endl;
+            }
           }
           ctx->state.store(TransactionContext::State::kAborted);
+          if (state_manager_) {
+            state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
+          }
           stats_.aborted_transactions++;
+          if (ctx->done_promise) {
+            ctx->done_promise->set_value();
+          }
           continue;
         }
         
@@ -516,19 +769,32 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
         // Phase 2: Commit all in parallel
         ctx->state.store(TransactionContext::State::kCommitting);
         std::vector<std::future<bool>> commit_results;
+        std::vector<std::thread> commit_threads;
         for (auto& client : participants) {
-          commit_results.push_back(std::async(std::launch::async, [&client, &ctx]() {
-            auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
-            if (status.ok()) {
-              ctx->commit_acks.fetch_add(1);
-              return true;
+          auto p = std::make_shared<std::promise<bool>>();
+          auto f = p->get_future();
+          commit_threads.emplace_back([client, ctx, p]() {
+            try {
+              auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
+              if (status.ok()) {
+                ctx->commit_acks.fetch_add(1);
+                p->set_value(true);
+              } else {
+                p->set_value(false);
+              }
+            } catch (...) {
+              std::cerr << "[2PC] Commit RPC exception for txn_id=" << ctx->txn_id << std::endl;
+              p->set_value(false);
             }
-            return false;
-          }));
+          });
+          commit_results.push_back(std::move(f));
         }
         
         for (auto& f : commit_results) {
           f.get();
+        }
+        for (auto& t : commit_threads) {
+          if (t.joinable()) t.join();
         }
         
         bool all_committed = (ctx->commit_acks.load() == static_cast<int>(participants.size()));
@@ -539,14 +805,25 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
           }
           stats_.committed_transactions++;
           stats_.total_transactions++;
-          
+
           auto end_time = std::chrono::steady_clock::now();
           auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
               end_time - ctx->start_time).count();
           stats_.RecordLatency(latency_us);
         } else {
-          ctx->state.store(TransactionContext::State::kAborted);
-          stats_.aborted_transactions++;
+          // Once commit phase has started, we cannot abort. Some participants
+          // may have already committed. Leave state as kCommitting for recovery.
+          if (state_manager_) {
+            state_manager_->UpdateState(ctx->txn_id, TxnState::kCommitting);
+          }
+          if (recovery_manager_) {
+            recovery_manager_->StartRecovery(ctx->txn_id);
+          }
+        }
+
+        // Notify synchronous waiter (e.g., SubmitPipelined)
+        if (ctx->done_promise) {
+          ctx->done_promise->set_value();
         }
       }
     }
@@ -639,49 +916,146 @@ void Optimized2PCEngine::ResetStats() {
 // =============================================================================
 
 std::vector<std::shared_ptr<StorageClient>> Optimized2PCEngine::GetParticipants(
-    const std::vector<CedarKey>& keys) {
-  // Simple hash-based participant selection
+    const std::vector<::cedar::CedarKey>& keys) {
   std::vector<std::shared_ptr<StorageClient>> participants;
   
-  if (clients_.empty()) {
-    return participants;
+  {
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    if (clients_.empty()) {
+      return participants;
+    }
+    
+    if (keys.empty()) {
+      // Fallback: return all clients for operations without explicit keys
+      participants = clients_;
+      return participants;
+    }
+    
+    // Hash-based participant selection using part_id
+    std::unordered_set<std::shared_ptr<StorageClient>> selected;
+    for (const auto& key : keys) {
+      PartitionID pid = key.part_id();
+      if (pid == 0) {
+        // Default partition: use entity_id hash
+        pid = static_cast<PartitionID>(key.entity_id() % std::max<size_t>(1, clients_.size()));
+      }
+      size_t client_idx = pid % clients_.size();
+      selected.insert(clients_[client_idx]);
+    }
+    
+    participants.assign(selected.begin(), selected.end());
   }
   
-  // For simplicity, use all clients
-  // In production, select based on key partitioning
-  participants = clients_;
-  
   return participants;
+}
+
+std::vector<PartitionID> Optimized2PCEngine::GetPartitionIDs(
+    const std::vector<::cedar::CedarKey>& keys) {
+  std::vector<PartitionID> pids;
+  
+  {
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    if (clients_.empty()) {
+      return pids;
+    }
+    
+    if (keys.empty()) {
+      // Fallback: return indices of all clients as partition IDs
+      for (size_t i = 0; i < clients_.size(); ++i) {
+        pids.push_back(static_cast<PartitionID>(i));
+      }
+      return pids;
+    }
+    
+    std::unordered_set<PartitionID> selected;
+    for (const auto& key : keys) {
+      PartitionID pid = key.part_id();
+      if (pid == 0) {
+        // Default partition: use entity_id hash consistent with GetParticipants
+        pid = static_cast<PartitionID>(key.entity_id() % std::max<size_t>(1, clients_.size()));
+      }
+      selected.insert(pid);
+    }
+    
+    pids.assign(selected.begin(), selected.end());
+    std::sort(pids.begin(), pids.end());
+  }
+  
+  return pids;
+}
+
+void Optimized2PCEngine::AddClient(std::shared_ptr<StorageClient> client) {
+  if (!client) return;
+  std::lock_guard<std::mutex> lock(clients_mutex_);
+  // Avoid duplicates by checking server address
+  for (const auto& existing : clients_) {
+    if (existing && existing->IsConnected() && client->IsConnected()) {
+      // Note: StorageClient doesn't expose address directly.
+      // In practice, caller should ensure uniqueness.
+      // For now, rely on GraphServiceRouter to avoid duplicate calls.
+    }
+  }
+  clients_.push_back(std::move(client));
+}
+
+void Optimized2PCEngine::RemoveClient(const std::string& server_address) {
+  std::lock_guard<std::mutex> lock(clients_mutex_);
+  clients_.erase(
+      std::remove_if(clients_.begin(), clients_.end(),
+                     [&server_address](const std::shared_ptr<StorageClient>& client) {
+                       return client && client->GetServerAddress() == server_address;
+                     }),
+      clients_.end());
+}
+
+size_t Optimized2PCEngine::GetClientCount() const {
+  std::lock_guard<std::mutex> lock(clients_mutex_);
+  return clients_.size();
 }
 
 bool Optimized2PCEngine::WaitForPrepareQuorum(
     const std::shared_ptr<TransactionContext>& ctx,
     std::vector<std::future<bool>>& futures) {
-  
+
   int timeout_ms = config_.prepare_timeout_ms;
   auto start = std::chrono::steady_clock::now();
-  
+
+  int success_count = 0;
+  int failure_count = 0;
+  const int total = static_cast<int>(futures.size());
+  // In 2PC, ALL participants must prepare successfully for atomicity.
+  // Majority quorum is incorrect and leaves unprepared participants in inconsistent state.
+  const int required_successes = total;
+
   for (auto& f : futures) {
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
-    
+
     if (elapsed >= timeout_ms) {
       return false;  // Timeout
     }
-    
+
     auto remaining = timeout_ms - elapsed;
     auto status = f.wait_for(std::chrono::milliseconds(remaining));
-    
+
     if (status != std::future_status::ready) {
       return false;  // Timeout
     }
-    
-    if (!f.get()) {
-      return false;  // Prepare failed
+
+    if (f.get()) {
+      success_count++;
+      if (success_count >= required_successes) {
+        return true;  // All participants prepared successfully
+      }
+    } else {
+      failure_count++;
+      if (failure_count > 0) {
+        return false;  // Any failure means Prepare phase cannot succeed
+      }
     }
   }
-  
-  return true;
+
+  return success_count >= required_successes;
 }
 
 bool Optimized2PCEngine::WaitForCommitQuorum(
