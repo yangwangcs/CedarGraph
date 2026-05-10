@@ -767,31 +767,33 @@ MetadataService::~MetadataService() { Shutdown(); }
 
 Status MetadataService::Initialize(const MetaServiceConfig& config) {
     config_ = config;
-    
-    // Initialize Raft with braft (production consensus)
-    raft_node_ = std::make_unique<BRaftNode>();
-    BRaftNode::Options options;
-    options.node_id = config.node_id;
-    options.listen_address = config.advertise_address.empty() 
-        ? config.listen_address : config.advertise_address;
-    options.data_path = config.data_dir;
-    options.election_timeout_ms = static_cast<int>(config.election_timeout_ms);
-    
-    // Add self and peers to initial configuration
-    options.initial_peers.push_back(options.listen_address);
-    for (const auto& peer : config.peers) {
-        if (peer.first != config.node_id) {
-            options.initial_peers.push_back(peer.second);
+
+    if (!config_.test_mode) {
+        // Initialize Raft with braft (production consensus)
+        raft_node_ = std::make_unique<BRaftNode>();
+        BRaftNode::Options options;
+        options.node_id = config.node_id;
+        options.listen_address = config.advertise_address.empty()
+            ? config.listen_address : config.advertise_address;
+        options.data_path = config.data_dir;
+        options.election_timeout_ms = static_cast<int>(config.election_timeout_ms);
+
+        // Add self and peers to initial configuration
+        options.initial_peers.push_back(options.listen_address);
+        for (const auto& peer : config.peers) {
+            if (peer.first != config.node_id) {
+                options.initial_peers.push_back(peer.second);
+            }
         }
+
+        auto status = raft_node_->Init(options, this);
+        CEDAR_RETURN_IF_ERROR(status);
     }
-    
-    auto status = raft_node_->Init(options, this);
-    CEDAR_RETURN_IF_ERROR(status);
-    
+
     // Start heartbeat check thread
     running_ = true;
     heartbeat_thread_ = std::thread(&MetadataService::HeartbeatCheckLoop, this);
-    
+
     initialized_ = true;
     return Status::OK();
 }
@@ -809,6 +811,10 @@ Status MetadataService::Shutdown() {
 }
 
 Status MetadataService::CreateSpace(const SpaceDef& space) {
+    if (config_.test_mode) {
+        state_machine_.ApplyCreateSpace(space);
+        return Status::OK();
+    }
     RaftCommand cmd;
     cmd.type = RaftCommandType::kCreateSpace;
     cmd.payload = space.Serialize();
@@ -816,6 +822,10 @@ Status MetadataService::CreateSpace(const SpaceDef& space) {
 }
 
 Status MetadataService::DropSpace(const std::string& space_name) {
+    if (config_.test_mode) {
+        state_machine_.ApplyDropSpace(space_name);
+        return Status::OK();
+    }
     RaftCommand cmd;
     cmd.type = RaftCommandType::kDropSpace;
     cmd.payload = space_name;
@@ -850,9 +860,13 @@ StatusOr<SpacePartitionMap> MetadataService::GetSpacePartitionMap(const std::str
     return state_machine_.GetSpacePartitionMap(space_name);
 }
 
-Status MetadataService::UpdatePartitionLeader(const std::string& space_name, 
-                                               PartitionID partition_id, 
+Status MetadataService::UpdatePartitionLeader(const std::string& space_name,
+                                               PartitionID partition_id,
                                                NodeID new_leader) {
+    if (config_.test_mode) {
+        state_machine_.ApplyUpdatePartitionLeader(space_name, partition_id, new_leader);
+        return Status::OK();
+    }
     RaftCommand cmd;
     cmd.type = RaftCommandType::kUpdateAssignment;
     std::ostringstream oss;
@@ -862,6 +876,10 @@ Status MetadataService::UpdatePartitionLeader(const std::string& space_name,
 }
 
 Status MetadataService::RegisterNode(const NodeInfo& info) {
+    if (config_.test_mode) {
+        state_machine_.ApplyRegisterNode(info);
+        return Status::OK();
+    }
     RaftCommand cmd;
     cmd.type = RaftCommandType::kUpdateNode;
     cmd.payload = info.Serialize();
@@ -869,6 +887,10 @@ Status MetadataService::RegisterNode(const NodeInfo& info) {
 }
 
 Status MetadataService::Heartbeat(const NodeStatus& status) {
+    if (config_.test_mode) {
+        state_machine_.ApplyUpdateNodeStatus(status);
+        return Status::OK();
+    }
     if (!raft_node_) {
         return Status::IOError("Raft node not initialized");
     }
@@ -905,10 +927,12 @@ std::vector<LabelSchema> MetadataService::GetSchema(const std::string& space_nam
 }
 
 bool MetadataService::IsLeader() const {
+    if (config_.test_mode) return true;
     return raft_node_ && raft_node_->IsLeader();
 }
 
 NodeID MetadataService::GetLeader() const {
+    if (config_.test_mode) return config_.node_id;
     if (!raft_node_) return kInvalidNodeID;
     auto leader = raft_node_->GetLeaderId();
     return leader.value_or(kInvalidNodeID);

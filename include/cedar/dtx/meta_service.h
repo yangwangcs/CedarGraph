@@ -246,6 +246,9 @@ struct MetaServiceConfig {
     // 心跳检测
     uint64_t heartbeat_timeout_sec{10};
     uint64_t heartbeat_check_interval_sec{5};
+
+    // 测试模式：跳过 braft 初始化，直接操作状态机
+    bool test_mode{false};
 };
 
 // =============================================================================

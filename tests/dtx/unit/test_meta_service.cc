@@ -11,7 +11,8 @@ protected:
         config.node_id = 1;
         config.listen_address = "127.0.0.1:2379";
         config.advertise_address = "127.0.0.1:2379";
-        
+        config.test_mode = true;
+
         auto status = meta_service_.Initialize(config);
         EXPECT_TRUE(status.ok()) << status.ToString();
     }
@@ -123,6 +124,7 @@ TEST_F(MetaServiceTest, SchemaSurvivesSnapshotRoundtrip) {
     config.node_id = 2;
     config.listen_address = "127.0.0.1:2380";
     config.advertise_address = "127.0.0.1:2380";
+    config.test_mode = true;
     EXPECT_TRUE(restored.Initialize(config).ok());
     EXPECT_TRUE(restored.DeserializeState(snapshot_data));
 
