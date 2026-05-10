@@ -295,7 +295,7 @@ public:
     // ===== 节点管理 =====
     
     Status RegisterNode(const NodeInfo& info);
-    Status Heartbeat(const NodeStatus& status);
+    virtual Status Heartbeat(const NodeStatus& status);
     StatusOr<NodeInfo> GetNode(NodeID node_id) const;
     std::vector<NodeInfo> GetAliveNodes() const;
     std::vector<NodeInfo> GetAllNodes() const;

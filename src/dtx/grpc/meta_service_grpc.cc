@@ -136,7 +136,18 @@ grpc::Status MetaServiceGrpcImpl::Heartbeat(grpc::ServerContext* context,
     NodeStatus status;
     status.node_id = request->status().node_id();
     status.cpu_usage_percent = request->status().cpu_usage_percent();
-    status.timestamp = std::chrono::system_clock::now();
+    status.memory_usage_percent = request->status().memory_usage_percent();
+    status.disk_usage_percent = request->status().disk_usage_percent();
+    status.qps = request->status().qps();
+    status.latency_ms = request->status().latency_ms();
+    for (int i = 0; i < request->status().leader_partitions_size(); ++i) {
+        status.leader_partitions.push_back(request->status().leader_partitions(i));
+    }
+    for (int i = 0; i < request->status().follower_partitions_size(); ++i) {
+        status.follower_partitions.push_back(request->status().follower_partitions(i));
+    }
+    status.timestamp = std::chrono::system_clock::from_time_t(
+        static_cast<time_t>(request->status().timestamp_unix()));
     auto s = meta_service_->Heartbeat(status);
     response->set_success(s.ok());
     if (!s.ok()) response->set_error_msg(s.ToString());

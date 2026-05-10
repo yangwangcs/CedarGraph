@@ -68,6 +68,10 @@ add_executable(test_meta_service_grpc_client dtx/unit/test_meta_service_grpc_cli
 target_link_libraries(test_meta_service_grpc_client ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_meta_service_grpc_client)
 
+add_executable(test_meta_service_grpc dtx/test_meta_service_grpc.cc)
+target_link_libraries(test_meta_service_grpc ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_meta_service_grpc)
+
 # add_cedar_test(test_sst_capacity_analysis)
 # add_cedar_test(test_auto_compaction_file_based)
 # add_cedar_test(test_sst_structure_analysis)
