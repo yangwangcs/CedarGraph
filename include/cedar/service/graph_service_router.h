@@ -25,6 +25,7 @@
 #include "query/query_cache.h"
 #include "cedar/dtx/partition.h"
 #include "cedar/dtx/raft/grpc_tls.h"
+#include "cedar/dtx/meta_service_grpc.h"
 #include "cedar/dtx/optimized_2pc_engine.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/dtx/transaction_state.h"
@@ -216,8 +217,8 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   // 从 MetaD 获取节点地址（带本地缓存）
   StatusOr<std::string> GetNodeAddress(uint32_t node_id);
 
-  // MetaD 客户端
-  std::unique_ptr<cedar::meta::MetaService::Stub> meta_stub_;
+  // MetaD 客户端 (带 failover)
+  std::unique_ptr<cedar::dtx::MetaServiceGrpcClient> meta_client_;
   
   // StorageD 客户端缓存
   std::shared_mutex stubs_mutex_;
@@ -256,7 +257,18 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
     std::atomic<uint64_t> failed_queries{0};
     std::atomic<uint64_t> cached_plans{0};
     std::atomic<uint64_t> total_latency_us{0};
+    std::atomic<uint64_t> active_queries{0};
   } stats_;
+  
+  // Latency history for P99 calculation (circular buffer, protected by latency_mutex_)
+  static constexpr size_t kLatencyHistorySize = 10000;
+  mutable std::mutex latency_mutex_;
+  std::vector<uint64_t> latency_history_;
+  size_t latency_history_pos_ = 0;
+  
+  void RecordLatency(uint64_t latency_us);
+  uint64_t GetP99Latency() const;
+  uint64_t GetQPS() const;
   
   std::atomic<bool> running_{false};
   std::thread refresh_thread_;

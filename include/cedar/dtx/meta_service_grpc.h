@@ -151,6 +151,8 @@ public:
     
     StatusOr<NodeInfo> GetNode(NodeID node_id) override;
     
+    StatusOr<std::vector<NodeInfo>> GetAliveNodes();
+    
     Status RegisterNode(const NodeInfo& info) override;
     
     Status Heartbeat(const NodeStatus& status) override;

@@ -450,6 +450,45 @@ StatusOr<NodeInfo> MetaServiceGrpcClient::GetNode(NodeID node_id) {
     return info;
 }
 
+StatusOr<std::vector<NodeInfo>> MetaServiceGrpcClient::GetAliveNodes() {
+    auto stub = GetStub();
+    if (!stub) return Status::IOError("Not connected to MetaD");
+    
+    cedar::meta::GetAliveNodesRequest request;
+    cedar::meta::GetAliveNodesResponse response;
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+    
+    auto grpc_status = stub->GetAliveNodes(&context, request, &response);
+    if (!grpc_status.ok()) {
+        auto reconnect = TryReconnect();
+        if (!reconnect.ok()) {
+            return Status::IOError("MetaD RPC failed and reconnect failed: " + grpc_status.error_message());
+        }
+        stub = GetStub();
+        if (!stub) return Status::IOError("Not connected to MetaD after reconnect");
+        grpc::ClientContext context2;
+        context2.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+        grpc_status = stub->GetAliveNodes(&context2, request, &response);
+        if (!grpc_status.ok()) {
+            return Status::IOError("MetaD RPC failed: " + grpc_status.error_message());
+        }
+    }
+    if (!response.success()) {
+        return Status::IOError(response.error_msg());
+    }
+    
+    std::vector<NodeInfo> result;
+    for (const auto& proto_node : response.nodes()) {
+        NodeInfo node;
+        node.node_id = static_cast<NodeID>(proto_node.node_id());
+        node.address = proto_node.address();
+        node.state = NodeInfo::State::kOnline;
+        result.push_back(node);
+    }
+    return result;
+}
+
 Status MetaServiceGrpcClient::RegisterNode(const NodeInfo& info) {
     auto stub = GetStub();
     if (!stub) return Status::IOError("Not connected to MetaD");
