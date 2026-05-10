@@ -27,14 +27,17 @@ using namespace cedar::gcn;
 class StorageBackfillTest : public ::testing::Test {
  protected:
   CedarGraphStorage* storage_ = nullptr;
+  std::string test_dir_;
 
   void SetUp() override {
-    CedarGraphStorage::DestroyDB("/tmp/test_backfill", CedarOptions());
+    test_dir_ = "/tmp/test_backfill_" + std::to_string(getpid()) + "_" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    CedarGraphStorage::DestroyDB(test_dir_, CedarOptions());
 
     CedarOptions options;
     options.create_if_missing = true;
 
-    Status s = CedarGraphStorage::Open(options, "/tmp/test_backfill", &storage_);
+    Status s = CedarGraphStorage::Open(options, test_dir_, &storage_);
     ASSERT_TRUE(s.ok());
   }
 
@@ -43,7 +46,7 @@ class StorageBackfillTest : public ::testing::Test {
       delete storage_;
       storage_ = nullptr;
     }
-    CedarGraphStorage::DestroyDB("/tmp/test_backfill", CedarOptions());
+    CedarGraphStorage::DestroyDB(test_dir_, CedarOptions());
   }
 };
 
