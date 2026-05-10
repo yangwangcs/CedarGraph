@@ -139,6 +139,9 @@ message StreamQueryRequest {
     
     // 游标 ID (用于续传)
     string cursor_id = 4;
+
+    // 查询 ID
+    string query_id = 5;
 }
 
 message StreamQueryResponse {
@@ -156,6 +159,12 @@ message StreamQueryResponse {
     
     // 进度 (0-100)
     uint32 progress_percent = 6;
+
+    // 查询 ID
+    string query_id = 7;
+
+    // 批次索引
+    int32 batch_index = 8;
 }
 
 // ============================================================================
