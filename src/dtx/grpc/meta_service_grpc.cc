@@ -4,6 +4,24 @@
 #include <grpcpp/grpcpp.h>
 #include <iostream>
 
+namespace {
+
+ cedar::dtx::PartitionAssignment PartitionAssignmentFromProto(
+    const cedar::meta::PartitionAssignment& proto) {
+   cedar::dtx::PartitionAssignment assignment;
+  assignment.partition_id = static_cast<cedar::dtx::PartitionID>(proto.partition_id());
+  assignment.space_name = proto.space_name();
+  assignment.leader_node = static_cast<cedar::dtx::NodeID>(proto.leader_node());
+  for (int i = 0; i < proto.follower_nodes_size(); ++i) {
+    assignment.follower_nodes.push_back(
+        static_cast<cedar::dtx::NodeID>(proto.follower_nodes(i)));
+  }
+  assignment.version = proto.version();
+  return assignment;
+}
+
+}  // namespace
+
 namespace cedar {
 namespace dtx {
 
@@ -364,15 +382,7 @@ StatusOr<PartitionAssignment> MetaServiceGrpcClient::GetPartitionAssignment(
         return Status::NotFound(response.error_msg());
     }
     
-    PartitionAssignment assign;
-    assign.partition_id = static_cast<PartitionID>(response.assignment().partition_id());
-    assign.space_name = response.assignment().space_name();
-    assign.leader_node = static_cast<NodeID>(response.assignment().leader_node());
-    for (int i = 0; i < response.assignment().follower_nodes_size(); ++i) {
-        assign.follower_nodes.push_back(static_cast<NodeID>(response.assignment().follower_nodes(i)));
-    }
-    assign.version = response.assignment().version();
-    return assign;
+    return PartitionAssignmentFromProto(response.assignment());
 }
 
 StatusOr<SpacePartitionMap> MetaServiceGrpcClient::GetSpacePartitionMap(const std::string& space_name) {
@@ -410,6 +420,10 @@ StatusOr<SpacePartitionMap> MetaServiceGrpcClient::GetSpacePartitionMap(const st
     map.num_partitions = static_cast<uint32_t>(response.partition_map().num_partitions());
     map.replication_factor = static_cast<uint32_t>(response.partition_map().replication_factor());
     map.version = response.partition_map().version();
+    // Fill assignments
+    for (const auto& [partition_id, assignment_pb] : response.partition_map().assignments()) {
+        map.assignments[partition_id] = PartitionAssignmentFromProto(assignment_pb);
+    }
     return map;
 }
 
