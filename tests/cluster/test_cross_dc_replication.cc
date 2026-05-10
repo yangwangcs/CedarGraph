@@ -31,8 +31,8 @@ TEST(CrossDCReplicationTest, BasicReplication) {
   Descriptor desc = Descriptor::InlineInt(0, 42);
   s = replicator.Replicate("key-1", desc, Timestamp(1000));
   
-  // Sync mode returns immediately (no actual network in test)
-  EXPECT_TRUE(s.ok());
+  // Cross-DC replication is not yet implemented
+  EXPECT_TRUE(s.IsNotSupportedError());
 }
 
 TEST(CrossDCReplicationTest, AsyncReplication) {
@@ -137,5 +137,5 @@ TEST(CrossDCReplicationTest, BatchReplication) {
   }
   
   Status s = replicator.ReplicateBatch(logs);
-  EXPECT_TRUE(s.ok());
+  EXPECT_TRUE(s.IsNotSupportedError());
 }

@@ -147,7 +147,8 @@ std::map<std::string, ReplicationStatus> CrossDCReplicator::GetAllStatuses() con
 }
 
 Status CrossDCReplicator::SyncWithDC(const std::string& dc_id) {
-  return Status::OK();
+  return Status::NotSupported(
+      "Cross-DC sync not implemented. Configure remote_dc_endpoints to enable.");
 }
 
 Status CrossDCReplicator::ResolveConflict(
@@ -217,16 +218,18 @@ void CrossDCReplicator::ProcessReplicationQueue() {
 Status CrossDCReplicator::ReplicateToDC(const ReplicationLog& log, 
                                          const std::string& dc_id) {
   uint32_t attempts = 0;
+  Status s;
   
   while (attempts < config_.max_retry_attempts) {
-    Status s = SendToRemoteDC(log, dc_id);
+    s = SendToRemoteDC(log, dc_id);
     if (s.ok()) {
       UpdateLag(dc_id);
       return Status::OK();
     }
 
-    // Don't retry on timeout: remote DC may have already processed the log
-    if (s.ToString().find("DEADLINE_EXCEEDED") != std::string::npos ||
+    // Don't retry on permanent errors (NotSupported, timeout)
+    if (s.IsNotSupportedError() ||
+        s.ToString().find("DEADLINE_EXCEEDED") != std::string::npos ||
         s.ToString().find("TIMEOUT") != std::string::npos) {
       break;
     }
@@ -244,13 +247,14 @@ Status CrossDCReplicator::ReplicateToDC(const ReplicationLog& log,
     it->second.is_healthy = false;
   }
   
-  return Status::IOError("CrossDCReplicator::ReplicateToDC",
-      "Failed to replicate to " + dc_id);
+  return s;
 }
 
 Status CrossDCReplicator::SendToRemoteDC(const ReplicationLog& log,
                                           const std::string& dc_id) {
-  return Status::OK();
+  return Status::NotSupported(
+      "Cross-DC replication transport not implemented. "
+      "Configure remote_dc_endpoints to enable.");
 }
 
 void CrossDCReplicator::UpdateLag(const std::string& dc_id) {
