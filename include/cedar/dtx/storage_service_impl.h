@@ -44,8 +44,17 @@
 #include "cedar/storage/storage_interface.h"
 #include "cedar/dtx/types.h"
 #include "cedar/dtx/transaction_state.h"
+#include "cedar/dtx/cross_dc_replicator.h"
 #include "cedar/dtx/storage/braft_partition_raft.h"
 #include "cedar/dtx/storage/partition_migrator.h"
+
+// Forward declaration to avoid including dtx_protocol.grpc.pb.h here,
+// which would shadow cedar::CedarKey with cedar::dtx::CedarKey (protobuf)
+namespace cedar {
+namespace dtx {
+class DTXServiceImpl;
+}  // namespace dtx
+}  // namespace cedar
 
 // gRPC includes
 #include <grpcpp/grpcpp.h>
@@ -572,6 +581,10 @@ class StorageServer {
     std::string metad_address = "127.0.0.1:50050";
     size_t max_partitions = 1024;
     std::chrono::seconds heartbeat_interval{5};
+    int dtx_port = 0;  // 0 means auto-assign (storage_port + 1)
+    std::string local_dc_id;
+    std::vector<std::string> peer_dcs;
+    std::map<std::string, std::string> remote_dc_endpoints;
   };
 
   StorageServer();
@@ -604,6 +617,13 @@ class StorageServer {
   // gRPC server
   std::unique_ptr<grpc::Server> grpc_server_;
   std::unique_ptr<StorageServiceImpl> service_impl_;
+
+  // DTX gRPC server (for cross-DC replication)
+  std::unique_ptr<grpc::Server> dtx_grpc_server_;
+  std::unique_ptr<DTXServiceImpl> dtx_service_impl_;
+
+  // Cross-DC replicator
+  std::unique_ptr<CrossDCReplicator> cross_dc_replicator_;
 
   // Partition migration
   std::unique_ptr<storage::PartitionMigrator> partition_migrator_;

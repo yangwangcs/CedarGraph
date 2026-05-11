@@ -27,8 +27,11 @@
 #include <vector>
 
 #include "cedar/core/status.h"
+#include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
 #include "cedar/types/cedar_types.h"
+
+#include <grpcpp/grpcpp.h>
 
 namespace cedar {
 namespace dtx {
@@ -46,11 +49,12 @@ struct DCReplicationConfig {
   std::chrono::milliseconds retry_delay{1000};
   bool enable_compression = true;
   uint32_t batch_size = 100;
+  std::map<std::string, std::string> remote_dc_endpoints;
 };
 
 struct ReplicationLog {
   uint64_t sequence_num;
-  std::string key;
+  CedarKey key;
   Descriptor value;
   Timestamp timestamp;
   std::string source_dc;
@@ -88,7 +92,11 @@ class CrossDCReplicator {
   Status Replicate(const std::string& key,
                    const Descriptor& value,
                    Timestamp timestamp);
-  
+
+  Status Replicate(const CedarKey& key,
+                   const Descriptor& value,
+                   Timestamp timestamp);
+
   Status ReplicateBatch(const std::vector<ReplicationLog>& logs);
 
   Status ReceiveReplication(const ReplicationLog& log);
@@ -100,6 +108,8 @@ class CrossDCReplicator {
 
   Status ResolveConflict(const std::string& key,
                          const std::vector<ReplicationLog>& conflicting_logs);
+
+  void SetStorage(cedar::CedarGraphStorage* storage) { storage_ = storage; }
 
   void SetReplicationCallback(ReplicationCallback callback);
 
@@ -127,6 +137,9 @@ class CrossDCReplicator {
   std::atomic<bool> running_{false};
   std::thread replication_thread_;
   
+  std::map<std::string, std::shared_ptr<grpc::Channel>> dc_channels_;
+  cedar::CedarGraphStorage* storage_ = nullptr;
+
   mutable std::mutex callback_mutex_;
   ReplicationCallback replication_callback_;
 };

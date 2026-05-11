@@ -30,9 +30,10 @@ TEST(CrossDCReplicationTest, BasicReplication) {
   
   Descriptor desc = Descriptor::InlineInt(0, 42);
   s = replicator.Replicate("key-1", desc, Timestamp(1000));
-  
-  // Cross-DC replication is not yet implemented
-  EXPECT_TRUE(s.IsNotSupportedError());
+
+  // Without endpoint, should fail with IOError
+  EXPECT_FALSE(s.ok());
+  EXPECT_TRUE(s.IsIOError());
 }
 
 TEST(CrossDCReplicationTest, AsyncReplication) {
@@ -77,25 +78,25 @@ TEST(CrossDCReplicationTest, ReplicationStatus) {
 
 TEST(CrossDCReplicationTest, ConflictResolution) {
   DCReplicationConfig config;
-  
+
   CrossDCReplicator replicator;
   replicator.Initialize(config, "dc-local", {"dc-peer"});
-  
+
   std::vector<ReplicationLog> conflicts;
-  
+
   ReplicationLog log1;
-  log1.key = "conflict-key";
+  log1.key.SetEntityId(1);
   log1.timestamp = Timestamp(1000);
   log1.source_dc = "dc-a";
-  
+
   ReplicationLog log2;
-  log2.key = "conflict-key";
+  log2.key.SetEntityId(1);
   log2.timestamp = Timestamp(2000);
   log2.source_dc = "dc-b";
-  
+
   conflicts.push_back(log1);
   conflicts.push_back(log2);
-  
+
   Status s = replicator.ResolveConflict("conflict-key", conflicts);
   EXPECT_TRUE(s.ok());
 }
@@ -123,19 +124,19 @@ TEST(CrossDCReplicationTest, ReplicationCallback) {
 TEST(CrossDCReplicationTest, BatchReplication) {
   DCReplicationConfig config;
   config.mode = ReplicationMode::kSync;
-  
+
   CrossDCReplicator replicator;
   replicator.Initialize(config, "dc-local", {"dc-remote"});
-  
+
   std::vector<ReplicationLog> logs;
   for (int i = 0; i < 10; i++) {
     ReplicationLog log;
-    log.key = "batch-key-" + std::to_string(i);
+    log.key.SetEntityId(i);
     log.value = Descriptor::InlineInt(0, i);
     log.timestamp = Timestamp(i);
     logs.push_back(log);
   }
-  
+
   Status s = replicator.ReplicateBatch(logs);
-  EXPECT_TRUE(s.IsNotSupportedError());
+  EXPECT_TRUE(s.IsIOError());
 }

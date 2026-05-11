@@ -272,6 +272,7 @@ set(CEDAR_DTX_SOURCES
     src/dtx/deadlock_detector.cc
     src/dtx/grpc_connection_pool.cc
     src/dtx/cross_dc_replicator.cc
+    src/dtx/dtx_service_impl.cc
     # src/dtx/service_discovery.cc  # TODO: Fix - references non-existent ServiceDiscovery class
     src/dtx/security/security_manager.cc
     src/dtx/grpc/migration_executor.cc

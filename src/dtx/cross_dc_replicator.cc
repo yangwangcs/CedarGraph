@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "cedar/dtx/cross_dc_replicator.h"
+#include "dtx_protocol.grpc.pb.h"
+#include <grpcpp/grpcpp.h>
 
 namespace cedar {
 namespace dtx {
@@ -30,15 +32,23 @@ Status CrossDCReplicator::Initialize(
     const DCReplicationConfig& config,
     const std::string& local_dc_id,
     const std::vector<std::string>& peer_dcs) {
-  
+
   config_ = config;
   local_dc_id_ = local_dc_id;
   peer_dcs_ = peer_dcs;
-  
+
   for (const auto& dc : peer_dcs) {
     dc_statuses_[dc] = ReplicationStatus{};
   }
-  
+
+  for (const auto& dc : peer_dcs) {
+    auto it = config.remote_dc_endpoints.find(dc);
+    if (it != config.remote_dc_endpoints.end()) {
+      auto channel = grpc::CreateChannel(it->second, grpc::InsecureChannelCredentials());
+      dc_channels_[dc] = channel;
+    }
+  }
+
   return Status::OK();
 }
 
@@ -76,6 +86,14 @@ void CrossDCReplicator::Stop() {
 Status CrossDCReplicator::Replicate(const std::string& key,
                                      const Descriptor& value,
                                      Timestamp timestamp) {
+  ::cedar::CedarKey ck;
+  ck.SetEntityId(std::hash<std::string>{}(key));
+  return Replicate(ck, value, timestamp);
+}
+
+Status CrossDCReplicator::Replicate(const ::cedar::CedarKey& key,
+                                     const Descriptor& value,
+                                     Timestamp timestamp) {
   ReplicationLog log;
   log.sequence_num = ++sequence_counter_;
   log.key = key;
@@ -84,7 +102,7 @@ Status CrossDCReplicator::Replicate(const std::string& key,
   log.source_dc = local_dc_id_;
   log.target_dcs = peer_dcs_;
   log.created_at = std::chrono::system_clock::now();
-  
+
   if (config_.mode == ReplicationMode::kSync) {
     for (const auto& dc : peer_dcs_) {
       Status s = ReplicateToDC(log, dc);
@@ -97,10 +115,10 @@ Status CrossDCReplicator::Replicate(const std::string& key,
     }
     return Status::OK();
   }
-  
+
   std::lock_guard<std::mutex> lock(queue_mutex_);
   replication_queue_.push(log);
-  
+
   return Status::OK();
 }
 
@@ -119,14 +137,23 @@ Status CrossDCReplicator::ReceiveReplication(const ReplicationLog& log) {
     return Status::InvalidArgument("CrossDCReplicator::ReceiveReplication",
         "Cannot receive replication from local DC");
   }
-  
+
+  // Apply to local storage if configured
+  if (storage_) {
+    auto s = storage_->Put(log.key.entity_id(), log.key.timestamp().value(),
+                            log.value, log.timestamp);
+    if (!s.ok()) {
+      return Status::IOError("Storage Put failed in ReceiveReplication: " + s.ToString());
+    }
+  }
+
   std::lock_guard<std::mutex> lock(status_mutex_);
   auto it = dc_statuses_.find(log.source_dc);
   if (it != dc_statuses_.end()) {
     it->second.last_sequence = std::max(it->second.last_sequence, log.sequence_num);
     it->second.replicated_count++;
   }
-  
+
   return Status::OK();
 }
 
@@ -147,25 +174,48 @@ std::map<std::string, ReplicationStatus> CrossDCReplicator::GetAllStatuses() con
 }
 
 Status CrossDCReplicator::SyncWithDC(const std::string& dc_id) {
-  return Status::NotSupported(
-      "Cross-DC sync not implemented. Configure remote_dc_endpoints to enable.");
+  auto it = dc_channels_.find(dc_id);
+  if (it == dc_channels_.end()) {
+    return Status::IOError("No gRPC channel for DC: " + dc_id);
+  }
+
+  auto stub = cedar::dtx::DTXService::NewStub(it->second);
+
+  cedar::dtx::ReplicateRequest request;
+  request.set_target_dc(dc_id);
+  // Empty logs = sync handshake
+
+  cedar::dtx::ReplicateResponse response;
+  ::grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() +
+                        config_.replication_timeout);
+
+  auto status = stub->Replicate(&context, request, &response);
+  if (!status.ok()) {
+    return Status::IOError("SyncWithDC RPC failed: " + status.error_message());
+  }
+  if (!response.success()) {
+    return Status::IOError("Remote DC rejected sync: " + response.error_msg());
+  }
+  return Status::OK();
 }
 
 Status CrossDCReplicator::ResolveConflict(
     const std::string& key,
     const std::vector<ReplicationLog>& conflicting_logs) {
-  
+
   if (conflicting_logs.empty()) {
     return Status::OK();
   }
-  
-  if (conflicting_logs.size() == 1) {
-    return Status::OK();
+
+  const ReplicationLog* winner = &conflicting_logs[0];
+  for (const auto& log : conflicting_logs) {
+    if (log.timestamp > winner->timestamp) {
+      winner = &log;
+    }
   }
-  
-  ReplicationLog winner = CreateTimestampBasedResolution(conflicting_logs);
-  
-  return Status::OK();
+
+  return ReceiveReplication(*winner);
 }
 
 void CrossDCReplicator::SetReplicationCallback(ReplicationCallback callback) {
@@ -227,8 +277,10 @@ Status CrossDCReplicator::ReplicateToDC(const ReplicationLog& log,
       return Status::OK();
     }
 
-    // Don't retry on permanent errors (NotSupported, timeout)
+    // Don't retry on permanent errors (NotSupported, no endpoint, timeout)
     if (s.IsNotSupportedError() ||
+        s.IsInvalidArgument() ||
+        s.ToString().find("No gRPC channel") != std::string::npos ||
         s.ToString().find("DEADLINE_EXCEEDED") != std::string::npos ||
         s.ToString().find("TIMEOUT") != std::string::npos) {
       break;
@@ -252,9 +304,49 @@ Status CrossDCReplicator::ReplicateToDC(const ReplicationLog& log,
 
 Status CrossDCReplicator::SendToRemoteDC(const ReplicationLog& log,
                                           const std::string& dc_id) {
-  return Status::NotSupported(
-      "Cross-DC replication transport not implemented. "
-      "Configure remote_dc_endpoints to enable.");
+  auto it = dc_channels_.find(dc_id);
+  if (it == dc_channels_.end()) {
+    return Status::IOError("No gRPC channel for DC: " + dc_id);
+  }
+
+  auto stub = cedar::dtx::DTXService::NewStub(it->second);
+
+  cedar::dtx::ReplicateRequest request;
+  request.set_target_dc(dc_id);
+
+  auto* entry = request.add_logs();
+  entry->set_sequence_num(log.sequence_num);
+
+  // CedarKey serialization
+  std::string key_bytes;
+  key_bytes.resize(sizeof(::cedar::CedarKey));
+  std::memcpy(&key_bytes[0], &log.key, sizeof(::cedar::CedarKey));
+  entry->set_key(key_bytes);
+
+  // Descriptor serialization
+  uint64_t desc_raw = log.value.AsRaw();
+  std::string desc_bytes(reinterpret_cast<const char*>(&desc_raw), sizeof(uint64_t));
+  entry->set_value(desc_bytes);
+
+  entry->set_timestamp(log.timestamp.value());
+  entry->set_source_dc(log.source_dc);
+  for (const auto& target : log.target_dcs) {
+    entry->add_target_dcs(target);
+  }
+
+  cedar::dtx::ReplicateResponse response;
+  ::grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() +
+                        config_.replication_timeout);
+
+  auto status = stub->Replicate(&context, request, &response);
+  if (!status.ok()) {
+    return Status::IOError("Replicate RPC failed: " + status.error_message());
+  }
+  if (!response.success()) {
+    return Status::IOError("Remote DC rejected replication: " + response.error_msg());
+  }
+  return Status::OK();
 }
 
 void CrossDCReplicator::UpdateLag(const std::string& dc_id) {

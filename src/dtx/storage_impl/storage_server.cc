@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "cedar/dtx/storage_service_impl.h"
+#include "cedar/dtx/dtx_service_impl.h"
 #include "cedar/dtx/storage/partition_raft_manager.h"
 #include "cedar/dtx/failover_manager.h"
 #include "cedar/dtx/monitoring.h"
@@ -108,6 +109,50 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
     partition_migrator_->SetMetaServiceClient(meta_client_.get());
   }
 
+  // Initialize DTX cross-DC replication service
+  dtx_service_impl_ = std::make_unique<cedar::dtx::DTXServiceImpl>(
+      partition_manager_.GetSharedStorage());
+
+  // Start DTX gRPC server on dtx_port (default: storage_port + 1)
+  int dtx_port = config_.dtx_port;
+  if (dtx_port == 0) {
+    // Parse storage port and add 1
+    size_t colon_pos = config_.listen_address.rfind(':');
+    if (colon_pos != std::string::npos) {
+      int storage_port = std::stoi(config_.listen_address.substr(colon_pos + 1));
+      dtx_port = storage_port + 1;
+    } else {
+      dtx_port = 50052;
+    }
+  }
+  std::string dtx_listen_address = "0.0.0.0:" + std::to_string(dtx_port);
+
+  ::grpc::ServerBuilder dtx_builder;
+  dtx_builder.AddListeningPort(dtx_listen_address,
+                                ::grpc::InsecureServerCredentials());
+  dtx_builder.RegisterService(dtx_service_impl_.get());
+  dtx_grpc_server_ = dtx_builder.BuildAndStart();
+  if (dtx_grpc_server_) {
+    std::cout << "DTX replication gRPC server started on " << dtx_listen_address << std::endl;
+  } else {
+    std::cerr << "Warning: Failed to start DTX replication gRPC server" << std::endl;
+  }
+
+  // Initialize CrossDCReplicator if DC config is provided
+  if (!config_.local_dc_id.empty() && !config_.peer_dcs.empty()) {
+    DCReplicationConfig dc_config;
+    dc_config.remote_dc_endpoints = config_.remote_dc_endpoints;
+    cross_dc_replicator_ = std::make_unique<CrossDCReplicator>();
+    s = cross_dc_replicator_->Initialize(dc_config, config_.local_dc_id, config_.peer_dcs);
+    if (s.ok()) {
+      cross_dc_replicator_->SetStorage(partition_manager_.GetSharedStorage());
+      cross_dc_replicator_->Start();
+      std::cout << "CrossDCReplicator started for DC: " << config_.local_dc_id << std::endl;
+    } else {
+      std::cerr << "Warning: Failed to initialize CrossDCReplicator: " << s.ToString() << std::endl;
+    }
+  }
+
   return Status::OK();
 }
 
@@ -166,6 +211,18 @@ Status StorageServer::Shutdown() {
     meta_client_->StopHeartbeatLoop();
   }
   
+  // Shutdown DTX gRPC server
+  if (dtx_grpc_server_) {
+    dtx_grpc_server_->Shutdown();
+    dtx_grpc_server_->Wait();
+    std::cout << "DTX gRPC server stopped" << std::endl;
+  }
+
+  // Shutdown cross-DC replicator
+  if (cross_dc_replicator_) {
+    cross_dc_replicator_->Stop();
+  }
+
   // Shutdown gRPC server
   if (grpc_server_) {
     grpc_server_->Shutdown();
