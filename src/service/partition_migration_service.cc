@@ -19,6 +19,8 @@
 #include "cedar/service/partition_migration_service.h"
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <random>
 #include <sstream>
@@ -383,6 +385,37 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
   if (request->commit()) {
     // Commit the migration
     task->status = cedar::migration::FINALIZING;
+    
+    // Write buffered data to storage before committing
+    if (!task->data_buffer.empty() && partition_migrator_ != nullptr) {
+      std::string temp_path = "/tmp/cedar_migration_" + task->migration_id;
+      std::filesystem::create_directories(temp_path);
+      std::string temp_file = temp_path + "/snapshot.bin";
+      std::ofstream ofs(temp_file, std::ios::binary);
+      if (ofs) {
+        ofs.write(reinterpret_cast<const char*>(task->data_buffer.data()),
+                  task->data_buffer.size());
+        ofs.close();
+
+        auto load_status = partition_migrator_->LoadSnapshotForMigration(
+            task->internal_id, temp_path);
+        if (!load_status.ok()) {
+          task->status = cedar::migration::FAILED;
+          task->error_msg = "Snapshot load failed: " + load_status.ToString();
+          {
+            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            ++stats_.total_migrations_failed;
+            if (stats_.active_migrations > 0) --stats_.active_migrations;
+          }
+          response->set_success(false);
+          response->set_error_msg(task->error_msg);
+          response->set_final_status(cedar::migration::FAILED);
+          return ::grpc::Status(::grpc::StatusCode::INTERNAL, task->error_msg);
+        }
+
+        std::filesystem::remove_all(temp_path);
+      }
+    }
     
     // Apply the actual data changes through the partition migrator
     if (partition_migrator_ != nullptr && task->internal_id > 0) {

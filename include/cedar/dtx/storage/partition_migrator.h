@@ -188,6 +188,9 @@ class PartitionMigrator {
   // Retry failed migration
   Status RetryMigration(uint64_t migration_id);
   
+  // Load snapshot data for a migration into target partition storage
+  Status LoadSnapshotForMigration(uint64_t migration_id, const std::string& snapshot_path);
+  
   // Bulk operations
   Status SubmitRebalancePlan(const std::vector<std::tuple<PartitionID, NodeID, NodeID>>& plan) {
     (void)plan;

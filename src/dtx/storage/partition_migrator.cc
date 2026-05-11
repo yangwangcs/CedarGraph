@@ -605,6 +605,46 @@ Status PartitionMigrator::CancelMigration(uint64_t migration_id, bool rollback) 
   return Status::OK();
 }
 
+Status PartitionMigrator::LoadSnapshotForMigration(
+    uint64_t migration_id, const std::string& snapshot_path) {
+  std::shared_lock<std::shared_mutex> lock(tasks_mutex_);
+  auto task_it = tasks_.find(migration_id);
+  if (task_it == tasks_.end()) {
+    return Status::NotFound("Migration not found");
+  }
+
+  auto& task = task_it->second;
+  if (!partition_manager_) {
+    return Status::IOError("PartitionManager not injected");
+  }
+
+  auto target_storage = partition_manager_->GetPartition(task->partition_id);
+  if (!target_storage) {
+    return Status::NotFound("Target partition not found");
+  }
+
+  // Load prepared transaction state if present
+  auto txn_state_path = snapshot_path + "/txn_state";
+  if (std::filesystem::exists(txn_state_path)) {
+    auto s = target_storage->LoadPreparedTxns(txn_state_path);
+    if (!s.ok()) return s;
+  }
+
+  // Copy data files into target partition's data root
+  auto data_root = target_storage->GetDataRoot();
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(snapshot_path)) {
+    if (!entry.is_regular_file()) continue;
+    auto rel_path = std::filesystem::relative(entry.path(), snapshot_path);
+    if (rel_path == "txn_state") continue;
+    auto dst_path = data_root + "/" + rel_path.string();
+    std::filesystem::create_directories(std::filesystem::path(dst_path).parent_path());
+    std::filesystem::copy_file(entry.path(), dst_path,
+                                std::filesystem::copy_options::overwrite_existing);
+  }
+
+  return Status::OK();
+}
+
 Status PartitionMigrator::CommitMigration(uint64_t migration_id) {
   std::unique_lock<std::shared_mutex> lock(tasks_mutex_);
   auto it = tasks_.find(migration_id);
