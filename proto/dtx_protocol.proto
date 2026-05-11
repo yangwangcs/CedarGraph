@@ -14,6 +14,10 @@ service DTXService {
 
   // Participant Registration
   rpc RegisterParticipant(RegisterRequest) returns (RegisterResponse);
+
+  // Cross-DC Replication
+  rpc Replicate(ReplicateRequest) returns (ReplicateResponse);
+  rpc ApplyReplication(stream ApplyReplicationRequest) returns (ApplyReplicationResponse);
 }
 
 // =============================================================================
@@ -240,4 +244,39 @@ message BatchResponse {
 
   // Reserved for future extensions
   reserved 100 to 199;
+}
+
+// =============================================================================
+// Cross-DC Replication Messages
+// =============================================================================
+
+message ReplicationLogEntry {
+  uint64 sequence_num = 1;
+  bytes key = 2;           // Serialized CedarKey
+  bytes value = 3;         // Serialized Descriptor
+  uint64 timestamp = 4;    // Microseconds since epoch
+  string source_dc = 5;
+  repeated string target_dcs = 6;
+}
+
+message ReplicateRequest {
+  string target_dc = 1;
+  repeated ReplicationLogEntry logs = 2;
+}
+
+message ReplicateResponse {
+  bool success = 1;
+  uint64 last_applied_sequence = 2;
+  string error_msg = 3;
+}
+
+message ApplyReplicationRequest {
+  string source_dc = 1;
+  repeated ReplicationLogEntry logs = 2;
+}
+
+message ApplyReplicationResponse {
+  bool success = 1;
+  uint64 last_applied_sequence = 2;
+  string error_msg = 3;
 }
