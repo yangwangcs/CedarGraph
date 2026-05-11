@@ -16,6 +16,13 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <unordered_map>
+
+#include <glog/logging.h>
+
+#include "cedar/storage/lsm_engine.h"
+#include "cedar/sst/zone_columnar_reader.h"
 
 namespace cedar {
 namespace dtx {
@@ -30,14 +37,110 @@ PartitionIndex::PartitionIndex(::cedar::CedarGraphStorage* storage)
 PartitionIndex::~PartitionIndex() = default;
 
 Status PartitionIndex::BuildIndex() {
-  std::unique_lock<std::shared_mutex> lock(mutex_);
-  
-  Clear();
-  
-  // Full rebuild requires scanning all SST files and sampling keys
-  // to determine entity ranges per partition.
-  
+  if (!storage_) {
+    return Status::IOError("Storage not available for index build");
+  }
+
+  auto* lsm_engine = storage_->GetLsmEngine();
+  if (!lsm_engine) {
+    return Status::IOError("LSM engine not available");
+  }
+
+  // Get all SST files across all levels
+  const auto& all_levels = lsm_engine->GetSstFiles();
+  if (all_levels.empty()) {
+    return Status::OK();
+  }
+
+  // Collect metadata outside the lock
+  std::vector<SSTPartitionMetadata> all_metadata;
+  all_metadata.reserve(64);  // rough guess
+
+  for (const auto& level : all_levels) {
+    for (const auto& sst_meta : level) {
+      auto result = IndexSingleSST(sst_meta);
+      if (result.ok()) {
+        all_metadata.push_back(std::move(result.ValueOrDie()));
+      } else {
+        LOG(WARNING) << "[PartitionIndex] Warning: failed to index SST "
+                     << sst_meta.file_number << ": " << result.status().ToString();
+      }
+    }
+  }
+
+  // Brief locked section: clear and insert
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    sst_metadata_.clear();
+    partition_sst_map_.clear();
+    cached_ranges_.clear();
+    cache_dirty_ = false;
+
+    for (auto& metadata : all_metadata) {
+      uint64_t file_number = metadata.file_number;
+      sst_metadata_.try_emplace(file_number, std::move(metadata));
+      for (const auto& [pid, range] : sst_metadata_[file_number].partition_ranges) {
+        (void)range;
+        partition_sst_map_[pid].insert(file_number);
+      }
+    }
+  }
+
+  cache_dirty_.store(true);
   return Status::OK();
+}
+
+StatusOr<SSTPartitionMetadata> PartitionIndex::IndexSingleSST(
+    const cedar::SSTFileMeta& sst_meta) {
+  std::string file_path = sst_meta.file_name();
+  try {
+    if (!std::filesystem::exists(file_path)) {
+      auto* lsm_engine = storage_->GetLsmEngine();
+      std::string db_path = lsm_engine ? lsm_engine->GetDbPath() : ".";
+      file_path = (std::filesystem::path(db_path) / sst_meta.file_name()).string();
+    }
+  } catch (const std::filesystem::filesystem_error& e) {
+    return Status::IOError("Filesystem error checking SST path: " + std::string(e.what()));
+  }
+
+  cedar::SstReader reader(file_path);
+  auto s = reader.Open();
+  if (!s.ok()) {
+    return Status::IOError("Failed to open SST: " + file_path + " - " + s.ToString());
+  }
+
+  std::unordered_map<PartitionID, PartitionEntityRange> local_ranges;
+
+  cedar::ReadPredicate predicate;
+  reader.Scan(predicate,
+              [&](const cedar::CedarKey& key, const cedar::Descriptor& desc) {
+                (void)desc;
+                PartitionID pid = key.part_id();
+                uint64_t entity_id = key.entity_id();
+
+                auto it = local_ranges.find(pid);
+                if (it == local_ranges.end()) {
+                  PartitionEntityRange range;
+                  range.partition_id = pid;
+                  range.min_entity_id = entity_id;
+                  range.max_entity_id = entity_id;
+                  range.estimated_key_count = 1;
+                  local_ranges.emplace(pid, range);
+                } else {
+                  it->second.min_entity_id = std::min(it->second.min_entity_id, entity_id);
+                  it->second.max_entity_id = std::max(it->second.max_entity_id, entity_id);
+                  it->second.estimated_key_count++;
+                }
+              });
+
+  reader.Close();
+
+  SSTPartitionMetadata metadata;
+  metadata.file_number = sst_meta.file_number;
+  metadata.file_size = sst_meta.file_size;
+  metadata.partition_ranges = std::move(local_ranges);
+
+  return metadata;
 }
 
 Status PartitionIndex::AddSST(uint64_t file_number, 

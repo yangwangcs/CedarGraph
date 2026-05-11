@@ -46,6 +46,7 @@
 // Forward declaration (global cedar namespace)
 namespace cedar {
 class CedarGraphStorage;
+struct SSTFileMeta;
 }
 
 namespace cedar {
@@ -148,6 +149,8 @@ class PartitionIndex {
   
   void InvalidateCache();
   void RebuildCache() const;
+  
+  StatusOr<SSTPartitionMetadata> IndexSingleSST(const cedar::SSTFileMeta& sst_meta);
 };
 
 // =============================================================================
