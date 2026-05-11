@@ -79,6 +79,10 @@ add_executable(test_meta_service_grpc dtx/test_meta_service_grpc.cc)
 target_link_libraries(test_meta_service_grpc ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_meta_service_grpc)
 
+add_executable(test_partition_index_build dtx/test_partition_index_build.cc)
+target_link_libraries(test_partition_index_build ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_partition_index_build)
+
 # add_cedar_test(test_sst_capacity_analysis)
 # add_cedar_test(test_auto_compaction_file_based)
 # add_cedar_test(test_sst_structure_analysis)
