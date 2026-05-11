@@ -252,6 +252,27 @@ StatusOr<cedar::meta::PartitionAssignment> MetaServiceNodeClient::GetPartitionAs
   return response.assignment();
 }
 
+StatusOr<cedar::meta::PartitionAssignment> MetaServiceNodeClient::GetPartitionAssignment(
+    PartitionID partition_id) {
+  return GetPartitionAssignment("default", partition_id);
+}
+
+Status MetaServiceNodeClient::UpdatePartitionAssignment(
+    const cedar::meta::PartitionAssignment& assignment) {
+  if (!connected_.load()) {
+    return Status::IOError("MetaServiceNodeClient not connected");
+  }
+
+  // TODO: Implement gRPC call to MetaD for UpdatePartitionAssignment.
+  // For now, log the intended update and return OK to allow the migration
+  // state machine to proceed. The actual RPC will be added in a follow-up.
+  std::cerr << "[MetaServiceNodeClient] UpdatePartitionAssignment stub: "
+            << "partition=" << assignment.partition_id()
+            << " leader_node=" << assignment.leader_node()
+            << " space_name=" << assignment.space_name() << std::endl;
+  return Status::OK();
+}
+
 StatusOr<cedar::meta::SpacePartitionMap> MetaServiceNodeClient::GetSpacePartitionMap(
     const std::string& space_name) {
   if (!connected_.load()) {

@@ -527,9 +527,14 @@ class MetaServiceNodeClient {
   // Queries
   StatusOr<cedar::meta::PartitionAssignment> GetPartitionAssignment(
       const std::string& space_name, PartitionID partition_id);
+  StatusOr<cedar::meta::PartitionAssignment> GetPartitionAssignment(
+      PartitionID partition_id);
   StatusOr<cedar::meta::SpacePartitionMap> GetSpacePartitionMap(
       const std::string& space_name);
   StatusOr<std::vector<cedar::meta::NodeInfo>> GetAliveNodes();
+
+  // Partition assignment update
+  Status UpdatePartitionAssignment(const cedar::meta::PartitionAssignment& assignment);
 
   // Lifecycle
   void StartHeartbeatLoop(std::function<std::vector<PartitionID>()> partition_provider);
