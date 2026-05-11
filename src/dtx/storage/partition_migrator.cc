@@ -17,9 +17,12 @@
 // =============================================================================
 
 #include "cedar/dtx/storage/partition_migrator.h"
+#include "cedar/dtx/storage_service_impl.h"
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <map>
 
 namespace cedar {
@@ -282,10 +285,90 @@ Status PartitionMigrator::PrepareSource(MigrationTask& task) {
 }
 
 Status PartitionMigrator::CopyData(MigrationTask& task) {
-  (void)task;
-  return Status::NotSupported(
-      "PartitionMigrator::CopyData requires full SST scan + network send implementation. "
-      "See docs/PRODUCTION_READINESS_AUDIT_2026-04-28.md for roadmap.");
+  if (!partition_manager_) {
+    return Status::IOError("PartitionManager not injected");
+  }
+
+  auto source_storage = partition_manager_->GetPartition(task.partition_id);
+  if (!source_storage) {
+    return Status::NotFound("Source partition not found: " +
+                            std::to_string(task.partition_id));
+  }
+
+  // 1. Force flush to ensure all data is in SST files
+  auto* shared_storage = source_storage->GetSharedStorage();
+  if (shared_storage) {
+    auto s = shared_storage->ForceFlush();
+    if (!s.ok()) {
+      return Status::IOError("ForceFlush failed: " + s.ToString());
+    }
+  }
+
+  // 2. Get partition stats for progress tracking
+  auto stats = source_storage->GetStats();
+  task.total_keys = stats.num_keys;
+  task.total_bytes = stats.disk_usage_bytes;
+  task.state = MigrationState::kCopying;
+
+  // 3. Save snapshot for migration
+  auto data_root = source_storage->GetDataRoot();
+  auto snapshot_path = data_root + "/migration_snap_" + std::to_string(task.migration_id);
+
+  auto s = source_storage->SaveSnapshotForMigration(snapshot_path);
+  if (!s.ok()) {
+    return Status::IOError("Snapshot creation failed: " + s.ToString());
+  }
+
+  // 4. Stream snapshot files to target node via SyncData RPC
+  if (migration_stub_) {
+    s = StreamSnapshotToTarget(task, snapshot_path);
+    if (!s.ok()) {
+      return Status::IOError("Snapshot stream failed: " + s.ToString());
+    }
+  }
+
+  task.migrated_keys = task.total_keys;
+  task.migrated_bytes = task.total_bytes;
+  return Status::OK();
+}
+
+Status PartitionMigrator::StreamSnapshotToTarget(
+    const MigrationTask& task, const std::string& snapshot_path) {
+  ::grpc::ClientContext context;
+  cedar::migration::SyncDataRequest request;
+  cedar::migration::SyncDataResponse response;
+
+  request.set_migration_id(std::to_string(task.migration_id));
+  request.set_partition_id(task.partition_id);
+  request.set_offset(0);
+
+  auto writer = migration_stub_->SyncData(&context, &response);
+
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(snapshot_path)) {
+    if (!entry.is_regular_file()) continue;
+
+    std::ifstream file(entry.path(), std::ios::binary);
+    if (!file) continue;
+
+    std::vector<char> buffer(64 * 1024);
+    while (file.good()) {
+      file.read(buffer.data(), buffer.size());
+      std::streamsize bytes_read = file.gcount();
+      if (bytes_read <= 0) break;
+
+      request.set_data(buffer.data(), static_cast<size_t>(bytes_read));
+      if (!writer->Write(request)) {
+        return Status::IOError("SyncData stream write failed");
+      }
+    }
+  }
+
+  writer->WritesDone();
+  auto status = writer->Finish();
+  if (!status.ok()) {
+    return Status::IOError("SyncData RPC failed: " + status.error_message());
+  }
+  return Status::OK();
 }
 
 Status PartitionMigrator::CatchUp(MigrationTask& task) {

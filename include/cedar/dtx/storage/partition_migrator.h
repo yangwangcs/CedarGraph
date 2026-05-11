@@ -231,6 +231,8 @@ class PartitionMigrator {
   Status CalculateChecksum(PartitionID pid, std::string* checksum);
   bool VerifyChecksum(const std::string& source_checksum, 
                       const std::string& target_checksum);
+  Status StreamSnapshotToTarget(
+      const MigrationTask& task, const std::string& snapshot_path);
   
   std::atomic<bool> running_{false};
   MigrationConfig config_;

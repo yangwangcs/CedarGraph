@@ -130,6 +130,9 @@ class PartitionStorage {
   Status SavePreparedTxns(const std::string& path) const;
   Status LoadPreparedTxns(const std::string& path);
 
+  // Save a consistent snapshot for migration (file copy + prepared txn state)
+  Status SaveSnapshotForMigration(const std::string& snapshot_path) const;
+
   // Get the data root directory for snapshot file operations
   std::string GetDataRoot() const;
   

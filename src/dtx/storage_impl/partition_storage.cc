@@ -499,6 +499,26 @@ std::string PartitionStorage::GetDataRoot() const {
   return manager_ ? manager_->GetDataRoot() : "/tmp/cedar_storage";
 }
 
+Status PartitionStorage::SaveSnapshotForMigration(const std::string& snapshot_path) const {
+  std::filesystem::create_directories(snapshot_path);
+
+  auto data_root = GetDataRoot();
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(data_root)) {
+    if (!entry.is_regular_file()) continue;
+    auto rel_path = std::filesystem::relative(entry.path(), data_root);
+    auto dst_path = snapshot_path + "/" + rel_path.string();
+    std::filesystem::create_directories(std::filesystem::path(dst_path).parent_path());
+    std::filesystem::copy_file(entry.path(), dst_path,
+                                std::filesystem::copy_options::overwrite_existing);
+  }
+
+  auto txn_state_path = snapshot_path + "/txn_state";
+  auto s = SavePreparedTxns(txn_state_path);
+  if (!s.ok()) return s;
+
+  return Status::OK();
+}
+
 Status PartitionStorage::RecoverFromWAL() {
   std::string wal_dir = manager_ ? manager_->GetDataRoot() + "/wal" : "/tmp/cedar_wal";
   std::string wal_path = wal_dir + "/partition_" + std::to_string(partition_id_) + "_wal.log";
