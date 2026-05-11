@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 
 #include "cedar/storage/cedar_graph_storage.h"
+#include "cedar/storage/lsm_engine.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/core/crc32c.h"
 
@@ -560,6 +561,12 @@ Status ExtendedPartitionManager::Initialize(const ExtendedConfig& config) {
     
     // Build initial index
     partition_index_->BuildIndex();
+    
+    // Inject partition index into LSM engine for incremental updates
+    auto* lsm = base_manager_.GetSharedStorage()->GetLsmEngine();
+    if (lsm && partition_index_) {
+      lsm->SetPartitionIndex(partition_index_.get());
+    }
   }
   
   return Status::OK();

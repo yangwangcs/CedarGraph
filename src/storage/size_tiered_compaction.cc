@@ -668,6 +668,10 @@ void SizeTieredCompactionEngine::WaitForCompactions() {
   }
 }
 
+void SizeTieredCompactionEngine::SetCompactionObserver(CompactionObserver observer) {
+  compaction_observer_ = std::move(observer);
+}
+
 Status SizeTieredCompactionEngine::CompactAll() {
   // 逐层强制合并
   for (int level = 0; level < config_.max_levels - 1; ++level) {
@@ -838,6 +842,18 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
   
   // 保存 MANIFEST
   s = SaveManifest();
+  
+  // 通知 Compaction 观察者
+  if (s.ok() && compaction_observer_) {
+    std::vector<uint64_t> removed_files;
+    for (const auto& f : task.input_files) {
+      removed_files.push_back(f.file_number);
+    }
+    for (const auto& f : task.overlapping_files) {
+      removed_files.push_back(f.file_number);
+    }
+    compaction_observer_(removed_files, output_file_number);
+  }
   
   return s;
 }

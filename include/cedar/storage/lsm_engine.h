@@ -48,6 +48,9 @@
 #include "cedar/core/env.h"
 
 namespace cedar {
+namespace dtx {
+class PartitionIndex;
+}
 
 // 前向声明
 class BatchExecutor;
@@ -122,6 +125,9 @@ class LsmEngine {
   
   // 设置 AutoBlobStorage（由上层 CedarGraphStorage 传入）
   void SetAutoBlobStorage(AutoBlobStorage* auto_blob);
+  
+  // 设置 PartitionIndex（用于增量索引更新）
+  void SetPartitionIndex(cedar::dtx::PartitionIndex* index);
   
   // 存储字符串（自动选择内联或 Blob）
   Status PutString(uint64_t entity_id, uint16_t col_id, const std::string& value);
@@ -562,6 +568,9 @@ class LsmEngine {
   // Blob 存储（由上层 CedarGraphStorage 设置）
   BlobFileManager* blob_manager_ = nullptr;
   AutoBlobStorage* auto_blob_storage_ = nullptr;
+  
+  // ========== Partition Index ==========
+  cedar::dtx::PartitionIndex* partition_index_ = nullptr;
   
   // 公开访问接口
  public:

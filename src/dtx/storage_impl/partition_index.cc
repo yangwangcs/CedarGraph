@@ -143,6 +143,16 @@ StatusOr<SSTPartitionMetadata> PartitionIndex::IndexSingleSST(
   return metadata;
 }
 
+Status PartitionIndex::IndexSSTFile(uint64_t file_number) {
+  cedar::SSTFileMeta sst_meta;
+  sst_meta.file_number = file_number;
+  auto result = IndexSingleSST(sst_meta);
+  if (result.ok()) {
+    return AddSST(file_number, result.ValueOrDie());
+  }
+  return result.status();
+}
+
 Status PartitionIndex::AddSST(uint64_t file_number, 
                               const SSTPartitionMetadata& metadata) {
   std::unique_lock<std::shared_mutex> lock(mutex_);

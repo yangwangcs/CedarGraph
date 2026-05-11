@@ -109,6 +109,9 @@ class PartitionIndex {
   // Update index when SST is deleted (Compaction)
   Status RemoveSST(uint64_t file_number);
   
+  // Convenience: scan a single SST file and add it to the index
+  Status IndexSSTFile(uint64_t file_number);
+  
   // Get all SST files that may contain data for partition
   std::vector<uint64_t> GetSSTFilesForPartition(PartitionID pid) const;
   

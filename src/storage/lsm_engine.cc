@@ -11,6 +11,7 @@
 #include "cedar/sst/sst_builder_factory.h"
 #include "cedar/transaction/batch_api.h"
 #include "cedar/transaction/wal.h"
+#include "cedar/dtx/partition_index.h"
 
 #include <filesystem>
 #include <thread>
@@ -18,6 +19,8 @@
 #include <chrono>
 #include <iostream>
 #include <unordered_set>
+
+#include <glog/logging.h>
 
 namespace cedar {
 
@@ -1517,6 +1520,15 @@ Status LsmEngine::FlushAccumulated() {
     compaction_engine_->ScheduleCompaction();
   }
   
+  // 增量更新 Partition Index
+  if (partition_index_) {
+    auto s = partition_index_->IndexSSTFile(file_number);
+    if (!s.ok()) {
+      LOG(WARNING) << "PartitionIndex::IndexSSTFile failed for file " << file_number
+                   << ": " << s.ToString();
+    }
+  }
+  
   // Accumulated flush complete
   
   return Status::OK();
@@ -1618,6 +1630,15 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::pair<CedarKey, Descriptor>>
     }
     
     compaction_engine_->ScheduleCompaction();
+  }
+  
+  // 增量更新 Partition Index
+  if (partition_index_) {
+    auto s = partition_index_->IndexSSTFile(file_number);
+    if (!s.ok()) {
+      LOG(WARNING) << "PartitionIndex::IndexSSTFile failed for file " << file_number
+                   << ": " << s.ToString();
+    }
   }
   
   return Status::OK();
@@ -2215,6 +2236,15 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
     
     compaction_engine_->ScheduleCompaction();
   }
+  
+  // 增量更新 Partition Index
+  if (partition_index_) {
+    auto s = partition_index_->IndexSSTFile(file_number);
+    if (!s.ok()) {
+      LOG(WARNING) << "PartitionIndex::IndexSSTFile failed for file " << file_number
+                   << ": " << s.ToString();
+    }
+  }
 
   return Status::OK();
 }
@@ -2335,6 +2365,22 @@ Status LsmEngine::DoCompaction(int level, const std::vector<SSTFileMeta>& inputs
       compaction_engine_->RemoveSSTFile(input.file_number);
     }
     compaction_engine_->AddSSTFile(*output_meta);
+  }
+  
+  // 增量更新 Partition Index
+  if (partition_index_) {
+    for (const auto& input : inputs) {
+      auto rs = partition_index_->RemoveSST(input.file_number);
+      if (!rs.ok()) {
+        LOG(WARNING) << "PartitionIndex::RemoveSST failed for file " << input.file_number
+                     << ": " << rs.ToString();
+      }
+    }
+    auto s = partition_index_->IndexSSTFile(file_number);
+    if (!s.ok()) {
+      LOG(WARNING) << "PartitionIndex::IndexSSTFile failed for file " << file_number
+                   << ": " << s.ToString();
+    }
   }
   
   return Status::OK();
@@ -3051,6 +3097,24 @@ void LsmEngine::SetBlobFileManager(BlobFileManager* blob_mgr) {
 
 void LsmEngine::SetAutoBlobStorage(AutoBlobStorage* auto_blob) {
   auto_blob_storage_ = auto_blob;
+}
+
+void LsmEngine::SetPartitionIndex(cedar::dtx::PartitionIndex* index) {
+  partition_index_ = index;
+  if (compaction_engine_ && partition_index_) {
+    compaction_engine_->SetCompactionObserver(
+        [this](const std::vector<uint64_t>& removed_files, uint64_t added_file) {
+          if (!partition_index_) return;
+          for (uint64_t fn : removed_files) {
+            partition_index_->RemoveSST(fn);
+          }
+          auto s = partition_index_->IndexSSTFile(added_file);
+          if (!s.ok()) {
+            LOG(WARNING) << "PartitionIndex::IndexSSTFile failed for file " << added_file
+                         << ": " << s.ToString();
+          }
+        });
+  }
 }
 
 Status LsmEngine::PutString(uint64_t entity_id, uint16_t col_id, const std::string& value) {

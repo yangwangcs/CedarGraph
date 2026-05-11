@@ -348,6 +348,10 @@ class SizeTieredCompactionEngine {
   // 手动触发全量合并
   Status CompactAll();
   
+  // ============= Compaction 回调 =============
+  using CompactionObserver = std::function<void(const std::vector<uint64_t>& removed_files, uint64_t added_file)>;
+  void SetCompactionObserver(CompactionObserver observer);
+  
   // ============= 查询支持 =============
   
   // 获取覆盖特定 Key 范围的所有 SST 文件（跨所有层级）
@@ -475,6 +479,9 @@ class SizeTieredCompactionEngine {
   // 当前正在合并的文件（防止并发合并同一文件）
   mutable std::mutex compacting_mutex_;
   std::unordered_set<uint64_t> compacting_files_;
+  
+  // Compaction 完成回调
+  CompactionObserver compaction_observer_;
 };
 
 // =============================================================================
