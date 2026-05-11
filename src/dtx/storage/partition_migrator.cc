@@ -163,21 +163,29 @@ StatusOr<uint64_t> PartitionMigrator::SubmitMigration(
     NodeID target_node,
     MigrationType type,
     MigrationProgressCallback callback) {
-  
   if (!running_.load()) {
     return Status::InvalidArgument("PartitionMigrator not running");
   }
-  
-  // Partition migration data movement is not yet fully implemented.
-  // The state machine exists but CopyData/CatchUp/SwitchTraffic are no-ops.
-  (void)pid;
-  (void)source_node;
-  (void)target_node;
-  (void)type;
-  (void)callback;
-  return Status::NotSupported(
-      "Partition migration is not yet production-ready. "
-      "Data copy, catch-up, and traffic switching are not implemented.");
+
+  uint64_t id = next_migration_id_.fetch_add(1);
+  auto task = std::make_unique<MigrationTask>();
+  task->migration_id = id;
+  task->partition_id = pid;
+  task->source_node = source_node;
+  task->target_node = target_node;
+  task->type = type;
+  task->state = MigrationState::kPending;
+  task->created_at = std::chrono::system_clock::now();
+
+  {
+    std::unique_lock<std::shared_mutex> lock(tasks_mutex_);
+    tasks_[id] = std::move(task);
+    if (callback) {
+      callbacks_[id] = callback;
+    }
+  }
+
+  return id;
 }
 
 void PartitionMigrator::ExecuteMigration(uint64_t migration_id) {
@@ -473,7 +481,6 @@ Status PartitionMigrator::SwitchTraffic(MigrationTask& task) {
     return Status::IOError("MetaD assignment update failed: " + s.ToString());
   }
 
-  task.state = MigrationState::kVerifying;
   return Status::OK();
 }
 
@@ -510,7 +517,6 @@ Status PartitionMigrator::CompleteMigration(MigrationTask& task) {
     }
   }
 
-  task.state = MigrationState::kCompleted;
   return Status::OK();
 }
 

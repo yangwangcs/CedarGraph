@@ -83,6 +83,10 @@ add_executable(test_partition_index_build dtx/test_partition_index_build.cc)
 target_link_libraries(test_partition_index_build ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_partition_index_build)
 
+add_executable(test_partition_migration_end_to_end dtx/test_partition_migration_end_to_end.cc)
+target_link_libraries(test_partition_migration_end_to_end ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_partition_migration_end_to_end)
+
 # add_cedar_test(test_sst_capacity_analysis)
 # add_cedar_test(test_auto_compaction_file_based)
 # add_cedar_test(test_sst_structure_analysis)

@@ -216,6 +216,8 @@ class PartitionMigrator {
   void SetMigrationServiceStub(
       std::shared_ptr<cedar::migration::PartitionMigrationService::Stub> stub);
 
+  friend class PartitionMigrationEndToEndTest;
+
  private:
   void MigrationWorkerLoop();
   void ExecuteMigration(uint64_t migration_id);
