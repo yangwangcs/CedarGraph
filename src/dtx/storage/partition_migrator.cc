@@ -84,6 +84,19 @@ PartitionMigrator::~PartitionMigrator() {
   Shutdown();
 }
 
+void PartitionMigrator::SetStoragePartitionManager(StoragePartitionManager* manager) {
+  partition_manager_ = manager;
+}
+
+void PartitionMigrator::SetMetaServiceClient(MetaServiceNodeClient* meta_client) {
+  meta_client_ = meta_client;
+}
+
+void PartitionMigrator::SetMigrationServiceStub(
+    std::shared_ptr<cedar::migration::PartitionMigrationService::Stub> stub) {
+  migration_stub_ = std::move(stub);
+}
+
 Status PartitionMigrator::Initialize(const MigrationConfig& config) {
   config_ = config;
   running_.store(true);

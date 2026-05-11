@@ -45,6 +45,7 @@
 #include "cedar/dtx/types.h"
 #include "cedar/dtx/transaction_state.h"
 #include "cedar/dtx/storage/braft_partition_raft.h"
+#include "cedar/dtx/storage/partition_migrator.h"
 
 // gRPC includes
 #include <grpcpp/grpcpp.h>
@@ -595,7 +596,10 @@ class StorageServer {
   // gRPC server
   std::unique_ptr<grpc::Server> grpc_server_;
   std::unique_ptr<StorageServiceImpl> service_impl_;
-  
+
+  // Partition migration
+  std::unique_ptr<storage::PartitionMigrator> partition_migrator_;
+
   std::atomic<bool> running_{false};
   std::mutex shutdown_mutex_;
   std::condition_variable shutdown_cv_;

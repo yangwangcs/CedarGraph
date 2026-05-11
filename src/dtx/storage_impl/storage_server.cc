@@ -94,7 +94,20 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
       // Continue anyway - we'll retry in heartbeat loop
     }
   }
-  
+
+  // Initialize partition migrator
+  partition_migrator_ = std::make_unique<storage::PartitionMigrator>();
+  storage::MigrationConfig migrator_config;
+  s = partition_migrator_->Initialize(migrator_config);
+  if (!s.ok()) {
+    std::cerr << "Warning: Failed to initialize partition migrator: " << s.ToString() << std::endl;
+    // Continue anyway - migration is optional
+  } else {
+    // Inject dependencies
+    partition_migrator_->SetStoragePartitionManager(&partition_manager_);
+    partition_migrator_->SetMetaServiceClient(meta_client_.get());
+  }
+
   return Status::OK();
 }
 
@@ -165,9 +178,14 @@ Status StorageServer::Shutdown() {
     meta_client_->Shutdown();
   }
   
+  // Shutdown partition migrator
+  if (partition_migrator_) {
+    partition_migrator_->Shutdown();
+  }
+
   // Shutdown partition manager
   partition_manager_.Shutdown();
-  
+
   // Shutdown raft manager
   if (raft_manager_) {
     raft_manager_->Shutdown();

@@ -35,9 +35,14 @@
 
 #include "cedar/core/status.h"
 #include "cedar/dtx/types.h"
+#include "migration_service.grpc.pb.h"
 
 namespace cedar {
 namespace dtx {
+
+class StoragePartitionManager;
+class MetaServiceNodeClient;
+
 namespace storage {
 
 // =============================================================================
@@ -202,6 +207,12 @@ class PartitionMigrator {
   };
   Stats GetStats() const;
 
+  // Dependency injection for data movement
+  void SetStoragePartitionManager(StoragePartitionManager* manager);
+  void SetMetaServiceClient(MetaServiceNodeClient* meta_client);
+  void SetMigrationServiceStub(
+      std::shared_ptr<cedar::migration::PartitionMigrationService::Stub> stub);
+
  private:
   void MigrationWorkerLoop();
   void ExecuteMigration(uint64_t migration_id);
@@ -234,6 +245,10 @@ class PartitionMigrator {
   
   mutable std::mutex stats_mutex_;
   Stats stats_;
+
+  StoragePartitionManager* partition_manager_ = nullptr;
+  MetaServiceNodeClient* meta_client_ = nullptr;
+  std::shared_ptr<cedar::migration::PartitionMigrationService::Stub> migration_stub_;
 };
 
 // =============================================================================
