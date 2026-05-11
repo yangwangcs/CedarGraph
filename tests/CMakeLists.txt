@@ -36,6 +36,11 @@ endmacro()
 # Cypher tests
 add_subdirectory(cypher)
 
+# Queryd tests
+add_executable(test_subquery_execution queryd/test_subquery_execution.cc)
+target_link_libraries(test_subquery_execution ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_subquery_execution)
+
 # Core tests
 add_cedar_test(test_cedar_key)
 add_cedar_test(test_descriptor)

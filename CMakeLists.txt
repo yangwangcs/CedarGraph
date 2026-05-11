@@ -397,6 +397,7 @@ set(CEDAR_GRAPH_SOURCES
 set(CEDAR_QUERYD_SOURCES
     src/queryd/distributed_executor.cpp
     src/queryd/query_storage_client.cpp    # 重命名避免冲突
+    src/queryd/storage_execution_context.cc
     src/queryd/meta_client.cpp
     src/queryd/query_service_full.cpp      # 完整版，包含 gRPC 服务
 )
@@ -431,6 +432,7 @@ set(QUERYD_PROTO_SOURCES
 # Queryd library (简化版)
 add_library(cedar_queryd STATIC 
     src/queryd/query_storage_client.cpp
+    src/queryd/storage_execution_context.cc
     src/queryd/distributed_executor.cpp
     src/queryd/meta_client.cpp
     ${QUERYD_PROTO_SOURCES}

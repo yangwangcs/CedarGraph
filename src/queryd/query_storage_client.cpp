@@ -13,6 +13,7 @@
 #include "cedar/cypher/parser.h"
 #include "cedar/cypher/ast.h"
 #include "cedar/cypher/expression_evaluator.h"
+#include "cedar/queryd/storage_execution_context.h"
 
 namespace cedar {
 namespace queryd {
@@ -213,7 +214,8 @@ std::unique_ptr<CedarScan> QueryStorageClient::CreateScan(Timestamp snapshot_ts)
 
 class NodeClientImpl : public QueryStorageClient::NodeClient {
  public:
-  explicit NodeClientImpl(QueryStorageClient* client) : client_(client) {}
+  explicit NodeClientImpl(QueryStorageClient* client, uint32_t partition_id)
+      : client_(client), partition_id_(partition_id) {}
 
   Status ScanEntity(uint64_t entity_id,
                     EntityType entity_type,
@@ -230,109 +232,47 @@ class NodeClientImpl : public QueryStorageClient::NodeClient {
       const std::string& query_fragment,
       const std::unordered_map<std::string, cypher::Value>& parameters,
       cypher::ResultSet* result) override {
-    if (!result) {
-      return Status::InvalidArgument("result pointer is null");
-    }
-
-    // Parse the query fragment
     cypher::CypherParser parser(query_fragment);
     auto stmt = parser.ParseStatement();
     if (!stmt) {
-      return Status::InvalidArgument("Failed to parse sub-query: " + parser.GetError());
+      return Status::InvalidArgument("Parse failed: " + parser.GetError());
     }
 
-    // Only support MATCH...RETURN (with optional WHERE) for now
-    if (stmt->clauses.empty() ||
-        stmt->clauses[0]->clause_type != cypher::ClauseType::MATCH) {
-      return Status::NotSupported(
-          "ExecuteSubQuery only supports MATCH...RETURN");
+    // Build execution plan
+    auto plan = cypher::ExecutionPlanBuilder::Build(stmt);
+    if (!plan) {
+      return Status::InvalidArgument("Plan build failed");
     }
 
-    auto* match = static_cast<cypher::MatchClause*>(stmt->clauses[0].get());
+    // Create storage-backed execution context
+    StorageBackedExecutionContext ctx(client_, partition_id_);
+    ctx.variables.reserve(parameters.size());
+    for (const auto& [name, val] : parameters) {
+      ctx.SetVariable(name, val);
+    }
 
-    // Reject relationship traversals - only single node scans are supported
-    for (const auto& pattern : match->patterns) {
-      for (const auto& element : pattern.elements) {
-        if (std::holds_alternative<cypher::RelationshipPattern>(element)) {
-          return Status::NotSupported(
-              "ExecuteSubQuery does not support relationship traversals yet");
+    // Initialize and execute
+    if (!plan->Init(&ctx)) {
+      return Status::IOError("Plan initialization failed");
+    }
+
+    result->columns.clear();
+    result->records.clear();
+    result->error = std::nullopt;
+
+    while (auto record = plan->Next()) {
+      result->records.push_back(*record);
+    }
+
+    // Extract column names from RETURN clause
+    for (const auto& clause : stmt->clauses) {
+      if (clause->clause_type == cypher::ClauseType::RETURN) {
+        auto* ret = static_cast<cypher::ReturnClause*>(clause.get());
+        for (const auto& item : ret->items) {
+          result->columns.push_back(item.alias.value_or("column"));
         }
+        break;
       }
-    }
-
-    // Reject OPTIONAL MATCH
-    if (match->optional) {
-      return Status::NotSupported(
-          "ExecuteSubQuery does not support OPTIONAL MATCH");
-    }
-
-    bool has_return = false;
-    std::function<bool(const cypher::Record&)> filter;
-
-    for (size_t i = 1; i < stmt->clauses.size(); ++i) {
-      const auto& clause = stmt->clauses[i];
-      switch (clause->clause_type) {
-        case cypher::ClauseType::WHERE: {
-          auto* where = static_cast<cypher::WhereClause*>(clause.get());
-          filter = cypher::ExpressionEvaluator::BuildPredicate(
-              where->condition.get(), parameters);
-          break;
-        }
-        case cypher::ClauseType::RETURN:
-          has_return = true;
-          break;
-        case cypher::ClauseType::ORDER_BY:
-        case cypher::ClauseType::LIMIT:
-        case cypher::ClauseType::SKIP:
-          // Silently ignore for now - they don't affect correctness
-          break;
-        case cypher::ClauseType::CREATE:
-        case cypher::ClauseType::SET:
-        case cypher::ClauseType::DELETE:
-          return Status::NotSupported(
-              "ExecuteSubQuery does not support write clauses");
-        default:
-          return Status::NotSupported(
-              "ExecuteSubQuery does not support clause type");
-      }
-    }
-
-    if (!has_return) {
-      return Status::NotSupported("Only MATCH...RETURN sub-queries are supported");
-    }
-
-    // Extract entity alias from first node pattern
-    std::string entity_alias;
-    if (!match->patterns.empty() && !match->patterns[0].elements.empty()) {
-      if (auto* node_pattern = std::get_if<cypher::NodePattern>(&match->patterns[0].elements[0])) {
-        entity_alias = node_pattern->variable;
-      }
-    }
-
-    // Full partition scan (node_id = 0 means all nodes)
-    // This is the minimal viable implementation for cross-partition queries.
-    std::vector<std::pair<Timestamp, Descriptor>> versions;
-    Status s = client_->ScanNode(0, Timestamp::Max(), &versions);
-    if (!s.ok()) {
-      return s;
-    }
-
-    // Convert scan results to cypher::ResultSet records and apply filter
-    for (const auto& [ts, desc] : versions) {
-      (void)ts;
-      cypher::Record record;
-      if (!entity_alias.empty()) {
-        cypher::Node node;
-        node.id = desc.AsRaw();
-        record.values[entity_alias] = cypher::Value(std::move(node));
-      }
-
-      // Apply WHERE filter
-      if (filter && !filter(record)) {
-        continue;
-      }
-
-      result->records.push_back(std::move(record));
     }
 
     return Status::OK();
@@ -340,12 +280,12 @@ class NodeClientImpl : public QueryStorageClient::NodeClient {
 
  private:
   QueryStorageClient* client_;
+  uint32_t partition_id_;
 };
 
 std::shared_ptr<QueryStorageClient::NodeClient> QueryStorageClient::GetNodeClient(
     uint32_t partition_id) {
-  (void)partition_id;
-  return std::make_shared<NodeClientImpl>(this);
+  return std::make_shared<NodeClientImpl>(this, partition_id);
 }
 
 Status QueryStorageClient::HealthCheck() {

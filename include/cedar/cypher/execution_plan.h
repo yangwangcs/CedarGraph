@@ -16,6 +16,7 @@
 #include "cedar/cypher/ast.h"
 #include "cedar/cypher/temporal_dialect.h"
 #include "cedar/cypher/value.h"
+#include "cedar/graph/cedar_graph.h"
 
 namespace cedar {
 
@@ -45,6 +46,14 @@ struct ExecutionContext {
   
   // GCN traversal callback - routes edge expansion to GCN when available
   std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> gcn_traversal_callback;
+  
+  // Storage-backed alternatives when CedarGraph is not available (e.g., QueryD sub-queries)
+  std::function<std::vector<uint64_t>(uint64_t min_id, uint64_t max_id, uint64_t step)> get_all_entities_fn;
+  std::function<std::vector<cedar::Neighbor>(uint64_t vertex_id, uint16_t edge_type, cedar::Timestamp start, cedar::Timestamp end)> get_out_neighbors_fn;
+  std::function<std::vector<cedar::Neighbor>(uint64_t vertex_id, uint16_t edge_type, cedar::Timestamp start, cedar::Timestamp end)> get_in_neighbors_fn;
+  
+  // Partition restriction for sub-query execution
+  std::optional<uint16_t> partition_id;
   
   // TMV engine for temporal queries
   cedar::gcn::TMVEngine* tmv_engine = nullptr;

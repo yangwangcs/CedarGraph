@@ -104,7 +104,7 @@ ExecutionPlan::ExecutionPlan(std::shared_ptr<PhysicalOperator> root)
     : root_(root) {}
 
 ResultSet ExecutionPlan::Execute(ExecutionContext* ctx) {
-  if (!ctx || (!ctx->graph && !ctx->gcn_traversal_callback)) {
+  if (!ctx || (!ctx->graph && !ctx->gcn_traversal_callback && !ctx->get_all_entities_fn)) {
     ResultSet result;
     result.SetError("Invalid execution context");
     return result;
@@ -193,7 +193,9 @@ bool NodeScan::Init(ExecutionContext* ctx) {
   }
   
   // Check if graph context provides entity enumeration
-  if (ctx->graph) {
+  if (ctx->get_all_entities_fn) {
+    node_ids_ = ctx->get_all_entities_fn(min_entity_id, max_entity_id, 1);
+  } else if (ctx->graph) {
     node_ids_ = ctx->graph->GetAllEntities(min_entity_id, max_entity_id, 1);
   } else {
     // Fallback: simple sequential range
@@ -313,11 +315,31 @@ std::shared_ptr<Record> Expand::Next() {
         for (uint64_t nid : neighbor_ids) {
           neighbors_.emplace_back(nid, Timestamp(0));
         }
-      } else if (context_->graph) {
-        auto neighbor_list = context_->graph->GetOutNeighbors(
-            from_id, edge_type, 0, Timestamp::Max());
+      } else if (direction_ == Direction::INCOMING && context_->get_in_neighbors_fn) {
+        auto neighbor_list = context_->get_in_neighbors_fn(
+            from_id, edge_type, Timestamp(0), Timestamp::Max());
         for (const auto& n : neighbor_list) {
           neighbors_.emplace_back(n.id, n.timestamp);
+        }
+      } else if (direction_ != Direction::INCOMING && context_->get_out_neighbors_fn) {
+        auto neighbor_list = context_->get_out_neighbors_fn(
+            from_id, edge_type, Timestamp(0), Timestamp::Max());
+        for (const auto& n : neighbor_list) {
+          neighbors_.emplace_back(n.id, n.timestamp);
+        }
+      } else if (context_->graph) {
+        if (direction_ == Direction::INCOMING) {
+          auto neighbor_list = context_->graph->GetInNeighbors(
+              from_id, edge_type, Timestamp(0), Timestamp::Max());
+          for (const auto& n : neighbor_list) {
+            neighbors_.emplace_back(n.id, n.timestamp);
+          }
+        } else {
+          auto neighbor_list = context_->graph->GetOutNeighbors(
+              from_id, edge_type, Timestamp(0), Timestamp::Max());
+          for (const auto& n : neighbor_list) {
+            neighbors_.emplace_back(n.id, n.timestamp);
+          }
         }
       }
       
