@@ -233,6 +233,8 @@ class PartitionMigrator {
                       const std::string& target_checksum);
   Status StreamSnapshotToTarget(
       const MigrationTask& task, const std::string& snapshot_path);
+  Status ReplayWalToTarget(
+      const MigrationTask& task, const std::string& wal_path);
   
   std::atomic<bool> running_{false};
   MigrationConfig config_;
