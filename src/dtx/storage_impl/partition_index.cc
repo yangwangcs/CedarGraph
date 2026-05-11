@@ -19,7 +19,7 @@
 #include <filesystem>
 #include <unordered_map>
 
-#include <glog/logging.h>
+#include "cedar/common/logging.h"
 
 #include "cedar/storage/lsm_engine.h"
 #include "cedar/sst/zone_columnar_reader.h"

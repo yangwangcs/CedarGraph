@@ -20,7 +20,7 @@
 #include <iostream>
 #include <unordered_set>
 
-#include <glog/logging.h>
+#include "cedar/common/logging.h"
 
 namespace cedar {
 
