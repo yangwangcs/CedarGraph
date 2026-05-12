@@ -204,6 +204,36 @@ services:
       start_period: 30s
 
   # ============================================================================
+  # Query Service - 查询分发服务
+  # ============================================================================
+  queryd:
+    <<: *cedar-base
+    container_name: cedar-queryd
+    hostname: queryd
+    environment:
+      - NODE_ROLE=queryd
+      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - QUERY_PORT=9889
+    volumes:
+      - ./logs/queryd:/logs
+    ports:
+      - "9889:9889"
+    depends_on:
+      storaged0:
+        condition: service_healthy
+      storaged1:
+        condition: service_healthy
+      storaged2:
+        condition: service_healthy
+    command: ["cedar-queryd", "--bind=0.0.0.0:9889", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9889 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================================
   # Console - 命令行客户端 (内置)
   # ============================================================================
   console:
