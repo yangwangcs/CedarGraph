@@ -195,3 +195,97 @@ TEST_F(MultiThreadedConcurrentTest, WriteWriteConflictDetection) {
   ASSERT_FALSE(versions.empty());
   EXPECT_EQ(versions.back().second.GetPayload(), 111);
 }
+
+TEST_F(MultiThreadedConcurrentTest, ConcurrentReadWriteMix) {
+  constexpr int kNumWriterThreads = 2;
+  constexpr int kNumReaderThreads = 2;
+  constexpr int kWritesPerThread = 100;
+  constexpr int kReadsPerThread = 200;
+
+  std::atomic<int> writes_done{0};
+  std::atomic<bool> stop_readers{false};
+
+  // Pre-seed some data so readers have something to read immediately
+  for (uint64_t i = 1; i <= 20; ++i) {
+    CedarKey key;
+    key.SetEntityId(i);
+    key.SetColumnId(1);
+    key.SetEntityType(1);
+    key.SetPartId(1);
+
+    std::vector<CedarKey> write_set = {key};
+    std::unordered_map<uint64_t, Descriptor> write_descriptors;
+    write_descriptors[CedarKeyHash{}(key)] = Descriptor::InlineInt(0, static_cast<int32_t>(i));
+
+    auto status = partition_->Prepare(5000 + i, {}, write_set, write_descriptors, Timestamp(1000));
+    ASSERT_TRUE(status.ok());
+    status = partition_->Commit(5000 + i, Timestamp(2000));
+    ASSERT_TRUE(status.ok());
+  }
+
+  std::vector<std::thread> writers;
+  for (int t = 0; t < kNumWriterThreads; ++t) {
+    writers.emplace_back([this, t, &writes_done]() {
+      for (int i = 0; i < kWritesPerThread; ++i) {
+        uint64_t entity_id = 100 + t * kWritesPerThread + i;
+        CedarKey key;
+        key.SetEntityId(entity_id);
+        key.SetColumnId(1);
+        key.SetEntityType(1);
+        key.SetPartId(1);
+
+        TxnID txn_id = 6000 + entity_id;
+        std::vector<CedarKey> write_set = {key};
+        std::unordered_map<uint64_t, Descriptor> write_descriptors;
+        write_descriptors[CedarKeyHash{}(key)] = Descriptor::InlineInt(0, static_cast<int32_t>(entity_id));
+
+        auto status = partition_->Prepare(txn_id, {}, write_set, write_descriptors, Timestamp(1000));
+        if (status.ok()) {
+          partition_->Commit(txn_id, Timestamp(2000));
+          writes_done.fetch_add(1);
+        }
+      }
+    });
+  }
+
+  std::vector<std::thread> readers;
+  for (int t = 0; t < kNumReaderThreads; ++t) {
+    readers.emplace_back([this, &writes_done, &stop_readers]() {
+      for (int i = 0; i < kReadsPerThread; ++i) {
+        if (stop_readers.load()) break;
+
+        // Read a random entity from the pre-seeded range
+        uint64_t entity_id = 1 + (i % 20);
+        std::vector<std::pair<Timestamp, Descriptor>> versions;
+        auto status = partition_manager_->GetSharedStorage()->ScanNode(entity_id, Timestamp::Max(), &versions);
+
+        // We don't assert on specific values here — the goal is to verify
+        // that concurrent reads don't crash or corrupt the storage.
+        (void)status;
+
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+      }
+    });
+  }
+
+  for (auto& t : writers) {
+    t.join();
+  }
+  stop_readers.store(true);
+  for (auto& t : readers) {
+    t.join();
+  }
+
+  EXPECT_EQ(writes_done.load(), kNumWriterThreads * kWritesPerThread);
+
+  // Post-hoc verification: all writes are readable
+  for (int t = 0; t < kNumWriterThreads; ++t) {
+    for (int i = 0; i < kWritesPerThread; ++i) {
+      uint64_t entity_id = 100 + t * kWritesPerThread + i;
+      std::vector<std::pair<Timestamp, Descriptor>> versions;
+      auto status = partition_manager_->GetSharedStorage()->ScanNode(entity_id, Timestamp::Max(), &versions);
+      EXPECT_TRUE(status.ok());
+      EXPECT_FALSE(versions.empty()) << "Entity " << entity_id << " not found after concurrent mix";
+    }
+  }
+}
