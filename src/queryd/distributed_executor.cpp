@@ -767,19 +767,87 @@ bool DistributedExecutor::IsSinglePartitionQuery(
     const std::unordered_map<std::string, cypher::Value>& parameters,
     uint32_t* partition_id) {
   
-  // Simple heuristic: check if query contains specific node ID lookup
-  // e.g., MATCH (n {id: 123}) WHERE id(n) = 123
-  
-  // Parse to extract entity IDs
   cypher::CypherParser parser(query);
   auto ast = parser.ParseStatement();
   if (!ast) {
     return false;
   }
   
-  // Check if all referenced entities are in the same partition
-  // This is simplified - production would do proper analysis
-  return false;  // Default to cross-partition for safety
+  // Extract entity IDs from MATCH ... (n {id: X}) patterns
+  std::vector<uint64_t> entity_ids;
+  for (const auto& clause : ast->clauses) {
+    if (clause->clause_type != cypher::ClauseType::MATCH) {
+      continue;
+    }
+    auto* match = static_cast<cypher::MatchClause*>(clause.get());
+    for (const auto& pattern : match->patterns) {
+      for (const auto& element : pattern.elements) {
+        if (!std::holds_alternative<cypher::NodePattern>(element)) {
+          continue;
+        }
+        const auto& node = std::get<cypher::NodePattern>(element);
+        auto it = node.properties.find("id");
+        if (it == node.properties.end()) {
+          continue;
+        }
+        if (it->second->expr_type != cypher::ExprType::LITERAL) {
+          continue;
+        }
+        auto* literal = static_cast<cypher::LiteralExpr*>(it->second.get());
+        if (literal->value.IsInt()) {
+          entity_ids.push_back(static_cast<uint64_t>(literal->value.GetInt()));
+        }
+      }
+    }
+  }
+  
+  // Also check WHERE id(n) = X patterns
+  for (const auto& clause : ast->clauses) {
+    if (clause->clause_type != cypher::ClauseType::WHERE) {
+      continue;
+    }
+    auto* where = static_cast<cypher::WhereClause*>(clause.get());
+    if (!where->condition) {
+      continue;
+    }
+    if (where->condition->expr_type != cypher::ExprType::COMPARISON) {
+      continue;
+    }
+    auto* comp = static_cast<cypher::ComparisonExpr*>(where->condition.get());
+    if (comp->op != cypher::ComparisonExpr::EQ) {
+      continue;
+    }
+    if (comp->left->expr_type != cypher::ExprType::PROPERTY ||
+        comp->right->expr_type != cypher::ExprType::LITERAL) {
+      continue;
+    }
+    auto* prop = static_cast<cypher::PropertyExpr*>(comp->left.get());
+    if (prop->property != "id") {
+      continue;
+    }
+    auto* literal = static_cast<cypher::LiteralExpr*>(comp->right.get());
+    if (literal->value.IsInt()) {
+      entity_ids.push_back(static_cast<uint64_t>(literal->value.GetInt()));
+    }
+  }
+  
+  if (entity_ids.empty()) {
+    return false;
+  }
+  
+  if (!router_) {
+    return false;
+  }
+  
+  uint32_t target_partition = router_->GetPartitionId(entity_ids[0]);
+  for (size_t i = 1; i < entity_ids.size(); ++i) {
+    if (router_->GetPartitionId(entity_ids[i]) != target_partition) {
+      return false;
+    }
+  }
+  
+  *partition_id = target_partition;
+  return true;
 }
 
 Status DistributedExecutor::ExecuteSinglePartition(
