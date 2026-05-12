@@ -40,6 +40,13 @@ spec:
             port: 9669
           initialDelaySeconds: 5
           periodSeconds: 5
+        volumeMounts:
+        - name: config
+          mountPath: /etc/cedar
+      volumes:
+      - name: config
+        configMap:
+          name: graphd-config
 ---
 apiVersion: v1
 kind: Service

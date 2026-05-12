@@ -9,6 +9,8 @@ resources:
   - storaged.yaml
   - graphd.yaml
   - queryd.yaml
+  - storaged-config.yaml
+  - graphd-config.yaml
 
 commonLabels:
   app.kubernetes.io/part-of: cedargraph

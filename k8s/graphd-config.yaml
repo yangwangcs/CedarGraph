@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: graphd-config
+  namespace: cedargraph
+data:
+  graphd.conf: |
+    node_type=graphd
+    query_port=9669
+    http_port=19669
+    max_concurrent_queries=1000
+    query_timeout_ms=30000
+    enable_query_cache=true
+    cache_ttl_seconds=60

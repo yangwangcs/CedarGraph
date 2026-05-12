@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storaged-config
+  namespace: cedargraph
+data:
+  storaged.conf: |
+    node_type=storaged
+    data_dir=/var/lib/cedar/storage
+    wal_dir=/var/lib/cedar/storage/wal
+    max_partitions=1024
+    flush_interval_ms=1000
+    compaction_enabled=true
+    raft_election_timeout_ms=1000
+    raft_heartbeat_interval_ms=100
+    dtx_port=7001
+    health_check_interval=30

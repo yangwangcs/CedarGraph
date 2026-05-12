@@ -80,9 +80,14 @@ spec:
           mountPath: /var/lib/cedar/storage
         - name: logs
           mountPath: /var/log/cedar
+        - name: config
+          mountPath: /etc/cedar
       volumes:
       - name: logs
         emptyDir: {}
+      - name: config
+        configMap:
+          name: storaged-config
   volumeClaimTemplates:
   - metadata:
       name: data
