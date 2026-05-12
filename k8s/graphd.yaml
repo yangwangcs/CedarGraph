@@ -17,8 +17,8 @@ spec:
     spec:
       containers:
       - name: graphd
-        image: cedargraph/cedar:latest
-        command: ["/bin/graphd"]
+        image: cedargraph:latest
+        command: ["/usr/local/bin/cedar-graphd"]
         args: ["--meta_server=metad:9559", "--port=9669"]
         ports:
         - containerPort: 9669
