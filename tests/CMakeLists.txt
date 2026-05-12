@@ -45,7 +45,9 @@ gtest_discover_tests(test_subquery_execution)
 add_cedar_test(test_cedar_key)
 add_cedar_test(test_descriptor)
 add_cedar_test(test_descriptor_schema_version)
-# add_cedar_test(test_cedar_graph_storage)
+add_executable(test_cedar_graph_storage storage/test_cedar_graph_storage.cc)
+target_link_libraries(test_cedar_graph_storage ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_cedar_graph_storage)
 add_cedar_test(test_cedar_update)
 add_cedar_test(test_cedar_update_validation)
 add_cedar_test(test_cedar_update_e2e)
@@ -66,6 +68,11 @@ add_cedar_test(test_temporal_minimal)
 # add_cedar_test(test_skeleton_cache_bare_perf)
 # add_cedar_test(test_rw_performance)
 add_cedar_test(test_driver_transaction)
+
+# End-to-end partition test
+add_executable(test_end_to_end_partition test_end_to_end_partition.cc)
+target_link_libraries(test_end_to_end_partition ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_end_to_end_partition)
 
 # DTX tests (in subdirectories)
 add_executable(test_2pc_recovery dtx/test_2pc_recovery.cpp)
@@ -192,9 +199,9 @@ endif()
 # gtest_discover_tests(test_partition_raft_manager)
 
 # Partition Router Tests
-# add_executable(test_partition_router cluster/test_partition_router.cc)
-# target_link_libraries(test_partition_router ${CEDAR_TEST_LIBS})
-# gtest_discover_tests(test_partition_router)
+add_executable(test_partition_router cluster/test_partition_router.cc)
+target_link_libraries(test_partition_router ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_partition_router)
 
 # Partition Storage Integration Tests
 # add_executable(test_partition_storage_integration cluster/test_partition_storage_integration.cc)

@@ -800,14 +800,15 @@ target_include_directories(test_mth_3node_temporal_performance PRIVATE
 )
 
 # End-to-End Partition Test (Production Readiness)
-add_executable(test_end_to_end_partition
-    tests/test_end_to_end_partition.cc
-)
-target_link_libraries(test_end_to_end_partition cedar ${LZ4_LIBRARIES})
-target_include_directories(test_end_to_end_partition PRIVATE 
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-)
+# NOTE: This target is already defined in tests/CMakeLists.txt
+# add_executable(test_end_to_end_partition
+#     tests/test_end_to_end_partition.cc
+# )
+# target_link_libraries(test_end_to_end_partition cedar ${LZ4_LIBRARIES})
+# target_include_directories(test_end_to_end_partition PRIVATE 
+#     ${CMAKE_SOURCE_DIR}/include
+#     ${CMAKE_SOURCE_DIR}/src
+# )
 
 # Enable Release mode by default if not specified
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
