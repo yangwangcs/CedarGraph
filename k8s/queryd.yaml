@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queryd
+  namespace: cedargraph
+  labels:
+    app: queryd
+    app.kubernetes.io/name: queryd
+    app.kubernetes.io/component: query
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: queryd
+  template:
+    metadata:
+      labels:
+        app: queryd
+        app.kubernetes.io/name: queryd
+        app.kubernetes.io/component: query
+    spec:
+      containers:
+      - name: queryd
+        image: cedargraph:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/local/bin/cedar-queryd"]
+        args: ["--meta_server=metad:9559", "--port=9889"]
+        env:
+        - name: NODE_ROLE
+          value: "queryd"
+        - name: META_SERVERS
+          value: "metad-0.metad:6000,metad-1.metad:6001,metad-2.metad:6002"
+        ports:
+        - containerPort: 9889
+          name: grpc
+        livenessProbe:
+          tcpSocket:
+            port: 9889
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 9889
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: queryd
+  namespace: cedargraph
+  labels:
+    app: queryd
+spec:
+  selector:
+    app: queryd
+  ports:
+  - port: 9889
+    targetPort: 9889
+    name: grpc
+  type: ClusterIP

@@ -8,6 +8,7 @@ resources:
   - metad.yaml
   - storaged.yaml
   - graphd.yaml
+  - queryd.yaml
 
 commonLabels:
   app.kubernetes.io/part-of: cedargraph
