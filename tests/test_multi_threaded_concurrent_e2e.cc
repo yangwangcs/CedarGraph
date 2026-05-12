@@ -132,3 +132,66 @@ TEST_F(MultiThreadedConcurrentTest, ConcurrentIndependentWriters) {
     }
   }
 }
+
+
+TEST_F(MultiThreadedConcurrentTest, WriteWriteConflictDetection) {
+  CedarKey key;
+  key.SetEntityId(999);
+  key.SetColumnId(1);
+  key.SetEntityType(1);
+  key.SetPartId(1);
+
+  std::atomic<bool> t1_prepared{false};
+  std::atomic<bool> t2_started{false};
+
+  std::thread t1([this, &key, &t1_prepared, &t2_started]() {
+    std::vector<CedarKey> write_set = {key};
+    std::unordered_map<uint64_t, Descriptor> write_descriptors;
+    write_descriptors[CedarKeyHash{}(key)] = Descriptor::InlineInt(0, 111);
+
+    auto status = partition_->Prepare(1001, {}, write_set, write_descriptors, Timestamp(1000));
+    ASSERT_TRUE(status.ok()) << "T1 Prepare should succeed: " << status.ToString();
+    t1_prepared.store(true);
+
+    // Wait for T2 to attempt its conflicting Prepare
+    while (!t2_started.load()) {
+      std::this_thread::yield();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Now commit T1
+    status = partition_->Commit(1001, Timestamp(2000));
+    EXPECT_TRUE(status.ok()) << "T1 Commit should succeed: " << status.ToString();
+  });
+
+  std::thread t2([this, &key, &t1_prepared, &t2_started]() {
+    // Wait until T1 has prepared
+    while (!t1_prepared.load()) {
+      std::this_thread::yield();
+    }
+
+    std::vector<CedarKey> write_set = {key};
+    std::unordered_map<uint64_t, Descriptor> write_descriptors;
+    write_descriptors[CedarKeyHash{}(key)] = Descriptor::InlineInt(0, 222);
+
+    t2_started.store(true);
+    auto status = partition_->Prepare(1002, {}, write_set, write_descriptors, Timestamp(1000));
+
+    // T2 should see a write-write conflict because T1 is still prepared
+    EXPECT_FALSE(status.ok()) << "T2 Prepare should fail due to conflict";
+    EXPECT_TRUE(status.IsBusy() || status.ToString().find("conflict") != std::string::npos)
+        << "Expected conflict error, got: " << status.ToString();
+  });
+
+  t1.join();
+  t2.join();
+
+  // Verify only T1's value was committed
+  auto* shared = partition_manager_->GetSharedStorage();
+  ASSERT_NE(shared, nullptr);
+  std::vector<std::pair<Timestamp, Descriptor>> versions;
+  auto status = shared->ScanNode(999, Timestamp::Max(), &versions);
+  ASSERT_TRUE(status.ok());
+  ASSERT_FALSE(versions.empty());
+  EXPECT_EQ(versions.back().second.GetPayload(), 111);
+}
