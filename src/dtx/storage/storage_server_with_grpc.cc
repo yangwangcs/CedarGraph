@@ -606,8 +606,17 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
         }
       }
       
-      // Call Prepare on partition
+      // Deserialize write_descriptors from proto request
       std::unordered_map<uint64_t, Descriptor> write_descriptors;
+      for (const auto& [key_hash, proto_desc] : request->write_descriptors()) {
+        if (!proto_desc.data().empty() && proto_desc.data().size() == sizeof(uint64_t)) {
+          uint64_t raw;
+          std::memcpy(&raw, proto_desc.data().data(), sizeof(raw));
+          write_descriptors[key_hash] = Descriptor(raw);
+        }
+      }
+      
+      // Call Prepare on partition
       Status status = partition->Prepare(txn_id, partition_reads, partition_writes, write_descriptors, commit_ts);
       if (!status.ok()) {
         all_prepared = false;
