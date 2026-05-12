@@ -74,6 +74,11 @@ add_executable(test_end_to_end_partition test_end_to_end_partition.cc)
 target_link_libraries(test_end_to_end_partition ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_end_to_end_partition)
 
+# Multi-threaded concurrent end-to-end test
+add_executable(test_multi_threaded_concurrent_e2e test_multi_threaded_concurrent_e2e.cc)
+target_link_libraries(test_multi_threaded_concurrent_e2e ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_multi_threaded_concurrent_e2e)
+
 # DTX tests (in subdirectories)
 add_executable(test_2pc_recovery dtx/test_2pc_recovery.cpp)
 target_link_libraries(test_2pc_recovery ${CEDAR_TEST_LIBS} glog)
@@ -132,6 +137,11 @@ gtest_discover_tests(test_governance_integration)
 add_executable(test_full_stack integration/test_full_stack.cc)
 target_link_libraries(test_full_stack ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_full_stack)
+
+# Linear end-to-end pipeline test
+add_executable(test_linear_end_to_end_pipeline test_linear_end_to_end_pipeline.cc)
+target_link_libraries(test_linear_end_to_end_pipeline ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_linear_end_to_end_pipeline)
 
 # End-to-end tests
 add_executable(test_distributed_storage_api end_to_end/test_distributed_storage_api.cc)
