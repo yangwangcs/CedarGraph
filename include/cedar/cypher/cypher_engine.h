@@ -58,6 +58,9 @@ class CypherEngine {
   // 获取缓存统计
   size_t GetCacheSize() const;
   
+  // Test-only accessor for the storage pointer
+  CedarGraphStorage* GetStorage() const { return storage_; }
+  
   // Set GCN traversal callback for routing edge expansions to GCN
   void SetGcnTraversalCallback(
       std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> callback);

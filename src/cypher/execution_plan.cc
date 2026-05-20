@@ -5,7 +5,9 @@
 #include "cedar/cypher/expression_evaluator.h"
 #include "cedar/graph/cedar_graph.h"
 #include "cedar/storage/cedar_graph_storage.h"
+#include "cedar/core/logging.h"
 #include <algorithm>
+#include <cstdlib>
 #include <sstream>
 
 namespace cedar {
@@ -104,7 +106,7 @@ ExecutionPlan::ExecutionPlan(std::shared_ptr<PhysicalOperator> root)
     : root_(root) {}
 
 ResultSet ExecutionPlan::Execute(ExecutionContext* ctx) {
-  if (!ctx || (!ctx->graph && !ctx->gcn_traversal_callback && !ctx->get_all_entities_fn)) {
+  if (!ctx || (!ctx->graph && !ctx->gcn_traversal_callback && !ctx->get_all_entities_fn && !ctx->storage)) {
     ResultSet result;
     result.SetError("Invalid execution context");
     return result;
@@ -300,11 +302,15 @@ std::shared_ptr<Record> Expand::Next() {
     if (neighbors_.empty()) {
       neighbors_.clear();
       
-      uint16_t edge_type = 0;  // Default edge type
-      if (rel_type_) {
-        try {
-          edge_type = static_cast<uint16_t>(std::stoi(*rel_type_));
-        } catch (...) {
+      uint16_t edge_type = 0;
+      if (rel_type_ && !rel_type_->empty()) {
+        char* end = nullptr;
+        long parsed = std::strtol(rel_type_->c_str(), &end, 10);
+        if (end != rel_type_->c_str() && *end == '\0') {
+          edge_type = static_cast<uint16_t>(parsed);
+        } else {
+          CEDAR_LOG_WARN() << "Symbolic edge type '" << *rel_type_
+                           << "' not resolved to numeric ID; using 0";
           edge_type = 0;
         }
       }

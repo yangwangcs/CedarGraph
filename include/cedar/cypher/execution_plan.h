@@ -36,6 +36,7 @@ class PhysicalOperator;
  */
 struct ExecutionContext {
   CedarGraph* graph = nullptr;
+  CedarGraphStorage* storage = nullptr;
   std::unordered_map<std::string, Value> variables;
   std::unordered_map<std::string, std::shared_ptr<Record>> variable_records;
   

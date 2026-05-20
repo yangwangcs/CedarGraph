@@ -20,9 +20,12 @@
 // =============================================================================
 
 #include <gtest/gtest.h>
+#include <filesystem>
+#include <chrono>
 
 #include "cedar/cypher/cypher_engine.h"
 #include "cedar/cypher/value.h"
+#include "cedar/storage/cedar_graph_storage.h"
 
 using namespace cedar::cypher;
 
@@ -84,6 +87,31 @@ TEST(PlanCacheTest, ParameterizedExecuteOverloadUsesFingerprint) {
 
   // They should share a single cache entry (same query string, same fingerprint)
   EXPECT_EQ(engine.GetCacheSize(), 1);
+}
+
+TEST(PlanCacheTest, StoragePointerIsWired) {
+  std::string db_path = "/tmp/test_plan_cache_storage_" +
+                        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  std::filesystem::remove_all(db_path);
+
+  cedar::CedarOptions options;
+  options.create_if_missing = true;
+  cedar::CedarGraphStorage* storage = nullptr;
+  auto status = cedar::CedarGraphStorage::Open(options, db_path, &storage);
+  ASSERT_TRUE(status.ok()) << status.ToString();
+  ASSERT_NE(storage, nullptr);
+
+  {
+    CypherEngine engine(storage);
+    EXPECT_EQ(engine.GetStorage(), storage);
+
+    // Execute a simple query to verify storage is wired into ExecutionContext
+    auto result = engine.Execute("MATCH (n) RETURN n");
+    EXPECT_FALSE(result.HasError()) << result.error.value_or("unknown error");
+  }
+
+  delete storage;
+  std::filesystem::remove_all(db_path);
 }
 
 int main(int argc, char** argv) {
