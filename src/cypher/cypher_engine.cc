@@ -2,6 +2,7 @@
 
 #include "cedar/cypher/cypher_engine.h"
 #include "cedar/cypher/parser.h"
+#include "cedar/cypher/fingerprint.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include <chrono>
 
@@ -13,8 +14,11 @@ CypherEngine::CypherEngine(CedarGraphStorage* storage) : storage_(storage) {}
 CypherEngine::~CypherEngine() = default;
 
 ResultSet CypherEngine::Execute(const std::string& query) {
+  // Compute fingerprint for cache key
+  auto fingerprint = ComputeFingerprint(query);
+
   // Check cache first
-  if (auto cached = GetCachedPlan(query)) {
+  if (auto cached = GetCachedPlan(fingerprint)) {
     ExecutionContext ctx;
     ctx.gcn_traversal_callback = gcn_traversal_callback_;
     return cached->Execute(&ctx);
@@ -28,19 +32,22 @@ ResultSet CypherEngine::Execute(const std::string& query) {
     return result;
   }
   
-  // Cache the plan
-  CachePlan(query, std::move(plan));
+  // Cache the plan by fingerprint
+  CachePlan(fingerprint, std::move(plan));
   
   // Execute
   ExecutionContext ctx;
   ctx.gcn_traversal_callback = gcn_traversal_callback_;
-  return GetCachedPlan(query)->Execute(&ctx);
+  return GetCachedPlan(fingerprint)->Execute(&ctx);
 }
 
 ResultSet CypherEngine::Execute(const std::string& query,
                                  const std::map<std::string, Value>& parameters) {
+  // Compute fingerprint for cache key
+  auto fingerprint = ComputeFingerprint(query);
+
   // Check cache first
-  if (auto cached = GetCachedPlan(query)) {
+  if (auto cached = GetCachedPlan(fingerprint)) {
     ExecutionContext ctx;
     ctx.gcn_traversal_callback = gcn_traversal_callback_;
     for (const auto& [k, v] : parameters) {
@@ -57,8 +64,8 @@ ResultSet CypherEngine::Execute(const std::string& query,
     return result;
   }
   
-  // Cache the plan
-  CachePlan(query, std::move(plan));
+  // Cache the plan by fingerprint
+  CachePlan(fingerprint, std::move(plan));
   
   // Execute with parameters bound to context variables
   ExecutionContext ctx;
@@ -66,7 +73,7 @@ ResultSet CypherEngine::Execute(const std::string& query,
   for (const auto& [k, v] : parameters) {
     ctx.SetVariable(k, v);
   }
-  return GetCachedPlan(query)->Execute(&ctx);
+  return GetCachedPlan(fingerprint)->Execute(&ctx);
 }
 
 bool CypherEngine::IsValid(const std::string& query) {
@@ -75,11 +82,21 @@ bool CypherEngine::IsValid(const std::string& query) {
 }
 
 std::string CypherEngine::Explain(const std::string& query) {
+  auto fingerprint = ComputeFingerprint(query);
+
+  // Check cache first
+  if (auto cached = GetCachedPlan(fingerprint)) {
+    return cached->Explain();
+  }
+
   auto plan = ParseAndPlan(query);
   if (!plan) {
     return "Error: " + last_error_;
   }
-  return plan->Explain();
+
+  // Cache the plan by fingerprint for future benefit
+  CachePlan(fingerprint, std::move(plan));
+  return GetCachedPlan(fingerprint)->Explain();
 }
 
 void CypherEngine::SetGcnTraversalCallback(
@@ -115,17 +132,17 @@ std::unique_ptr<ExecutionPlan> CypherEngine::ParseAndPlan(const std::string& que
   return std::make_unique<ExecutionPlan>(root);
 }
 
-ExecutionPlan* CypherEngine::GetCachedPlan(const std::string& query) {
-  auto it = plan_cache_.find(query);
+ExecutionPlan* CypherEngine::GetCachedPlan(const std::string& fingerprint) {
+  auto it = plan_cache_.find(fingerprint);
   if (it != plan_cache_.end()) {
     return it->second.get();
   }
   return nullptr;
 }
 
-void CypherEngine::CachePlan(const std::string& query, 
+void CypherEngine::CachePlan(const std::string& fingerprint, 
                              std::unique_ptr<ExecutionPlan> plan) {
-  plan_cache_[query] = std::move(plan);
+  plan_cache_[fingerprint] = std::move(plan);
 }
 
 }  // namespace cypher

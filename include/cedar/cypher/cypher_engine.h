@@ -12,6 +12,7 @@
 
 #include "cedar/cypher/value.h"
 #include "cedar/cypher/execution_plan.h"
+#include "cedar/cypher/fingerprint.h"
 #include "cedar/core/status.h"
 
 namespace cedar {
@@ -76,10 +77,10 @@ class CypherEngine {
   std::unique_ptr<ExecutionPlan> ParseAndPlan(const std::string& query);
   
   // 从缓存获取计划
-  ExecutionPlan* GetCachedPlan(const std::string& query);
+  ExecutionPlan* GetCachedPlan(const std::string& fingerprint);
   
   // 缓存计划
-  void CachePlan(const std::string& query, std::unique_ptr<ExecutionPlan> plan);
+  void CachePlan(const std::string& fingerprint, std::unique_ptr<ExecutionPlan> plan);
 };
 
 }  // namespace cypher
