@@ -32,13 +32,12 @@ ResultSet CypherEngine::Execute(const std::string& query) {
     return result;
   }
   
-  // Cache the plan by fingerprint
-  CachePlan(fingerprint, std::move(plan));
-  
   // Execute
   ExecutionContext ctx;
   ctx.gcn_traversal_callback = gcn_traversal_callback_;
-  return GetCachedPlan(fingerprint)->Execute(&ctx);
+  auto* raw_plan = plan.get();
+  CachePlan(fingerprint, std::move(plan));
+  return raw_plan->Execute(&ctx);
 }
 
 ResultSet CypherEngine::Execute(const std::string& query,
@@ -64,16 +63,15 @@ ResultSet CypherEngine::Execute(const std::string& query,
     return result;
   }
   
-  // Cache the plan by fingerprint
-  CachePlan(fingerprint, std::move(plan));
-  
   // Execute with parameters bound to context variables
   ExecutionContext ctx;
   ctx.gcn_traversal_callback = gcn_traversal_callback_;
   for (const auto& [k, v] : parameters) {
     ctx.SetVariable(k, v);
   }
-  return GetCachedPlan(fingerprint)->Execute(&ctx);
+  auto* raw_plan = plan.get();
+  CachePlan(fingerprint, std::move(plan));
+  return raw_plan->Execute(&ctx);
 }
 
 bool CypherEngine::IsValid(const std::string& query) {

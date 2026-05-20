@@ -70,6 +70,22 @@ TEST(PlanCacheTest, CacheHitAvoidsReparse) {
   EXPECT_EQ(engine.GetCacheSize(), 1);
 }
 
+TEST(PlanCacheTest, ParameterizedExecuteOverloadUsesFingerprint) {
+  CypherEngine engine(nullptr);
+
+  // Execute parameterized queries with the same structure but different params
+  std::map<std::string, Value> params1;
+  params1["id"] = Value(1);
+  engine.Execute("MATCH (n) WHERE n.id = $id RETURN n", params1);
+
+  std::map<std::string, Value> params2;
+  params2["id"] = Value(2);
+  engine.Execute("MATCH (n) WHERE n.id = $id RETURN n", params2);
+
+  // They should share a single cache entry (same query string, same fingerprint)
+  EXPECT_EQ(engine.GetCacheSize(), 1);
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

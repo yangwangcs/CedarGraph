@@ -12,7 +12,6 @@
 
 #include "cedar/cypher/value.h"
 #include "cedar/cypher/execution_plan.h"
-#include "cedar/cypher/fingerprint.h"
 #include "cedar/core/status.h"
 
 namespace cedar {
