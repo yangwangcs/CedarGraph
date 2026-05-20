@@ -176,6 +176,13 @@ void GcnNode::HeartbeatLoop() {
       std::vector<coordinator::CacheWindow> windows;
       coordinator_client_->Heartbeat(windows);
     }
+    // Advance watermark based on a safe time-based heuristic.
+    // (Production-grade watermark should come from min active query time or CDC commit pointer.)
+    if (watermark_gc_) {
+      auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count();
+      watermark_gc_->UpdateWatermark(static_cast<uint64_t>(now_sec - 60));
+    }
     std::this_thread::sleep_for(
         std::chrono::milliseconds(FLAGS_gcn_heartbeat_interval_ms));
   }

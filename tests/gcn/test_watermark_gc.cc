@@ -10,6 +10,36 @@
 
 using namespace cedar::gcn;
 
+TEST(WatermarkGcTest, WatermarkAdvancesAndDrops) {
+  TMVEngine engine(16);
+  WatermarkGc gc(&engine);
+
+  // Bootstrap a vertex with old edges
+  engine.BootstrapVertex(42, Direction::kOut,
+                         {{100, 0, 100, 0, 1, 0}}, false);
+  engine.BootstrapVertex(42, Direction::kOut,
+                         {{200, 0, 200, 0, 1, 0}}, false);
+  engine.BootstrapVertex(
+      42, Direction::kOut,
+      {{300, 200, std::numeric_limits<uint32_t>::max(), 0, 1, 0}}, false);
+
+  gc.Start(100);  // 100ms interval for fast test
+
+  // Advance watermark to 250 — chunks with valid_to <= 250 should be dropped
+  gc.UpdateWatermark(250);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  gc.Stop();
+
+  // After GC, only chunk 3 remains (valid_from=200, valid_to=MAX)
+  auto at_200 = engine.ScanAtTime(42, Direction::kOut, 200);
+  EXPECT_EQ(at_200.size(), 1u);
+  EXPECT_EQ(at_200[0].target_id, 300u);
+
+  auto at_100 = engine.ScanAtTime(42, Direction::kOut, 100);
+  EXPECT_EQ(at_100.size(), 0u);
+}
+
 TEST(WatermarkGcTest, GcDropsOldChunks) {
   TMVEngine engine(16);
 
