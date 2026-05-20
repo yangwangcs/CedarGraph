@@ -32,5 +32,5 @@ gtest_discover_tests(test_fingerprint)
 add_executable(test_plan_cache
     test_plan_cache.cc
 )
-target_link_libraries(test_plan_cache cedar cedar_cypher gtest pthread)
+target_link_libraries(test_plan_cache cedar cedar_cypher cedar_queryd gtest pthread)
 gtest_discover_tests(test_plan_cache)

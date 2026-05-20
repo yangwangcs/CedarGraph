@@ -15,6 +15,9 @@
 #include "cedar/core/status.h"
 #include "cedar/graph/cedar_graph.h"
 
+// Forward declaration for query validator
+#include "cedar/cypher/validator.h"
+
 namespace cedar {
 
 class CedarGraphStorage;
@@ -62,6 +65,11 @@ class CypherEngine {
   // Set GCN traversal callback for routing edge expansions to GCN
   void SetGcnTraversalCallback(
       std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> callback);
+  
+  // Set query validator for semantic validation
+  void SetValidator(std::unique_ptr<QueryValidator> validator) {
+    validator_ = std::move(validator);
+  }
 
  private:
   CedarGraphStorage* storage_;
@@ -70,6 +78,9 @@ class CypherEngine {
   
   // GCN traversal callback
   std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> gcn_traversal_callback_;
+  
+  // Query validator
+  std::unique_ptr<QueryValidator> validator_;
   
   // 查询计划缓存
   std::map<std::string, std::unique_ptr<ExecutionPlan>> plan_cache_;

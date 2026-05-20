@@ -117,6 +117,14 @@ std::unique_ptr<ExecutionPlan> CypherEngine::ParseAndPlan(const std::string& que
     return nullptr;
   }
   
+  if (validator_) {
+    auto validation = validator_->Validate(*stmt);
+    if (!validation.ok()) {
+      last_error_ = validation.ToString();
+      return nullptr;
+    }
+  }
+  
   auto temporal_clause = parser.GetTemporalClause();
   auto root = ExecutionPlanBuilder::Build(stmt, temporal_clause);
   
