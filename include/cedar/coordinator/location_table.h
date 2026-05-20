@@ -16,7 +16,9 @@
 #define CEDAR_COORDINATOR_LOCATION_TABLE_H_
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace cedar {
@@ -40,22 +42,60 @@ class VertexLocationTable {
   VertexLocationTable(const VertexLocationTable&) = delete;
   VertexLocationTable& operator=(const VertexLocationTable&) = delete;
 
+  // Query the cache window covering entity_id at query_time.
+  // Returns std::nullopt if no valid cache is registered.
   std::optional<CacheWindow> Locate(uint64_t entity_id, uint64_t query_time) {
-    // Stub implementation
-    (void)entity_id;
-    (void)query_time;
-    return std::nullopt;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = table_.find(entity_id);
+    if (it == table_.end()) return std::nullopt;
+    if (query_time < it->second.cached_from || query_time > it->second.cached_to) {
+      return std::nullopt;
+    }
+    return it->second;
   }
 
+  // Report a locally-held cache window. Overwrites any existing window
+  // for the same entity_id if the new version is >= current.
   void ReportCache(const CacheWindow& window) {
-    // Stub implementation
-    (void)window;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = table_.find(window.entity_id);
+    if (it == table_.end() || window.version >= it->second.version) {
+      table_[window.entity_id] = window;
+    }
   }
 
+  // Process a heartbeat containing all currently cached windows.
+  // Refreshes expire_at for known windows and adds new ones.
   void Heartbeat(const std::vector<CacheWindow>& windows) {
-    // Stub implementation
-    (void)windows;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& w : windows) {
+      auto it = table_.find(w.entity_id);
+      if (it == table_.end() || w.version >= it->second.version) {
+        table_[w.entity_id] = w;
+      }
+    }
   }
+
+  // Remove expired entries.
+  void GCExpired(uint64_t now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = table_.begin(); it != table_.end();) {
+      if (it->second.expire_at < now) {
+        it = table_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  size_t Size() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return table_.size();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::unordered_map<uint64_t, CacheWindow> table_;
 };
 
 }  // namespace coordinator

@@ -38,6 +38,10 @@ class TMVEngine {
 
   size_t DropBelowWatermark(uint64_t watermark);
 
+  // Remove a vertex and all its edge chunks from the engine.
+  // Returns number of chunks freed.
+  size_t InvalidateVertex(uint64_t entity_id);
+
   size_t VertexCount() const;
   size_t ChunkCount() const;
 

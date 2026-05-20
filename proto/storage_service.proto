@@ -319,6 +319,9 @@ service StorageService {
     rpc GetRangeForCompute(GetRangeForComputeRequest) returns (GetRangeForComputeResponse);
     rpc GetCommittedVersion(GetCommittedVersionRequest) returns (GetCommittedVersionResponse);
 
+    // QueryD sub-query execution (Adaptive Execution Path)
+    rpc ExecuteSubQuery(ExecuteSubQueryRequest) returns (stream SubQueryResultBatch);
+
     // 心跳（流式，StorageD 定期上报）
     rpc Heartbeat(stream HeartbeatRequest) returns (stream HeartbeatResponse);
 }
@@ -365,4 +368,32 @@ message GetCommittedVersionRequest {}
 message GetCommittedVersionResponse {
     uint64 committed_version = 1;
     uint64 watermark = 2;
+}
+
+// Sub-query execution for Adaptive Execution Path (AEP)
+message QueryValue {
+    oneof value_type {
+        bool bool_val = 1;
+        int64 int_val = 2;
+        double float_val = 3;
+        string string_val = 4;
+    }
+}
+
+message QueryRow {
+    repeated QueryValue values = 1;
+}
+
+message ExecuteSubQueryRequest {
+    string query_fragment = 1;
+    map<string, QueryValue> parameters = 2;
+    uint32 partition_id = 3;
+    bytes plan_fingerprint = 4;
+    bool accept_streaming = 5;
+}
+
+message SubQueryResultBatch {
+    repeated QueryRow records = 1;
+    repeated string columns = 2;
+    bool is_last = 3;
 }

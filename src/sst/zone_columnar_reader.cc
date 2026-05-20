@@ -437,11 +437,10 @@ std::optional<Descriptor> ZoneColumnarSstReader::GetValueByRow(
   
   if (block.zone_sizes[4] > row_idx * sizeof(uint64_t)) {
     // Parse descriptor from zone 4
-    // This is simplified - actual implementation depends on descriptor encoding
     const char* data = block.data.data() + block.zone_offsets[4] + row_idx * sizeof(uint64_t);
-    uint64_t desc_data = *reinterpret_cast<const uint64_t*>(data);
-    (void)desc_data;
-    // Convert to descriptor...
+    uint64_t desc_data;
+    std::memcpy(&desc_data, data, sizeof(desc_data));
+    desc = Descriptor(desc_data);
   }
   
   return desc;

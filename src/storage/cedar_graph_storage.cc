@@ -696,6 +696,15 @@ std::vector<std::pair<Timestamp, Descriptor>> CedarGraphStorage::ScanLimit(
   return results;
 }
 
+Status CedarGraphStorage::ScanNode(uint64_t entity_id, Timestamp end_time,
+                                   std::vector<std::pair<Timestamp, Descriptor>>* versions) {
+  if (!rep_->engine) {
+    return Status::InvalidArgument("CedarGraphStorage", "not opened");
+  }
+  *versions = Scan(entity_id, Timestamp(0), end_time);
+  return Status::OK();
+}
+
 std::vector<std::pair<Timestamp, Descriptor>> CedarGraphStorage::ScanMemTableOnly(
     uint64_t entity_id, 
     Timestamp start_time, 

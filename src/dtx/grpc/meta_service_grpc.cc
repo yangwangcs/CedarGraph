@@ -248,6 +248,63 @@ grpc::Status MetaServiceGrpcImpl::GetSchema(grpc::ServerContext* context,
     return grpc::Status::OK;
 }
 
+grpc::Status MetaServiceGrpcImpl::LocateCache(grpc::ServerContext* context,
+    const cedar::meta::LocateCacheRequest* request,
+    cedar::meta::LocateCacheResponse* response) {
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    auto window = location_table_.Locate(request->entity_id(), request->query_time());
+    if (window) {
+        response->set_found(true);
+        auto* cw = response->mutable_window();
+        cw->set_entity_id(window->entity_id);
+        cw->set_cached_from(window->cached_from);
+        cw->set_cached_to(window->cached_to);
+        cw->set_gcn_node_id(window->gcn_node_id);
+        cw->set_version(window->version);
+        cw->set_expire_at(window->expire_at);
+    } else {
+        response->set_found(false);
+    }
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::ReportCache(grpc::ServerContext* context,
+    const cedar::meta::ReportCacheRequest* request,
+    cedar::meta::ReportCacheResponse* response) {
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    coordinator::CacheWindow window;
+    window.entity_id = request->window().entity_id();
+    window.cached_from = request->window().cached_from();
+    window.cached_to = request->window().cached_to();
+    window.gcn_node_id = request->window().gcn_node_id();
+    window.version = request->window().version();
+    window.expire_at = request->window().expire_at();
+    location_table_.ReportCache(window);
+    response->set_success(true);
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::GcnHeartbeat(grpc::ServerContext* context,
+    const cedar::meta::GcnHeartbeatRequest* request,
+    cedar::meta::GcnHeartbeatResponse* response) {
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    std::vector<coordinator::CacheWindow> windows;
+    for (int i = 0; i < request->windows_size(); ++i) {
+        const auto& w = request->windows(i);
+        coordinator::CacheWindow window;
+        window.entity_id = w.entity_id();
+        window.cached_from = w.cached_from();
+        window.cached_to = w.cached_to();
+        window.gcn_node_id = w.gcn_node_id();
+        window.version = w.version();
+        window.expire_at = w.expire_at();
+        windows.push_back(window);
+    }
+    location_table_.Heartbeat(windows);
+    response->set_success(true);
+    return grpc::Status::OK;
+}
+
 // =============================================================================
 // MetaServiceGrpcServer
 // =============================================================================

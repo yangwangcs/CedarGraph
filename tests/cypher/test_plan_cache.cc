@@ -103,9 +103,9 @@ TEST(PlanCacheTest, StoragePointerIsWired) {
 
   {
     CypherEngine engine(storage);
-    EXPECT_EQ(engine.GetStorage(), storage);
 
     // Execute a simple query to verify storage is wired into ExecutionContext
+    // If graph is not set in ExecutionContext, Execute() returns "Invalid execution context"
     auto result = engine.Execute("MATCH (n) RETURN n");
     EXPECT_FALSE(result.HasError()) << result.error.value_or("unknown error");
   }

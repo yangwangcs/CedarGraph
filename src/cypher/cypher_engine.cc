@@ -9,7 +9,11 @@
 namespace cedar {
 namespace cypher {
 
-CypherEngine::CypherEngine(CedarGraphStorage* storage) : storage_(storage) {}
+CypherEngine::CypherEngine(CedarGraphStorage* storage) : storage_(storage) {
+  if (storage_) {
+    graph_ = std::make_unique<CedarGraph>(storage_);
+  }
+}
 
 CypherEngine::~CypherEngine() = default;
 
@@ -20,7 +24,7 @@ ResultSet CypherEngine::Execute(const std::string& query) {
   // Check cache first
   if (auto cached = GetCachedPlan(fingerprint)) {
     ExecutionContext ctx;
-    ctx.storage = storage_;
+    ctx.graph = graph_.get();
     ctx.gcn_traversal_callback = gcn_traversal_callback_;
     return cached->Execute(&ctx);
   }
@@ -35,7 +39,7 @@ ResultSet CypherEngine::Execute(const std::string& query) {
   
   // Execute
   ExecutionContext ctx;
-  ctx.storage = storage_;
+  ctx.graph = graph_.get();
   ctx.gcn_traversal_callback = gcn_traversal_callback_;
   auto* raw_plan = plan.get();
   CachePlan(fingerprint, std::move(plan));
@@ -50,7 +54,7 @@ ResultSet CypherEngine::Execute(const std::string& query,
   // Check cache first
   if (auto cached = GetCachedPlan(fingerprint)) {
     ExecutionContext ctx;
-    ctx.storage = storage_;
+    ctx.graph = graph_.get();
     ctx.gcn_traversal_callback = gcn_traversal_callback_;
     for (const auto& [k, v] : parameters) {
       ctx.SetVariable(k, v);
@@ -68,7 +72,7 @@ ResultSet CypherEngine::Execute(const std::string& query,
   
   // Execute with parameters bound to context variables
   ExecutionContext ctx;
-  ctx.storage = storage_;
+  ctx.graph = graph_.get();
   ctx.gcn_traversal_callback = gcn_traversal_callback_;
   for (const auto& [k, v] : parameters) {
     ctx.SetVariable(k, v);

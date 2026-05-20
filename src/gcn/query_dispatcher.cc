@@ -18,10 +18,13 @@
 
 #include "cedar/gcn/query_dispatcher.h"
 
+#include "cedar/gcn/storage_backfill_service.h"
+
 namespace cedar {
 namespace gcn {
 
-QueryDispatcher::QueryDispatcher(TMVEngine* engine) : engine_(engine) {}
+QueryDispatcher::QueryDispatcher(TMVEngine* engine)
+    : engine_(engine), backfill_service_(nullptr) {}
 
 grpc::Status QueryDispatcher::DispatchTraversal(const TraversalRequest& req,
                                                 TraversalResponse* resp) {
@@ -51,6 +54,42 @@ grpc::Status QueryDispatcher::DispatchTraversal(const TraversalRequest& req,
     // Local miss: return empty response.
     // Bootstrap-then-retry logic will be added in Task 4.x.
     resp->set_success(false);
+  }
+
+  return grpc::Status::OK;
+}
+
+grpc::Status QueryDispatcher::DispatchSubQuery(const SubQueryRequest& req,
+                                               SubQueryResponse* resp) {
+  resp->Clear();
+  resp->set_trace_id(req.trace_id());
+
+  if (!engine_) {
+    resp->set_success(false);
+    resp->set_error_msg("TMVEngine not available");
+    return grpc::Status::OK;
+  }
+
+  std::vector<TMVEdge> edges =
+      engine_->ScanAtTime(req.current_entity_id(), Direction::kOut,
+                          req.query_time());
+
+  if (edges.empty() && backfill_service_) {
+    // Lazy backfill: fetch from StorageD on cache miss
+    backfill_service_->BackfillVertex(req.current_entity_id(), /*edge_type=*/0);
+    edges = engine_->ScanAtTime(req.current_entity_id(), Direction::kOut,
+                                req.query_time());
+  }
+
+  if (!edges.empty()) {
+    resp->set_success(true);
+    for (const auto& edge : edges) {
+      resp->add_next_entity_ids(edge.target_id);
+    }
+  } else {
+    resp->set_success(false);
+    resp->set_error_msg("No edges found for entity " +
+                        std::to_string(req.current_entity_id()));
   }
 
   return grpc::Status::OK;

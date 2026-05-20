@@ -27,6 +27,7 @@
 #include <queue>
 
 #include "cedar/gcn/query_dispatcher.h"
+#include "cedar/gcn/scatter_gather_router.h"
 #include "gcn_service.grpc.pb.h"
 
 namespace cedar {
@@ -39,7 +40,16 @@ class GcnServiceImpl final : public GcnService::Service {
   explicit GcnServiceImpl(
       TMVEngine* engine,
       std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback = nullptr);
+  explicit GcnServiceImpl(
+      TMVEngine* engine,
+      StorageBackfillService* backfill_service,
+      std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback = nullptr);
   ~GcnServiceImpl() override;
+
+  // Inject a ScatterGatherRouter for distributed sub-query / traversal routing.
+  void SetScatterGatherRouter(std::shared_ptr<ScatterGatherRouter> router) {
+    router_ = std::move(router);
+  }
 
   // Disable copy
   GcnServiceImpl(const GcnServiceImpl&) = delete;
@@ -71,6 +81,7 @@ class GcnServiceImpl final : public GcnService::Service {
  private:
   std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback_;
   std::unique_ptr<QueryDispatcher> dispatcher_;
+  std::shared_ptr<ScatterGatherRouter> router_;
   std::queue<CDCEvent> pending_events_;
   std::mutex queue_mutex_;
   std::condition_variable queue_cv_;

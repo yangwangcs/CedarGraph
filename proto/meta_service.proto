@@ -153,6 +153,48 @@ message PartitionMapChange {
 }
 
 // ============================================================================
+// GCN Cache Location 管理
+// ============================================================================
+
+message CacheWindow {
+    uint64 entity_id = 1;
+    uint64 cached_from = 2;
+    uint64 cached_to = 3;
+    uint32 gcn_node_id = 4;
+    uint64 version = 5;
+    uint64 expire_at = 6;
+}
+
+message LocateCacheRequest {
+    uint64 entity_id = 1;
+    uint64 query_time = 2;
+}
+
+message LocateCacheResponse {
+    bool found = 1;
+    CacheWindow window = 2;
+}
+
+message ReportCacheRequest {
+    CacheWindow window = 1;
+}
+
+message ReportCacheResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message GcnHeartbeatRequest {
+    uint32 gcn_node_id = 1;
+    repeated CacheWindow windows = 2;
+}
+
+message GcnHeartbeatResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+// ============================================================================
 // Meta Service gRPC 服务
 // ============================================================================
 
@@ -177,6 +219,11 @@ service MetaService {
     // Schema 管理
     rpc CreateLabelSchema(CreateLabelSchemaRequest) returns (CreateLabelSchemaResponse);
     rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
+
+    // GCN Cache 管理
+    rpc LocateCache(LocateCacheRequest) returns (LocateCacheResponse);
+    rpc ReportCache(ReportCacheRequest) returns (ReportCacheResponse);
+    rpc GcnHeartbeat(GcnHeartbeatRequest) returns (GcnHeartbeatResponse);
 }
 
 // ============================================================================

@@ -31,6 +31,7 @@ DEFINE_int64(gcn_tmv_max_chunks, 256, "Maximum TMV chunks per engine");
 DEFINE_bool(gcn_backfill_enabled, false, "Enable storage to TMV backfill on startup");
 DEFINE_uint64(gcn_backfill_start_id, 1, "Start entity ID for backfill");
 DEFINE_uint64(gcn_backfill_end_id, 1000, "End entity ID for backfill");
+DEFINE_int32(gcn_heartbeat_interval_ms, 5000, "GCN heartbeat interval in milliseconds");
 
 namespace cedar {
 
@@ -46,13 +47,11 @@ GcnNode::~GcnNode() {
   // Create TMVEngine
   engine_ = std::make_unique<gcn::TMVEngine>(static_cast<size_t>(FLAGS_gcn_tmv_max_chunks));
 
-  // Storage backfill (optional)
-  if (FLAGS_gcn_backfill_enabled) {
-    // Note: storage_ should be injected before Initialize() is called
-    if (storage_) {
-      auto backfill_service = std::make_unique<gcn::StorageBackfillService>(engine_.get(), storage_);
-      backfill_service->BackfillRange(FLAGS_gcn_backfill_start_id, FLAGS_gcn_backfill_end_id);
-      // Service can be discarded after backfill; TMV owns the data
+  // Storage backfill (optional, or lazy on-demand)
+  if (storage_) {
+    backfill_service_ = std::make_unique<gcn::StorageBackfillService>(engine_.get(), storage_);
+    if (FLAGS_gcn_backfill_enabled) {
+      backfill_service_->BackfillRange(FLAGS_gcn_backfill_start_id, FLAGS_gcn_backfill_end_id);
     }
   }
 
@@ -75,7 +74,16 @@ GcnNode::~GcnNode() {
     event.op = gcn::CDCEventOp::kCreate;
     this->event_applier_->ApplyUnordered(event);
   };
-  service_impl_ = std::make_unique<gcn::GcnServiceImpl>(engine_.get(), std::move(callback));
+  service_impl_ = std::make_unique<gcn::GcnServiceImpl>(
+      engine_.get(), backfill_service_.get(), std::move(callback));
+
+  // Create CoordinatorClient connection to metad
+  auto coordinator_channel = grpc::CreateChannel(
+      FLAGS_gcn_coordinator, grpc::InsecureChannelCredentials());
+  coordinator_client_ =
+      std::make_unique<gcn::CoordinatorClient>(coordinator_channel);
+  coordinator_client_->SetGcnNodeId(
+      static_cast<uint32_t>(FLAGS_gcn_port));
 
   // Build and start gRPC server
   std::ostringstream address;
@@ -106,6 +114,9 @@ GcnNode::~GcnNode() {
   // Start CDC listener thread
   cdc_thread_ = std::thread(&GcnNode::CdcListenerLoop, this);
 
+  // Start heartbeat thread to report liveness to metad
+  heartbeat_thread_ = std::thread(&GcnNode::HeartbeatLoop, this);
+
   return cedar::Status::OK();
 }
 
@@ -122,10 +133,16 @@ GcnNode::~GcnNode() {
   if (cdc_thread_.joinable()) {
     cdc_thread_.join();
   }
+  if (heartbeat_thread_.joinable()) {
+    heartbeat_thread_.join();
+  }
 
   // Release resources
   grpc_server_.reset();
   service_impl_.reset();
+  coordinator_client_.reset();
+  backfill_service_.reset();
+  event_applier_.reset();
   watermark_gc_.reset();
   engine_.reset();
 
@@ -134,10 +151,24 @@ GcnNode::~GcnNode() {
 
 void GcnNode::CdcListenerLoop() {
   while (running_.load()) {
-    // CDC listener requires WAL/change-stream integration (Task 3.3+).
-    // For now, this loop acts as a placeholder until the CDC infrastructure
-    // is connected to the storage engine.
+    // TODO(#C-CDC-001): Wire CDC listener to WAL change-stream.
+    // This loop is a placeholder until the CDC infrastructure is connected
+    // to the storage engine (planned in Task 3.3+).
     std::this_thread::sleep_for(std::chrono::seconds(5));
+  }
+}
+
+void GcnNode::HeartbeatLoop() {
+  while (running_.load()) {
+    if (coordinator_client_) {
+      // TODO(#C-GCN-003): When TMVEngine supports enumerating cached vertices,
+      // construct real CacheWindow vectors from the engine and pass them here.
+      // For now we send an empty heartbeat so MetaD knows this GCN is alive.
+      std::vector<coordinator::CacheWindow> windows;
+      coordinator_client_->Heartbeat(windows);
+    }
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(FLAGS_gcn_heartbeat_interval_ms));
   }
 }
 

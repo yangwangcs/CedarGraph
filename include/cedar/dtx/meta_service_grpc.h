@@ -24,6 +24,7 @@
 #include <memory>
 #include <thread>
 
+#include "cedar/coordinator/location_table.h"
 #include "cedar/dtx/meta_service.h"
 #include "meta_service.grpc.pb.h"
 
@@ -86,8 +87,22 @@ public:
                            const cedar::meta::GetSchemaRequest* request,
                            cedar::meta::GetSchemaResponse* response) override;
 
+    // GCN Cache management
+    grpc::Status LocateCache(grpc::ServerContext* context,
+                             const cedar::meta::LocateCacheRequest* request,
+                             cedar::meta::LocateCacheResponse* response) override;
+
+    grpc::Status ReportCache(grpc::ServerContext* context,
+                             const cedar::meta::ReportCacheRequest* request,
+                             cedar::meta::ReportCacheResponse* response) override;
+
+    grpc::Status GcnHeartbeat(grpc::ServerContext* context,
+                              const cedar::meta::GcnHeartbeatRequest* request,
+                              cedar::meta::GcnHeartbeatResponse* response) override;
+
 private:
     MetadataService* meta_service_;
+    coordinator::VertexLocationTable location_table_;
     
     // 类型转换 helpers
     SpaceDef FromProto(const cedar::meta::SpaceDef& proto);

@@ -13,6 +13,7 @@
 #include "cedar/cypher/value.h"
 #include "cedar/cypher/execution_plan.h"
 #include "cedar/core/status.h"
+#include "cedar/graph/cedar_graph.h"
 
 namespace cedar {
 
@@ -58,15 +59,13 @@ class CypherEngine {
   // 获取缓存统计
   size_t GetCacheSize() const;
   
-  // Test-only accessor for the storage pointer
-  CedarGraphStorage* GetStorage() const { return storage_; }
-  
   // Set GCN traversal callback for routing edge expansions to GCN
   void SetGcnTraversalCallback(
       std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> callback);
 
  private:
   CedarGraphStorage* storage_;
+  std::unique_ptr<CedarGraph> graph_;
   std::string last_error_;
   
   // GCN traversal callback

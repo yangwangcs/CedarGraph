@@ -26,9 +26,15 @@
 namespace cedar {
 namespace gcn {
 
+class StorageBackfillService;
+
 class QueryDispatcher {
  public:
   explicit QueryDispatcher(TMVEngine* engine);
+
+  void SetBackfillService(StorageBackfillService* svc) {
+    backfill_service_ = svc;
+  }
 
   // Routes a traversal request:
   //   - Local hit: vertex cached with edges at query_time -> fill response
@@ -36,8 +42,17 @@ class QueryDispatcher {
   grpc::Status DispatchTraversal(const TraversalRequest& req,
                                  TraversalResponse* resp);
 
+  // Routes a distributed sub-query request:
+  //   - Local hit: fills next_entity_ids from TMVEngine
+  //   - Local miss: attempts lazy backfill if backfill_service_ is available
+  grpc::Status DispatchSubQuery(const SubQueryRequest& req,
+                                SubQueryResponse* resp);
+
+  TMVEngine* engine() const { return engine_; }
+
  private:
   TMVEngine* engine_;
+  class StorageBackfillService* backfill_service_ = nullptr;
 };
 
 }  // namespace gcn

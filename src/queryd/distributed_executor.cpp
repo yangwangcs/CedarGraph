@@ -3,6 +3,8 @@
 
 #include "cedar/queryd/distributed_executor.h"
 
+#include "cedar/cypher/fingerprint.h"
+
 #include <algorithm>
 #include <chrono>
 #include <future>
@@ -1018,39 +1020,42 @@ QueryPlanCache::QueryPlanCache(size_t max_size) : max_size_(max_size) {}
 
 std::shared_ptr<cypher::ExecutionPlan> QueryPlanCache::Get(
     const std::string& query) {
-  
+  std::string fp = cedar::cypher::ComputeFingerprint(query);
+
   std::shared_lock<std::shared_mutex> lock(mutex_);
-  
-  auto it = cache_.find(query);
+
+  auto it = cache_.find(fp);
   if (it != cache_.end()) {
     it->second.last_access = ++access_counter_;
     it->second.access_count++;
     hits_++;
     return it->second.plan;
   }
-  
+
   misses_++;
   return nullptr;
 }
 
-void QueryPlanCache::Put(const std::string& query, 
+void QueryPlanCache::Put(const std::string& query,
                          std::shared_ptr<cypher::ExecutionPlan> plan) {
-  
+  std::string fp = cedar::cypher::ComputeFingerprint(query);
+
   std::unique_lock<std::shared_mutex> lock(mutex_);
-  
+
   EvictIfNeeded();
-  
+
   CacheEntry entry;
   entry.plan = std::move(plan);
   entry.last_access = ++access_counter_;
   entry.access_count = 1;
-  
-  cache_[query] = std::move(entry);
+
+  cache_[fp] = std::move(entry);
 }
 
 void QueryPlanCache::Invalidate(const std::string& query) {
+  std::string fp = cedar::cypher::ComputeFingerprint(query);
   std::unique_lock<std::shared_mutex> lock(mutex_);
-  cache_.erase(query);
+  cache_.erase(fp);
 }
 
 void QueryPlanCache::Clear() {

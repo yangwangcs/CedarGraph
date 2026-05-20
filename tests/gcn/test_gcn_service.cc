@@ -61,7 +61,7 @@ TEST_F(GcnServiceTest, TraverseReturnsDefaults) {
   EXPECT_EQ(response.served_version(), 0u);
   EXPECT_EQ(response.visited_entity_ids_size(), 0);
   EXPECT_EQ(response.success(), false);
-  EXPECT_EQ(response.error_msg(), "");
+  EXPECT_EQ(response.error_msg(), "Dispatcher not available");
   EXPECT_EQ(response.trace_id(), "");
 }
 
@@ -76,8 +76,8 @@ TEST_F(GcnServiceTest, SubQueryReturnsDefaults) {
 
   EXPECT_TRUE(status.ok());
   EXPECT_EQ(response.success(), false);
-  EXPECT_EQ(response.error_msg(), "");
-  EXPECT_EQ(response.trace_id(), "");
+  EXPECT_EQ(response.error_msg(), "Dispatcher not available");
+  EXPECT_EQ(response.trace_id(), "test-trace-456");
   EXPECT_EQ(response.next_entity_ids_size(), 0);
 }
 

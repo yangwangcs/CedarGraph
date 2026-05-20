@@ -9,6 +9,9 @@
 // 包含 dtx StorageClient 头文件
 #include "cedar/dtx/storage_service_impl.h"
 
+// 包含 StorageService proto 头文件 (for RemoteRPCNodeClient)
+#include "storage_service.grpc.pb.h"
+
 // 包含 Cypher parser 和 AST 头文件
 #include "cedar/cypher/parser.h"
 #include "cedar/cypher/ast.h"
@@ -283,9 +286,120 @@ class NodeClientImpl : public QueryStorageClient::NodeClient {
   uint32_t partition_id_;
 };
 
+// Helper: convert proto QueryValue to cypher::Value
+static cypher::Value ProtoValueToCypherValue(const cedar::storage::QueryValue& pv) {
+  if (pv.has_bool_val()) return cypher::Value(pv.bool_val());
+  if (pv.has_int_val()) return cypher::Value(pv.int_val());
+  if (pv.has_float_val()) return cypher::Value(pv.float_val());
+  if (pv.has_string_val()) return cypher::Value(pv.string_val());
+  return cypher::Value();
+}
+
+// Helper: convert cypher::Value to proto QueryValue
+static void CypherValueToProtoValue(const cypher::Value& cv, cedar::storage::QueryValue* pv) {
+  switch (cv.Type()) {
+    case cypher::ValueType::kBool:
+      pv->set_bool_val(cv.GetBool());
+      break;
+    case cypher::ValueType::kInt:
+      pv->set_int_val(cv.GetInt());
+      break;
+    case cypher::ValueType::kFloat:
+      pv->set_float_val(cv.GetFloat());
+      break;
+    case cypher::ValueType::kString:
+      pv->set_string_val(cv.GetString());
+      break;
+    default:
+      // Null / others -> leave as default (null)
+      break;
+  }
+}
+
+class RemoteRPCNodeClient : public QueryStorageClient::NodeClient {
+ public:
+  RemoteRPCNodeClient(std::shared_ptr<grpc::Channel> channel,
+                      uint32_t partition_id)
+      : stub_(cedar::storage::StorageService::NewStub(channel)),
+        partition_id_(partition_id) {}
+
+  Status ScanEntity(uint64_t entity_id,
+                    EntityType entity_type,
+                    Timestamp start_ts,
+                    Timestamp end_ts,
+                    std::vector<std::pair<Timestamp, Descriptor>>* results) override {
+    (void)entity_id;
+    (void)entity_type;
+    (void)start_ts;
+    (void)end_ts;
+    (void)results;
+    return Status::NotSupported(
+        "RemoteRPCNodeClient::ScanEntity is not supported. Use ExecuteSubQuery "
+        "with a MATCH/RETURN fragment instead.");
+  }
+
+  Status ExecuteSubQuery(
+      const std::string& query_fragment,
+      const std::unordered_map<std::string, cypher::Value>& parameters,
+      cypher::ResultSet* result) override {
+    cedar::storage::ExecuteSubQueryRequest req;
+    req.set_query_fragment(query_fragment);
+    req.set_partition_id(partition_id_);
+    req.set_accept_streaming(true);
+
+    auto* params = req.mutable_parameters();
+    for (const auto& [name, val] : parameters) {
+      CypherValueToProtoValue(val, &(*params)[name]);
+    }
+
+    grpc::ClientContext ctx;
+    ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
+    auto reader = stub_->ExecuteSubQuery(&ctx, req);
+
+    cedar::storage::SubQueryResultBatch batch;
+    result->records.clear();
+    result->columns.clear();
+    result->error = std::nullopt;
+
+    while (reader->Read(&batch)) {
+      if (result->columns.empty() && batch.columns_size() > 0) {
+        for (const auto& col : batch.columns()) {
+          result->columns.push_back(col);
+        }
+      }
+      for (const auto& row : batch.records()) {
+        cypher::Record record;
+        for (int i = 0; i < row.values_size() && i < static_cast<int>(result->columns.size()); ++i) {
+          record.Set(result->columns[i], ProtoValueToCypherValue(row.values(i)));
+        }
+        result->records.push_back(std::move(record));
+      }
+      if (batch.is_last()) break;
+    }
+
+    grpc::Status status = reader->Finish();
+    if (!status.ok()) {
+      return Status::IOError("ExecuteSubQuery RPC failed: " + status.error_message());
+    }
+    return Status::OK();
+  }
+
+ private:
+  std::unique_ptr<cedar::storage::StorageService::Stub> stub_;
+  uint32_t partition_id_;
+};
+
 std::shared_ptr<QueryStorageClient::NodeClient> QueryStorageClient::GetNodeClient(
     uint32_t partition_id) {
-  return std::make_shared<NodeClientImpl>(this, partition_id);
+  if (IsLocalPartition(partition_id)) {
+    return std::make_shared<NodeClientImpl>(this, partition_id);
+  }
+  auto channel = GetOrCreateChannel(partition_id);
+  if (!channel) {
+    // Fallback to local execution if channel unavailable
+    return std::make_shared<NodeClientImpl>(this, partition_id);
+  }
+  return std::make_shared<RemoteRPCNodeClient>(channel, partition_id);
 }
 
 Status QueryStorageClient::HealthCheck() {
@@ -410,6 +524,42 @@ void QueryCache::EvictIfNeeded() {
   for (size_t i = 0; i < to_evict && it != cache_.end(); ++i) {
     it = cache_.erase(it);
   }
+}
+
+void QueryStorageClient::MarkPartitionLocal(uint32_t partition_id) {
+  std::unique_lock<std::shared_mutex> lock(local_partitions_mutex_);
+  local_partition_ids_.insert(partition_id);
+}
+
+bool QueryStorageClient::IsLocalPartition(uint32_t partition_id) const {
+  std::shared_lock<std::shared_mutex> lock(local_partitions_mutex_);
+  return local_partition_ids_.find(partition_id) != local_partition_ids_.end();
+}
+
+std::shared_ptr<grpc::Channel> QueryStorageClient::GetOrCreateChannel(
+    uint32_t partition_id) {
+  {
+    std::shared_lock<std::shared_mutex> lock(channels_mutex_);
+    auto it = partition_channels_.find(partition_id);
+    if (it != partition_channels_.end()) {
+      return it->second;
+    }
+  }
+  std::string address;
+  {
+    std::shared_lock<std::shared_mutex> lock(nodes_mutex_);
+    auto it = partition_routing_.find(partition_id);
+    if (it == partition_routing_.end()) {
+      return nullptr;
+    }
+    address = it->second;
+  }
+  auto channel = grpc::CreateChannel(address, grpc::InsecureChannelCredentials());
+  {
+    std::unique_lock<std::shared_mutex> lock(channels_mutex_);
+    partition_channels_[partition_id] = channel;
+  }
+  return channel;
 }
 
 }  // namespace queryd

@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "cedar/core/status.h"
+#include "cedar/dtx/phi_accrual.h"
 #include "cedar/dtx/types.h"
 
 namespace cedar {
@@ -113,6 +114,30 @@ struct FailureDetectionConfig {
 };
 
 // =============================================================================
+// Multi-Dimensional Health Metrics
+// =============================================================================
+
+struct HealthMetrics {
+  double tcp_latency_ms{0};
+  double raft_replication_lag{0};
+  double disk_io_latency_ms{0};
+  double memory_pressure_ratio{0};  // used / total
+  double cpu_load_1m{0};
+  double error_rate_1m{0};          // errors / sec
+  std::chrono::steady_clock::time_point sampled_at;
+};
+
+struct HealthScore {
+  double overall{100.0};     // 0-100
+  HealthMetrics breakdown;
+  bool is_degraded{false};   // predictive flag: trend is degrading
+  bool is_unhealthy{false};  // hard failure: phi threshold exceeded or critical metric
+};
+
+// Callback to collect health metrics from external subsystems (Raft, storage, etc.)
+using HealthMetricsCollector = std::function<HealthMetrics(NodeID)>;
+
+// =============================================================================
 // 故障恢复策略
 // =============================================================================
 
@@ -161,6 +186,8 @@ class PartitionFailoverController {
     uint32_t min_replicas{2};                                 // 最小副本数
     bool enable_auto_promote{true};                          // 自动提升副本
     NodeID local_node_id{0};                                  // 本地节点ID
+    std::chrono::milliseconds check_interval{1000};          // 健康检查间隔
+    FailureDetectionConfig detection_config;                 // 故障检测配置
   };
   
   PartitionFailoverController();
@@ -212,6 +239,12 @@ class PartitionFailoverController {
   // Register node address for health probing
   void RegisterNodeAddress(NodeID node_id, const std::string& address);
 
+  // Register an external metrics collector (e.g., Raft lag, disk I/O)
+  void RegisterHealthMetricsCollector(HealthMetricsCollector collector);
+
+  // Get the latest computed health score for a node (for external consumers)
+  std::optional<HealthScore> GetHealthScore(NodeID node_id) const;
+
  private:
   // 故障转移流程
   void ExecuteFailover(PartitionID pid);
@@ -244,14 +277,42 @@ class PartitionFailoverController {
   
   bool CheckReplicaHealth(NodeID node_id);
   bool PerformActiveHealthCheck(NodeID node_id);
-  
+
+  // Multi-dimensional health score computation
+  HealthMetrics CollectMetrics(NodeID node_id, bool* tcp_ok_out = nullptr);
+  HealthScore ComputeScore(const HealthMetrics& metrics);
+  bool IsTrendDegrading(NodeID node_id, const HealthScore& current);
+  void TriggerGraduatedDegradation(NodeID node_id);
+  void CancelGraduatedDegradation(NodeID node_id);
+
+  // Legacy boolean health (kept for backward compat)
   std::unordered_map<NodeID, bool> replica_health_;
   mutable std::mutex replica_health_mutex_;
-  
+
+  // Multi-dimensional health scores
+  std::unordered_map<NodeID, HealthScore> health_scores_;
+  mutable std::mutex health_scores_mutex_;
+
+  // Score history for trend detection (per node, last N samples)
+  std::unordered_map<NodeID, std::deque<double>> score_history_;
+  mutable std::mutex score_history_mutex_;
+
+  // Nodes currently in graduated degradation
+  std::unordered_set<NodeID> degraded_nodes_;
+  mutable std::mutex degraded_nodes_mutex_;
+
+  // Phi Accrual detectors per node
+  std::unordered_map<NodeID, std::unique_ptr<PhiAccrualDetector>> phi_detectors_;
+  mutable std::mutex phi_detectors_mutex_;
+
+  // External metrics collectors
+  std::vector<HealthMetricsCollector> metrics_collectors_;
+  mutable std::mutex collectors_mutex_;
+
   // Node address registry (populated by RegisterPartition or external caller)
   std::unordered_map<NodeID, std::string> node_addresses_;
   mutable std::mutex node_addresses_mutex_;
-  
+
   std::unordered_map<PartitionID, std::chrono::steady_clock::time_point> lease_expiry_;
 };
 

@@ -33,6 +33,17 @@ GcnServiceImpl::GcnServiceImpl(
     : on_event_callback_(std::move(on_event_callback)),
       dispatcher_(std::make_unique<QueryDispatcher>(engine)) {}
 
+GcnServiceImpl::GcnServiceImpl(
+    TMVEngine* engine,
+    StorageBackfillService* backfill_service,
+    std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback)
+    : on_event_callback_(std::move(on_event_callback)),
+      dispatcher_(std::make_unique<QueryDispatcher>(engine)) {
+  if (dispatcher_ && backfill_service) {
+    dispatcher_->SetBackfillService(backfill_service);
+  }
+}
+
 GcnServiceImpl::~GcnServiceImpl() {
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -54,28 +65,54 @@ grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* context,
                                       TraversalResponse* response) {
   if (context->IsCancelled()) return grpc::Status::CANCELLED;
   if (dispatcher_) {
-    return dispatcher_->DispatchTraversal(*request, response);
+    auto status = dispatcher_->DispatchTraversal(*request, response);
+    // On local miss, try distributed routing via ScatterGatherRouter
+    if (!response->success() && router_) {
+      *response = router_->ScatterTraversalByEntity(*request);
+    }
+    return status;
   }
-  // Stub: return default response fields
   response->Clear();
+  response->set_success(false);
+  response->set_error_msg("Dispatcher not available");
   return grpc::Status::OK;
 }
 
 grpc::Status GcnServiceImpl::SubQuery(grpc::ServerContext* context,
-                                      const SubQueryRequest* /*request*/,
+                                      const SubQueryRequest* request,
                                       SubQueryResponse* response) {
   if (context->IsCancelled()) return grpc::Status::CANCELLED;
-  // Stub: return default response fields
   response->Clear();
-  return grpc::Status::OK;
+  response->set_trace_id(request->trace_id());
+
+  if (!dispatcher_) {
+    response->set_success(false);
+    response->set_error_msg("Dispatcher not available");
+    return grpc::Status::OK;
+  }
+
+  // Delegate to QueryDispatcher which uses TMVEngine for local traversal
+  auto status = dispatcher_->DispatchSubQuery(*request, response);
+
+  // On local miss, try distributed routing via consistent hash
+  if (!response->success() && router_) {
+    *response = router_->ScatterByEntity(*request);
+  }
+
+  return status;
 }
 
 grpc::Status GcnServiceImpl::OnCacheInvalidate(grpc::ServerContext* context,
-                                               const CacheInvalidateNotice* /*request*/,
+                                               const CacheInvalidateNotice* request,
                                                Empty* response) {
   if (context->IsCancelled()) return grpc::Status::CANCELLED;
-  // Stub: return empty response
   response->Clear();
+
+  if (dispatcher_ && dispatcher_->engine()) {
+    size_t freed = dispatcher_->engine()->InvalidateVertex(request->entity_id());
+    (void)freed;
+  }
+
   return grpc::Status::OK;
 }
 

@@ -178,6 +178,7 @@ set(CEDAR_CORE_SOURCES
 # Storage sources
 set(CEDAR_STORAGE_SOURCES
     src/storage/lsm_engine.cc
+    src/storage/plan_cache.cc
     src/storage/cedar_config.cc
     src/storage/sst_reader_cache.cc
     src/storage/block_cache.cc
@@ -245,6 +246,7 @@ set(CEDAR_DTX_SOURCES
     src/dtx/storage/raft_rpc_client.cc
     src/dtx/storage/multi_raft_optimization.cc
 
+    src/dtx/phi_accrual.cc
     src/dtx/storage/failover_manager.cc
     src/dtx/storage/metrics_collector.cc
     src/dtx/storage/metrics_storage_impl.cc
@@ -260,6 +262,7 @@ set(CEDAR_DTX_SOURCES
     src/dtx/storage_impl/meta_service_client.cc
     src/dtx/optimized_2pc_engine.cc
     src/dtx/chaos_testing_impl.cc
+    src/dtx/storage/storage_service.cc
     src/dtx/storage_impl/storage_service_ext.cc
     src/dtx/storage_impl/partition_index.cc
     src/dtx/grpc/rpc_client.cc
@@ -413,6 +416,7 @@ set(CEDAR_CYPHER_SOURCES
     src/cypher/execution_plan.cc
     src/cypher/expression_evaluator.cc
     src/cypher/value.cc
+    src/cypher/fingerprint.cc
     src/cypher/temporal_dialect.cc
     src/cypher/operators/temporal_operators.cc
     src/cypher/validator.cc

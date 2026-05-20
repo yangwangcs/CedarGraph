@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "cedar/cypher/parser.h"
+#include "cedar/cypher/fingerprint.h"
 
 namespace cedar {
 namespace service {
@@ -1820,16 +1821,7 @@ Status GraphServiceRouter::ExecuteDistributedWrite(
 }
 
 std::string GraphServiceRouter::GenerateQueryFingerprint(const std::string& query) {
-  std::string normalized = query;
-  
-  // 转小写
-  std::transform(normalized.begin(), normalized.end(), normalized.begin(), ::tolower);
-  
-  // 去除多余空格
-  std::regex multiple_spaces("\\s+");
-  normalized = std::regex_replace(normalized, multiple_spaces, " ");
-  
-  return normalized;
+  return cedar::cypher::ComputeFingerprint(query);
 }
 
 uint64_t GraphServiceRouter::CalculatePartitionHash(const std::vector<uint32_t>& partition_ids) {

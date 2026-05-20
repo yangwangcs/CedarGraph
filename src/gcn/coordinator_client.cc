@@ -13,10 +13,14 @@
 // limitations under the License.
 
 // =============================================================================
-// CoordinatorClient Implementation (stubs)
+// CoordinatorClient Implementation
 // =============================================================================
 
 #include "cedar/gcn/coordinator_client.h"
+
+#include <chrono>
+
+#include "meta_service.grpc.pb.h"
 
 namespace cedar {
 namespace gcn {
@@ -26,30 +30,74 @@ CoordinatorClient::CoordinatorClient(std::shared_ptr<grpc::Channel> channel)
 
 std::optional<coordinator::CacheWindow> CoordinatorClient::Locate(
     uint64_t entity_id, uint64_t query_time) {
-  // Stub: return a hard-coded window for entity 42.
-  if (entity_id == 42) {
-    coordinator::CacheWindow window;
-    window.entity_id = 42;
-    window.cached_from = 0;
-    window.cached_to = 2000;
-    window.gcn_node_id = 7;
-    window.version = 3;
-    window.expire_at = 3000;
-    return window;
+  if (!channel_) return std::nullopt;
+
+  auto stub = cedar::meta::MetaService::NewStub(channel_);
+  cedar::meta::LocateCacheRequest req;
+  req.set_entity_id(entity_id);
+  req.set_query_time(query_time);
+
+  cedar::meta::LocateCacheResponse resp;
+  grpc::ClientContext ctx;
+  ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+  grpc::Status status = stub->LocateCache(&ctx, req, &resp);
+  if (!status.ok() || !resp.found()) {
+    return std::nullopt;
   }
-  (void)query_time;
-  return std::nullopt;
+
+  coordinator::CacheWindow window;
+  window.entity_id = resp.window().entity_id();
+  window.cached_from = resp.window().cached_from();
+  window.cached_to = resp.window().cached_to();
+  window.gcn_node_id = resp.window().gcn_node_id();
+  window.version = resp.window().version();
+  window.expire_at = resp.window().expire_at();
+  return window;
 }
 
 void CoordinatorClient::ReportCache(const coordinator::CacheWindow& window) {
-  // Stub: no-op until real gRPC is wired.
-  (void)window;
+  if (!channel_) return;
+
+  auto stub = cedar::meta::MetaService::NewStub(channel_);
+  cedar::meta::ReportCacheRequest req;
+  auto* w = req.mutable_window();
+  w->set_entity_id(window.entity_id);
+  w->set_cached_from(window.cached_from);
+  w->set_cached_to(window.cached_to);
+  w->set_gcn_node_id(window.gcn_node_id);
+  w->set_version(window.version);
+  w->set_expire_at(window.expire_at);
+
+  cedar::meta::ReportCacheResponse resp;
+  grpc::ClientContext ctx;
+  ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+  (void)stub->ReportCache(&ctx, req, &resp);
 }
 
 void CoordinatorClient::Heartbeat(
     const std::vector<coordinator::CacheWindow>& windows) {
-  // Stub: no-op until real gRPC is wired.
-  (void)windows;
+  if (!channel_) return;
+
+  auto stub = cedar::meta::MetaService::NewStub(channel_);
+  cedar::meta::GcnHeartbeatRequest req;
+  req.set_gcn_node_id(gcn_node_id_);
+  for (const auto& w : windows) {
+    auto* cw = req.add_windows();
+    cw->set_entity_id(w.entity_id);
+    cw->set_cached_from(w.cached_from);
+    cw->set_cached_to(w.cached_to);
+    cw->set_gcn_node_id(w.gcn_node_id);
+    cw->set_version(w.version);
+    cw->set_expire_at(w.expire_at);
+  }
+
+  cedar::meta::GcnHeartbeatResponse resp;
+  grpc::ClientContext ctx;
+  ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+  (void)stub->GcnHeartbeat(&ctx, req, &resp);
 }
 
 }  // namespace gcn

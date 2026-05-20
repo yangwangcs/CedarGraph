@@ -33,6 +33,8 @@ StorageServiceImpl::StorageServiceImpl(StoragePartitionManager* partition_manage
   if (partition_manager_) {
     storage_interface_ = std::make_unique<cedar::storage::StorageInterface>(
         partition_manager_->GetSharedStorage());
+    cypher_engine_ = std::make_unique<cedar::cypher::CypherEngine>(
+        partition_manager_->GetSharedStorage());
   }
 }
 
@@ -1226,7 +1228,9 @@ grpc::Status StorageServiceImpl::GetRangeForCompute(
     edge->set_edge_type(entry.edge_type);
   }
 
-  response->set_served_version(0);  // Stub: no easy accessor for committed version
+  LOG(WARNING) << "GetRangeForCompute served_version stub (entity="
+               << request->entity_id() << ")";
+  response->set_served_version(0);
   response->set_truncated(truncated);
 
   return grpc::Status::OK;
@@ -1241,7 +1245,7 @@ grpc::Status StorageServiceImpl::GetCommittedVersion(
   }
   (void)request;
 
-  // Stub: no easy accessor for committed version yet
+  LOG(WARNING) << "GetCommittedVersion stub called";
   response->set_committed_version(0);
   response->set_watermark(0);
 
@@ -1352,5 +1356,113 @@ grpc::Status StorageServiceImpl::Heartbeat(grpc::ServerContext* context,
   return grpc::Status::OK;
 }
 
+
+// =============================================================================
+// QueryD Sub-Query Execution (Adaptive Execution Path)
+// =============================================================================
+
+grpc::Status StorageServiceImpl::ExecuteSubQuery(
+    grpc::ServerContext* context,
+    const cedar::storage::ExecuteSubQueryRequest* request,
+    grpc::ServerWriter<cedar::storage::SubQueryResultBatch>* writer) {
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+
+  // Leader check for linearizable read
+  PartitionID pid = static_cast<PartitionID>(request->partition_id());
+  std::string leader_hint;
+  auto leader_status = CheckReadLeader(pid, &leader_hint);
+  if (!leader_status.ok()) {
+    cedar::storage::SubQueryResultBatch batch;
+    batch.set_is_last(true);
+    writer->Write(batch);
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                        "Not leader", leader_hint);
+  }
+
+  if (!cypher_engine_) {
+    cedar::storage::SubQueryResultBatch batch;
+    batch.set_is_last(true);
+    writer->Write(batch);
+    return grpc::Status::OK;
+  }
+
+  // Convert proto parameters to cypher::Value map
+  std::map<std::string, cedar::cypher::Value> params;
+  for (const auto& kv : request->parameters()) {
+    const auto& qv = kv.second;
+    switch (qv.value_type_case()) {
+      case cedar::storage::QueryValue::kBoolVal:
+        params[kv.first] = cedar::cypher::Value(qv.bool_val());
+        break;
+      case cedar::storage::QueryValue::kIntVal:
+        params[kv.first] = cedar::cypher::Value(qv.int_val());
+        break;
+      case cedar::storage::QueryValue::kFloatVal:
+        params[kv.first] = cedar::cypher::Value(qv.float_val());
+        break;
+      case cedar::storage::QueryValue::kStringVal:
+        params[kv.first] = cedar::cypher::Value(qv.string_val());
+        break;
+      default:
+        params[kv.first] = cedar::cypher::Value::Null();
+        break;
+    }
+  }
+
+  // Execute via CypherEngine
+  cedar::cypher::ResultSet result = cypher_engine_->Execute(request->query_fragment(), params);
+
+  cedar::storage::SubQueryResultBatch batch;
+  if (result.HasError()) {
+    batch.set_is_last(true);
+    writer->Write(batch);
+    return grpc::Status::OK;
+  }
+
+  // Write column names
+  for (const auto& col : result.columns) {
+    batch.add_columns(col);
+  }
+
+  // Write records
+  for (const auto& record : result.records) {
+    auto* row = batch.add_records();
+    for (const auto& col : result.columns) {
+      auto it = record.values.find(col);
+      if (it != record.values.end()) {
+        cedar::storage::QueryValue qv;
+        switch (it->second.Type()) {
+          case cedar::cypher::ValueType::kBool:
+            qv.set_bool_val(it->second.GetBool());
+            break;
+          case cedar::cypher::ValueType::kInt:
+            qv.set_int_val(it->second.GetInt());
+            break;
+          case cedar::cypher::ValueType::kFloat:
+            qv.set_float_val(it->second.GetFloat());
+            break;
+          case cedar::cypher::ValueType::kString:
+            qv.set_string_val(it->second.GetString());
+            break;
+          default:
+            // For complex types (Node, Edge, List, Map), serialize as string
+            qv.set_string_val("<complex>");
+            break;
+        }
+        *row->add_values() = std::move(qv);
+      } else {
+        // Missing column -> null
+        cedar::storage::QueryValue qv;
+        *row->add_values() = std::move(qv);
+      }
+    }
+  }
+
+  batch.set_is_last(true);
+  writer->Write(batch);
+  return grpc::Status::OK;
+}
 }  // namespace dtx
 }  // namespace cedar

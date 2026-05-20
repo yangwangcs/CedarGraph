@@ -210,6 +210,10 @@ class CedarGraphStorage {
       Timestamp start_time, 
       Timestamp end_time,
       size_t max_results);
+
+  // Scan all versions for a node up to a given timestamp
+  Status ScanNode(uint64_t entity_id, Timestamp end_time,
+                  std::vector<std::pair<Timestamp, Descriptor>>* versions);
   
   // ========== 批量查询接口 (Batch Query API) ==========
   // Batch query items for efficient multi-entity lookup

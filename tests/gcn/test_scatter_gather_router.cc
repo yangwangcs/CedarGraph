@@ -70,3 +70,85 @@ TEST(ScatterGatherRouterTest, GatherMergesResponses) {
   EXPECT_TRUE(merged.truncated());
   EXPECT_TRUE(merged.success());
 }
+
+TEST(ScatterGatherRouterTest, GatherMarksFailureIfAnySubQueryFails) {
+  SubQueryResponse resp1;
+  resp1.set_success(true);
+  resp1.add_next_entity_ids(10);
+
+  SubQueryResponse resp2;
+  resp2.set_success(false);
+
+  std::vector<SubQueryResponse> responses = {resp1, resp2};
+
+  ScatterGatherRouter router;
+  TraversalResponse merged = router.Gather(responses);
+
+  EXPECT_FALSE(merged.success());
+  EXPECT_EQ(merged.visited_entity_ids_size(), 1);
+}
+
+TEST(ScatterGatherRouterTest, ScatterRejectsUnknownPeer) {
+  ScatterGatherRouter router;
+
+  SubQueryRequest req;
+  req.set_trace_id("trace-123");
+  req.set_current_entity_id(42);
+
+  SubQueryResponse resp = router.Scatter(req, "unknown-gcn");
+
+  EXPECT_FALSE(resp.success());
+  EXPECT_NE(resp.error_msg().find("Unknown target GCN"), std::string::npos);
+}
+
+TEST(ScatterGatherRouterTest, ConsistentHashRoutesToRegisteredPeer) {
+  ScatterGatherRouter router;
+
+  // No peers registered -> should return empty target
+  EXPECT_EQ(router.GetTargetGCN(42), "");
+
+  // Register two peers
+  router.RegisterPeer("gcn-a", nullptr);
+  router.RegisterPeer("gcn-b", nullptr);
+
+  EXPECT_EQ(router.PeerCount(), 2u);
+
+  // After registration, hash ring should route to one of the peers
+  std::string target = router.GetTargetGCN(42);
+  EXPECT_TRUE(target == "gcn-a" || target == "gcn-b");
+
+  // Same entity should map to the same GCN (deterministic)
+  EXPECT_EQ(router.GetTargetGCN(42), target);
+
+  // Different entity may map to same or different GCN
+  std::string target2 = router.GetTargetGCN(99);
+  EXPECT_TRUE(target2 == "gcn-a" || target2 == "gcn-b");
+}
+
+TEST(ScatterGatherRouterTest, UnregisterPeerRemovesFromHashRing) {
+  ScatterGatherRouter router;
+  router.RegisterPeer("gcn-a", nullptr);
+  router.RegisterPeer("gcn-b", nullptr);
+
+  std::string target_before = router.GetTargetGCN(42);
+
+  router.UnregisterPeer("gcn-a");
+  EXPECT_EQ(router.PeerCount(), 1u);
+
+  std::string target_after = router.GetTargetGCN(42);
+  // After removing gcn-a, all entities must still route to the remaining peer
+  EXPECT_EQ(target_after, "gcn-b");
+}
+
+TEST(ScatterGatherRouterTest, ScatterByEntityRejectsWhenNoPeers) {
+  ScatterGatherRouter router;
+
+  SubQueryRequest req;
+  req.set_trace_id("trace-123");
+  req.set_current_entity_id(42);
+
+  SubQueryResponse resp = router.ScatterByEntity(req);
+
+  EXPECT_FALSE(resp.success());
+  EXPECT_NE(resp.error_msg().find("No GCN available"), std::string::npos);
+}

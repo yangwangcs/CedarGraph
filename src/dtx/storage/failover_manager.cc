@@ -495,15 +495,15 @@ void PartitionFailoverController::LeaseRenewalLoop() {
 
 void PartitionFailoverController::HealthCheckLoop() {
   while (running_.load()) {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    
+    std::this_thread::sleep_for(config_.check_interval);
+
     if (!running_.load()) break;
-    
+
     try {
       // --- Existing leader lease expiry check ---
       auto now = std::chrono::steady_clock::now();
       std::vector<PartitionID> expired_leaders;
-      
+
       {
         std::lock_guard<std::mutex> lock(partitions_mutex_);
         for (const auto& [pid, state] : partitions_) {
@@ -522,14 +522,14 @@ void PartitionFailoverController::HealthCheckLoop() {
           }
         }
       }
-      
+
       for (PartitionID pid : expired_leaders) {
         std::cerr << "[Failover] Leader lease expired for partition " << pid
                   << ", triggering failover" << std::endl;
         ReportLeaderFailure(pid);
       }
-      
-      // --- NEW: Active replica health probing ---
+
+      // --- Multi-Dimensional Health Check with Phi Accrual ---
       std::vector<NodeID> replicas_to_probe;
       {
         std::lock_guard<std::mutex> lock(partitions_mutex_);
@@ -539,19 +539,279 @@ void PartitionFailoverController::HealthCheckLoop() {
           }
         }
       }
-      // Deduplicate
       std::sort(replicas_to_probe.begin(), replicas_to_probe.end());
       replicas_to_probe.erase(
           std::unique(replicas_to_probe.begin(), replicas_to_probe.end()),
           replicas_to_probe.end());
 
       for (NodeID node_id : replicas_to_probe) {
-        PerformActiveHealthCheck(node_id);
+        // 1. Collect metrics
+        bool tcp_ok = false;
+        HealthMetrics metrics = CollectMetrics(node_id, &tcp_ok);
+
+        // 2. Compute multi-dimensional score
+        HealthScore score = ComputeScore(metrics);
+
+        // 3. Phi Accrual: update detector and evaluate suspicion
+        {
+          std::lock_guard<std::mutex> lock(phi_detectors_mutex_);
+          auto it = phi_detectors_.find(node_id);
+          if (it == phi_detectors_.end()) {
+            it = phi_detectors_.emplace(node_id,
+                std::make_unique<PhiAccrualDetector>(500)).first;
+          }
+          // Record the actual loop interval as the heartbeat interval,
+          // not the TCP latency. This reflects "how often do we hear from this node".
+          double interval_ms = static_cast<double>(config_.check_interval.count());
+          if (!tcp_ok) {
+            // If TCP failed, record a large interval to signal missed heartbeat.
+            interval_ms = static_cast<double>(config_.detection_config.timeout.count());
+          }
+          it->second->RecordInterval(interval_ms);
+
+          // Silence = check_interval (time since last scheduled heartbeat).
+          double silence_ms = static_cast<double>(config_.check_interval.count());
+          if (it->second->SampleCount() >= 5) {
+            double phi = it->second->Phi(silence_ms);
+            if (phi >= config_.detection_config.phi_threshold) {
+              score.is_unhealthy = true;
+              std::cerr << "[Failover] Phi Accrual suspects node " << node_id
+                        << " (phi=" << phi << ")" << std::endl;
+            }
+          }
+        }
+
+        // 4. Predictive degradation: trend detection
+        if (!score.is_unhealthy && IsTrendDegrading(node_id, score)) {
+          score.is_degraded = true;
+          TriggerGraduatedDegradation(node_id);
+        } else if (score.overall >= 70.0) {
+          CancelGraduatedDegradation(node_id);
+        }
+
+        // 5. Store results
+        {
+          std::lock_guard<std::mutex> lock(replica_health_mutex_);
+          replica_health_[node_id] = !score.is_unhealthy;
+        }
+        {
+          std::lock_guard<std::mutex> lock(health_scores_mutex_);
+          health_scores_[node_id] = score;
+        }
+
+        // 6. If hard-unhealthy, report failure for leader roles
+        if (score.is_unhealthy) {
+          std::lock_guard<std::mutex> lock(partitions_mutex_);
+          for (const auto& partition_pair : partitions_) {
+            PartitionID pid = partition_pair.first;
+            const auto& state = partition_pair.second;
+            if (state.current_leader == node_id && !state.is_failover_in_progress) {
+              std::cerr << "[Failover] Node " << node_id
+                        << " unhealthy, triggering failover for partition " << pid << std::endl;
+              // Launch failover asynchronously (copy pid by value)
+              std::thread([this, pid]() { ReportLeaderFailure(pid); }).detach();
+              break;  // One failover at a time per node
+            }
+          }
+        }
       }
     } catch (...) {
       std::cerr << "[FailoverManager] Health check exception" << std::endl;
     }
   }
+}
+
+HealthMetrics PartitionFailoverController::CollectMetrics(NodeID node_id, bool* tcp_ok_out) {
+  HealthMetrics metrics;
+  metrics.sampled_at = std::chrono::steady_clock::now();
+
+  // TCP probe latency (ms). PerformActiveHealthCheck returns bool and caches.
+  // We re-probe here to get fresh latency. Simplification: use the internal
+  // TCP connect timeout as a proxy for latency if the node is reachable.
+  auto tcp_start = std::chrono::steady_clock::now();
+  bool tcp_ok = PerformActiveHealthCheck(node_id);
+  auto tcp_end = std::chrono::steady_clock::now();
+  metrics.tcp_latency_ms = static_cast<double>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(tcp_end - tcp_start).count());
+  if (!tcp_ok) {
+    metrics.tcp_latency_ms = 9999.0;  // Mark as extremely high
+  }
+  if (tcp_ok_out) {
+    *tcp_ok_out = tcp_ok;
+  }
+
+  // Invoke external collectors for subsystem metrics (Raft lag, disk I/O, etc.)
+  {
+    std::lock_guard<std::mutex> lock(collectors_mutex_);
+    for (const auto& collector : metrics_collectors_) {
+      HealthMetrics ext = collector(node_id);
+      // Merge: prefer external values if they are non-zero / meaningful
+      if (ext.raft_replication_lag > 0) metrics.raft_replication_lag = ext.raft_replication_lag;
+      if (ext.disk_io_latency_ms > 0) metrics.disk_io_latency_ms = ext.disk_io_latency_ms;
+      if (ext.memory_pressure_ratio > 0) metrics.memory_pressure_ratio = ext.memory_pressure_ratio;
+      if (ext.cpu_load_1m > 0) metrics.cpu_load_1m = ext.cpu_load_1m;
+      if (ext.error_rate_1m > 0) metrics.error_rate_1m = ext.error_rate_1m;
+    }
+  }
+
+  // Fallback: synthesize rough memory / CPU from local process if no collector
+  // and this is the local node. This avoids zero-values skewing the score.
+  if (node_id == config_.local_node_id) {
+    if (metrics.memory_pressure_ratio <= 0.0) {
+      // Rough estimate: not available without platform-specific APIs
+      metrics.memory_pressure_ratio = 0.3;
+    }
+    if (metrics.cpu_load_1m <= 0.0) {
+      metrics.cpu_load_1m = 0.3;
+    }
+  }
+
+  return metrics;
+}
+
+HealthScore PartitionFailoverController::ComputeScore(const HealthMetrics& m) {
+  HealthScore score;
+  score.breakdown = m;
+
+  // Weighted scoring. Weights sum to 1.0.
+  // TCP latency: ideal < 10ms, death at > 2000ms
+  double tcp_score = 100.0;
+  if (m.tcp_latency_ms >= 2000.0) {
+    tcp_score = 0.0;
+  } else if (m.tcp_latency_ms > 10.0) {
+    tcp_score = 100.0 * (1.0 - (m.tcp_latency_ms - 10.0) / 1990.0);
+  }
+
+  // Raft lag: ideal < 100, death at > 10000
+  double raft_score = 100.0;
+  if (m.raft_replication_lag >= 10000.0) {
+    raft_score = 0.0;
+  } else if (m.raft_replication_lag > 100.0) {
+    raft_score = 100.0 * (1.0 - (m.raft_replication_lag - 100.0) / 9900.0);
+  }
+
+  // Disk I/O: ideal < 5ms, death at > 500ms
+  double disk_score = 100.0;
+  if (m.disk_io_latency_ms >= 500.0) {
+    disk_score = 0.0;
+  } else if (m.disk_io_latency_ms > 5.0) {
+    disk_score = 100.0 * (1.0 - (m.disk_io_latency_ms - 5.0) / 495.0);
+  }
+
+  // Memory pressure: ideal < 50%, death at > 95%
+  double mem_score = 100.0;
+  if (m.memory_pressure_ratio >= 0.95) {
+    mem_score = 0.0;
+  } else if (m.memory_pressure_ratio > 0.5) {
+    mem_score = 100.0 * (1.0 - (m.memory_pressure_ratio - 0.5) / 0.45);
+  }
+
+  // CPU load: ideal < 50%, death at > 95%
+  double cpu_score = 100.0;
+  if (m.cpu_load_1m >= 0.95) {
+    cpu_score = 0.0;
+  } else if (m.cpu_load_1m > 0.5) {
+    cpu_score = 100.0 * (1.0 - (m.cpu_load_1m - 0.5) / 0.45);
+  }
+
+  // Error rate: ideal 0, death at > 100/sec
+  double err_score = 100.0;
+  if (m.error_rate_1m >= 100.0) {
+    err_score = 0.0;
+  } else {
+    err_score = 100.0 * (1.0 - m.error_rate_1m / 100.0);
+  }
+
+  static constexpr double w_tcp  = 0.25;
+  static constexpr double w_raft = 0.20;
+  static constexpr double w_disk = 0.15;
+  static constexpr double w_mem  = 0.15;
+  static constexpr double w_cpu  = 0.15;
+  static constexpr double w_err  = 0.10;
+
+  score.overall = w_tcp * tcp_score
+                + w_raft * raft_score
+                + w_disk * disk_score
+                + w_mem * mem_score
+                + w_cpu * cpu_score
+                + w_err * err_score;
+
+  // Hard failure: any single dimension is completely dead or overall < 20
+  if (tcp_score <= 0.0 || mem_score <= 0.0 || score.overall < 20.0) {
+    score.is_unhealthy = true;
+  }
+
+  return score;
+}
+
+bool PartitionFailoverController::IsTrendDegrading(NodeID node_id,
+                                                     const HealthScore& current) {
+  std::lock_guard<std::mutex> lock(score_history_mutex_);
+  auto& history = score_history_[node_id];
+  history.push_back(current.overall);
+  if (history.size() > 10) {
+    history.pop_front();
+  }
+  if (history.size() < 3) {
+    return false;
+  }
+  // Check if last 3 samples are monotonically decreasing and overall < 60
+  size_t n = history.size();
+  bool decreasing = (history[n - 1] < history[n - 2]) &&
+                    (history[n - 2] < history[n - 3]);
+  return decreasing && current.overall < 60.0;
+}
+
+void PartitionFailoverController::TriggerGraduatedDegradation(NodeID node_id) {
+  bool already_degraded = false;
+  {
+    std::lock_guard<std::mutex> lock(degraded_nodes_mutex_);
+    already_degraded = degraded_nodes_.find(node_id) != degraded_nodes_.end();
+    if (!already_degraded) {
+      degraded_nodes_.insert(node_id);
+    }
+  }
+  if (!already_degraded) {
+    std::cerr << "[Failover] Predictive degradation triggered for node " << node_id
+              << ". Redirecting new read traffic." << std::endl;
+    // Notify routing layer to deprioritize this node for new requests
+    RouteUpdateCallback cb;
+    {
+      std::lock_guard<std::mutex> lock(route_mutex_);
+      cb = route_update_callback_;
+    }
+    if (cb) {
+      // Use a reserved partition_id 0 to signal node-level degradation
+      cb(0, node_id);
+    }
+  }
+}
+
+void PartitionFailoverController::CancelGraduatedDegradation(NodeID node_id) {
+  bool was_degraded = false;
+  {
+    std::lock_guard<std::mutex> lock(degraded_nodes_mutex_);
+    was_degraded = degraded_nodes_.erase(node_id) > 0;
+  }
+  if (was_degraded) {
+    std::cerr << "[Failover] Predictive degradation cancelled for node " << node_id
+              << ". Restoring full traffic." << std::endl;
+  }
+}
+
+void PartitionFailoverController::RegisterHealthMetricsCollector(
+    HealthMetricsCollector collector) {
+  std::lock_guard<std::mutex> lock(collectors_mutex_);
+  metrics_collectors_.push_back(std::move(collector));
+}
+
+std::optional<HealthScore> PartitionFailoverController::GetHealthScore(NodeID node_id) const {
+  std::lock_guard<std::mutex> lock(health_scores_mutex_);
+  auto it = health_scores_.find(node_id);
+  if (it != health_scores_.end()) {
+    return it->second;
+  }
+  return std::nullopt;
 }
 
 // =============================================================================

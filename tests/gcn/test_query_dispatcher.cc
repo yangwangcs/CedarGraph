@@ -70,3 +70,47 @@ TEST(QueryDispatcherTest, LocalMiss) {
   EXPECT_FALSE(resp.success());
   EXPECT_EQ(resp.visited_entity_ids_size(), 0);
 }
+
+TEST(QueryDispatcherTest, DispatchSubQueryLocalHit) {
+  TMVEngine engine(16);
+  QueryDispatcher dispatcher(&engine);
+
+  std::vector<TMVEdge> edges;
+  edges.push_back(
+      {100, 500, std::numeric_limits<uint32_t>::max(), 0, 1, 0});
+  edges.push_back(
+      {200, 500, std::numeric_limits<uint32_t>::max(), 0, 1, 0});
+  engine.BootstrapVertex(42, Direction::kOut, edges, false);
+
+  SubQueryRequest req;
+  req.set_trace_id("trace-sub");
+  req.set_current_entity_id(42);
+  req.set_query_time(1000);
+
+  SubQueryResponse resp;
+  grpc::Status status = dispatcher.DispatchSubQuery(req, &resp);
+
+  EXPECT_TRUE(status.ok());
+  EXPECT_TRUE(resp.success());
+  EXPECT_EQ(resp.trace_id(), "trace-sub");
+  EXPECT_EQ(resp.next_entity_ids_size(), 2);
+  EXPECT_EQ(resp.next_entity_ids(0), 100u);
+  EXPECT_EQ(resp.next_entity_ids(1), 200u);
+}
+
+TEST(QueryDispatcherTest, DispatchSubQueryLocalMissNoBackfill) {
+  TMVEngine engine(16);
+  QueryDispatcher dispatcher(&engine);
+
+  SubQueryRequest req;
+  req.set_trace_id("trace-sub-miss");
+  req.set_current_entity_id(99);
+  req.set_query_time(1000);
+
+  SubQueryResponse resp;
+  grpc::Status status = dispatcher.DispatchSubQuery(req, &resp);
+
+  EXPECT_TRUE(status.ok());
+  EXPECT_FALSE(resp.success());
+  EXPECT_EQ(resp.next_entity_ids_size(), 0);
+}

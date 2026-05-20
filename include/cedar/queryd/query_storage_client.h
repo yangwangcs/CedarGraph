@@ -22,6 +22,8 @@
 #include "cedar/types/descriptor.h"
 #include "cedar/query/cedar_scan.h"
 
+#include <grpcpp/grpcpp.h>
+
 // 前向声明 - 使用底层 dtx 的 StorageClient
 namespace cedar {
 namespace dtx {
@@ -76,6 +78,9 @@ class QueryStorageClient {
 
   // 注册存储节点
   void RegisterNode(uint32_t partition_id, const std::string& node_address);
+
+  // Mark a partition as locally hosted (for Adaptive Execution Path).
+  void MarkPartitionLocal(uint32_t partition_id);
 
   // ========== 基础操作 (转发到底层客户端) ==========
   
@@ -144,6 +149,12 @@ class QueryStorageClient {
   
   std::shared_ptr<NodeClient> GetNodeClient(uint32_t partition_id);
 
+  // Check if a partition is hosted locally (short-circuit path).
+  bool IsLocalPartition(uint32_t partition_id) const;
+
+  // Get or create gRPC channel to a remote partition.
+  std::shared_ptr<grpc::Channel> GetOrCreateChannel(uint32_t partition_id);
+
   // ========== 健康检查与统计 ==========
   
   Status HealthCheck();
@@ -177,6 +188,14 @@ class QueryStorageClient {
   std::unordered_map<std::string, CircuitBreaker> circuit_breakers_;
   mutable std::mutex cb_mutex_;
   
+  // Local partition IDs (for AEP local/remote routing)
+  mutable std::shared_mutex local_partitions_mutex_;
+  std::unordered_set<uint32_t> local_partition_ids_;
+
+  // Remote partition gRPC channels
+  mutable std::shared_mutex channels_mutex_;
+  std::unordered_map<uint32_t, std::shared_ptr<grpc::Channel>> partition_channels_;
+
   // 统计
   mutable std::mutex stats_mutex_;
   Stats stats_;

@@ -327,6 +327,38 @@ size_t TMVEngine::DropBelowWatermark(uint64_t watermark) {
   return dropped;
 }
 
+size_t TMVEngine::InvalidateVertex(uint64_t entity_id) {
+  uint32_t shard_idx = static_cast<uint32_t>(entity_id) & (TMVIndex::kNumShards - 1);
+  TMVIndex::Shard& shard = index_.shards_[shard_idx];
+  absl::base_internal::SpinLockHolder holder{shard.lock};
+
+  auto it = shard.entries.find(entity_id);
+  if (it == shard.entries.end()) {
+    return 0;
+  }
+
+  size_t freed = 0;
+  // Free outgoing edge chunks
+  TMVChunk* chunk = it->second.out_chunk_head.load(std::memory_order_relaxed);
+  while (chunk) {
+    TMVChunk* next = chunk->next.load(std::memory_order_acquire);
+    pool_.Free(chunk);
+    ++freed;
+    chunk = next;
+  }
+  // Free incoming edge chunks
+  chunk = it->second.in_chunk_head.load(std::memory_order_relaxed);
+  while (chunk) {
+    TMVChunk* next = chunk->next.load(std::memory_order_acquire);
+    pool_.Free(chunk);
+    ++freed;
+    chunk = next;
+  }
+
+  shard.entries.erase(it);
+  return freed;
+}
+
 size_t TMVEngine::VertexCount() const {
   size_t count = 0;
   for (uint32_t s = 0; s < TMVIndex::kNumShards; ++s) {

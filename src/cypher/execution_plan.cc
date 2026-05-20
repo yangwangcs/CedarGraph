@@ -106,7 +106,7 @@ ExecutionPlan::ExecutionPlan(std::shared_ptr<PhysicalOperator> root)
     : root_(root) {}
 
 ResultSet ExecutionPlan::Execute(ExecutionContext* ctx) {
-  if (!ctx || (!ctx->graph && !ctx->gcn_traversal_callback && !ctx->get_all_entities_fn && !ctx->storage)) {
+  if (!ctx || (!ctx->graph && !ctx->gcn_traversal_callback && !ctx->get_all_entities_fn)) {
     ResultSet result;
     result.SetError("Invalid execution context");
     return result;

@@ -165,6 +165,10 @@ add_executable(test_failover cluster/test_failover.cc)
 target_link_libraries(test_failover ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_failover)
 
+add_executable(test_failover_health_score cluster/test_failover_health_score.cc)
+target_link_libraries(test_failover_health_score ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_failover_health_score)
+
 add_executable(test_health_monitoring cluster/test_health_monitoring.cc)
 target_link_libraries(test_health_monitoring ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_health_monitoring)
@@ -233,6 +237,11 @@ gtest_discover_tests(test_partition_router)
 # target_link_libraries(test_cypher_validator ${CEDAR_TEST_LIBS} cedar_queryd)
 # gtest_discover_tests(test_cypher_validator)
 
+# Storage Subquery Tests
+add_executable(test_storage_subquery storage/test_storage_subquery.cc)
+target_link_libraries(test_storage_subquery ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_subquery)
+
 # Storage Interface Tests
 add_executable(test_storage_interface test_storage_interface.cc)
 target_link_libraries(test_storage_interface ${CEDAR_TEST_LIBS})
@@ -241,6 +250,16 @@ gtest_discover_tests(test_storage_interface)
 # add_executable(test_storage_interface_predicate test_storage_interface_predicate.cc)
 # target_link_libraries(test_storage_interface_predicate ${CEDAR_TEST_LIBS})
 # gtest_discover_tests(test_storage_interface_predicate)
+
+# Coordinator tests
+add_executable(test_location_table coordinator/test_location_table.cc)
+target_link_libraries(test_location_table ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_location_table)
+
+# DTX GCN cache handler tests
+add_executable(test_meta_service_gcn_cache dtx/test_meta_service_gcn_cache.cc)
+target_link_libraries(test_meta_service_gcn_cache ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_meta_service_gcn_cache)
 
 # GCN tests
 add_executable(test_tmv_edge gcn/test_tmv_edge.cc)
@@ -268,6 +287,10 @@ target_link_libraries(test_gcn_service cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_gcn_service PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_gcn_service)
 
+add_executable(test_adaptive_execution queryd/test_adaptive_execution.cc)
+target_link_libraries(test_adaptive_execution ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_adaptive_execution)
+
 add_executable(test_query_dispatcher gcn/test_query_dispatcher.cc)
 target_link_directories(test_query_dispatcher PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_query_dispatcher cedar_gcn ${GTEST_MAIN_TARGET})
@@ -282,6 +305,11 @@ add_executable(test_scatter_gather_router gcn/test_scatter_gather_router.cc)
 target_link_directories(test_scatter_gather_router PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_scatter_gather_router cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_scatter_gather_router)
+
+add_executable(test_backpressure_controller gcn/test_backpressure_controller.cc)
+target_link_directories(test_backpressure_controller PRIVATE /opt/homebrew/lib)
+target_link_libraries(test_backpressure_controller cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_backpressure_controller)
 
 add_executable(test_local_compute_thread gcn/test_local_compute_thread.cc)
 target_link_directories(test_local_compute_thread PRIVATE /opt/homebrew/lib)

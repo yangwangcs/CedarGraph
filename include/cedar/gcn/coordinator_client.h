@@ -34,6 +34,8 @@ class CoordinatorClient {
  public:
   explicit CoordinatorClient(std::shared_ptr<grpc::Channel> channel);
 
+  void SetGcnNodeId(uint32_t node_id) { gcn_node_id_ = node_id; }
+
   // Query the coordinator for the cache window covering entity_id at
   // query_time.  Returns std::nullopt if no cache is registered.
   std::optional<coordinator::CacheWindow> Locate(uint64_t entity_id,
@@ -47,6 +49,7 @@ class CoordinatorClient {
 
  private:
   std::shared_ptr<grpc::Channel> channel_;
+  uint32_t gcn_node_id_ = 0;
 };
 
 }  // namespace gcn

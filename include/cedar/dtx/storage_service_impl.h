@@ -40,6 +40,7 @@
 
 #include "cedar/core/status.h"
 #include "cedar/types/descriptor.h"
+#include "cedar/cypher/cypher_engine.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/storage/storage_interface.h"
 #include "cedar/dtx/types.h"
@@ -66,6 +67,12 @@ namespace cedar {
 // Forward declaration for governance layer integration
 namespace governance {
   class ServiceRegistry;
+}
+
+// Forward declarations for AEP ExecuteSubQuery (defined in storage_service.proto)
+namespace storage {
+  class ExecuteSubQueryRequest;
+  class SubQueryResultBatch;
 }
 
 namespace dtx {
@@ -314,6 +321,11 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                          grpc::ServerReaderWriter<cedar::storage::HeartbeatResponse,
                                                   cedar::storage::HeartbeatRequest>* stream) override;
 
+  // QueryD sub-query execution (Adaptive Execution Path)
+  grpc::Status ExecuteSubQuery(grpc::ServerContext* context,
+                               const cedar::storage::ExecuteSubQueryRequest* request,
+                               grpc::ServerWriter<cedar::storage::SubQueryResultBatch>* writer) override;
+
  private:
   // Helper methods for proto conversion
   CedarKey ProtoToCedarKey(const cedar::storage::CedarKey& proto_key);
@@ -327,6 +339,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status CheckReadLeader(PartitionID pid, std::string* leader_hint);
 
   std::unique_ptr<cedar::storage::StorageInterface> storage_interface_;
+  std::unique_ptr<cedar::cypher::CypherEngine> cypher_engine_;
   std::vector<cedar::storage::PropertyPredicateItem> ConvertPredicates(
       const google::protobuf::RepeatedPtrField<cedar::storage::ScanPredicate>& proto_preds);
 
