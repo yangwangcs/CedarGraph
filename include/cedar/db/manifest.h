@@ -180,6 +180,9 @@ class ManifestManager {
   Status ApplyEdits(const std::vector<ManifestEdit>& edits,
                     std::shared_ptr<Version>* new_version);
   
+  // 仅将编辑记录写入 Manifest（不切换版本）
+  Status LogEdit(const ManifestEdit& edit);
+  
   // 获取当前 Manifest 文件号
   uint64_t GetManifestFileNumber() const;
   
@@ -234,9 +237,9 @@ class VersionSet {
   // 获取指定版本
   std::shared_ptr<Version> GetVersion(uint64_t version_id) const;
   
-  // 应用编辑并创建新版本
+  // 应用单个编辑并创建新版本
   Status ApplyEdit(const ManifestEdit& edit,
-                   std::shared_ptr<Version>* new_version);
+                   std::shared_ptr<Version>* new_version = nullptr);
   
   // 批量应用编辑
   Status ApplyEdits(const std::vector<ManifestEdit>& edits,

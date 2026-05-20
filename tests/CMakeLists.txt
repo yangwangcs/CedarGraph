@@ -45,6 +45,14 @@ gtest_discover_tests(test_subquery_execution)
 add_cedar_test(test_cedar_key)
 add_cedar_test(test_descriptor)
 add_cedar_test(test_descriptor_schema_version)
+add_cedar_test(test_env)
+add_executable(test_compaction db/test_compaction.cc)
+target_link_libraries(test_compaction ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_compaction)
+
+add_executable(test_manifest_replay db/test_manifest_replay.cc)
+target_link_libraries(test_manifest_replay ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_manifest_replay)
 add_executable(test_cedar_graph_storage storage/test_cedar_graph_storage.cc)
 target_link_libraries(test_cedar_graph_storage ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cedar_graph_storage)
@@ -103,6 +111,10 @@ gtest_discover_tests(test_partition_index_build)
 add_executable(test_partition_migration_end_to_end dtx/test_partition_migration_end_to_end.cc)
 target_link_libraries(test_partition_migration_end_to_end ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_partition_migration_end_to_end)
+
+add_executable(test_storage_service_impl dtx/test_storage_service_impl.cc)
+target_link_libraries(test_storage_service_impl ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_storage_service_impl)
 
 # add_cedar_test(test_sst_capacity_analysis)
 # add_cedar_test(test_auto_compaction_file_based)
@@ -194,9 +206,7 @@ gtest_discover_tests(test_cross_dc_replication)
 # target_link_libraries(test_partition_raft ${CEDAR_TEST_LIBS})
 # gtest_discover_tests(test_partition_raft)
 
-add_executable(test_raft_propose_batch cluster/test_raft_propose_batch.cc)
-target_link_libraries(test_raft_propose_batch ${CEDAR_TEST_LIBS})
-gtest_discover_tests(test_raft_propose_batch)
+
 
 # Cluster test tool
 add_executable(cluster_test_tool ../tools/cluster_test_tool.cc)

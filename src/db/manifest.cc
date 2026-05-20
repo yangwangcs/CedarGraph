@@ -422,8 +422,24 @@ Status ManifestManager::Initialize(bool create_if_missing) {
     }
     
     manifest_filename_ = db_path_ + "/" + manifest_name;
-    // Manifest file reading requires version state reconstruction
-    // from edit records (not yet implemented).
+    
+    // 提取 manifest 文件编号
+    const std::string prefix = "MANIFEST-";
+    if (manifest_name.rfind(prefix, 0) == 0) {
+      try {
+        manifest_file_number_ = std::stoull(manifest_name.substr(prefix.size()));
+      } catch (...) {
+        return Status::Corruption("Manifest", "Invalid manifest filename: " + manifest_name);
+      }
+    } else {
+      return Status::Corruption("Manifest", "Invalid manifest filename: " + manifest_name);
+    }
+    
+    // 打开现有 manifest 文件用于追加写入
+    s = env_->NewAppendableFile(manifest_filename_, &manifest_file_);
+    if (!s.ok()) {
+      return s;
+    }
     
   } else if (create_if_missing) {
     // 创建新的 Manifest
@@ -587,6 +603,11 @@ Status ManifestManager::ApplyEdit(const ManifestEdit& edit,
   return Status::OK();
 }
 
+Status ManifestManager::LogEdit(const ManifestEdit& edit) {
+  std::lock_guard<std::mutex> lock(manifest_mutex_);
+  return WriteEditToManifest(edit);
+}
+
 Status ManifestManager::WriteEditToManifest(const ManifestEdit& edit) {
   if (!manifest_file_) {
     return Status::IOError("Manifest", "not opened");
@@ -646,6 +667,11 @@ VersionSet::~VersionSet() = default;
 std::shared_ptr<Version> VersionSet::GetCurrentVersion() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return current_version_;
+}
+
+Status VersionSet::ApplyEdit(const ManifestEdit& edit,
+                             std::shared_ptr<Version>* new_version) {
+  return ApplyEdits({edit}, new_version);
 }
 
 Status VersionSet::ApplyEdits(const std::vector<ManifestEdit>& edits,
