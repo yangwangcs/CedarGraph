@@ -31,6 +31,7 @@
 #include "cedar/dtx/transaction_state.h"
 #include "cedar/dtx/transaction_recovery_manager.h"
 #include "cedar/dtx/transaction_timeout_manager.h"
+#include "cedar/gcn/scatter_gather_router.h"
 
 namespace cedar {
 namespace service {
@@ -199,8 +200,9 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   std::shared_ptr<cedar::storage::StorageService::Stub> GetStorageStub(
       const std::string& node_addr);
   
-  // 获取 GCN 客户端 stub
-  std::shared_ptr<cedar::gcn::GcnService::Stub> GetGcnStub();
+  // GCN 客户端
+  std::shared_ptr<cedar::gcn::ScatterGatherRouter> gcn_router_;
+  std::vector<std::string> gcn_peer_addresses_;
   
   // 执行单分区查询
   Status ExecutePartitionQuery(const std::string& query,
@@ -226,11 +228,6 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
       storage_stubs_;
   std::unordered_map<std::string, std::shared_ptr<grpc::Channel>>
       storage_channels_;
-  
-  // GCN 客户端
-  std::mutex gcn_mutex_;
-  std::string gcn_server_addr_;
-  std::shared_ptr<cedar::gcn::GcnService::Stub> gcn_stub_;
   
   // 分区映射缓存
   mutable std::shared_mutex partition_map_mutex_;

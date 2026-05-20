@@ -51,15 +51,15 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
 
   std::cout << "[GraphD] Connected to MetaD at " << meta_server_addr << std::endl;
   
-  // 连接到 GCN（如果配置了）
+  // 初始化 GCN 路由（如果配置了）
+  gcn_router_ = std::make_shared<cedar::gcn::ScatterGatherRouter>();
   if (!gcn_server_addr.empty()) {
-    std::lock_guard<std::mutex> lock(gcn_mutex_);
-    gcn_server_addr_ = gcn_server_addr;
     auto gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls_config_);
     if (!gcn_creds) gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
     auto gcn_channel = grpc::CreateChannel(gcn_server_addr, gcn_creds);
-    gcn_stub_ = cedar::gcn::GcnService::NewStub(gcn_channel);
-    std::cout << "[GraphD] Connected to GCN at " << gcn_server_addr << std::endl;
+    gcn_router_->RegisterPeer(gcn_server_addr, gcn_channel);
+    gcn_peer_addresses_.push_back(gcn_server_addr);
+    std::cout << "[GraphD] Registered GCN " << gcn_server_addr << " in router" << std::endl;
   }
   
   // 初始加载分区映射
@@ -471,11 +471,6 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   return grpc::Status::OK;
 }
 
-std::shared_ptr<cedar::gcn::GcnService::Stub> GraphServiceRouter::GetGcnStub() {
-  std::lock_guard<std::mutex> lock(gcn_mutex_);
-  return gcn_stub_;
-}
-
 grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
                                           const TraverseRequest* request,
                                           TraverseResponse* response) {
@@ -483,23 +478,18 @@ grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
     return grpc::Status::CANCELLED;
   }
 
-  // 优先路由到 GCN（本地图计算节点）
-  auto gcn_stub = GetGcnStub();
-  if (gcn_stub) {
+  // 优先路由到 GCN（支持多 GCN Scatter-Gather）
+  if (gcn_router_ && !gcn_peer_addresses_.empty()) {
     cedar::gcn::TraversalRequest gcn_request;
     gcn_request.set_trace_id("graphd-traverse");
     gcn_request.set_root_entity_id(request->start_node_id());
-    gcn_request.set_query_time(request->as_of_timestamp() > 0 ? request->as_of_timestamp() : UINT64_MAX);
+    gcn_request.set_query_time(request->as_of_timestamp() > 0
+                                ? request->as_of_timestamp() : UINT64_MAX);
     gcn_request.set_max_hops(request->max_depth() > 0 ? request->max_depth() : 3);
     gcn_request.set_edge_type(request->edge_types_size() > 0 ? request->edge_types(0) : 0);
-    gcn_request.set_required_version(0);
-    
-    cedar::gcn::TraversalResponse gcn_response;
-    grpc::ClientContext client_context;
-    client_context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
-    auto grpc_status = gcn_stub->Traverse(&client_context, gcn_request, &gcn_response);
-    
-    if (grpc_status.ok() && gcn_response.success()) {
+
+    auto gcn_response = gcn_router_->ScatterTraversalByEntity(gcn_request);
+    if (gcn_response.success()) {
       response->set_success(true);
       response->set_nodes_visited(gcn_response.visited_entity_ids_size());
       for (const auto& entity_id : gcn_response.visited_entity_ids()) {
