@@ -82,21 +82,11 @@ bool CypherEngine::IsValid(const std::string& query) {
 }
 
 std::string CypherEngine::Explain(const std::string& query) {
-  auto fingerprint = ComputeFingerprint(query);
-
-  // Check cache first
-  if (auto cached = GetCachedPlan(fingerprint)) {
-    return cached->Explain();
-  }
-
   auto plan = ParseAndPlan(query);
   if (!plan) {
     return "Error: " + last_error_;
   }
-
-  // Cache the plan by fingerprint for future benefit
-  CachePlan(fingerprint, std::move(plan));
-  return GetCachedPlan(fingerprint)->Explain();
+  return plan->Explain();
 }
 
 void CypherEngine::SetGcnTraversalCallback(

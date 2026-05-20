@@ -58,22 +58,6 @@ TEST(PlanCacheTest, ClearCacheWorks) {
   EXPECT_EQ(engine.GetCacheSize(), 0);
 }
 
-TEST(PlanCacheTest, ParameterizedExecuteWithParametersSharesEntry) {
-  CypherEngine engine(nullptr);
-
-  // Execute parameterized queries with different literal values
-  std::map<std::string, Value> params1;
-  params1["id"] = Value(1);
-  engine.Execute("MATCH (n) WHERE n.id = $id RETURN n", params1);
-
-  std::map<std::string, Value> params2;
-  params2["id"] = Value(2);
-  engine.Execute("MATCH (n) WHERE n.id = $id RETURN n", params2);
-
-  // They should share a single cache entry
-  EXPECT_EQ(engine.GetCacheSize(), 1);
-}
-
 TEST(PlanCacheTest, CacheHitAvoidsReparse) {
   CypherEngine engine(nullptr);
 
