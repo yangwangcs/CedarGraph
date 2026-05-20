@@ -22,9 +22,13 @@
 namespace cedar {
 namespace dtx {
 
+// Forward declaration to avoid circular include
+class StorageServiceImpl;
+
 class DTXServiceImpl final : public cedar::dtx::DTXService::Service {
  public:
-  explicit DTXServiceImpl(cedar::CedarGraphStorage* storage);
+  explicit DTXServiceImpl(cedar::CedarGraphStorage* storage,
+                         cedar::dtx::StorageServiceImpl* storage_service = nullptr);
 
   ::grpc::Status Prepare(::grpc::ServerContext* context,
                          const cedar::dtx::PrepareRequest* request,
@@ -51,6 +55,7 @@ class DTXServiceImpl final : public cedar::dtx::DTXService::Service {
 
  private:
   cedar::CedarGraphStorage* storage_;
+  cedar::dtx::StorageServiceImpl* storage_service_ = nullptr;
 
   Status ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log_entry);
 };

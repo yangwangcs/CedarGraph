@@ -111,7 +111,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
 
   // Initialize DTX cross-DC replication service
   dtx_service_impl_ = std::make_unique<cedar::dtx::DTXServiceImpl>(
-      partition_manager_.GetSharedStorage());
+      partition_manager_.GetSharedStorage(), service_impl_.get());
 
   // Start DTX gRPC server on dtx_port (default: storage_port + 1)
   int dtx_port = config_.dtx_port;

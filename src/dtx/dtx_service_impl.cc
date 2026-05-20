@@ -12,15 +12,52 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "cedar/dtx/storage_service_impl.h"
 #include "cedar/dtx/dtx_service_impl.h"
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
+#include "storage_service.pb.h"
+
+#include <functional>
+#include <string>
 
 namespace cedar {
 namespace dtx {
 
-DTXServiceImpl::DTXServiceImpl(cedar::CedarGraphStorage* storage)
-    : storage_(storage) {}
+namespace {
+
+uint64_t ConvertTxnId(const std::string& txn_id_str) {
+  try {
+    return std::stoull(txn_id_str);
+  } catch (...) {
+    return std::hash<std::string>{}(txn_id_str);
+  }
+}
+
+void CopyCedarKey(const cedar::dtx::CedarKey& src, cedar::storage::CedarKey* dst) {
+  dst->set_entity_id(src.entity_id());
+  dst->set_timestamp(src.timestamp());
+}
+
+uint64_t GetCommitTs(const cedar::dtx::PrepareRequest& dtx_req) {
+  if (dtx_req.has_timestamp_info()) {
+    return dtx_req.timestamp_info().wall_time();
+  }
+  return dtx_req.prepare_version();
+}
+
+uint64_t GetCommitTs(const cedar::dtx::CommitRequest& dtx_req) {
+  if (dtx_req.has_timestamp_info()) {
+    return dtx_req.timestamp_info().wall_time();
+  }
+  return dtx_req.commit_version();
+}
+
+}  // namespace
+
+DTXServiceImpl::DTXServiceImpl(cedar::CedarGraphStorage* storage,
+                               cedar::dtx::StorageServiceImpl* storage_service)
+    : storage_(storage), storage_service_(storage_service) {}
 
 ::grpc::Status DTXServiceImpl::Replicate(
     ::grpc::ServerContext* context,
@@ -98,40 +135,132 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
   return Status::OK();
 }
 
-// Stub implementations for 2PC methods
 ::grpc::Status DTXServiceImpl::Prepare(::grpc::ServerContext* context,
                                        const cedar::dtx::PrepareRequest* request,
                                        cedar::dtx::PrepareResponse* response) {
-  (void)context; (void)request;
-  response->set_success(false);
-  response->set_error_msg("Prepare not implemented in DTXService; use StorageService");
-  return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
+  if (!storage_service_) {
+    response->set_success(false);
+    response->set_error_msg("Prepare not implemented in DTXService; use StorageService");
+    return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
+  }
+
+  cedar::storage::PrepareRequest storage_req;
+  storage_req.set_txn_id(ConvertTxnId(request->txn_id()));
+  storage_req.set_commit_ts(GetCommitTs(*request));
+
+  for (const auto& key : request->reads()) {
+    CopyCedarKey(key, storage_req.add_read_set());
+  }
+  for (const auto& key : request->writes()) {
+    CopyCedarKey(key, storage_req.add_write_set());
+  }
+
+  cedar::storage::PrepareResponse storage_resp;
+  auto grpc_status = storage_service_->Prepare(context, &storage_req, &storage_resp);
+  if (!grpc_status.ok()) {
+    response->set_success(false);
+    response->set_error_msg(grpc_status.error_message());
+    return grpc_status;
+  }
+
+  response->set_success(storage_resp.prepared());
+  response->set_vote_commit(storage_resp.prepared());
+  response->set_can_prepare(storage_resp.prepared());
+  response->set_error_msg(storage_resp.error_msg());
+  return ::grpc::Status::OK;
 }
 
 ::grpc::Status DTXServiceImpl::Commit(::grpc::ServerContext* context,
                                       const cedar::dtx::CommitRequest* request,
                                       cedar::dtx::CommitResponse* response) {
-  (void)context; (void)request;
-  response->set_success(false);
-  response->set_error_msg("Commit not implemented in DTXService; use StorageService");
-  return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
+  if (!storage_service_) {
+    response->set_success(false);
+    response->set_error_msg("Commit not implemented in DTXService; use StorageService");
+    return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
+  }
+
+  cedar::storage::CommitRequest storage_req;
+  storage_req.set_txn_id(ConvertTxnId(request->txn_id()));
+  storage_req.set_commit_ts(GetCommitTs(*request));
+
+  cedar::storage::CommitResponse storage_resp;
+  auto grpc_status = storage_service_->Commit(context, &storage_req, &storage_resp);
+  if (!grpc_status.ok()) {
+    response->set_success(false);
+    response->set_error_msg(grpc_status.error_message());
+    return grpc_status;
+  }
+
+  response->set_success(storage_resp.success());
+  response->set_error_msg(storage_resp.error_msg());
+  return ::grpc::Status::OK;
 }
 
 ::grpc::Status DTXServiceImpl::Abort(::grpc::ServerContext* context,
                                      const cedar::dtx::AbortRequest* request,
                                      cedar::dtx::AbortResponse* response) {
-  (void)context; (void)request;
-  response->set_success(false);
-  response->set_error_msg("Abort not implemented in DTXService; use StorageService");
-  return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
+  if (!storage_service_) {
+    response->set_success(false);
+    response->set_error_msg("Abort not implemented in DTXService; use StorageService");
+    return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
+  }
+
+  cedar::storage::AbortRequest storage_req;
+  storage_req.set_txn_id(ConvertTxnId(request->txn_id()));
+
+  cedar::storage::AbortResponse storage_resp;
+  auto grpc_status = storage_service_->Abort(context, &storage_req, &storage_resp);
+  if (!grpc_status.ok()) {
+    response->set_success(false);
+    response->set_error_msg(grpc_status.error_message());
+    return grpc_status;
+  }
+
+  response->set_success(storage_resp.success());
+  response->set_error_msg(storage_resp.error_msg());
+  return ::grpc::Status::OK;
 }
 
 ::grpc::Status DTXServiceImpl::Inquire(::grpc::ServerContext* context,
                                        const cedar::dtx::InquireRequest* request,
                                        cedar::dtx::InquireResponse* response) {
-  (void)context; (void)request;
-  response->set_state(cedar::dtx::InquireResponse_TxnState_UNKNOWN);
-  return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
+  if (!storage_service_) {
+    response->set_state(cedar::dtx::InquireResponse_TxnState_UNKNOWN);
+    return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
+  }
+
+  cedar::storage::InquireRequest storage_req;
+  storage_req.set_txn_id(ConvertTxnId(request->txn_id()));
+
+  cedar::storage::InquireResponse storage_resp;
+  auto grpc_status = storage_service_->Inquire(context, &storage_req, &storage_resp);
+  if (!grpc_status.ok()) {
+    response->set_state(cedar::dtx::InquireResponse_TxnState_UNKNOWN);
+    response->set_details(grpc_status.error_message());
+    return grpc_status;
+  }
+
+  cedar::dtx::InquireResponse_TxnState dtx_state;
+  switch (storage_resp.state()) {
+    case cedar::storage::InquireResponse_TxnState_PREPARED:
+      dtx_state = cedar::dtx::InquireResponse_TxnState_PREPARED;
+      break;
+    case cedar::storage::InquireResponse_TxnState_COMMITTED:
+      dtx_state = cedar::dtx::InquireResponse_TxnState_COMMITTED;
+      break;
+    case cedar::storage::InquireResponse_TxnState_ABORTED:
+      dtx_state = cedar::dtx::InquireResponse_TxnState_ABORTED;
+      break;
+    case cedar::storage::InquireResponse_TxnState_INCONSISTENT:
+    case cedar::storage::InquireResponse_TxnState_UNKNOWN:
+    default:
+      dtx_state = cedar::dtx::InquireResponse_TxnState_UNKNOWN;
+      break;
+  }
+  response->set_txn_id(request->txn_id());
+  response->set_state(dtx_state);
+  response->set_details(storage_resp.error_msg());
+  return ::grpc::Status::OK;
 }
 
 ::grpc::Status DTXServiceImpl::RegisterParticipant(::grpc::ServerContext* context,
