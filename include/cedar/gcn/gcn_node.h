@@ -17,7 +17,9 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include <grpcpp/grpcpp.h>
 
@@ -59,6 +61,11 @@ class GcnNode {
   // Inject storage for optional backfill on startup
   void SetStorage(CedarGraphStorage* storage) { storage_ = storage; }
 
+  // Inject peer GCN addresses for scatter-gather routing
+  void SetPeerAddresses(const std::vector<std::string>& addresses) {
+    peer_addresses_ = addresses;
+  }
+
  private:
   void CdcListenerLoop();
   void HeartbeatLoop();
@@ -73,6 +80,8 @@ class GcnNode {
   CedarGraphStorage* storage_ = nullptr;
 
   std::unique_ptr<gcn::WatermarkGc> watermark_gc_;
+
+  std::vector<std::string> peer_addresses_;
 
   std::atomic<bool> running_{false};
   std::thread cdc_thread_;

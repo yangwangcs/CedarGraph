@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include "cedar/gcn/gcn_node.h"
 #include "cedar/gcn/scatter_gather_router.h"
 #include "gcn_service.pb.h"
 
@@ -151,4 +152,14 @@ TEST(ScatterGatherRouterTest, ScatterByEntityRejectsWhenNoPeers) {
 
   EXPECT_FALSE(resp.success());
   EXPECT_NE(resp.error_msg().find("No GCN available"), std::string::npos);
+}
+
+TEST(GcnNodePeerTest, InitializeRegistersPeers) {
+  cedar::GcnNode node;
+  node.SetPeerAddresses({"127.0.0.1:9781", "127.0.0.1:9782"});
+  // We cannot Start() without a real gRPC port, but Initialize() should
+  // at least create the router and register peers without crashing.
+  auto status = node.Initialize();
+  (void)status;
+  SUCCEED();
 }

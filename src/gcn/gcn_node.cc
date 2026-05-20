@@ -20,6 +20,7 @@
 #include <sstream>
 
 #include "cedar/dtx/raft/grpc_tls.h"
+#include "cedar/gcn/scatter_gather_router.h"
 
 #include <gflags/gflags.h>
 #include <grpcpp/grpcpp.h>
@@ -76,6 +77,14 @@ GcnNode::~GcnNode() {
   };
   service_impl_ = std::make_unique<gcn::GcnServiceImpl>(
       engine_.get(), backfill_service_.get(), std::move(callback));
+
+  // Register peers in ScatterGatherRouter for multi-GCN routing
+  auto router = std::make_shared<gcn::ScatterGatherRouter>();
+  for (const auto& addr : peer_addresses_) {
+    auto channel = grpc::CreateChannel(addr, grpc::InsecureChannelCredentials());
+    router->RegisterPeer(addr, channel);
+  }
+  service_impl_->SetScatterGatherRouter(router);
 
   // Create CoordinatorClient connection to metad
   auto coordinator_channel = grpc::CreateChannel(
