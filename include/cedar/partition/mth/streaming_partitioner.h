@@ -11,6 +11,7 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <mutex>
 #include "cedar/partition/mth/cedar_key.h"
 #include "cedar/partition/mth/partition_state.h"
 
@@ -50,6 +51,8 @@ class StreamingPartitioner : public IEventPartitioner {
   size_t capacity_;
   double alpha_, beta_, gamma_, eta_;
   double temporal_alpha_;
+
+  mutable std::mutex mutex_;
 
   std::vector<PartitionState> states_;
   std::unordered_map<uint64_t, uint16_t> entity_home_;

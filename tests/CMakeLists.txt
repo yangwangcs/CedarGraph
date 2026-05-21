@@ -99,6 +99,11 @@ add_executable(test_end_to_end_partition test_end_to_end_partition.cc)
 target_link_libraries(test_end_to_end_partition ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_end_to_end_partition)
 
+# Streaming partitioner thread safety test
+add_executable(test_streaming_partitioner_thread_safety partition/test_streaming_partitioner_thread_safety.cc)
+target_link_libraries(test_streaming_partitioner_thread_safety ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_streaming_partitioner_thread_safety)
+
 # Multi-threaded concurrent end-to-end test
 add_executable(test_multi_threaded_concurrent_e2e test_multi_threaded_concurrent_e2e.cc)
 target_link_libraries(test_multi_threaded_concurrent_e2e ${CEDAR_TEST_LIBS})
@@ -148,6 +153,10 @@ gtest_discover_tests(test_transaction_pool)
 add_executable(test_wal_ordering transaction/test_wal_ordering.cc)
 target_link_libraries(test_wal_ordering ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_wal_ordering)
+
+add_executable(test_pool_state_reset transaction/test_pool_state_reset.cc)
+target_link_libraries(test_pool_state_reset ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_pool_state_reset)
 
 add_executable(test_plan_cache_thread_safety cypher/test_plan_cache_thread_safety.cc)
 target_link_libraries(test_plan_cache_thread_safety ${CEDAR_TEST_LIBS} cedar_queryd)

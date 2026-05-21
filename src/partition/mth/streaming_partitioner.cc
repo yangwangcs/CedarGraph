@@ -27,6 +27,7 @@ StreamingPartitioner::StreamingPartitioner(
 
 void StreamingPartitioner::SetMigrationAffinity(
     const std::unordered_map<uint64_t, uint16_t>& affinity) {
+  std::lock_guard<std::mutex> lock(mutex_);
   migration_affinity_ = affinity;
 }
 
@@ -103,6 +104,7 @@ uint16_t StreamingPartitioner::ScoreAndPick(uint64_t entity_id, uint64_t ts_micr
 }
 
 uint16_t StreamingPartitioner::AssignEvent(const CedarKey& key) {
+  std::lock_guard<std::mutex> lock(mutex_);
   uint8_t op = key.flags & KeyFlags::kOpTypeMask;
   uint64_t entity_id = key.entity_id;
   uint64_t ts = key.timestamp_be;
