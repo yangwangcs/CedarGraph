@@ -73,7 +73,10 @@ Status ChaosFramework::RunExperiment(const std::string& experiment_name) {
     }
     
     auto result = ExecuteFault(fault);
-    results_.push_back(result);
+    {
+      std::lock_guard<std::mutex> lock(results_mutex_);
+      results_.push_back(result);
+    }
     
     if (!result.success) {
       error_count++;
@@ -123,7 +126,10 @@ void ChaosFramework::ContinuousChaosLoop() {
       // Check probability
       if (prob_dist(random_gen_) <= fault.probability) {
         auto result = ExecuteFault(fault);
-        results_.push_back(result);
+        {
+          std::lock_guard<std::mutex> lock(results_mutex_);
+          results_.push_back(result);
+        }
         
         // Wait for recovery
         std::this_thread::sleep_for(fault.duration);
@@ -162,10 +168,12 @@ Status ChaosFramework::InjectFault(const FaultSpec& spec) {
 }
 
 std::vector<FaultResult> ChaosFramework::GetResults() const {
+  std::lock_guard<std::mutex> lock(results_mutex_);
   return results_;
 }
 
 void ChaosFramework::ClearResults() {
+  std::lock_guard<std::mutex> lock(results_mutex_);
   results_.clear();
 }
 

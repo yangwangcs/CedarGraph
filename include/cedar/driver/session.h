@@ -23,6 +23,7 @@
 
 #include <memory>
 #include <functional>
+#include <mutex>
 
 #include "cedar/driver/bookmark.h"
 #include "cedar/driver/retry_policy.h"
@@ -141,8 +142,14 @@ class Session {
   
   // ========== 书签管理 ==========
   
-  Bookmark GetLastBookmark() const { return last_bookmark_; }
-  void SetBookmark(const Bookmark& bookmark) { last_bookmark_ = bookmark; }
+  Bookmark GetLastBookmark() const {
+    std::lock_guard<std::mutex> lock(bookmark_mutex_);
+    return last_bookmark_;
+  }
+  void SetBookmark(const Bookmark& bookmark) {
+    std::lock_guard<std::mutex> lock(bookmark_mutex_);
+    last_bookmark_ = bookmark;
+  }
   void UpdateBookmark(const Bookmark& bookmark);
   
   // ========== 状态 ==========
@@ -157,6 +164,7 @@ class Session {
   WalWriter* wal_writer_;
   SessionConfig config_;
   bool is_open_;
+  mutable std::mutex bookmark_mutex_;
   Bookmark last_bookmark_;
 };
 

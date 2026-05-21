@@ -109,6 +109,11 @@ add_executable(test_security_blockers security/test_security_blockers.cc)
 target_link_libraries(test_security_blockers ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_security_blockers)
 
+# Supporting modules critical batch
+add_executable(test_supporting_critical security/test_supporting_critical.cc)
+target_link_libraries(test_supporting_critical ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_supporting_critical)
+
 # add_cedar_test(test_cedar_scan)
 # add_cedar_test(test_cedar_scan_simple)
 # add_cedar_test(test_cedar_scan_view)

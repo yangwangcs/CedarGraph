@@ -37,6 +37,7 @@ ManagedTxn::ManagedTxn(ManagedTxn&& other) noexcept
       session_(other.session_),
       committed_(other.committed_),
       aborted_(other.aborted_) {
+  other.txn_.reset();
   other.session_ = nullptr;
   other.committed_ = false;
   other.aborted_ = true;  // 标记为已处理
@@ -54,6 +55,7 @@ ManagedTxn& ManagedTxn::operator=(ManagedTxn&& other) noexcept {
     committed_ = other.committed_;
     aborted_ = other.aborted_;
     
+    other.txn_.reset();
     other.session_ = nullptr;
     other.committed_ = false;
     other.aborted_ = true;
@@ -156,7 +158,11 @@ Session& Session::operator=(Session&& other) noexcept {
     wal_writer_ = other.wal_writer_;
     config_ = std::move(other.config_);
     is_open_ = other.is_open_;
-    last_bookmark_ = std::move(other.last_bookmark_);
+    {
+      std::lock_guard<std::mutex> lock(bookmark_mutex_);
+      std::lock_guard<std::mutex> other_lock(other.bookmark_mutex_);
+      last_bookmark_ = std::move(other.last_bookmark_);
+    }
     
     other.txn_manager_ = nullptr;
     other.is_open_ = false;
@@ -188,16 +194,20 @@ ManagedTxn Session::BeginTransaction(const TransactionConfig& config) {
 
 ManagedTxn Session::BeginTransaction(const Bookmark& bookmark,
                                       const TransactionConfig& config) {
-  // 书签版本检查
-  if (bookmark > last_bookmark_) {
-    // 实际实现中可能需要等待
+  {
+    std::lock_guard<std::mutex> lock(bookmark_mutex_);
+    // 书签版本检查
+    if (bookmark > last_bookmark_) {
+      // 实际实现中可能需要等待
+    }
+    
+    last_bookmark_ = bookmark;
   }
-  
-  last_bookmark_ = bookmark;
   return BeginTransaction(config);
 }
 
 void Session::UpdateBookmark(const Bookmark& bookmark) {
+  std::lock_guard<std::mutex> lock(bookmark_mutex_);
   if (bookmark > last_bookmark_) {
     last_bookmark_ = bookmark;
   }

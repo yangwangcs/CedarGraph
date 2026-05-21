@@ -154,6 +154,7 @@ class ChaosFramework {
   
   std::vector<ChaosExperiment> experiments_;
   std::vector<FaultSpec> continuous_faults_;
+  mutable std::mutex results_mutex_;
   std::vector<FaultResult> results_;
   
   std::unique_ptr<std::thread> chaos_thread_;

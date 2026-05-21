@@ -103,38 +103,66 @@ class RetryPolicy {
     std::chrono::milliseconds current_delay = config_.initial_backoff;
     
     for (size_t attempt = 1; attempt <= config_.max_attempts; ++attempt) {
-      ReturnType result = func();
-      
-      // 获取错误状态（假设结果有 ok() 方法）
-      Status status = ExtractStatus(result);
-      
-      // 成功或最后一次尝试
-      if (status.ok() || attempt == config_.max_attempts) {
-        return result;
-      }
-      
-      // 判断是否可重试
-      if (!ShouldRetry(status)) {
-        return result;  // 不可重试，直接返回错误
-      }
-      
-      // 计算下一次延迟
-      if (attempt < config_.max_attempts) {
-        auto delay = CalculateDelay(current_delay);
+      try {
+        ReturnType result = func();
         
-        if (config_.on_retry) {
-          config_.on_retry(attempt, status, delay);
+        // 获取错误状态（假设结果有 ok() 方法）
+        Status status = ExtractStatus(result);
+        
+        // 成功或最后一次尝试
+        if (status.ok() || attempt == config_.max_attempts) {
+          return result;
         }
         
-        std::this_thread::sleep_for(delay);
+        // 判断是否可重试
+        if (!ShouldRetry(status)) {
+          return result;  // 不可重试，直接返回错误
+        }
         
-        // 更新下一次的延迟
+        // 计算下一次延迟
+        if (attempt < config_.max_attempts) {
+          auto delay = CalculateDelay(current_delay);
+          
+          if (config_.on_retry) {
+            config_.on_retry(attempt, status, delay);
+          }
+          
+          std::this_thread::sleep_for(delay);
+          
+          // 更新下一次的延迟
+          current_delay = NextDelay(current_delay);
+        }
+      } catch (const std::exception& e) {
+        if (attempt == config_.max_attempts) {
+          if constexpr (std::is_same_v<ReturnType, Status>) {
+            return Status::IOError("Retry", std::string("Unhandled exception: ") + e.what());
+          } else {
+            // For non-Status return types, we cannot construct an error result.
+            // Re-throw to preserve existing behavior while still logging.
+            throw;
+          }
+        }
+        auto delay = CalculateDelay(current_delay);
+        if (config_.on_retry) {
+          config_.on_retry(attempt,
+                           Status::IOError("Retry", std::string("Exception: ") + e.what()),
+                           delay);
+        }
+        std::this_thread::sleep_for(delay);
         current_delay = NextDelay(current_delay);
       }
     }
     
     // 理论上不会到达这里
-    return func();
+    try {
+      return func();
+    } catch (const std::exception& e) {
+      if constexpr (std::is_same_v<ReturnType, Status>) {
+        return Status::IOError("Retry", std::string("Unhandled exception: ") + e.what());
+      } else {
+        throw;
+      }
+    }
   }
   
  private:

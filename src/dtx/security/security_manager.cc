@@ -23,6 +23,7 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
 #include <openssl/evp.h>
@@ -298,38 +299,58 @@ Status Authenticator::UpdatePassword(const std::string& username,
 
 std::string Authenticator::HashPassword(const std::string& password) {
   std::string salt = GenerateRandomString(16);
-  std::string salted = salt + password;
-  
-  unsigned char hash[SHA256_DIGEST_LENGTH];
-  SHA256(reinterpret_cast<const unsigned char*>(salted.data()), 
-         salted.size(), hash);
-  
+  constexpr int kIterations = 100000;
+  constexpr int kKeyLen = 32;
+
+  unsigned char derived[kKeyLen];
+  if (!PKCS5_PBKDF2_HMAC(password.c_str(), static_cast<int>(password.size()),
+                         reinterpret_cast<const unsigned char*>(salt.data()),
+                         static_cast<int>(salt.size()),
+                         kIterations, EVP_sha256(), kKeyLen, derived)) {
+    return "";
+  }
+
   std::ostringstream oss;
   oss << salt;
-  for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-    oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+  for (int i = 0; i < kKeyLen; i++) {
+    oss << std::hex << std::setw(2) << std::setfill('0') << (int)derived[i];
   }
-  
+
   return oss.str();
 }
 
 bool Authenticator::VerifyPassword(const std::string& password,
                                     const std::string& hash) {
-  if (hash.size() < 16) return false;
-  
-  std::string salt = hash.substr(0, 16);
-  std::string salted = salt + password;
-  
-  unsigned char expected_hash[SHA256_DIGEST_LENGTH];
-  SHA256(reinterpret_cast<const unsigned char*>(salted.data()), 
-         salted.size(), expected_hash);
-  
-  std::ostringstream oss;
-  for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-    oss << std::hex << std::setw(2) << std::setfill('0') << (int)expected_hash[i];
+  constexpr size_t kSaltLen = 16;
+  constexpr int kKeyLen = 32;
+  constexpr int kIterations = 100000;
+
+  if (hash.size() < kSaltLen + static_cast<size_t>(kKeyLen) * 2) return false;
+
+  std::string salt = hash.substr(0, kSaltLen);
+
+  unsigned char expected_derived[kKeyLen];
+  if (!PKCS5_PBKDF2_HMAC(password.c_str(), static_cast<int>(password.size()),
+                         reinterpret_cast<const unsigned char*>(salt.data()),
+                         static_cast<int>(salt.size()),
+                         kIterations, EVP_sha256(), kKeyLen, expected_derived)) {
+    return false;
   }
-  
-  return hash == (salt + oss.str());
+
+  std::string expected_hash = salt;
+  for (int i = 0; i < kKeyLen; i++) {
+    std::ostringstream oss;
+    oss << std::hex << std::setw(2) << std::setfill('0') << (int)expected_derived[i];
+    expected_hash += oss.str();
+  }
+
+  // Constant-time comparison to prevent timing attacks
+  if (hash.size() != expected_hash.size()) return false;
+  volatile unsigned char diff = 0;
+  for (size_t i = 0; i < hash.size(); ++i) {
+    diff |= static_cast<unsigned char>(hash[i] ^ expected_hash[i]);
+  }
+  return diff == 0;
 }
 
 static std::string Base64UrlEncode(const std::string& input) {
@@ -408,16 +429,31 @@ std::string Authenticator::GenerateJWT(const AuthToken& token) {
 }
 
 StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
+  // Validate JWT structure: header.payload.signature
   size_t first_dot = jwt.find('.');
+  if (first_dot == std::string::npos || first_dot == 0) {
+    return Status::InvalidArgument("Invalid JWT format: missing first dot");
+  }
   size_t second_dot = jwt.find('.', first_dot + 1);
-
-  if (first_dot == std::string::npos || second_dot == std::string::npos) {
-    return Status::InvalidArgument("Invalid JWT format");
+  if (second_dot == std::string::npos || second_dot == first_dot + 1) {
+    return Status::InvalidArgument("Invalid JWT format: missing second dot");
+  }
+  if (jwt.find('.', second_dot + 1) != std::string::npos) {
+    return Status::InvalidArgument("Invalid JWT format: too many dots");
+  }
+  if (second_dot + 1 >= jwt.size()) {
+    return Status::InvalidArgument("Invalid JWT format: empty signature");
   }
 
   std::string encoded_header = jwt.substr(0, first_dot);
   std::string encoded_payload = jwt.substr(first_dot + 1, second_dot - first_dot - 1);
   std::string encoded_signature = jwt.substr(second_dot + 1);
+
+  // Decode header to validate structure
+  std::string header = Base64UrlDecode(encoded_header);
+  if (header.empty() || header.find("\"alg\"") == std::string::npos) {
+    return Status::InvalidArgument("Invalid JWT header");
+  }
 
   // Verify HMAC-SHA256 signature
   std::string signature_input = encoded_header + "." + encoded_payload;
@@ -441,53 +477,78 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
     return Status::InvalidArgument("Invalid JWT payload");
   }
 
-  // Parse payload fields
+  // Helper: extract a JSON string field value robustly
+  auto extract_string_field = [](const std::string& json,
+                                  const std::string& field_name) -> std::string {
+    std::string key = "\"" + field_name + "\"";
+    size_t pos = json.find(key);
+    if (pos == std::string::npos) return "";
+    pos += key.size();
+    // Skip whitespace and colon
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                  json[pos] == '\n' || json[pos] == '\r')) {
+      pos++;
+    }
+    if (pos >= json.size() || json[pos] != ':') return "";
+    pos++;  // skip ':'
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                  json[pos] == '\n' || json[pos] == '\r')) {
+      pos++;
+    }
+    if (pos >= json.size() || json[pos] != '"') return "";
+    pos++;  // skip opening quote
+    std::string value;
+    while (pos < json.size() && json[pos] != '"') {
+      if (json[pos] == '\\' && pos + 1 < json.size()) {
+        value += json[pos + 1];
+        pos += 2;
+      } else {
+        value += json[pos];
+        pos++;
+      }
+    }
+    return value;
+  };
+
+  // Helper: extract a JSON numeric field value robustly
+  auto extract_number_field = [](const std::string& json,
+                                  const std::string& field_name) -> std::optional<int64_t> {
+    std::string key = "\"" + field_name + "\"";
+    size_t pos = json.find(key);
+    if (pos == std::string::npos) return std::nullopt;
+    pos += key.size();
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                  json[pos] == '\n' || json[pos] == '\r')) {
+      pos++;
+    }
+    if (pos >= json.size() || json[pos] != ':') return std::nullopt;
+    pos++;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                  json[pos] == '\n' || json[pos] == '\r')) {
+      pos++;
+    }
+    size_t start = pos;
+    if (start < json.size() && json[start] == '-') pos++;
+    while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') {
+      pos++;
+    }
+    if (start == pos) return std::nullopt;
+    try {
+      return std::stoll(json.substr(start, pos - start));
+    } catch (...) {
+      return std::nullopt;
+    }
+  };
+
   AuthToken token;
+  token.token_id = extract_string_field(payload, "jti");
+  token.user_id = extract_string_field(payload, "sub");
+  token.user_name = extract_string_field(payload, "name");
 
-  // Extract jti (token_id)
-  size_t jti_pos = payload.find("\"jti\":\"");
-  if (jti_pos != std::string::npos) {
-    size_t jti_start = jti_pos + 7;
-    size_t jti_end = payload.find("\"", jti_start);
-    if (jti_end != std::string::npos) {
-      token.token_id = payload.substr(jti_start, jti_end - jti_start);
-    }
-  }
-
-  // Extract sub (user_id)
-  size_t sub_pos = payload.find("\"sub\":\"");
-  if (sub_pos != std::string::npos) {
-    size_t sub_start = sub_pos + 7;
-    size_t sub_end = payload.find("\"", sub_start);
-    if (sub_end != std::string::npos) {
-      token.user_id = payload.substr(sub_start, sub_end - sub_start);
-    }
-  }
-
-  // Extract name (user_name)
-  size_t name_pos = payload.find("\"name\":\"");
-  if (name_pos != std::string::npos) {
-    size_t name_start = name_pos + 8;
-    size_t name_end = payload.find("\"", name_start);
-    if (name_end != std::string::npos) {
-      token.user_name = payload.substr(name_start, name_end - name_start);
-    }
-  }
-
-  // Extract exp
-  size_t exp_pos = payload.find("\"exp\":");
-  if (exp_pos == std::string::npos) {
-    exp_pos = payload.find("\"exp\" :");
-  }
-  if (exp_pos != std::string::npos) {
-    size_t exp_start = payload.find_first_of("0123456789", exp_pos + 6);
-    if (exp_start != std::string::npos) {
-      size_t exp_end = payload.find_first_not_of("0123456789", exp_start);
-      try {
-        auto exp_time = std::stoll(payload.substr(exp_start, exp_end - exp_start));
-        token.expires_at = std::chrono::system_clock::from_time_t(exp_time);
-      } catch (...) {}
-    }
+  auto exp_opt = extract_number_field(payload, "exp");
+  if (exp_opt.has_value()) {
+    token.expires_at = std::chrono::system_clock::from_time_t(
+        static_cast<time_t>(exp_opt.value()));
   }
 
   return token;
