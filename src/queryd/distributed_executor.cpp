@@ -15,6 +15,7 @@
 #include "cedar/storage/adaptive_thread_pool.h"
 #include "cedar/cypher/parser.h"
 #include "cedar/cypher/planner.h"
+#include "cedar/partition/partition_strategy_manager.h"
 
 namespace cedar {
 namespace queryd {
@@ -32,9 +33,12 @@ PartitionRouter::PartitionRouter(QueryMetaClient* meta_client)
 
 PartitionRouter::~PartitionRouter() = default;
 
-uint32_t PartitionRouter::GetPartitionId(uint64_t entity_id) const {
-  // Simple hash-based routing
-  // In production, use consistent hashing or range-based partitioning
+uint32_t PartitionRouter::GetPartitionId(uint64_t entity_id) {
+  // Delegate to PartitionStrategyManager if available for consistent routing
+  if (strategy_manager_ != nullptr) {
+    return strategy_manager_->RouteVertex(entity_id).partition_id;
+  }
+  // Fallback: simple hash-based routing
   if (partition_count_ == 0) {
     return 0;
   }

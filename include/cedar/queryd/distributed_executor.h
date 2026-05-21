@@ -32,6 +32,9 @@ namespace queryd {
 class QueryStorageClient;
 class QueryMetaClient;
 }
+namespace partition {
+class PartitionStrategyManager;
+}
 
 #include "cedar/queryd/meta_client.h"
 
@@ -84,7 +87,7 @@ class PartitionRouter {
   explicit PartitionRouter(QueryMetaClient* meta_client);
   ~PartitionRouter();
 
-  uint32_t GetPartitionId(uint64_t entity_id) const;
+  uint32_t GetPartitionId(uint64_t entity_id);
   Status GetStorageNode(uint32_t partition_id, std::string* address);
   Status GetPartitionInfo(uint32_t partition_id, PartitionInfo* info);
   Status CheckIsLeader(uint32_t partition_id, const std::string& address);
@@ -92,6 +95,9 @@ class PartitionRouter {
   std::unordered_map<uint32_t, std::vector<uint64_t>> RouteEntities(
       const std::vector<uint64_t>& entity_ids);
   void SetRequireLeaderOnly(bool require) { require_leader_only_ = require; }
+  void SetStrategyManager(partition::PartitionStrategyManager* mgr) {
+    strategy_manager_ = mgr;
+  }
 
  private:
   QueryMetaClient* meta_client_;
@@ -100,6 +106,7 @@ class PartitionRouter {
   std::unordered_map<uint32_t, PartitionInfo> partition_info_cache_;
   uint32_t partition_count_ = 0;
   bool require_leader_only_ = true;
+  partition::PartitionStrategyManager* strategy_manager_ = nullptr;
   void RefreshPartitionCache();
 };
 
