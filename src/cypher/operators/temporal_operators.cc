@@ -181,10 +181,6 @@ bool TemporalExpand::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> TemporalExpand::Next() {
-  if (!context_->gcn_traversal_callback) {
-    return nullptr;
-  }
-
   while (current_record_) {
     if (!neighbors_.empty() && neighbor_index_ >= neighbors_.size()) {
       current_record_ = children_[0]->Next();
@@ -211,11 +207,41 @@ std::shared_ptr<Record> TemporalExpand::Next() {
           edge_type = 0;
         }
       }
-      auto neighbor_ids = context_->gcn_traversal_callback(
-          from_id, edge_type, context_->query_timestamp.value());
-      for (uint64_t nid : neighbor_ids) {
-        neighbors_.emplace_back(nid ^ Timestamp(0).value(), nid, from_id);
+      
+      if (context_->gcn_traversal_callback) {
+        auto neighbor_ids = context_->gcn_traversal_callback(
+            from_id, edge_type, context_->query_timestamp.value());
+        for (uint64_t nid : neighbor_ids) {
+          neighbors_.emplace_back(nid ^ Timestamp(0).value(), nid, from_id);
+        }
+      } else if (direction_ == Direction::INCOMING && context_->get_in_neighbors_fn) {
+        auto neighbor_list = context_->get_in_neighbors_fn(
+            from_id, static_cast<uint16_t>(edge_type), query_start_, query_end_);
+        for (const auto& n : neighbor_list) {
+          neighbors_.emplace_back(n.id ^ n.timestamp.value(), n.id, from_id);
+        }
+      } else if (direction_ != Direction::INCOMING && context_->get_out_neighbors_fn) {
+        auto neighbor_list = context_->get_out_neighbors_fn(
+            from_id, static_cast<uint16_t>(edge_type), query_start_, query_end_);
+        for (const auto& n : neighbor_list) {
+          neighbors_.emplace_back(n.id ^ n.timestamp.value(), n.id, from_id);
+        }
+      } else if (context_->graph) {
+        if (direction_ == Direction::INCOMING) {
+          auto neighbor_list = context_->graph->GetInNeighbors(
+              from_id, static_cast<uint16_t>(edge_type), query_start_, query_end_);
+          for (const auto& n : neighbor_list) {
+            neighbors_.emplace_back(n.id ^ n.timestamp.value(), n.id, from_id);
+          }
+        } else {
+          auto neighbor_list = context_->graph->GetOutNeighbors(
+              from_id, static_cast<uint16_t>(edge_type), query_start_, query_end_);
+          for (const auto& n : neighbor_list) {
+            neighbors_.emplace_back(n.id ^ n.timestamp.value(), n.id, from_id);
+          }
+        }
       }
+      
       neighbor_index_ = 0;
       if (neighbors_.empty()) {
         current_record_ = children_[0]->Next();

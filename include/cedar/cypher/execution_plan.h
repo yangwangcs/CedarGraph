@@ -109,10 +109,27 @@ class PhysicalOperator {
   virtual std::unique_ptr<PhysicalOperator> Clone() const = 0;
   
   /**
+   * @brief Returns true if this operator requires a graph or GCN callback
+   */
+  virtual bool RequiresGraph() const { return false; }
+  
+  /**
+   * @brief Returns true if this operator strictly requires a GCN callback
+   */
+  virtual bool RequiresGcnCallback() const { return false; }
+  
+  /**
    * @brief Add child operator
    */
   void AddChild(std::shared_ptr<PhysicalOperator> child) {
     children_.push_back(child);
+  }
+  
+  /**
+   * @brief Get child operators
+   */
+  const std::vector<std::shared_ptr<PhysicalOperator>>& GetChildren() const {
+    return children_;
   }
   
  protected:
@@ -442,6 +459,8 @@ class TemporalExpand : public PhysicalOperator {
   Timestamp query_end_ = Timestamp::Max();
   
   // Temporal filtering
+  bool RequiresGraph() const override { return true; }
+  
   bool MatchesTemporalConstraint(const Relationship& rel) const;
   bool IsPathContinuous(const std::vector<Relationship>& path) const;
 };
@@ -576,6 +595,11 @@ class ExecutionPlan {
    * @brief Clone the execution plan (deep copy with reset state)
    */
   std::unique_ptr<ExecutionPlan> Clone() const;
+  
+  /**
+   * @brief Validate that the execution context satisfies operator dependencies
+   */
+  cedar::Status ValidateDependencies(const ExecutionContext& ctx) const;
   
  private:
   std::shared_ptr<PhysicalOperator> root_;

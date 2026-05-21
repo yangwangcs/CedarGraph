@@ -6,6 +6,7 @@
 #include "cedar/graph/cedar_graph.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/core/logging.h"
+#include "cedar/core/status.h"
 #include <algorithm>
 #include <cstdlib>
 #include <sstream>
@@ -106,9 +107,16 @@ ExecutionPlan::ExecutionPlan(std::shared_ptr<PhysicalOperator> root)
     : root_(root) {}
 
 ResultSet ExecutionPlan::Execute(ExecutionContext* ctx) {
-  if (!ctx || (!ctx->graph && !ctx->gcn_traversal_callback && !ctx->get_all_entities_fn)) {
+  if (!ctx) {
     ResultSet result;
     result.SetError("Invalid execution context");
+    return result;
+  }
+  
+  auto status = ValidateDependencies(*ctx);
+  if (!status.ok()) {
+    ResultSet result;
+    result.SetError(status.ToString());
     return result;
   }
   
@@ -144,6 +152,29 @@ std::string ExecutionPlan::Explain() const {
 std::unique_ptr<ExecutionPlan> ExecutionPlan::Clone() const {
   auto cloned_root = std::shared_ptr<PhysicalOperator>(root_->Clone());
   return std::make_unique<ExecutionPlan>(cloned_root);
+}
+
+ cedar::Status ExecutionPlan::ValidateDependencies(const ExecutionContext& ctx) const {
+  std::vector<const PhysicalOperator*> stack;
+  stack.push_back(root_.get());
+  
+  while (!stack.empty()) {
+    const auto* op = stack.back();
+    stack.pop_back();
+    
+    if (op->RequiresGraph() && !ctx.graph && !ctx.gcn_traversal_callback) {
+      return cedar::Status::InvalidArgument("Operator requires graph or GCN callback");
+    }
+    if (op->RequiresGcnCallback() && !ctx.gcn_traversal_callback) {
+      return cedar::Status::InvalidArgument("Operator requires GCN callback");
+    }
+    
+    for (const auto& child : op->GetChildren()) {
+      stack.push_back(child.get());
+    }
+  }
+  
+  return cedar::Status::OK();
 }
 
 // ============================================================================

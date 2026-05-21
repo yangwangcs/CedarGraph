@@ -193,6 +193,10 @@ add_executable(test_value_type_safety cypher/test_value_type_safety.cc)
 target_link_libraries(test_value_type_safety ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_value_type_safety)
 
+add_executable(test_execution_context_validation cypher/test_execution_context_validation.cc)
+target_link_libraries(test_execution_context_validation ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_execution_context_validation)
+
 add_executable(test_expression_null_safety cypher/test_expression_null_safety.cc)
 target_link_libraries(test_expression_null_safety ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_expression_null_safety)
@@ -200,6 +204,13 @@ gtest_discover_tests(test_expression_null_safety)
 add_executable(test_nodescan_real_data cypher/test_nodescan_real_data.cc)
 target_link_libraries(test_nodescan_real_data ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_nodescan_real_data)
+
+add_executable(test_planner_signature
+    cypher/test_planner_signature.cc
+    ../src/cypher/planner.cc
+)
+target_link_libraries(test_planner_signature ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_planner_signature)
 
 add_executable(test_distinct_no_collision cypher/test_distinct_no_collision.cc)
 target_link_libraries(test_distinct_no_collision ${CEDAR_TEST_LIBS} cedar_queryd)
