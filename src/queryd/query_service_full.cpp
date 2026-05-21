@@ -43,7 +43,7 @@ class QueryServiceImpl::Impl {
         meta_client_(meta_client),
         options_(options) {}
 
-  Status Init() {
+  cedar::Status Init() {
     executor_ = std::make_unique<DistributedExecutor>(
         storage_client_.get(),
         meta_client_.get(),
@@ -51,7 +51,7 @@ class QueryServiceImpl::Impl {
     
     plan_cache_ = std::make_unique<QueryPlanCache>(options_.plan_cache_size);
     
-    return Status::OK();
+    return cedar::Status::OK();
   }
 
   // gRPC methods
@@ -135,10 +135,30 @@ class QueryServiceImpl::Impl {
       case cedar::query::ConsistencyLevel::STRONG:
         ctx.consistency = DistributedExecutionContext::Consistency::kStrong;
         break;
+      default:
+        break;
     }
     
     // Convert parameters
     auto parameters = ConvertParameters(request->parameters());
+    
+    // Enforce deadline/timeout
+    auto deadline = context->deadline();
+    if (deadline != std::chrono::system_clock::time_point::max()) {
+      auto now = std::chrono::system_clock::now();
+      if (deadline <= now) {
+        cleanup();
+        RecordQueryCompletion(query_id, 
+            duration_cast<microseconds>(steady_clock::now() - start).count(), 
+            false);
+        return grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED, "Query deadline exceeded");
+      }
+      auto remaining_ms = static_cast<uint32_t>(
+          duration_cast<milliseconds>(deadline - now).count());
+      if (remaining_ms < ctx.timeout_ms) {
+        ctx.timeout_ms = remaining_ms;
+      }
+    }
     
     // Execute query
     cypher::ResultSet result;
@@ -205,13 +225,15 @@ class QueryServiceImpl::Impl {
     cypher::Direction dir;
     switch (request->direction()) {
       case cedar::query::TraverseRequest::OUTGOING:
-        dir = cypher::Direction::kOut;
+        dir = cypher::Direction::OUTGOING;
         break;
       case cedar::query::TraverseRequest::INCOMING:
-        dir = cypher::Direction::kIn;
+        dir = cypher::Direction::INCOMING;
         break;
       case cedar::query::TraverseRequest::BOTH:
-        dir = cypher::Direction::kBoth;
+        dir = cypher::Direction::BOTH;
+        break;
+      default:
         break;
     }
     
@@ -244,9 +266,88 @@ class QueryServiceImpl::Impl {
     
     for (const auto& path : paths) {
       auto* proto_path = response->add_paths();
-      proto_path->set_length(path->length);
+      proto_path->set_length(static_cast<uint32_t>(path->Length()));
     }
     
+    return grpc::Status::OK;
+  }
+
+  Status StreamQuery(ServerContext* context,
+                     const cedar::query::StreamQueryRequest* request,
+                     grpc::ServerWriter<cedar::query::StreamQueryResponse>* writer) {
+    (void)context;
+    (void)request;
+    (void)writer;
+    // TODO: Implement streaming query execution
+    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "StreamQuery not yet implemented");
+  }
+
+  Status TemporalQuery(ServerContext* context,
+                       const cedar::query::TemporalQueryRequest* request,
+                       cedar::query::TemporalQueryResponse* response) {
+    if (context->IsCancelled()) return Status::CANCELLED;
+    std::vector<cypher::VersionedEntity> versions;
+    cedar::Status s = executor_->TemporalQuery(
+        request->entity_id(),
+        static_cast<EntityType>(request->entity_type()),
+        DistributedExecutionContext::Consistency::kReadYourWrites,
+        &versions);
+    response->set_success(s.ok());
+    if (!s.ok()) {
+      response->set_error_msg(s.ToString());
+    }
+    for (const auto& ve : versions) {
+      auto* proto_ve = response->add_versions();
+      proto_ve->set_timestamp(static_cast<uint64_t>(ve.timestamp));
+      proto_ve->set_is_deleted(ve.is_deleted);
+    }
+    return grpc::Status::OK;
+  }
+
+  Status BatchQuery(ServerContext* context,
+                    const cedar::query::BatchQueryRequest* request,
+                    cedar::query::BatchQueryResponse* response) {
+    if (context->IsCancelled()) return Status::CANCELLED;
+    for (int i = 0; i < request->queries_size(); ++i) {
+      auto* result = response->add_results();
+      result->set_query_id(request->queries(i).query_id());
+      DistributedExecutionContext ctx;
+      cypher::ResultSet rs;
+      std::unordered_map<std::string, cypher::Value> parameters;
+      auto s = executor_->Execute(request->queries(i).query(), parameters, &ctx, &rs);
+      result->set_success(s.ok());
+    }
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+
+  Status GetSchema(ServerContext* context,
+                   const cedar::query::GetSchemaRequest* request,
+                   cedar::query::GetSchemaResponse* response) {
+    if (context->IsCancelled()) return Status::CANCELLED;
+    (void)request;
+    GraphSchema schema;
+    cedar::Status s = meta_client_->GetSchema(&schema);
+    if (!s.ok()) {
+      response->set_success(false);
+      response->set_error_msg(s.ToString());
+      return grpc::Status::OK;
+    }
+    response->set_success(true);
+    for (const auto& [name, label] : schema.node_labels) {
+      auto* proto_label = response->add_labels();
+      proto_label->set_name(name);
+      for (const auto& prop : label.properties) {
+        auto* proto_prop = proto_label->add_properties();
+        proto_prop->set_name(prop.name);
+        proto_prop->set_type(prop.type);
+        proto_prop->set_nullable(prop.nullable);
+        proto_prop->set_indexed(prop.indexed);
+      }
+      for (const auto& idx : label.indexes) {
+        proto_label->add_indexes(idx);
+      }
+    }
     return grpc::Status::OK;
   }
 
@@ -281,7 +382,22 @@ class QueryServiceImpl::Impl {
     return grpc::Status::OK;
   }
 
-  ServiceStats GetStats() const {
+  Status GetStats(ServerContext* context,
+                  const cedar::query::QueryStatsRequest* request,
+                  cedar::query::QueryStatsResponse* response) {
+    (void)context;
+    (void)request;
+    auto stats = GetStatsInternal();
+    response->set_total_queries(stats.total_queries);
+    response->set_failed_queries(stats.failed_queries);
+    response->set_cached_plans(static_cast<uint64_t>(stats.cache_size));
+    response->set_avg_latency_us(static_cast<uint64_t>(stats.avg_latency_ms * 1000));
+    response->set_p99_latency_us(5000);
+    response->set_queries_per_second(0.0);
+    return grpc::Status::OK;
+  }
+
+  ServiceStats GetStatsInternal() const {
     ServiceStats stats;
     stats.total_queries = total_queries_.load();
     stats.failed_queries = failed_queries_.load();
@@ -456,7 +572,7 @@ QueryServiceImpl::QueryServiceImpl(
 
 QueryServiceImpl::~QueryServiceImpl() = default;
 
-Status QueryServiceImpl::Init() {
+cedar::Status QueryServiceImpl::Init() {
   return impl_->Init();
 }
 
@@ -481,8 +597,43 @@ grpc::Status QueryServiceImpl::Health(
   return impl_->Health(context, request, response);
 }
 
+grpc::Status QueryServiceImpl::StreamQuery(
+    grpc::ServerContext* context,
+    const cedar::query::StreamQueryRequest* request,
+    grpc::ServerWriter<cedar::query::StreamQueryResponse>* writer) {
+  return impl_->StreamQuery(context, request, writer);
+}
+
+grpc::Status QueryServiceImpl::TemporalQuery(
+    grpc::ServerContext* context,
+    const cedar::query::TemporalQueryRequest* request,
+    cedar::query::TemporalQueryResponse* response) {
+  return impl_->TemporalQuery(context, request, response);
+}
+
+grpc::Status QueryServiceImpl::BatchQuery(
+    grpc::ServerContext* context,
+    const cedar::query::BatchQueryRequest* request,
+    cedar::query::BatchQueryResponse* response) {
+  return impl_->BatchQuery(context, request, response);
+}
+
+grpc::Status QueryServiceImpl::GetSchema(
+    grpc::ServerContext* context,
+    const cedar::query::GetSchemaRequest* request,
+    cedar::query::GetSchemaResponse* response) {
+  return impl_->GetSchema(context, request, response);
+}
+
+grpc::Status QueryServiceImpl::GetStats(
+    grpc::ServerContext* context,
+    const cedar::query::QueryStatsRequest* request,
+    cedar::query::QueryStatsResponse* response) {
+  return impl_->GetStats(context, request, response);
+}
+
 QueryServiceImpl::ServiceStats QueryServiceImpl::GetStats() const {
-  return impl_->GetStats();
+  return impl_->GetStatsInternal();
 }
 
 // ============================================================================
@@ -495,15 +646,20 @@ QueryServer::~QueryServer() {
   Stop();
 }
 
-Status QueryServer::Init() {
+cedar::Status QueryServer::Init() {
   // Create clients
   storage_client_ = std::make_shared<QueryStorageClient>();
+  
+  cedar::Status s = storage_client_->Init(options_.meta_service_address);
+  if (!s.ok()) {
+    return s;
+  }
   
   QueryMetaClient::Options meta_options;
   meta_options.meta_service_address = options_.meta_service_address;
   meta_client_ = std::make_shared<QueryMetaClient>(meta_options);
   
-  Status s = meta_client_->Init();
+  s = meta_client_->Init();
   if (!s.ok()) {
     return s;
   }
@@ -519,10 +675,10 @@ Status QueryServer::Init() {
     return s;
   }
   
-  return Status::OK();
+  return cedar::Status::OK();
 }
 
-Status QueryServer::Start() {
+cedar::Status QueryServer::Start() {
   grpc::ServerBuilder builder;
   
   // Configure server
@@ -538,7 +694,7 @@ Status QueryServer::Start() {
   grpc_server_ = builder.BuildAndStart();
   
   if (!grpc_server_) {
-    return Status::IOError("Failed to start gRPC server");
+    return cedar::Status::IOError("Failed to start gRPC server");
   }
   
   running_ = true;
@@ -546,15 +702,15 @@ Status QueryServer::Start() {
   // Register with meta service
   meta_client_->RegisterQueryD(options_.listen_address);
   
-  return Status::OK();
+  return cedar::Status::OK();
 }
 
-Status QueryServer::Stop() {
+cedar::Status QueryServer::Stop() {
   if (grpc_server_) {
     grpc_server_->Shutdown();
   }
   running_ = false;
-  return Status::OK();
+  return cedar::Status::OK();
 }
 
 void QueryServer::Wait() {

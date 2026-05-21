@@ -107,7 +107,7 @@ uint16_t StreamingPartitioner::AssignEvent(const CedarKey& key) {
   std::lock_guard<std::mutex> lock(mutex_);
   uint8_t op = key.flags & KeyFlags::kOpTypeMask;
   uint64_t entity_id = key.entity_id;
-  uint64_t ts = key.timestamp_be;
+  uint64_t ts = CedarKey::DecodeTimestamp(key.timestamp_be);
 
   if (op == OpType::kUpdate || op == OpType::kDelete) {
     auto it = entity_home_.find(entity_id);

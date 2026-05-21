@@ -520,11 +520,30 @@ Status DistributedExecutor::Execute(
   
   auto start = steady_clock::now();
 
+  // Check query timeout (timeout_ms == 0 means immediate timeout)
+  if (ctx->timeout_ms == 0) {
+    return Status::IOError("Query timeout exceeded (zero tolerance)");
+  }
+  {
+    auto elapsed_ms = duration_cast<milliseconds>(steady_clock::now() - start).count();
+    if (elapsed_ms >= static_cast<int64_t>(ctx->timeout_ms)) {
+      return Status::IOError("Query timeout exceeded before execution");
+    }
+  }
+
   // Parse and validate query
   cypher::CypherParser parser(query);
   auto stmt = parser.ParseStatement();
   if (!stmt) {
     return Status::InvalidArgument("Failed to parse query: " + parser.GetError());
+  }
+
+  // Check timeout after parsing
+  {
+    auto elapsed_ms = duration_cast<milliseconds>(steady_clock::now() - start).count();
+    if (elapsed_ms >= static_cast<int64_t>(ctx->timeout_ms)) {
+      return Status::IOError("Query timeout exceeded during parsing");
+    }
   }
 
   if (validator_) {

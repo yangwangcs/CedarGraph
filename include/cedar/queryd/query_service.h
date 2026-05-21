@@ -19,47 +19,17 @@
 #include "cedar/core/status.h"
 #include "cedar/cypher/value.h"
 
-// Protobuf generated headers - 将在构建时生成
-// #include "proto/query_service.pb.h"
-// #include "proto/query_service.grpc.pb.h"
-
-// 前向声明 protobuf 类型
-namespace cedar {
-namespace query {
-class QueryService;
-class ExecuteQueryRequest;
-class ExecuteQueryResponse;
-class StreamQueryRequest;
-class StreamQueryResponse;
-class TraverseRequest;
-class TraverseResponse;
-class TemporalQueryRequest;
-class TemporalQueryResponse;
-class BatchQueryRequest;
-class BatchQueryResponse;
-class GetSchemaRequest;
-class GetSchemaResponse;
-class HealthRequest;
-class HealthResponse;
-class QueryStatsRequest;
-class QueryStatsResponse;
-} // namespace query
-} // namespace cedar
-
-// gRPC 前向声明
-namespace grpc {
-class ServerContext;
-class Status;
-template <class Response> class ServerWriter;
-}
+// Protobuf generated headers
+#include "query_service.pb.h"
+#include "query_service.grpc.pb.h"
 
 namespace cedar {
 namespace queryd {
 
 // Forward declarations
 class DistributedExecutor;
-class QueryStorageClient;  // 重命名避免冲突
-class QueryMetaClient;     // 重命名避免冲突
+class QueryStorageClient;
+class QueryMetaClient;
 class QueryPlanCache;
 
 // ============================================================================
@@ -99,7 +69,7 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
   QueryServiceImpl(
       std::shared_ptr<QueryStorageClient> storage_client,
       std::shared_ptr<QueryMetaClient> meta_client,
-      const Options& options = Options{});
+      const Options& options);
   ~QueryServiceImpl();
 
   // Initialize service
@@ -158,51 +128,9 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
   };
   ServiceStats GetStats() const;
 
-  // Get active queries
-  std::vector<ActiveQuery> GetActiveQueries() const;
-
  private:
-  std::shared_ptr<QueryStorageClient> storage_client_;
-  std::shared_ptr<QueryMetaClient> meta_client_;
-  Options options_;
-  
-  std::unique_ptr<DistributedExecutor> executor_;
-  std::unique_ptr<QueryPlanCache> plan_cache_;
-  
-  // Query tracking
-  mutable std::mutex queries_mutex_;
-  std::unordered_map<std::string, ActiveQuery> active_queries_;
-  std::deque<std::pair<std::chrono::steady_clock::time_point, std::string>> query_history_;
-  
-  // Stats
-  mutable std::mutex stats_mutex_;
-  std::atomic<uint64_t> total_queries_{0};
-  std::atomic<uint64_t> failed_queries_{0};
-  std::atomic<uint64_t> total_latency_us_{0};
-  
-  // Rate limiting
-  std::atomic<uint32_t> current_queries_{0};
-  std::condition_variable query_cv_;
-  mutable std::mutex query_mutex_;
-  
-  // Generate query ID
-  std::string GenerateQueryId();
-  
-  // Convert between proto and internal types
-  std::unordered_map<std::string, cypher::Value> ConvertParameters(
-      const cedar::query::QueryParameters& proto_params);
-  
-  cedar::query::Value ConvertToProtoValue(const cypher::Value& value);
-  cypher::Value ConvertFromProtoValue(const cedar::query::Value& proto_value);
-  
-  // Record query completion
-  void RecordQueryCompletion(const std::string& query_id, 
-                             uint64_t latency_us,
-                             bool success);
-  
-  // Check rate limit
-  bool AcquireQuerySlot();
-  void ReleaseQuerySlot();
+  class Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 // ============================================================================
