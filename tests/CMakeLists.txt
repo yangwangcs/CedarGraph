@@ -103,6 +103,12 @@ add_cedar_test(test_cedar_update_simple_e2e)
 add_cedar_test(test_cedar_update_persistence)
 # add_cedar_test(test_cedar_basic_persistence)
 add_cedar_test(test_cedar_key_roundtrip)
+
+# Security blocker tests
+add_executable(test_security_blockers security/test_security_blockers.cc)
+target_link_libraries(test_security_blockers ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_security_blockers)
+
 # add_cedar_test(test_cedar_scan)
 # add_cedar_test(test_cedar_scan_simple)
 # add_cedar_test(test_cedar_scan_view)
@@ -465,6 +471,10 @@ add_executable(test_tmv_engine gcn/test_tmv_engine.cc)
 target_link_libraries(test_tmv_engine cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_tmv_engine)
 
+add_executable(test_tmv_engine_safety gcn/test_tmv_engine_safety.cc)
+target_link_libraries(test_tmv_engine_safety cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_tmv_engine_safety)
+
 add_executable(test_gcn_service gcn/test_gcn_service.cc)
 target_link_libraries(test_gcn_service cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_gcn_service PRIVATE /opt/homebrew/lib)
@@ -473,6 +483,10 @@ gtest_discover_tests(test_gcn_service)
 add_executable(test_adaptive_execution queryd/test_adaptive_execution.cc)
 target_link_libraries(test_adaptive_execution ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_adaptive_execution)
+
+add_executable(test_queryd_blockers queryd/test_queryd_blockers.cc)
+target_link_libraries(test_queryd_blockers ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_queryd_blockers)
 
 add_executable(test_query_dispatcher gcn/test_query_dispatcher.cc)
 target_link_directories(test_query_dispatcher PRIVATE /opt/homebrew/lib)
@@ -542,3 +556,10 @@ add_executable(test_graph_service_router
 target_link_libraries(test_graph_service_router cedar cedar_cypher cedar_queryd gRPC::grpc++ ${GTEST_MAIN_TARGET})
 target_link_directories(test_graph_service_router PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_graph_service_router)
+
+add_executable(test_migration_pipeline
+    service/test_migration_pipeline.cc
+)
+target_link_libraries(test_migration_pipeline cedar cedar_graph gRPC::grpc++ ${GTEST_MAIN_TARGET} pthread)
+target_link_directories(test_migration_pipeline PRIVATE /opt/homebrew/lib)
+gtest_discover_tests(test_migration_pipeline)

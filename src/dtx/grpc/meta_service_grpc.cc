@@ -30,7 +30,13 @@ namespace dtx {
 // =============================================================================
 
 MetaServiceGrpcImpl::MetaServiceGrpcImpl(MetadataService* meta_service) 
-    : meta_service_(meta_service) {}
+    : meta_service_(meta_service) {
+    if (meta_service_) {
+        meta_service_->WatchPartitionMap("", [this](const PartitionMapChange& change) {
+            this->OnPartitionChange(change);
+        });
+    }
+}
 
 grpc::Status MetaServiceGrpcImpl::CreateSpace(grpc::ServerContext* context,
     const cedar::meta::CreateSpaceRequest* request,
@@ -186,13 +192,91 @@ grpc::Status MetaServiceGrpcImpl::GetAliveNodes(grpc::ServerContext* context,
     return grpc::Status::OK;
 }
 
+
+void MetaServiceGrpcImpl::OnPartitionChange(const PartitionMapChange& change) {
+    cedar::meta::PartitionMapChange proto_change;
+    proto_change.set_space_name(change.space_name);
+    proto_change.set_partition_id(change.partition_id);
+    switch (change.change_type) {
+        case PartitionChangeType::kLeaderChanged:
+            proto_change.set_change_type("LEADER_CHANGED");
+            break;
+        case PartitionChangeType::kReplicaAdded:
+            proto_change.set_change_type("REPLICA_ADDED");
+            break;
+        case PartitionChangeType::kReplicaRemoved:
+            proto_change.set_change_type("REPLICA_REMOVED");
+            break;
+        case PartitionChangeType::kPartitionMigrated:
+            proto_change.set_change_type("PARTITION_MIGRATED");
+            break;
+    }
+    proto_change.set_old_leader(change.old_leader);
+    proto_change.set_new_leader(change.new_leader);
+    proto_change.set_version(change.version);
+    proto_change.set_timestamp_unix(
+        std::chrono::system_clock::to_time_t(change.timestamp));
+    
+    std::lock_guard<std::mutex> lock(watchers_mutex_);
+    for (auto it = active_watchers_.begin(); it != active_watchers_.end();) {
+        auto stream = it->lock();
+        if (!stream) {
+            it = active_watchers_.erase(it);
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> stream_lock(stream->mutex);
+            stream->pending_changes.push(proto_change);
+        }
+        stream->cv.notify_one();
+        ++it;
+    }
+}
+
 grpc::Status MetaServiceGrpcImpl::WatchPartitionMap(grpc::ServerContext* context,
     const cedar::meta::WatchPartitionMapRequest* request,
     grpc::ServerWriter<cedar::meta::PartitionMapChange>* writer) {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     (void)request;
-    (void)writer;
-    // Simplified implementation - just keep connection open
+    
+    auto stream = std::make_shared<WatchStream>();
+    {
+        std::lock_guard<std::mutex> lock(watchers_mutex_);
+        active_watchers_.push_back(stream);
+    }
+    
+    while (!context->IsCancelled()) {
+        std::unique_lock<std::mutex> lock(stream->mutex);
+        bool has_change = stream->cv.wait_for(lock, std::chrono::seconds(1), [&] {
+            return !stream->pending_changes.empty() || stream->cancelled ||
+                   context->IsCancelled();
+        });
+        
+        if (context->IsCancelled() || stream->cancelled) break;
+        
+        if (has_change && !stream->pending_changes.empty()) {
+            auto change = stream->pending_changes.front();
+            stream->pending_changes.pop();
+            lock.unlock();
+            
+            if (!writer->Write(change)) {
+                break;
+            }
+        }
+    }
+    
+    {
+        std::lock_guard<std::mutex> lock(watchers_mutex_);
+        stream->cancelled = true;
+        for (auto it = active_watchers_.begin(); it != active_watchers_.end();) {
+            if (it->lock() == stream) {
+                it = active_watchers_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    
     return grpc::Status::OK;
 }
 

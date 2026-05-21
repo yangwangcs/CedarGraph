@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 
+#include "cedar/core/status.h"
 #include "cedar/gcn/tmv_engine.h"
 
 namespace cedar {
@@ -33,12 +34,12 @@ class EventApplier {
   EventApplier& operator=(const EventApplier&) = delete;
 
   // Apply events that are already in commit_version order.
-  void ApplyOrdered(const GraphCDCEvent& event);
+  cedar::Status ApplyOrdered(const GraphCDCEvent& event);
 
   // Apply events that may arrive out of order.  Buffers events until
   // commit_version == applied_version_ + 1, then applies them and
   // drains the reorder buffer for any contiguous next versions.
-  void ApplyUnordered(const GraphCDCEvent& event);
+  cedar::Status ApplyUnordered(const GraphCDCEvent& event);
 
   uint64_t applied_version() const { return applied_version_; }
 
@@ -46,8 +47,9 @@ class EventApplier {
   TMVEngine* tmv_engine_;
   uint64_t applied_version_ = 0;
   std::map<uint64_t, GraphCDCEvent> reorder_buffer_;
+  static constexpr size_t kMaxReorderBuffer = 100000;
 
-  void ApplyInternal(const GraphCDCEvent& event);
+  cedar::Status ApplyInternal(const GraphCDCEvent& event);
   void DrainBuffer();
 };
 

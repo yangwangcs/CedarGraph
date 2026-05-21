@@ -15,12 +15,14 @@
 #include "cedar/gcn/gcn_node.h"
 
 #include <chrono>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <sstream>
 
 #include "cedar/dtx/raft/grpc_tls.h"
 #include "cedar/gcn/scatter_gather_router.h"
+#include "cedar/core/logging.h"
 
 #include <gflags/gflags.h>
 #include <grpcpp/grpcpp.h>
@@ -68,12 +70,38 @@ GcnNode::~GcnNode() {
     gcn::GraphCDCEvent event;
     event.commit_version = proto_event.version();
     event.entity_id = proto_event.entity_id();
-    event.target_id = proto_event.entity_id() + 1;
+
+    // Parse target_id and edge_type from payload
+    const std::string& payload = proto_event.payload();
+    if (payload.size() >= sizeof(uint64_t)) {
+      std::memcpy(&event.target_id, payload.data(), sizeof(uint64_t));
+      if (payload.size() >= sizeof(uint64_t) + sizeof(uint32_t)) {
+        std::memcpy(&event.edge_type, payload.data() + sizeof(uint64_t), sizeof(uint32_t));
+      } else {
+        event.edge_type = 1;
+      }
+    } else {
+      CEDAR_LOG_WARN() << "CDCEvent missing payload for target_id, entity_id="
+                       << proto_event.entity_id() << "\n";
+      event.target_id = proto_event.entity_id();
+      event.edge_type = 1;
+    }
+
     event.valid_from = static_cast<uint32_t>(proto_event.timestamp());
-    event.valid_to = std::numeric_limits<uint32_t>::max();
-    event.edge_type = 1;
-    event.op = gcn::CDCEventOp::kCreate;
-    this->event_applier_->ApplyUnordered(event);
+
+    // Map event_type to op and valid_to
+    if (proto_event.event_type() == "DELETE") {
+      event.valid_to = event.valid_from;
+      event.op = gcn::CDCEventOp::kDelete;
+    } else {
+      event.valid_to = std::numeric_limits<uint32_t>::max();
+      event.op = gcn::CDCEventOp::kCreate;
+    }
+
+    cedar::Status s = this->event_applier_->ApplyUnordered(event);
+    if (!s.ok()) {
+      CEDAR_LOG_ERROR() << "Failed to apply CDC event: " << s.ToString() << "\n";
+    }
   };
   service_impl_ = std::make_unique<gcn::GcnServiceImpl>(
       engine_.get(), backfill_service_.get(), std::move(callback));

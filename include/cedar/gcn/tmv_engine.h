@@ -8,6 +8,7 @@
 #include "cedar/gcn/tmv_edge.h"
 #include "cedar/gcn/tmv_index.h"
 #include "cedar/gcn/tmv_vertex_entry.h"
+#include "cedar/core/status.h"
 
 namespace cedar {
 namespace gcn {
@@ -22,15 +23,15 @@ class TMVEngine {
   TMVEngine(const TMVEngine&) = delete;
   TMVEngine& operator=(const TMVEngine&) = delete;
 
-  void BootstrapVertex(uint64_t entity_id,
-                       Direction dir,
-                       const std::vector<TMVEdge>& edges,
-                       bool reverse);
+  cedar::Status BootstrapVertex(uint64_t entity_id,
+                                Direction dir,
+                                const std::vector<TMVEdge>& edges,
+                                bool reverse);
 
-  void AppendEdge(uint64_t entity_id,
-                  Direction dir,
-                  const TMVEdge& edge,
-                  bool reverse);
+  cedar::Status AppendEdge(uint64_t entity_id,
+                           Direction dir,
+                           const TMVEdge& edge,
+                           bool reverse);
 
   std::vector<TMVEdge> ScanAtTime(uint64_t entity_id,
                                   Direction dir,
@@ -49,9 +50,11 @@ class TMVEngine {
   NumaArenaPool pool_;
   TMVIndex index_;
 
-  void AppendToEntry(TMVVertexEntry* entry,
+  bool AppendToEntry(TMVVertexEntry* entry,
                      Direction dir,
-                     const TMVEdge& edge);
+                     const TMVEdge& edge,
+                     TMVChunk** out_new_chunk = nullptr,
+                     TMVChunk** out_old_tail = nullptr);
 
   size_t DropChunksBelowWatermark(std::atomic<TMVChunk*>* head_ptr,
                                   std::atomic<TMVChunk*>* tail_ptr,

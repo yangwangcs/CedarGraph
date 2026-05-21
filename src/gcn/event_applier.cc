@@ -2,27 +2,41 @@
 
 #include <limits>
 
+#include "cedar/core/logging.h"
+
 namespace cedar {
 namespace gcn {
 
 EventApplier::EventApplier(TMVEngine* engine) : tmv_engine_(engine) {}
 
-void EventApplier::ApplyOrdered(const GraphCDCEvent& event) {
-  ApplyInternal(event);
-  applied_version_ = event.commit_version;
+cedar::Status EventApplier::ApplyOrdered(const GraphCDCEvent& event) {
+  cedar::Status s = ApplyInternal(event);
+  if (s.ok()) {
+    applied_version_ = event.commit_version;
+  }
+  return s;
 }
 
-void EventApplier::ApplyUnordered(const GraphCDCEvent& event) {
+cedar::Status EventApplier::ApplyUnordered(const GraphCDCEvent& event) {
   if (event.commit_version == applied_version_ + 1) {
-    ApplyInternal(event);
+    cedar::Status s = ApplyInternal(event);
+    if (!s.ok()) {
+      return s;
+    }
     applied_version_ = event.commit_version;
     DrainBuffer();
   } else {
+    if (reorder_buffer_.size() >= kMaxReorderBuffer) {
+      CEDAR_LOG_ERROR() << "EventApplier reorder buffer overflow (size="
+                        << reorder_buffer_.size() << ", max=" << kMaxReorderBuffer << ")\n";
+      return cedar::Status::ResourceExhausted("Reorder buffer full");
+    }
     reorder_buffer_[event.commit_version] = event;
   }
+  return cedar::Status::OK();
 }
 
-void EventApplier::ApplyInternal(const GraphCDCEvent& event) {
+cedar::Status EventApplier::ApplyInternal(const GraphCDCEvent& event) {
   TMVEdge edge;
   edge.target_id = event.target_id;
   edge.attr_offset = 0;
@@ -38,15 +52,21 @@ void EventApplier::ApplyInternal(const GraphCDCEvent& event) {
   }
 
   if (tmv_engine_) {
-    tmv_engine_->AppendEdge(event.entity_id, Direction::kOut, edge, true);
+    return tmv_engine_->AppendEdge(event.entity_id, Direction::kOut, edge, true);
   }
+  return cedar::Status::OK();
 }
 
 void EventApplier::DrainBuffer() {
   while (!reorder_buffer_.empty()) {
     auto it = reorder_buffer_.begin();
     if (it->first == applied_version_ + 1) {
-      ApplyInternal(it->second);
+      cedar::Status s = ApplyInternal(it->second);
+      if (!s.ok()) {
+        CEDAR_LOG_ERROR() << "EventApplier failed to drain buffered event version "
+                          << it->first << ": " << s.ToString() << "\n";
+        break;
+      }
       applied_version_ = it->first;
       reorder_buffer_.erase(it);
     } else {

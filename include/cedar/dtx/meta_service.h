@@ -40,6 +40,9 @@ struct RaftCommand;
 namespace cedar {
 namespace dtx {
 
+// Forward declaration (defined in meta_service_impl.h)
+struct MetaCommand;
+
 // Inline raft types (migrated from deleted raft_interface.h)
 using LogIndex = uint64_t;
 using LogTerm = uint64_t;
@@ -370,13 +373,15 @@ private:
         LogIndex GetLastAppliedIndex() const override;
         
         // 内部方法（由 MetadataService 调用）
+        void ApplyCommand(const MetaCommand& cmd);
         void ApplyCreateSpace(const SpaceDef& space);
         void ApplyDropSpace(const std::string& space_name);
         void ApplyRegisterNode(const NodeInfo& info);
         void ApplyUpdateNodeStatus(const NodeStatus& status);
-        void ApplyUpdatePartitionLeader(const std::string& space_name,
-                                         PartitionID partition_id,
-                                         NodeID new_leader);
+        std::pair<uint64_t, NodeID> ApplyUpdatePartitionLeader(
+            const std::string& space_name,
+            PartitionID partition_id,
+            NodeID new_leader);
         
         // 查询方法
         StatusOr<SpaceDef> GetSpace(const std::string& name) const;

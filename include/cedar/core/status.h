@@ -62,6 +62,9 @@ class Status {
   static Status Busy(const Slice& msg, const Slice& msg2 = Slice()) {
     return Status(kBusy, msg, msg2);
   }
+  static Status ResourceExhausted(const Slice& msg, const Slice& msg2 = Slice()) {
+    return Status(kResourceExhausted, msg, msg2);
+  }
 
   // Returns true iff the status indicates success.
   bool ok() const { return (state_ == nullptr); }
@@ -90,6 +93,9 @@ class Status {
   // Returns true iff the status indicates a Busy error.
   bool IsBusy() const { return code() == kBusy; }
 
+  // Returns true iff the status indicates a ResourceExhausted error.
+  bool IsResourceExhausted() const { return code() == kResourceExhausted; }
+
   // Return a string representation of this status suitable for printing.
   // Returns the string "OK" for success.
   std::string ToString() const;
@@ -107,7 +113,8 @@ class Status {
     kIOError = 5,
     kConflict = 6,  // OCC transaction conflict
     kNotLeader = 7, // Not Raft leader
-    kBusy = 8       // Resource busy
+    kBusy = 8,      // Resource busy
+    kResourceExhausted = 9  // Resource exhausted
   };
 
   Code code() const {
