@@ -163,8 +163,7 @@ class FailoverManager {
   bool IsRunning() const { return running_.load(); }
   
   // Register partition for monitoring
-  Status RegisterPartition(PartitionID pid, 
-                           RaftStorageManager* raft_manager);
+  Status RegisterPartition(PartitionID pid);
   void UnregisterPartition(PartitionID pid);
   
   // Manual operations
@@ -202,7 +201,7 @@ class FailoverManager {
   
   mutable std::shared_mutex monitors_mutex_;
   std::unordered_map<PartitionID, std::unique_ptr<PartitionHealthMonitor>> monitors_;
-  std::unordered_map<PartitionID, RaftStorageManager*> raft_managers_;
+
   
   std::unique_ptr<std::thread> monitor_thread_;
   
@@ -214,43 +213,6 @@ class FailoverManager {
   // Callbacks
   FailoverCallback failover_callback_;
   AlertCallback alert_callback_;
-};
-
-// =============================================================================
-// Leader Election Controller
-// =============================================================================
-
-class LeaderElectionController {
- public:
-  LeaderElectionController();
-  ~LeaderElectionController();
-  
-  Status Initialize(StorageRaftGroup* raft_group);
-  
-  // Request vote from peers
-  Status RequestVote();
-  
-  // Handle vote response
-  void RecordVote(NodeID voter, bool granted);
-  
-  // Check if we have majority
-  bool HasMajority() const;
-  
-  // Reset election state
-  void Reset();
-  
-  // Get current vote count
-  uint32_t GetVoteCount() const { return vote_count_.load(); }
-  uint32_t GetNeededVotes() const { return needed_votes_.load(); }
-
- private:
-  StorageRaftGroup* raft_group_ = nullptr;
-  std::atomic<uint32_t> vote_count_{0};
-  std::atomic<uint32_t> needed_votes_{0};
-  std::atomic<bool> vote_granted_to_self_{false};
-  
-  mutable std::mutex voted_mutex_;
-  std::unordered_set<NodeID> voted_nodes_;
 };
 
 }  // namespace storage

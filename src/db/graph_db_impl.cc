@@ -16,6 +16,10 @@
 
 #include <filesystem>
 #include <fstream>
+#include <queue>
+
+#include "cedar/sst/zone_columnar_reader.h"
+#include "cedar/sst/sst_builder_factory.h"
 
 namespace cedar {
 
@@ -687,11 +691,141 @@ Status CedarGraphDBImpl::DoCompaction(int level) {
     }
   }
   
-  // Actual compaction (merging files) requires:
-  // 1. Read all input file data
-  // 2. Merge-sort
-  // 3. Write new SST files
-  // 4. Update Manifest
+  // 收集所有需要合并的文件
+  std::vector<FileMetaData> all_inputs = inputs;
+  all_inputs.insert(all_inputs.end(), overlapping_files.begin(),
+                    overlapping_files.end());
+  
+  // 读取所有输入文件的数据
+  std::vector<std::pair<CedarKey, Descriptor>> all_entries;
+  for (const auto& file : all_inputs) {
+    std::string filepath = db_path_ + "/" + std::to_string(file.file_number) + ".sst";
+    ZoneColumnarSstReader reader(filepath);
+    Status s = reader.Open();
+    if (!s.ok()) {
+      return s;
+    }
+    auto* iter = reader.NewIterator();
+    for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+      all_entries.emplace_back(iter->Key(), iter->Value());
+    }
+    delete iter;
+  }
+  
+  if (all_entries.empty()) {
+    // 无数据可合并，仅删除输入文件
+    std::vector<ManifestEdit> edits;
+    for (const auto& file : all_inputs) {
+      edits.push_back(ManifestEdit::DeleteFile(file.level, file.file_number));
+    }
+    std::shared_ptr<Version> new_version;
+    Status s = version_set_.ApplyEdits(edits, &new_version);
+    if (!s.ok()) {
+      return s;
+    }
+    for (const auto& edit : edits) {
+      s = manifest_manager_.LogEdit(edit);
+      if (!s.ok()) {
+        return s;
+      }
+    }
+    for (const auto& file : all_inputs) {
+      std::string old_path = db_path_ + "/" + std::to_string(file.file_number) + ".sst";
+      env_->RemoveFile(old_path).IgnoreError();
+    }
+    stats_.compactions.fetch_add(1, std::memory_order_relaxed);
+    return Status::OK();
+  }
+  
+  // 按全局排序契约排序（entity_id ASC, type ASC, col_id ASC, target_id ASC,
+  // timestamp DESC, sequence ASC）
+  std::sort(all_entries.begin(), all_entries.end(),
+            [](const auto& a, const auto& b) {
+              return a.first.LessForSorting(b.first);
+            });
+  
+  // 确定输出层级
+  int output_level = (level + 1 < options_.max_levels) ? level + 1 : level;
+  
+  // 创建新的 SST 文件
+  uint64_t new_file_number = version_set_.GetNextFileNumber();
+  std::string output_path = db_path_ + "/" + std::to_string(new_file_number) + ".sst";
+  
+  WritableFile* file = nullptr;
+  Status s = env_->NewWritableFile(output_path, &file);
+  if (!s.ok()) {
+    return s;
+  }
+  
+  auto builder = SstBuilderFactory::Create(file, db_path_);
+  uint64_t out_min_entity = UINT64_MAX;
+  uint64_t out_max_entity = 0;
+  uint64_t out_min_ts = UINT64_MAX;
+  uint64_t out_max_ts = 0;
+  
+  for (const auto& [key, desc] : all_entries) {
+    builder->Add(key, desc);
+    out_min_entity = std::min(out_min_entity, key.entity_id());
+    out_max_entity = std::max(out_max_entity, key.entity_id());
+    out_min_ts = std::min(out_min_ts, key.timestamp().value());
+    out_max_ts = std::max(out_max_ts, key.timestamp().value());
+  }
+  
+  s = builder->Finish();
+  delete file;
+  if (!s.ok()) {
+    env_->RemoveFile(output_path);
+    return s;
+  }
+  
+  uint64_t file_size = 0;
+  s = env_->GetFileSize(output_path, &file_size);
+  if (!s.ok()) {
+    env_->RemoveFile(output_path);
+    return s;
+  }
+  
+  // 构造新文件的元数据
+  FileMetaData new_meta;
+  new_meta.file_number = new_file_number;
+  new_meta.level = output_level;
+  new_meta.file_size = file_size;
+  new_meta.smallest_entity_id = out_min_entity;
+  new_meta.largest_entity_id = out_max_entity;
+  new_meta.smallest_timestamp = out_min_ts;
+  new_meta.largest_timestamp = out_max_ts;
+  new_meta.num_entries = builder->NumEntries();
+  new_meta.num_deletions = 0;
+  
+  // 构造 Manifest 编辑：删除旧文件，添加新文件
+  std::vector<ManifestEdit> edits;
+  edits.reserve(all_inputs.size() + 1);
+  for (const auto& f : all_inputs) {
+    edits.push_back(ManifestEdit::DeleteFile(f.level, f.file_number));
+  }
+  edits.push_back(ManifestEdit::AddFile(output_level, new_meta));
+  
+  // 应用到 VersionSet
+  std::shared_ptr<Version> new_version;
+  s = version_set_.ApplyEdits(edits, &new_version);
+  if (!s.ok()) {
+    env_->RemoveFile(output_path);
+    return s;
+  }
+  
+  // 记录到 Manifest
+  for (const auto& edit : edits) {
+    s = manifest_manager_.LogEdit(edit);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+  
+  // 删除旧的 SST 文件
+  for (const auto& f : all_inputs) {
+    std::string old_path = db_path_ + "/" + std::to_string(f.file_number) + ".sst";
+    env_->RemoveFile(old_path).IgnoreError();
+  }
   
   // 更新统计
   stats_.compactions.fetch_add(1, std::memory_order_relaxed);

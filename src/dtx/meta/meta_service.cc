@@ -361,24 +361,24 @@ StatusOr<LabelSchema> LabelSchema::Deserialize(const std::string& data) {
 }
 
 // MetadataStateMachine implementation
-void MetadataService::MetadataStateMachine::Apply(const raft::LogEntry& entry) {
+void MetadataService::MetadataStateMachine::Apply(const LogEntry& entry) {
     // In real implementation, deserialize entry.data and apply the command
     // For now, just track the index
     last_applied_index_.store(entry.index);
 }
 
-raft::Snapshot MetadataService::MetadataStateMachine::CreateSnapshot() {
-    raft::Snapshot snapshot;
+Snapshot MetadataService::MetadataStateMachine::CreateSnapshot() {
+    Snapshot snapshot;
     snapshot.last_included_index = last_applied_index_.load();
     snapshot.data = Serialize();
     return snapshot;
 }
 
-Status MetadataService::MetadataStateMachine::RestoreSnapshot(const raft::Snapshot& snapshot) {
+Status MetadataService::MetadataStateMachine::RestoreSnapshot(const Snapshot& snapshot) {
     return Deserialize(snapshot.data);
 }
 
-raft::LogIndex MetadataService::MetadataStateMachine::GetLastAppliedIndex() const {
+LogIndex MetadataService::MetadataStateMachine::GetLastAppliedIndex() const {
     return last_applied_index_.load();
 }
 

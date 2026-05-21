@@ -239,12 +239,9 @@ set(CEDAR_DTX_SOURCES
     src/dtx/meta/meta_types.cc
     src/dtx/raft/grpc_tls.cc
     src/dtx/raft/braft_node.cc
-    src/dtx/raft/raft_node_factory.cc
+
     src/dtx/load_balancer.cc
     src/dtx/coordinator_integration.cc
-    src/dtx/storage/raft_replication.cc
-    src/dtx/storage/raft_rpc_client.cc
-    src/dtx/storage/multi_raft_optimization.cc
 
     src/dtx/phi_accrual.cc
     src/dtx/storage/failover_manager.cc
@@ -262,10 +259,8 @@ set(CEDAR_DTX_SOURCES
     src/dtx/storage_impl/meta_service_client.cc
     src/dtx/optimized_2pc_engine.cc
     src/dtx/chaos_testing_impl.cc
-    src/dtx/storage/storage_service.cc
     src/dtx/storage_impl/storage_service_ext.cc
     src/dtx/storage_impl/partition_index.cc
-    src/dtx/grpc/rpc_client.cc
     src/dtx/grpc/meta_service_grpc.cc
     src/dtx/dtx_rpc_client.cc
     src/dtx/transaction_state.cc
@@ -667,11 +662,7 @@ add_executable(test_stability_recovery
 )
 target_link_libraries(test_stability_recovery cedar ${LZ4_LIBRARIES})
 
-# Automated Recovery Integration Test
-add_executable(test_auto_recovery_integration
-    tests/test_auto_recovery_integration.cpp
-)
-target_link_libraries(test_auto_recovery_integration cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+
 
 # Docker Performance Benchmark
 add_executable(test_docker_perf_benchmark

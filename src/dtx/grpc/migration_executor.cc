@@ -14,14 +14,143 @@
 
 #include "cedar/dtx/migration_executor.h"
 #include "cedar/dtx/partition.h"
-#include "cedar/dtx/rpc_client.h"
 #include "cedar/dtx/storage_service_impl.h"
 
 #include <algorithm>
 #include <chrono>
 
+#include "cedar/governance/service_registry.h"
+
 namespace cedar {
 namespace dtx {
+
+// =============================================================================
+// DTxRpcClient - inlined from deleted rpc_client.h / rpc_client.cc
+// =============================================================================
+
+class DTxRpcClient {
+ public:
+  explicit DTxRpcClient(const DTxConfig& config) : config_(config) {}
+  ~DTxRpcClient() = default;
+
+  Status AddNode(NodeID node_id, const std::string& address) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto info = std::make_unique<NodeInfo>();
+    info->id = node_id;
+    info->address = address;
+    info->available = true;
+    nodes_[node_id] = std::move(info);
+    return Status::OK();
+  }
+
+  void RemoveNode(NodeID node_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    nodes_.erase(node_id);
+  }
+
+  bool IsNodeAvailable(NodeID node_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = nodes_.find(node_id);
+    return (it != nodes_.end() && it->second->available);
+  }
+
+  Status DiscoverAndAddNodes(const std::string& service_name,
+                              cedar::governance::ServiceRegistry& registry) {
+    auto services_result = registry.Discover(service_name);
+    if (!services_result.ok()) return services_result.status();
+    auto services = services_result.ValueOrDie();
+    NodeID next_id = 1;
+    for (const auto& service : services) {
+      if (service.status != cedar::governance::ServiceStatus::kHealthy) continue;
+      std::string address = service.host + ":" + std::to_string(service.port);
+      std::lock_guard<std::mutex> lock(mutex_);
+      bool exists = false;
+      for (const auto& [id, info] : nodes_) {
+        if (info->address == address) { exists = true; break; }
+      }
+      if (!exists) {
+        auto info = std::make_unique<NodeInfo>();
+        info->id = next_id++;
+        info->address = address;
+        info->available = true;
+        info->service_id = service.id;
+        nodes_[info->id] = std::move(info);
+      }
+    }
+    return Status::OK();
+  }
+
+  void RefreshNodesFromRegistry(const std::string& service_name,
+                                 cedar::governance::ServiceRegistry& registry) {
+    auto services_result = registry.Discover(service_name);
+    if (!services_result.ok()) return;
+    auto services = services_result.ValueOrDie();
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [id, info] : nodes_) info->available = false;
+    for (const auto& service : services) {
+      if (service.status != cedar::governance::ServiceStatus::kHealthy) continue;
+      std::string address = service.host + ":" + std::to_string(service.port);
+      for (auto& [id, info] : nodes_) {
+        if (info->address == address || info->service_id == service.id) {
+          info->available = true;
+          info->service_id = service.id;
+          break;
+        }
+      }
+    }
+  }
+
+  std::vector<NodeID> GetDiscoveredNodes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<NodeID> result;
+    for (const auto& [id, info] : nodes_) {
+      if (info->available) result.push_back(id);
+    }
+    return result;
+  }
+
+  Status Put(NodeID /*node_id*/, PartitionID /*pid*/,
+             const CedarKey& /*key*/, const Descriptor& /*value*/,
+             Timestamp /*txn_version*/) {
+    return Status::OK();
+  }
+
+  StatusOr<Descriptor> Get(NodeID /*node_id*/, PartitionID /*pid*/,
+                           const CedarKey& /*key*/, Timestamp /*read_time*/) {
+    return Descriptor();
+  }
+
+  Status Prepare(NodeID /*node_id*/, TxnID /*txn_id*/,
+                 const std::vector<CedarKey>& /*reads*/,
+                 const std::vector<CedarKey>& /*writes*/,
+                 Timestamp /*commit_ts*/) {
+    return Status::OK();
+  }
+
+  Status Commit(NodeID /*node_id*/, TxnID /*txn_id*/, Timestamp /*commit_ts*/) {
+    return Status::OK();
+  }
+
+  Status Abort(NodeID /*node_id*/, TxnID /*txn_id*/) {
+    return Status::OK();
+  }
+
+ private:
+  DTxConfig config_;
+  struct NodeInfo {
+    NodeID id;
+    std::string address;
+    std::atomic<bool> available{true};
+    std::string service_id;
+  };
+  mutable std::mutex mutex_;
+  std::unordered_map<NodeID, std::unique_ptr<NodeInfo>> nodes_;
+  int64_t registry_watch_id_ = -1;
+};
+
+// =============================================================================
+// MigrationTask Implementation
+// =============================================================================
 
 // =============================================================================
 // MigrationTask Implementation

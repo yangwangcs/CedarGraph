@@ -16,6 +16,7 @@ message CedarKey {
     uint32 sequence = 5;
     uint32 type_flags = 6;
     uint32 partition_id = 7;
+    uint32 entity_type = 8;  // explicit 0=Vertex, 1=EdgeOut, 2=EdgeIn
 }
 
 message Descriptor {

@@ -93,6 +93,9 @@ class CedarGraphDBImpl {
   VersionSet* GetVersionSet() { return &version_set_; }
   ManifestManager* GetManifestManager() { return &manifest_manager_; }
   
+  // 测试访问
+  Status TEST_DoCompaction(int level) { return DoCompaction(level); }
+  
  private:
   // 数据库路径和选项
   std::string db_path_;

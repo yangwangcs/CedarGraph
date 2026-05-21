@@ -499,18 +499,21 @@ Status ZoneColumnarSstReader::LoadMetadataFromBuffer() {
   return Status::OK();
 }
 
-// Iterator implementation stubs
+// Iterator implementation
 ZoneColumnarSstReader::Iterator::Iterator(const ZoneColumnarSstReader* reader)
-    : reader_(reader), current_idx_(0), valid_(false) {
+    : reader_(reader), current_idx_(0), total_count_(0), valid_(false) {
 }
 
 void ZoneColumnarSstReader::Iterator::SeekToFirst() {
   current_idx_ = 0;
-  valid_ = reader_->footer_.row_count > 0;
+  total_count_ = reader_->footer_.row_count;
+  valid_ = total_count_ > 0;
+  if (valid_) {
+    EnsureBlockLoaded(static_cast<uint32_t>(current_idx_));
+  }
 }
 
 void ZoneColumnarSstReader::Iterator::Seek(const CedarKey& key) {
-  // Simplified: linear search through blocks
   SeekToFirst();
   while (valid_) {
     if (Key() == key) return;
@@ -521,21 +524,51 @@ void ZoneColumnarSstReader::Iterator::Seek(const CedarKey& key) {
 void ZoneColumnarSstReader::Iterator::Next() {
   if (!valid_) return;
   current_idx_++;
-  valid_ = current_idx_ < reader_->footer_.row_count;
+  valid_ = current_idx_ < total_count_;
+  if (valid_) {
+    EnsureBlockLoaded(static_cast<uint32_t>(current_idx_));
+  }
 }
 
 CedarKey ZoneColumnarSstReader::Iterator::Key() const {
-  if (!valid_) return CedarKey();
-  // Find block and row for current_idx_
-  // Simplified implementation
-  return CedarKey();
+  if (!valid_ || !current_block_) return CedarKey();
+  uint32_t local_idx = static_cast<uint32_t>(current_idx_ - current_block_start_row_);
+  return reader_->ReconstructKeyFromBlock(*current_block_, local_idx);
 }
 
 Descriptor ZoneColumnarSstReader::Iterator::Value() const {
-  if (!valid_) return Descriptor();
-  // Find block and row for current_idx_
-  // Simplified implementation
-  return Descriptor();
+  if (!valid_ || !current_block_) return Descriptor();
+  uint32_t local_idx = static_cast<uint32_t>(current_idx_ - current_block_start_row_);
+  auto opt = reader_->GetValueByRow(*current_block_, local_idx);
+  return opt.value_or(Descriptor());
+}
+
+Status ZoneColumnarSstReader::Iterator::EnsureBlockLoaded(uint32_t row_idx) const {
+  // Find which block contains this row
+  uint32_t block_id = 0;
+  uint32_t start_row = 0;
+  for (size_t i = 0; i < reader_->block_index_.size(); ++i) {
+    const auto& entry = reader_->block_index_[i];
+    if (row_idx < start_row + entry.row_count) {
+      block_id = static_cast<uint32_t>(i);
+      break;
+    }
+    start_row += entry.row_count;
+  }
+  
+  if (block_id >= reader_->block_index_.size()) {
+    return Status::Corruption("Iterator", "row index out of range");
+  }
+  
+  if (current_block_id_ != block_id) {
+    current_block_ = reader_->LoadBlock(block_id);
+    current_block_id_ = block_id;
+    current_block_start_row_ = start_row;
+    if (!current_block_) {
+      return Status::Corruption("Iterator", "failed to load block");
+    }
+  }
+  return Status::OK();
 }
 
 // Other methods stubs

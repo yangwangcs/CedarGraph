@@ -326,10 +326,11 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                                const cedar::storage::ExecuteSubQueryRequest* request,
                                grpc::ServerWriter<cedar::storage::SubQueryResultBatch>* writer) override;
 
- private:
   // Helper methods for proto conversion
-  CedarKey ProtoToCedarKey(const cedar::storage::CedarKey& proto_key);
-  cedar::storage::CedarKey CedarKeyToProto(const CedarKey& key);
+  static CedarKey ProtoToCedarKey(const cedar::storage::CedarKey& proto_key);
+  static cedar::storage::CedarKey CedarKeyToProto(const CedarKey& key);
+
+ private:
   Descriptor ProtoToDescriptor(const cedar::storage::Descriptor& proto_desc,
                                 uint16_t column_id = 0);
   cedar::storage::Descriptor DescriptorToProto(const Descriptor& desc);

@@ -3,12 +3,12 @@
 namespace cedar {
 
 VSLMemTable::VSLMemTable() 
-    : skiplist_(std::make_unique<LockFreeVSL>()) {}
+    : skiplist_(std::make_unique<CoarseLockedVSL>()) {}
 
 VSLMemTable::~VSLMemTable() = default;
 
 Status VSLMemTable::Put(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version) {
-  // 修复: 传递 txn_version 给 LockFreeVSL
+  // 修复: 传递 txn_version 给 CoarseLockedVSL
   bool inserted = skiplist_->Insert(key, descriptor, txn_version);
   if (inserted) {
     size_.fetch_add(1, std::memory_order_relaxed);

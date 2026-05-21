@@ -208,3 +208,34 @@ TEST(CedarKeyComparatorTest, CompareUserKey) {
 
   EXPECT_EQ(cmp.CompareUserKey(ua, ub), 0);
 }
+
+// ==================== CRC32C Tests ====================
+
+#include "cedar/core/crc32c.h"
+
+TEST(Crc32cTest, KnownValue) {
+  const char data[] = "The quick brown fox jumps over the lazy dog";
+  uint32_t crc = cedar::crc32c::Value(data, sizeof(data) - 1);
+  // Known CRC32C value for this string (verified externally).
+  EXPECT_EQ(crc, 0x22620404U);
+}
+
+TEST(Crc32cTest, HardwareMatchesSoftware) {
+  const char data[] = "The quick brown fox jumps over the lazy dog";
+  uint32_t sw = cedar::crc32c::ExtendSW(0, data, sizeof(data) - 1);
+  uint32_t hw = cedar::crc32c::ExtendHW(0, data, sizeof(data) - 1);
+  EXPECT_EQ(sw, hw);
+}
+
+TEST(Crc32cTest, EmptyString) {
+  EXPECT_EQ(cedar::crc32c::Value("", 0), 0U);
+}
+
+TEST(Crc32cTest, ExtendConsistency) {
+  const char part1[] = "Hello, ";
+  const char part2[] = "World!";
+  uint32_t crc1 = cedar::crc32c::Value(part1, sizeof(part1) - 1);
+  uint32_t combined = cedar::crc32c::Extend(crc1, part2, sizeof(part2) - 1);
+  uint32_t full = cedar::crc32c::Value("Hello, World!", 13);
+  EXPECT_EQ(combined, full);
+}

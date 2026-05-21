@@ -26,6 +26,13 @@ namespace crc32c {
 // crc32c of a stream of data.
 uint32_t Extend(uint32_t init_crc, const char* data, size_t n);
 
+// Software-only fallback (byte-at-a-time table lookup).
+uint32_t ExtendSW(uint32_t init_crc, const char* data, size_t n);
+
+// Hardware-accelerated path (SSE4.2 on x86_64, CRC32 extension on ARM64).
+// Only available when compiled with the corresponding target features.
+uint32_t ExtendHW(uint32_t init_crc, const char* data, size_t n);
+
 // Return the crc32c of data[0,n-1]
 inline uint32_t Value(const char* data, size_t n) { return Extend(0, data, n); }
 

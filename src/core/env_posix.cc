@@ -860,4 +860,40 @@ WritableFile::~WritableFile() = default;
 Logger::~Logger() = default;
 FileLock::~FileLock() = default;
 
+Status WriteStringToFile(Env* env, const Slice& data, const std::string& fname) {
+  WritableFile* file;
+  Status s = env->NewWritableFile(fname, &file);
+  if (!s.ok()) return s;
+  s = file->Append(data);
+  if (s.ok()) s = file->Close();
+  delete file;
+  return s;
+}
+
+Status ReadFileToString(Env* env, const std::string& fname, std::string* data) {
+  data->clear();
+  SequentialFile* file;
+  Status s = env->NewSequentialFile(fname, &file);
+  if (!s.ok()) return s;
+  static const size_t kBufferSize = 8192;
+  char scratch[kBufferSize];
+  while (true) {
+    Slice fragment;
+    s = file->Read(kBufferSize, &fragment, scratch);
+    if (!s.ok()) break;
+    data->append(fragment.data(), fragment.size());
+    if (fragment.empty()) break;
+  }
+  delete file;
+  return s;
+}
+
+void Log(Logger* info_log, const char* fmt, ...) {
+  if (info_log == nullptr) return;
+  va_list ap;
+  va_start(ap, fmt);
+  info_log->Logv(fmt, ap);
+  va_end(ap);
+}
+
 }  // namespace cedar

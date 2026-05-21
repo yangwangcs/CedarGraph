@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 #include "cedar/dtx/meta_service.h"
-#include "cedar/dtx/raft/raft_interface.h"
 
 using namespace cedar::dtx;
 

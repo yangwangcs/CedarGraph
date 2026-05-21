@@ -421,6 +421,7 @@ class ZoneColumnarSstReader::Iterator {
   // 当前加载的 block
   mutable std::shared_ptr<BlockCacheEntry> current_block_;
   mutable uint32_t current_block_id_ = UINT32_MAX;
+  mutable uint32_t current_block_start_row_ = 0;
   
   // 确保指定行所在的 block 已加载
   Status EnsureBlockLoaded(uint32_t row_idx) const;

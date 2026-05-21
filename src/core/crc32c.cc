@@ -17,6 +17,14 @@
 #include <cstddef>
 #include <cstdint>
 
+#if defined(__x86_64__) && defined(__SSE4_2__)
+#include <nmmintrin.h>
+#define CEDAR_CRC32C_HW 1
+#elif defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+#include <arm_acle.h>
+#define CEDAR_CRC32C_HW 1
+#endif
+
 namespace cedar {
 namespace crc32c {
 
@@ -72,7 +80,7 @@ static constexpr const uint32_t kCRC32Xor = static_cast<uint32_t>(0xffffffffU);
 
 }  // namespace
 
-uint32_t Extend(uint32_t crc, const char* data, size_t n) {
+uint32_t ExtendSW(uint32_t crc, const char* data, size_t n) {
   const uint8_t* p = reinterpret_cast<const uint8_t*>(data);
   const uint8_t* e = p + n;
   uint32_t l = crc ^ kCRC32Xor;
@@ -84,6 +92,73 @@ uint32_t Extend(uint32_t crc, const char* data, size_t n) {
   }
 
   return l ^ kCRC32Xor;
+}
+
+#ifdef CEDAR_CRC32C_HW
+
+static inline bool HasHardwareCrc32c() {
+#if defined(__x86_64__)
+  // On x86_64 with SSE4.2 compile flag, assume available.
+  return true;
+#elif defined(__aarch64__)
+  // On AArch64 with CRC extension compile flag, assume available.
+  return true;
+#else
+  return false;
+#endif
+}
+
+uint32_t ExtendHW(uint32_t crc, const char* data, size_t n) {
+  uint32_t l = crc ^ kCRC32Xor;
+  const char* p = data;
+  const char* end = p + n;
+
+#if defined(__x86_64__) && defined(__SSE4_2__)
+  while (p + 8 <= end) {
+    l = static_cast<uint32_t>(_mm_crc32_u64(l, *reinterpret_cast<const uint64_t*>(p)));
+    p += 8;
+  }
+  if (p + 4 <= end) {
+    l = _mm_crc32_u32(l, *reinterpret_cast<const uint32_t*>(p));
+    p += 4;
+  }
+  if (p + 2 <= end) {
+    l = _mm_crc32_u16(l, *reinterpret_cast<const uint16_t*>(p));
+    p += 2;
+  }
+  if (p < end) {
+    l = _mm_crc32_u8(l, *reinterpret_cast<const uint8_t*>(p));
+  }
+#elif defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+  while (p + 8 <= end) {
+    l = __crc32cd(l, *reinterpret_cast<const uint64_t*>(p));
+    p += 8;
+  }
+  if (p + 4 <= end) {
+    l = __crc32cw(l, *reinterpret_cast<const uint32_t*>(p));
+    p += 4;
+  }
+  if (p + 2 <= end) {
+    l = __crc32ch(l, *reinterpret_cast<const uint16_t*>(p));
+    p += 2;
+  }
+  if (p < end) {
+    l = __crc32cb(l, *reinterpret_cast<const uint8_t*>(p));
+  }
+#endif
+
+  return l ^ kCRC32Xor;
+}
+
+#endif  // CEDAR_CRC32C_HW
+
+uint32_t Extend(uint32_t init_crc, const char* data, size_t n) {
+#ifdef CEDAR_CRC32C_HW
+  if (HasHardwareCrc32c()) {
+    return ExtendHW(init_crc, data, n);
+  }
+#endif
+  return ExtendSW(init_crc, data, n);
 }
 
 }  // namespace crc32c

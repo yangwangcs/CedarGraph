@@ -45,12 +45,12 @@ CedarKey StorageServiceImpl::ProtoToCedarKey(const cedar::storage::CedarKey& pro
   // CedarKey constructor: entity_id, entity_type, column_id, timestamp, sequence, target_id, flags, part_id
   return CedarKey(
       proto_key.entity_id(),
-      static_cast<EntityType>(proto_key.type_flags()),  // entity_type from type_flags
+      static_cast<EntityType>(proto_key.entity_type()),  // explicit entity_type field
       static_cast<uint16_t>(proto_key.column_id()),
       Timestamp(proto_key.timestamp()),
       static_cast<uint16_t>(proto_key.sequence()),
       proto_key.target_id(),
-      0,  // flags
+      static_cast<uint8_t>(proto_key.type_flags()),
       static_cast<PartitionID>(proto_key.partition_id()));
 }
 
@@ -63,6 +63,7 @@ cedar::storage::CedarKey StorageServiceImpl::CedarKeyToProto(const CedarKey& key
   proto.set_column_id(key.column_id());
   proto.set_sequence(key.sequence());
   proto.set_type_flags(key.flags());
+  proto.set_entity_type(static_cast<uint32_t>(key.entity_type()));
   proto.set_partition_id(key.part_id());
   return proto;
 }

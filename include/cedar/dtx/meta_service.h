@@ -32,7 +32,6 @@
 
 #include "cedar/core/status.h"
 #include "cedar/dtx/types.h"
-#include "cedar/dtx/raft/raft_interface.h"
 #include "cedar/dtx/raft/braft_node.h"
 
 // Forward declaration for braft integration
@@ -40,6 +39,35 @@ struct RaftCommand;
 
 namespace cedar {
 namespace dtx {
+
+// Inline raft types (migrated from deleted raft_interface.h)
+using LogIndex = uint64_t;
+using LogTerm = uint64_t;
+
+struct LogEntry {
+    LogTerm term{0};
+    LogIndex index{0};
+    std::string data;
+    LogEntry() = default;
+    LogEntry(LogTerm t, LogIndex i, std::string d)
+        : term(t), index(i), data(std::move(d)) {}
+};
+
+struct Snapshot {
+    LogIndex last_included_index{0};
+    LogTerm last_included_term{0};
+    std::string data;
+    bool IsEmpty() const { return data.empty(); }
+};
+
+class StateMachine {
+public:
+    virtual ~StateMachine() = default;
+    virtual void Apply(const LogEntry& entry) = 0;
+    virtual Snapshot CreateSnapshot() = 0;
+    virtual Status RestoreSnapshot(const Snapshot& snapshot) = 0;
+    virtual LogIndex GetLastAppliedIndex() const = 0;
+};
 
 // =============================================================================
 // 基础类型定义
@@ -334,12 +362,12 @@ public:
     
 private:
     // Raft 状态机实现
-    class MetadataStateMachine : public raft::StateMachine {
+    class MetadataStateMachine : public StateMachine {
     public:
-        void Apply(const raft::LogEntry& entry) override;
-        raft::Snapshot CreateSnapshot() override;
-        Status RestoreSnapshot(const raft::Snapshot& snapshot) override;
-        raft::LogIndex GetLastAppliedIndex() const override;
+        void Apply(const LogEntry& entry) override;
+        Snapshot CreateSnapshot() override;
+        Status RestoreSnapshot(const Snapshot& snapshot) override;
+        LogIndex GetLastAppliedIndex() const override;
         
         // 内部方法（由 MetadataService 调用）
         void ApplyCreateSpace(const SpaceDef& space);
@@ -390,7 +418,7 @@ private:
         std::unordered_map<NodeID, NodeInfo> nodes_;
         std::unordered_map<NodeID, NodeStatus> node_statuses_;
         
-        std::atomic<raft::LogIndex> last_applied_index_{0};
+        std::atomic<LogIndex> last_applied_index_{0};
     };
     
     // 心跳检查线程
