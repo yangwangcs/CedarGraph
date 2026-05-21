@@ -361,7 +361,7 @@ add_library(cedar STATIC
     ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc
 )
 
-target_link_libraries(cedar ${LZ4_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf gRPC::grpc++ glog)
+target_link_libraries(cedar ${LZ4_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf gRPC::grpc++)
 target_include_directories(cedar PUBLIC ${LZ4_INCLUDE_DIRS})
 target_link_directories(cedar PUBLIC ${LZ4_LIBRARY_DIRS})
 target_compile_definitions(cedar PRIVATE CEDAR_NO_GLOG)

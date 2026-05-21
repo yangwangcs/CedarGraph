@@ -656,6 +656,7 @@ uint64_t ManifestManager::GetManifestSize() const {
   try {
     return std::filesystem::file_size(manifest_filename_);
   } catch (...) {
+    std::cerr << "[Manifest] Failed to get file size for: " << manifest_filename_ << std::endl;
     return 0;
   }
 }
@@ -762,7 +763,7 @@ Status ManifestManager::CleanupOldManifests(size_t keep_count) {
             uint64_t file_num = std::stoull(num_str);
             manifests.push_back({file_num, entry.path().string()});
           } catch (...) {
-            // 忽略无法解析的文件名
+            std::cerr << "[Manifest] Ignoring unparsable filename: " << entry.path().string() << std::endl;
           }
         }
       }
@@ -778,7 +779,7 @@ Status ManifestManager::CleanupOldManifests(size_t keep_count) {
       try {
         std::filesystem::remove(manifests[i].second);
       } catch (...) {
-        // 忽略删除错误
+        std::cerr << "[Manifest] Failed to delete old manifest: " << manifests[i].second << std::endl;
       }
     }
   }
@@ -814,7 +815,7 @@ Status ManifestManager::ArchiveOldManifests(size_t keep_count) {
               manifests.push_back({file_num, entry.path().string()});
             }
           } catch (...) {
-            // 忽略无法解析的文件名
+            std::cerr << "[Manifest] Ignoring unparsable filename: " << entry.path().string() << std::endl;
           }
         }
       }
@@ -836,7 +837,7 @@ Status ManifestManager::ArchiveOldManifests(size_t keep_count) {
         // For now, archive by renaming the file.
         std::filesystem::rename(src, dst);
       } catch (...) {
-        // 忽略归档错误
+        std::cerr << "[Manifest] Failed to archive manifest file" << std::endl;
       }
     }
   }

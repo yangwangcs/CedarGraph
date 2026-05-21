@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <iostream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -95,7 +96,7 @@ void FaultInjector::FaultWorkerLoop() {
       
       std::this_thread::sleep_for(std::chrono::seconds(1));
     } catch (...) {
-      // 故障注入线程异常不应导致崩溃
+      std::cerr << "[ChaosTesting] Fault injection thread exception" << std::endl;
     }
   }
   
@@ -103,7 +104,7 @@ void FaultInjector::FaultWorkerLoop() {
   try {
     ClearAllFaults();
   } catch (...) {
-    // 清理异常不应传播
+    std::cerr << "[ChaosTesting] Cleanup exception" << std::endl;
   }
 }
 

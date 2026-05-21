@@ -20,11 +20,12 @@ std::vector<uint64_t> LocalComputeThread::ExecuteBFS(uint64_t root,
   std::vector<uint64_t> results;
   std::unordered_set<uint64_t> visited;
   std::queue<std::pair<uint64_t, uint32_t>> q;
+  static constexpr size_t kMaxBfsResults = 10000;
 
   visited.insert(root);
   q.emplace(root, 0);
 
-  while (!q.empty()) {
+  while (!q.empty() && results.size() < kMaxBfsResults) {
     auto [vertex, depth] = q.front();
     q.pop();
 
@@ -38,7 +39,7 @@ std::vector<uint64_t> LocalComputeThread::ExecuteBFS(uint64_t root,
 
     for (const auto& edge : edges) {
       uint64_t neighbor = edge.target_id;
-      if (visited.find(neighbor) == visited.end()) {
+      if (visited.find(neighbor) == visited.end() && results.size() < kMaxBfsResults) {
         visited.insert(neighbor);
         results.push_back(neighbor);
         q.emplace(neighbor, depth + 1);
@@ -60,11 +61,12 @@ std::vector<uint64_t> LocalComputeThread::ExecuteDFS(uint64_t root,
   std::vector<uint64_t> results;
   std::unordered_set<uint64_t> visited;
   std::stack<std::pair<uint64_t, uint32_t>> s;
+  static constexpr size_t kMaxDfsResults = 10000;
 
   visited.insert(root);
   s.emplace(root, 0);
 
-  while (!s.empty()) {
+  while (!s.empty() && results.size() < kMaxDfsResults) {
     auto [vertex, depth] = s.top();
     s.pop();
 
@@ -78,7 +80,7 @@ std::vector<uint64_t> LocalComputeThread::ExecuteDFS(uint64_t root,
 
     for (const auto& edge : edges) {
       uint64_t neighbor = edge.target_id;
-      if (visited.find(neighbor) == visited.end()) {
+      if (visited.find(neighbor) == visited.end() && results.size() < kMaxDfsResults) {
         visited.insert(neighbor);
         results.push_back(neighbor);
         s.emplace(neighbor, depth + 1);

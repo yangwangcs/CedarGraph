@@ -17,7 +17,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
-
+#include <iostream>
 #include <sstream>
 #include <thread>
 
@@ -494,8 +494,10 @@ int ConfigManager::GetInt(const std::string& key, int default_val) const {
   try {
     return std::stoi(str_val);
   } catch (const std::invalid_argument&) {
+    std::cerr << "[ConfigManager] Invalid integer value: '" << str_val << "', using default: " << default_val << std::endl;
     return default_val;
   } catch (const std::out_of_range&) {
+    std::cerr << "[ConfigManager] Out of range integer value: '" << str_val << "', using default: " << default_val << std::endl;
     return default_val;
   }
 }
@@ -510,8 +512,10 @@ int64_t ConfigManager::GetInt64(const std::string& key,
   try {
     return std::stoll(str_val);
   } catch (const std::invalid_argument&) {
+    std::cerr << "[ConfigManager] Invalid integer value: '" << str_val << "', using default: " << default_val << std::endl;
     return default_val;
   } catch (const std::out_of_range&) {
+    std::cerr << "[ConfigManager] Out of range integer value: '" << str_val << "', using default: " << default_val << std::endl;
     return default_val;
   }
 }
@@ -526,8 +530,10 @@ double ConfigManager::GetDouble(const std::string& key,
   try {
     return std::stod(str_val);
   } catch (const std::invalid_argument&) {
+    std::cerr << "[ConfigManager] Invalid integer value: '" << str_val << "', using default: " << default_val << std::endl;
     return default_val;
   } catch (const std::out_of_range&) {
+    std::cerr << "[ConfigManager] Out of range integer value: '" << str_val << "', using default: " << default_val << std::endl;
     return default_val;
   }
 }

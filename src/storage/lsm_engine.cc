@@ -2552,6 +2552,7 @@ Status LsmEngine::LoadSstFiles() {
         file_number = std::stoull(number_str);
         next_file_number_ = std::max(next_file_number_.load(), file_number + 1);
       } catch (...) {
+        std::cerr << "[LSMEngine] Failed to parse file number from: " << number_str << std::endl;
         continue;
       }
 

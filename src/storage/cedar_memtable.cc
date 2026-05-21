@@ -69,6 +69,9 @@ void CedarMemTable::UpdateVersionChain(const InternalKey& internal_key,
   // 创建新节点，传入 txn_version 用于 MVCC
   auto new_node = std::make_unique<TemporalVersionNode>(timestamp, descriptor, txn_version);
   TemporalVersionNode* node_ptr = new_node.get();
+  if (node_pool_.size() >= 10000000) {
+    std::cerr << "[CedarMemTable] WARNING: node_pool exceeded 10M nodes, potential unbounded growth" << std::endl;
+  }
   node_pool_.push_back(std::move(new_node));
   
   // 查找或创建版本链

@@ -14,9 +14,9 @@
 
 #include "cedar/dtx/security.h"
 
+#include <iostream>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-
 #include <thread>
 #include <fstream>
 
@@ -536,6 +536,7 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
     try {
       return std::stoll(json.substr(start, pos - start));
     } catch (...) {
+      std::cerr << "[SecurityManager] Failed to parse JSON integer" << std::endl;
       return std::nullopt;
     }
   };
@@ -861,7 +862,7 @@ void AuditLogger::WriteLoop() {
         log_file_.flush();
       }
     } catch (...) {
-      // 日志写入异常不应导致后台线程崩溃
+      std::cerr << "[SecurityManager] Log write exception" << std::endl;
     }
   }
 }

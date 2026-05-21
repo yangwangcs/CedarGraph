@@ -183,8 +183,10 @@ TEST(PartitionMigrationCriticalTest, CleanupOldMigrationsRaceSafe) {
   EXPECT_TRUE(
       service.FinalizeMigration(&ctx, &finalize_req, &finalize_resp).ok());
 
-  // Cleanup should work without races
-  size_t cleaned = service.CleanupOldMigrations(std::chrono::hours(0));
+  // Cleanup should work without races — allow a brief window since
+  // FinalizeMigration sets completed_at to now.
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  size_t cleaned = service.CleanupOldMigrations(std::chrono::milliseconds(5));
   EXPECT_EQ(cleaned, 1u);
 
   auto stats = service.GetStats();

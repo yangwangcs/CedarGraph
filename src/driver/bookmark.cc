@@ -15,8 +15,9 @@
 #include "cedar/driver/bookmark.h"
 
 #include <algorithm>
-#include <sstream>
 #include <iomanip>
+#include <iostream>
+#include <sstream>
 
 namespace cedar {
 namespace driver {
@@ -41,6 +42,7 @@ std::optional<Bookmark> Bookmark::FromString(const std::string& str) {
       uint64_t ts = std::stoull(str.substr(3));
       return Bookmark(ts, 0);
     } catch (...) {
+      std::cerr << "[Bookmark] Failed to parse bookmark string: " << str << std::endl;
       return std::nullopt;
     }
   }
@@ -59,6 +61,7 @@ std::optional<Bookmark> Bookmark::FromString(const std::string& str) {
       uint64_t txn_id = std::stoull(str.substr(first_colon + 1));
       return Bookmark(ts, txn_id);
     } catch (...) {
+      std::cerr << "[Bookmark] Failed to parse bookmark string: " << str << std::endl;
       return std::nullopt;
     }
   }

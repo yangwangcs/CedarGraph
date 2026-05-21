@@ -3,6 +3,7 @@
 #include "cedar/cypher/value.h"
 #include <cmath>
 #include <functional>
+#include <iostream>
 #include <string>
 
 namespace cedar {
@@ -356,6 +357,7 @@ double Value::ToDouble() const {
     try {
       return std::stod(GetString());
     } catch (...) {
+      std::cerr << "[Value] Failed to convert string to double: " << GetString() << std::endl;
       return 0.0;
     }
   }
@@ -369,6 +371,7 @@ int64_t Value::ToInt() const {
     try {
       return std::stoll(GetString());
     } catch (...) {
+      std::cerr << "[Value] Failed to convert string to integer: " << GetString() << std::endl;
       return 0;
     }
   }

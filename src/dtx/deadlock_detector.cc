@@ -15,6 +15,7 @@
 #include "cedar/dtx/deadlock_detector.h"
 
 #include <algorithm>
+#include <iostream>
 #include <sstream>
 
 namespace cedar {
@@ -515,7 +516,7 @@ void DistributedDeadlockDetector::HandleDeadlock(const DeadlockDetectionResult& 
       std::lock_guard<std::mutex> stats_lock(stats_mutex_);
       ++stats_.victims_aborted;
     } catch (...) {
-      // victim_handler_ 异常不应导致检测器崩溃
+      std::cerr << "[DeadlockDetector] Victim handler exception" << std::endl;
     }
   } else if (victim == 0 && !result.cycle.empty()) {
     // No victim selected - log and attempt to break cycle by removing youngest

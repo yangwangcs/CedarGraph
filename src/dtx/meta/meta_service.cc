@@ -1,6 +1,5 @@
 #include "cedar/dtx/meta_service.h"
 #include "cedar/dtx/meta_service_impl.h"
-#include <glog/logging.h>
 #include <chrono>
 #include <thread>
 #include <sstream>
@@ -948,10 +947,6 @@ Status MetadataService::RegisterNode(const NodeInfo& info) {
 }
 
 Status MetadataService::Heartbeat(const NodeStatus& status) {
-    if (config_.test_mode) {
-        state_machine_.ApplyUpdateNodeStatus(status);
-        return Status::OK();
-    }
     // Token bucket rate limiting: max 10 proposals/sec per node
     {
         std::lock_guard<std::mutex> lock(heartbeat_tokens_mutex_);
@@ -965,6 +960,10 @@ Status MetadataService::Heartbeat(const NodeStatus& status) {
             return Status::ResourceExhausted("Heartbeat rate limit exceeded");
         }
         --tokens;
+    }
+    if (config_.test_mode) {
+        state_machine_.ApplyUpdateNodeStatus(status);
+        return Status::OK();
     }
     if (!raft_node_) {
         return Status::IOError("Raft node not initialized");
@@ -1139,9 +1138,9 @@ void MetadataService::HeartbeatCheckLoop() {
                 }
             }
         } catch (const std::exception& e) {
-            LOG(ERROR) << "[MetaD] HeartbeatCheckLoop exception: " << e.what();
+            std::cerr << "[MetaD] HeartbeatCheckLoop exception: " << e.what() << std::endl;
         } catch (...) {
-            LOG(ERROR) << "[MetaD] HeartbeatCheckLoop unknown exception";
+            std::cerr << "[MetaD] HeartbeatCheckLoop unknown exception" << std::endl;
         }
 
         std::this_thread::sleep_for(std::chrono::seconds(config_.heartbeat_check_interval_sec));

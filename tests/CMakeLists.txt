@@ -602,6 +602,6 @@ add_executable(test_service_meta_critical
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
 )
-target_link_libraries(test_service_meta_critical cedar cedar_graph cedar_cypher cedar_queryd gRPC::grpc++ glog ${GTEST_MAIN_TARGET} pthread)
+target_link_libraries(test_service_meta_critical cedar cedar_graph cedar_cypher cedar_queryd gRPC::grpc++ ${GTEST_MAIN_TARGET} pthread)
 target_link_directories(test_service_meta_critical PRIVATE /opt/homebrew/lib)
 add_test(NAME test_service_meta_critical COMMAND test_service_meta_critical)

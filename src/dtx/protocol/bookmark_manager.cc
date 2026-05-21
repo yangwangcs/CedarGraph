@@ -14,6 +14,7 @@
 
 #include "cedar/dtx/bookmark_manager.h"
 
+#include <iostream>
 #include <sstream>
 #include <thread>
 #include <chrono>
@@ -36,6 +37,7 @@ BookmarkHlc BookmarkHlc::FromString(const std::string& str) {
     uint64_t l = std::stoull(str.substr(pos + 1));
     return BookmarkHlc(wt, l);
   } catch (...) {
+    std::cerr << "[BookmarkManager] Failed to parse bookmark string: " << str << std::endl;
     return BookmarkHlc(0, 0);
   }
 }
@@ -154,6 +156,7 @@ std::optional<DistributedBookmark> DistributedBookmark::Deserialize(const std::s
     
     return result;
   } catch (...) {
+    std::cerr << "[BookmarkManager] Failed to deserialize bookmark" << std::endl;
     return std::nullopt;
   }
 }

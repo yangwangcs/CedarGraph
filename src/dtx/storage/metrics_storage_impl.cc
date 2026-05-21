@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -433,6 +434,7 @@ Status MetricsCollector::StartHttpServer() {
     try {
       port = std::stoi(config_.endpoint.substr(pos + 1));
     } catch (...) {
+      std::cerr << "[MetricsStorage] Failed to parse endpoint port, using default 9090" << std::endl;
       port = 9090;
     }
   }

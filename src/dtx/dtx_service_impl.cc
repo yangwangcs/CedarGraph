@@ -16,6 +16,7 @@
 #include "cedar/dtx/dtx_service_impl.h"
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
+#include <iostream>
 #include "storage_service.pb.h"
 
 #include <functional>
@@ -30,6 +31,7 @@ uint64_t ConvertTxnId(const std::string& txn_id_str) {
   try {
     return std::stoull(txn_id_str);
   } catch (...) {
+    std::cerr << "[DtxService] Failed to parse txn_id: " << txn_id_str << std::endl;
     return std::hash<std::string>{}(txn_id_str);
   }
 }

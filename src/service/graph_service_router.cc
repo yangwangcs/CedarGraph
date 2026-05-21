@@ -4,7 +4,6 @@
 
 #include "cedar/service/graph_service_router.h"
 
-#include <glog/logging.h>
 #include <algorithm>
 #include <chrono>
 #include <iostream>
@@ -78,7 +77,8 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   // 初始化 2PC 分布式事务引擎
   auto s = Initialize2PCEngine();
   if (!s.ok()) {
-    LOG(FATAL) << "[GraphD] Failed to initialize 2PC engine: " << s.ToString();
+    std::cerr << "[GraphD] FATAL: Failed to initialize 2PC engine: " << s.ToString() << std::endl;
+    std::abort();
   }
   
   return Status::OK();
