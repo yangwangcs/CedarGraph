@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "cedar/types/cedar_types.h"
+#include "cedar/core/status.h"
 
 namespace cedar {
 namespace cypher {
@@ -288,7 +289,7 @@ class Value {
   }
   bool IsGraph() const { return IsNode() || IsRelationship() || IsPath(); }
   
-  // Value accessors (with type checking)
+  // Value accessors (unsafe — throw std::bad_variant_access on type mismatch)
   bool GetBool() const;
   int64_t GetInt() const;
   double GetFloat() const;
@@ -308,6 +309,22 @@ class Value {
   const std::vector<Value>& GetList() const { return std::get<std::vector<Value>>(value_); }
   std::map<std::string, Value>& GetMap() { return std::get<std::map<std::string, Value>>(value_); }
   const std::map<std::string, Value>& GetMap() const { return std::get<std::map<std::string, Value>>(value_); }
+  
+  // Safe type-guarded accessors (return StatusOr — no exceptions)
+  StatusOr<bool> TryGetBool() const;
+  StatusOr<int64_t> TryGetInt() const;
+  StatusOr<double> TryGetFloat() const;
+  StatusOr<std::string> TryGetString() const;
+  StatusOr<Timestamp> TryGetTimestamp() const;
+  StatusOr<Date> TryGetDate() const;
+  StatusOr<Time> TryGetTime() const;
+  StatusOr<DateTime> TryGetDateTime() const;
+  StatusOr<Duration> TryGetDuration() const;
+  StatusOr<Node> TryGetNode() const;
+  StatusOr<Relationship> TryGetRelationship() const;
+  StatusOr<Path> TryGetPath() const;
+  StatusOr<std::vector<Value>> TryGetList() const;
+  StatusOr<std::map<std::string, Value>> TryGetMap() const;
   
   // Comparison operators
   bool operator==(const Value& other) const;

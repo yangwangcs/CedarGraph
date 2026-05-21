@@ -466,6 +466,118 @@ Duration Value::GetDuration() const {
   return std::get<Duration>(value_);
 }
 
+StatusOr<bool> Value::TryGetBool() const {
+  if (!IsBool()) {
+    return Status::InvalidArgument(
+        std::string("Expected bool, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<bool>(value_);
+}
+
+StatusOr<int64_t> Value::TryGetInt() const {
+  if (!IsInt()) {
+    return Status::InvalidArgument(
+        std::string("Expected int, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<int64_t>(value_);
+}
+
+StatusOr<double> Value::TryGetFloat() const {
+  if (!IsFloat()) {
+    return Status::InvalidArgument(
+        std::string("Expected float, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<double>(value_);
+}
+
+StatusOr<std::string> Value::TryGetString() const {
+  if (!IsString()) {
+    return Status::InvalidArgument(
+        std::string("Expected string, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<std::string>(value_);
+}
+
+StatusOr<Timestamp> Value::TryGetTimestamp() const {
+  if (!IsTimestamp()) {
+    return Status::InvalidArgument(
+        std::string("Expected timestamp, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<Timestamp>(value_);
+}
+
+StatusOr<Date> Value::TryGetDate() const {
+  if (!IsDate()) {
+    return Status::InvalidArgument(
+        std::string("Expected date, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<Date>(value_);
+}
+
+StatusOr<Time> Value::TryGetTime() const {
+  if (!IsTime()) {
+    return Status::InvalidArgument(
+        std::string("Expected time, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<Time>(value_);
+}
+
+StatusOr<DateTime> Value::TryGetDateTime() const {
+  if (!IsDateTime()) {
+    return Status::InvalidArgument(
+        std::string("Expected datetime, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<DateTime>(value_);
+}
+
+StatusOr<Duration> Value::TryGetDuration() const {
+  if (!IsDuration()) {
+    return Status::InvalidArgument(
+        std::string("Expected duration, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<Duration>(value_);
+}
+
+StatusOr<Node> Value::TryGetNode() const {
+  if (!IsNode()) {
+    return Status::InvalidArgument(
+        std::string("Expected node, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<Node>(value_);
+}
+
+StatusOr<Relationship> Value::TryGetRelationship() const {
+  if (!IsRelationship()) {
+    return Status::InvalidArgument(
+        std::string("Expected relationship, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<Relationship>(value_);
+}
+
+StatusOr<Path> Value::TryGetPath() const {
+  if (!IsPath()) {
+    return Status::InvalidArgument(
+        std::string("Expected path, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<Path>(value_);
+}
+
+StatusOr<std::vector<Value>> Value::TryGetList() const {
+  if (!IsList()) {
+    return Status::InvalidArgument(
+        std::string("Expected list, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<std::vector<Value>>(value_);
+}
+
+StatusOr<std::map<std::string, Value>> Value::TryGetMap() const {
+  if (!IsMap()) {
+    return Status::InvalidArgument(
+        std::string("Expected map, got ") + ValueTypeToString(Type()));
+  }
+  return std::get<std::map<std::string, Value>>(value_);
+}
+
 Value Value::MakeNode(uint64_t id, const std::vector<std::string>& labels,
                       const std::map<std::string, Value>& props) {
   Node n;
