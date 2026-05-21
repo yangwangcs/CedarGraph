@@ -136,6 +136,14 @@ void ThreadPoolCompactionExecutor::WaitForAll() {
   }
 }
 
+size_t ThreadPoolCompactionExecutor::PendingTasks() const {
+  return task_queue_->Size();
+}
+
+void ThreadPoolCompactionExecutor::Push(PrioritizedCompactionTask task) {
+  task_queue_->Push(std::move(task));
+}
+
 void ThreadPoolCompactionExecutor::WorkerThread() {
   while (!shutdown_.load()) {
     PrioritizedCompactionTask ptask;
@@ -214,7 +222,7 @@ bool ParallelCompactionEngine::ScheduleIfNeeded() {
   ptask.priority.timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
   
   // 提交到队列
-  // Note: 这里简化处理，直接执行
+  executor_->Push(std::move(ptask));
   return true;
 }
 
@@ -227,9 +235,7 @@ int ParallelCompactionEngine::ActiveTasks() const {
 }
 
 size_t ParallelCompactionEngine::PendingTasks() const {
-  // Approximate pending tasks by active tasks count.
-  // Full queue depth requires exposing task_queue_ size from executor.
-  return static_cast<size_t>(executor_ ? executor_->ActiveTasks() : 0);
+  return executor_ ? executor_->PendingTasks() : 0;
 }
 
 }  // namespace cedar

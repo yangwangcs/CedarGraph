@@ -50,6 +50,10 @@ add_executable(test_compaction db/test_compaction.cc)
 target_link_libraries(test_compaction ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_compaction)
 
+add_executable(test_compaction_streaming db/test_compaction_streaming.cc)
+target_link_libraries(test_compaction_streaming ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_compaction_streaming)
+
 add_executable(test_manifest_replay db/test_manifest_replay.cc)
 target_link_libraries(test_manifest_replay ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_manifest_replay)
@@ -73,6 +77,10 @@ gtest_discover_tests(test_recursive_lock)
 add_executable(test_cedar_graph_storage storage/test_cedar_graph_storage.cc)
 target_link_libraries(test_cedar_graph_storage ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cedar_graph_storage)
+
+add_executable(test_temporal_constraint storage/test_temporal_constraint.cc)
+target_link_libraries(test_temporal_constraint ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_temporal_constraint)
 
 add_executable(test_failover_races storage/test_failover_races.cc)
 target_link_libraries(test_failover_races ${CEDAR_TEST_LIBS})
@@ -382,6 +390,10 @@ gtest_discover_tests(test_partition_router)
 add_executable(test_storage_subquery storage/test_storage_subquery.cc)
 target_link_libraries(test_storage_subquery ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_storage_subquery)
+
+add_executable(test_parallel_compaction_scheduler storage/test_parallel_compaction_scheduler.cc)
+target_link_libraries(test_parallel_compaction_scheduler ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_parallel_compaction_scheduler)
 
 # Storage Interface Tests
 add_executable(test_storage_interface test_storage_interface.cc)

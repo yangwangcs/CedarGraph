@@ -171,6 +171,12 @@ class ThreadPoolCompactionExecutor {
   // 获取活跃任务数
   int ActiveTasks() const { return active_tasks_.load(); }
 
+  // 获取待处理任务数
+  size_t PendingTasks() const;
+
+  // 提交带优先级的任务
+  void Push(PrioritizedCompactionTask task);
+
  private:
   void WorkerThread();
   void ExecuteCompaction(const PrioritizedCompactionTask& ptask);
