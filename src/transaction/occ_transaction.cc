@@ -167,16 +167,7 @@ Status OCCTransaction::Commit() {
   
   state_.store(TransactionState::kCommitting);
   
-  // 写入 MemTable
-  Status write_status = WriteToMemTable();
-  if (!write_status.ok()) {
-    state_.store(TransactionState::kAborted);
-    txn_manager_->UnregisterActiveTransaction(txn_id_);
-    txn_manager_->mutable_stats().txn_aborted.fetch_add(1, std::memory_order_relaxed);
-    return write_status;
-  }
-  
-  // 写入 WAL
+  // 写入 WAL (必须先于 MemTable，保证崩溃恢复时 WAL 有记录)
   if (wal_writer_) {
     Status wal_status = WriteToWAL();
     if (!wal_status.ok()) {
@@ -185,6 +176,15 @@ Status OCCTransaction::Commit() {
       txn_manager_->mutable_stats().txn_aborted.fetch_add(1, std::memory_order_relaxed);
       return wal_status;
     }
+  }
+  
+  // 写入 MemTable
+  Status write_status = WriteToMemTable();
+  if (!write_status.ok()) {
+    state_.store(TransactionState::kAborted);
+    txn_manager_->UnregisterActiveTransaction(txn_id_);
+    txn_manager_->mutable_stats().txn_aborted.fetch_add(1, std::memory_order_relaxed);
+    return write_status;
   }
   
   // 标记提交完成
