@@ -343,18 +343,33 @@ void CedarGraph::ClearCache() {
 // ========== Cypher Query Interface ==========
 
 cypher::ResultSet CedarGraph::ExecuteCypher(const std::string& query) {
-  (void)query;
-  return cypher::ResultSet();
+  if (!cypher_engine_ && storage_) {
+    cypher_engine_ = std::make_unique<cypher::CypherEngine>(storage_);
+  }
+  if (!cypher_engine_) {
+    return cypher::ResultSet();
+  }
+  return cypher_engine_->Execute(query);
 }
 
 std::string CedarGraph::ExplainCypher(const std::string& query) {
-  (void)query;
-  return "CedarGraph Cypher not yet implemented";
+  if (!cypher_engine_ && storage_) {
+    cypher_engine_ = std::make_unique<cypher::CypherEngine>(storage_);
+  }
+  if (!cypher_engine_) {
+    return "CedarGraph Cypher not yet implemented";
+  }
+  return cypher_engine_->Explain(query);
 }
 
 bool CedarGraph::IsValidCypher(const std::string& query) {
-  (void)query;
-  return false;
+  if (!cypher_engine_ && storage_) {
+    cypher_engine_ = std::make_unique<cypher::CypherEngine>(storage_);
+  }
+  if (!cypher_engine_) {
+    return false;
+  }
+  return cypher_engine_->IsValid(query);
 }
 
 // ========== Temporal Query Interface ==========
