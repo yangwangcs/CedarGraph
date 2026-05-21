@@ -1396,12 +1396,12 @@ std::optional<std::pair<CedarKey, Descriptor>> LsmEngine::QueryAccumulatedBuffer
     EntityType entity_type,
     uint16_t column_id,
     Timestamp timestamp) const {
+  std::lock_guard<std::mutex> lock(accumulated_mutex_);
+
   if (accumulated_entries_.empty()) {
     return std::nullopt;
   }
-  
-  std::lock_guard<std::mutex> lock(accumulated_mutex_);
-  
+
   std::optional<std::pair<CedarKey, Descriptor>> best_match;
   for (const auto& [key, descriptor] : accumulated_entries_) {
     if (key.entity_id() != entity_id) continue;
