@@ -911,12 +911,14 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
                                  partition_manager_->GetAllPartitions().end());
     }
     
+    std::vector<PartitionStorage*> committed_so_far;
+    
     for (PartitionID pid : involved_partitions) {
       auto* partition = partition_manager_->GetPartition(pid);
       if (!partition) {
         all_committed = false;
         errors.push_back("Partition not found: " + std::to_string(pid));
-        continue;  // Try remaining partitions
+        break;
       }
       
       // If braft replication is enabled, propose through Raft
@@ -925,7 +927,7 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
         if (!raft_group) {
           all_committed = false;
           errors.push_back("Raft group not found for partition: " + std::to_string(pid));
-          continue;
+          break;
         }
         if (!raft_group->IsLeader()) {
           auto leader_id = raft_group->GetLeaderId();
@@ -949,8 +951,9 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
           all_committed = false;
           errors.push_back("Raft propose failed for partition " + std::to_string(pid) +
                            ": " + status.ToString());
-          continue;
+          break;
         }
+        committed_so_far.push_back(partition);
         continue;
       }
       
@@ -959,14 +962,16 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
       if (!status.ok()) {
         all_committed = false;
         errors.push_back("Partition " + std::to_string(pid) + ": " + status.ToString());
-        continue;  // Try remaining partitions
+        break;
       }
+      committed_so_far.push_back(partition);
     }
     
-    if (all_committed) {
-      response->set_success(true);
-      return grpc::Status::OK;
-    } else {
+    if (!all_committed) {
+      // Abort all already-committed partitions to maintain atomicity
+      for (auto* p : committed_so_far) {
+        p->Abort(txn_id);  // best-effort rollback
+      }
       response->set_success(false);
       std::string error_msg = "Commit failed on one or more partitions: ";
       for (const auto& e : errors) {
@@ -975,6 +980,9 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
       response->set_error_msg(error_msg);
       return grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
     }
+    
+    response->set_success(true);
+    return grpc::Status::OK;
   } catch (const std::exception& e) {
     std::cerr << "[StorageServiceImpl::Commit] Exception: " << e.what() << std::endl;
     response->set_success(false);
