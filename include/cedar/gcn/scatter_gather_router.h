@@ -23,6 +23,7 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -86,6 +87,7 @@ class ScatterGatherRouter {
   std::unordered_map<std::string, std::shared_ptr<grpc::Channel>> peers_;
   std::unordered_map<std::string, std::unique_ptr<GcnService::Stub>> stubs_;
   BackpressureController backpressure_;
+  mutable std::mutex peers_mutex_;
   cedar::storage::ConsistentHashRing hash_ring_;
 };
 

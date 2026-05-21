@@ -29,6 +29,7 @@ ScatterGatherRouter::~ScatterGatherRouter() = default;
 
 void ScatterGatherRouter::RegisterPeer(const std::string& gcn_id,
                                        std::shared_ptr<grpc::Channel> channel) {
+  std::lock_guard<std::mutex> lock(peers_mutex_);
   peers_[gcn_id] = std::move(channel);
   if (peers_[gcn_id]) {
     stubs_[gcn_id] = GcnService::NewStub(peers_[gcn_id]);
@@ -37,6 +38,7 @@ void ScatterGatherRouter::RegisterPeer(const std::string& gcn_id,
 }
 
 void ScatterGatherRouter::UnregisterPeer(const std::string& gcn_id) {
+  std::lock_guard<std::mutex> lock(peers_mutex_);
   peers_.erase(gcn_id);
   stubs_.erase(gcn_id);
   hash_ring_.RemoveNode(gcn_id);
@@ -59,6 +61,7 @@ SubQueryResponse ScatterGatherRouter::ScatterByEntity(const SubQueryRequest& req
 }
 
 size_t ScatterGatherRouter::PeerCount() const {
+  std::lock_guard<std::mutex> lock(peers_mutex_);
   return peers_.size();
 }
 
@@ -67,12 +70,16 @@ SubQueryResponse ScatterGatherRouter::Scatter(const SubQueryRequest& req,
   SubQueryResponse response;
   response.set_trace_id(req.trace_id());
 
+  std::unique_lock<std::mutex> lock(peers_mutex_);
   auto stub_it = stubs_.find(target_gcn);
   if (stub_it == stubs_.end()) {
+    lock.unlock();
     response.set_success(false);
     response.set_error_msg("Unknown target GCN: " + target_gcn);
     return response;
   }
+  auto stub = stub_it->second.get();
+  lock.unlock();
 
   // Backpressure check
   if (!backpressure_.AcquireSlot(target_gcn)) {
@@ -83,15 +90,13 @@ SubQueryResponse ScatterGatherRouter::Scatter(const SubQueryRequest& req,
 
   grpc::ClientContext ctx;
   ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
-  grpc::Status status = stub_it->second->SubQuery(&ctx, req, &response);
+  grpc::Status status = stub->SubQuery(&ctx, req, &response);
 
   backpressure_.ReleaseSlot(target_gcn);
 
   if (!status.ok()) {
     response.set_success(false);
     response.set_error_msg("RPC failed: " + status.error_message());
-  } else {
-    response.set_success(true);
   }
 
   return response;
@@ -127,12 +132,16 @@ TraversalResponse ScatterGatherRouter::ScatterTraversal(
     const TraversalRequest& req, const std::string& target_gcn) {
   TraversalResponse response;
 
+  std::unique_lock<std::mutex> lock(peers_mutex_);
   auto stub_it = stubs_.find(target_gcn);
   if (stub_it == stubs_.end()) {
+    lock.unlock();
     response.set_success(false);
     response.set_error_msg("Unknown target GCN: " + target_gcn);
     return response;
   }
+  auto stub = stub_it->second.get();
+  lock.unlock();
 
   if (!backpressure_.AcquireSlot(target_gcn)) {
     response.set_success(false);
@@ -142,7 +151,7 @@ TraversalResponse ScatterGatherRouter::ScatterTraversal(
 
   grpc::ClientContext ctx;
   ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
-  grpc::Status status = stub_it->second->Traverse(&ctx, req, &response);
+  grpc::Status status = stub->Traverse(&ctx, req, &response);
 
   backpressure_.ReleaseSlot(target_gcn);
 

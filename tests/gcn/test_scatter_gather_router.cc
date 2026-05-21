@@ -14,9 +14,13 @@
 
 #include <gtest/gtest.h>
 
+#include <grpcpp/grpcpp.h>
+#include <sstream>
+#include <thread>
+
 #include "cedar/gcn/gcn_node.h"
 #include "cedar/gcn/scatter_gather_router.h"
-#include "gcn_service.pb.h"
+#include "gcn_service.grpc.pb.h"
 
 using namespace cedar::gcn;
 
@@ -162,4 +166,163 @@ TEST(GcnNodePeerTest, InitializeRegistersPeers) {
   auto status = node.Initialize();
   (void)status;
   SUCCEED();
+}
+
+// ---------------------------------------------------------------------------
+// Mock GCN service that returns a downstream failure in SubQuery
+// ---------------------------------------------------------------------------
+class FailingGcnService : public GcnService::Service {
+ public:
+  grpc::Status SubQuery(grpc::ServerContext* /*context*/,
+                        const SubQueryRequest* /*request*/,
+                        SubQueryResponse* response) override {
+    response->set_success(false);
+    response->set_error_msg("downstream error: shard unavailable");
+    return grpc::Status::OK;
+  }
+
+  grpc::Status Traverse(grpc::ServerContext* /*context*/,
+                        const TraversalRequest* /*request*/,
+                        TraversalResponse* response) override {
+    response->set_success(false);
+    response->set_error_msg("downstream error: shard unavailable");
+    return grpc::Status::OK;
+  }
+};
+
+TEST(ScatterGatherRouterTest, ScatterPropagatesDownstreamFailure) {
+  FailingGcnService service;
+  std::string server_address = "127.0.0.1:0";
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&service);
+  std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+  ASSERT_NE(server, nullptr);
+
+  std::ostringstream oss;
+  oss << "127.0.0.1:" << port;
+  server_address = oss.str();
+
+  std::thread server_thread([&server]() { server->Wait(); });
+
+  ScatterGatherRouter router;
+  auto channel = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
+  router.RegisterPeer("failing-gcn", channel);
+
+  SubQueryRequest req;
+  req.set_trace_id("trace-123");
+  req.set_current_entity_id(42);
+
+  SubQueryResponse resp = router.Scatter(req, "failing-gcn");
+
+  EXPECT_FALSE(resp.success());
+  EXPECT_NE(resp.error_msg().find("downstream error"), std::string::npos);
+
+  server->Shutdown();
+  server_thread.join();
+}
+
+TEST(ScatterGatherRouterTest, ScatterTraversalPropagatesDownstreamFailure) {
+  FailingGcnService service;
+  std::string server_address = "127.0.0.1:0";
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&service);
+  std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+  ASSERT_NE(server, nullptr);
+
+  std::ostringstream oss;
+  oss << "127.0.0.1:" << port;
+  server_address = oss.str();
+
+  std::thread server_thread([&server]() { server->Wait(); });
+
+  ScatterGatherRouter router;
+  auto channel = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
+  router.RegisterPeer("failing-gcn", channel);
+
+  TraversalRequest req;
+  req.set_trace_id("trace-456");
+  req.set_root_entity_id(42);
+
+  TraversalResponse resp = router.ScatterTraversal(req, "failing-gcn");
+
+  EXPECT_FALSE(resp.success());
+  EXPECT_NE(resp.error_msg().find("downstream error"), std::string::npos);
+
+  server->Shutdown();
+  server_thread.join();
+}
+
+TEST(ScatterGatherRouterTest, ConcurrentRegisterUnregisterIsSafe) {
+  ScatterGatherRouter router;
+  const int kThreads = 8;
+  const int kOpsPerThread = 500;
+
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&router, t, kOpsPerThread]() {
+      for (int i = 0; i < kOpsPerThread; ++i) {
+        std::string id = "gcn-" + std::to_string(t) + "-" + std::to_string(i);
+        router.RegisterPeer(id, nullptr);
+        router.UnregisterPeer(id);
+      }
+    });
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  EXPECT_EQ(router.PeerCount(), 0u);
+}
+
+TEST(ScatterGatherRouterTest, ConcurrentMixedOperationsIsSafe) {
+  ScatterGatherRouter router;
+  const int kThreads = 8;
+  const int kOpsPerThread = 500;
+
+  // Pre-register some peers so reads have something to look up
+  for (int i = 0; i < 4; ++i) {
+    router.RegisterPeer("stable-gcn-" + std::to_string(i), nullptr);
+  }
+
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&router, t, kOpsPerThread]() {
+      for (int i = 0; i < kOpsPerThread; ++i) {
+        switch (i % 4) {
+          case 0: {
+            std::string id = "dyn-gcn-" + std::to_string(t) + "-" + std::to_string(i);
+            router.RegisterPeer(id, nullptr);
+            break;
+          }
+          case 1: {
+            std::string id = "dyn-gcn-" + std::to_string(t) + "-" + std::to_string(i - 1);
+            router.UnregisterPeer(id);
+            break;
+          }
+          case 2:
+            (void)router.PeerCount();
+            break;
+          case 3:
+            (void)router.GetTargetGCN(static_cast<uint64_t>(i));
+            break;
+        }
+      }
+    });
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  // We can't assert an exact count because of interleaving, but it must be
+  // deterministic and non-crashing. All dynamically-added peers should be gone
+  // because each thread unregisters what it registered (modulo interleaving
+  // where another thread may have unregistered it already, which is idempotent).
+  // The stable peers should remain.
+  EXPECT_GE(router.PeerCount(), 4u);
 }
