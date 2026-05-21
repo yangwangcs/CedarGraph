@@ -3,6 +3,7 @@
 #include <chrono>
 #include <thread>
 #include <sstream>
+#include <iostream>
 #include <cstring>
 #include "meta_service.pb.h"
 
@@ -1087,7 +1088,7 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
 }
 
 void MetadataService::OnBecomeLeader() {
-    std::cout << "[MetadataService] Node " << config_.node_id << " became leader" << std::endl;
+    std::cerr << "[MetadataService] Node " << config_.node_id << " became leader" << std::endl;
 
     // Notify watchers on leader change
     PartitionMapChange change;
@@ -1102,7 +1103,7 @@ void MetadataService::OnBecomeLeader() {
 }
 
 void MetadataService::OnStepDown() {
-    std::cout << "[MetadataService] Node " << config_.node_id << " stepped down" << std::endl;
+    std::cerr << "[MetadataService] Node " << config_.node_id << " stepped down" << std::endl;
 }
 
 void MetadataService::HeartbeatCheckLoop() {

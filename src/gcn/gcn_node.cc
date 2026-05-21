@@ -138,7 +138,7 @@ GcnNode::~GcnNode() {
     return cedar::Status::IOError("Failed to start gRPC server on " + server_address);
   }
 
-  std::cout << "GCN listening on " << server_address << std::endl;
+  std::cerr << "GCN listening on " << server_address << std::endl;
 
   return cedar::Status::OK();
 }

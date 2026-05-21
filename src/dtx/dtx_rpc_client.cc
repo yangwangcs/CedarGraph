@@ -75,7 +75,7 @@ Status DTXRpcClient::AddParticipant(NodeID id, const std::string& endpoint) {
   std::lock_guard<std::mutex> lock(participants_mutex_);
   participants_[id] = participant;
 
-  std::cout << "[DTXRpcClient] Added participant " << id << " at " << endpoint << std::endl;
+  std::cerr << "[DTXRpcClient] Added participant " << id << " at " << endpoint << std::endl;
   return Status::OK();
 }
 
@@ -84,7 +84,7 @@ Status DTXRpcClient::RemoveParticipant(NodeID id) {
   auto it = participants_.find(id);
   if (it != participants_.end()) {
     participants_.erase(it);
-    std::cout << "[DTXRpcClient] Removed participant " << id << std::endl;
+    std::cerr << "[DTXRpcClient] Removed participant " << id << std::endl;
     return Status::OK();
   }
   return Status::NotFound("Participant not found: " + std::to_string(id));
@@ -101,7 +101,7 @@ void DTXRpcClient::UpdateEndpoint(NodeID id, const std::string& new_endpoint) {
     it->second->channel = grpc::CreateCustomChannel(new_endpoint, credentials_, args);
     it->second->stub = std::shared_ptr<cedar::dtx::DTXService::Stub>(
         cedar::dtx::DTXService::NewStub(it->second->channel));
-    std::cout << "[DTXRpcClient] Updated participant " << id << " endpoint to " << new_endpoint << std::endl;
+    std::cerr << "[DTXRpcClient] Updated participant " << id << " endpoint to " << new_endpoint << std::endl;
   }
 }
 

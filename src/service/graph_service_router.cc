@@ -49,7 +49,7 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
     return Status::InvalidArgument("Failed to connect to MetaD: " + connect_status.ToString());
   }
 
-  std::cout << "[GraphD] Connected to MetaD at " << meta_server_addr << std::endl;
+  std::cerr << "[GraphD] Connected to MetaD at " << meta_server_addr << std::endl;
   
   // 初始化 GCN 路由（如果配置了）
   gcn_router_ = std::make_shared<cedar::gcn::ScatterGatherRouter>();
@@ -59,7 +59,7 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
     auto gcn_channel = grpc::CreateChannel(gcn_server_addr, gcn_creds);
     gcn_router_->RegisterPeer(gcn_server_addr, gcn_channel);
     gcn_peer_addresses_.push_back(gcn_server_addr);
-    std::cout << "[GraphD] Registered GCN " << gcn_server_addr << " in router" << std::endl;
+    std::cerr << "[GraphD] Registered GCN " << gcn_server_addr << " in router" << std::endl;
   }
   
   // 初始加载分区映射
@@ -72,7 +72,7 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   cache_config.default_ttl_seconds = 60;
   query_cache_ = std::make_unique<cedar::query::QueryCache>(cache_config);
   
-  std::cout << "[GraphD] Query cache initialized" << std::endl;
+  std::cerr << "[GraphD] Query cache initialized" << std::endl;
 
   // 初始化 2PC 分布式事务引擎
   auto s = Initialize2PCEngine();
@@ -96,11 +96,11 @@ Status GraphServiceRouter::Start() {
     if (!recovery_result.ok()) {
       std::cerr << "[GraphD] Transaction recovery warning: " << recovery_result.ToString() << std::endl;
     } else {
-      std::cout << "[GraphD] Transaction recovery completed" << std::endl;
+      std::cerr << "[GraphD] Transaction recovery completed" << std::endl;
     }
   }
   
-  std::cout << "[GraphD] Router started" << std::endl;
+  std::cerr << "[GraphD] Router started" << std::endl;
   return Status::OK();
 }
 
@@ -120,7 +120,7 @@ Status GraphServiceRouter::Stop() {
     meta_client_.reset();
   }
 
-  std::cout << "[GraphD] Router stopped" << std::endl;
+  std::cerr << "[GraphD] Router stopped" << std::endl;
   return Status::OK();
 }
 
@@ -1555,7 +1555,7 @@ Status GraphServiceRouter::Initialize2PCEngine() {
         continue;
       }
       storage_clients_.push_back(client);
-      std::cout << "[GraphD] StorageClient connected to " << addr << std::endl;
+      std::cerr << "[GraphD] StorageClient connected to " << addr << std::endl;
     }
   }
   
@@ -1576,14 +1576,14 @@ Status GraphServiceRouter::Initialize2PCEngine() {
             continue;
           }
           storage_clients_.push_back(client);
-          std::cout << "[GraphD] StorageClient connected to " << node.address << std::endl;
+          std::cerr << "[GraphD] StorageClient connected to " << node.address << std::endl;
         }
       }
     }
   }
   
   if (storage_clients_.empty()) {
-    std::cout << "[GraphD] No storage clients available, 2PC engine not initialized" << std::endl;
+    std::cerr << "[GraphD] No storage clients available, 2PC engine not initialized" << std::endl;
     return Status::OK();  // Non-fatal
   }
   
@@ -1640,7 +1640,7 @@ Status GraphServiceRouter::Initialize2PCEngine() {
     return s;
   }
   
-  std::cout << "[GraphD] 2PC engine initialized with " << storage_clients_.size()
+  std::cerr << "[GraphD] 2PC engine initialized with " << storage_clients_.size()
             << " storage clients" << std::endl;
   return Status::OK();
 }
@@ -1703,7 +1703,7 @@ grpc::Status GraphServiceRouter::BeginTransaction(grpc::ServerContext* context,
     txn_state_manager_->CreateTransaction(txn_id, std::vector<uint16_t>{});
   }
   
-  std::cout << "[GraphD] BeginTransaction: " << txn_id << std::endl;
+  std::cerr << "[GraphD] BeginTransaction: " << txn_id << std::endl;
   return grpc::Status::OK;
 }
 
@@ -1751,7 +1751,7 @@ grpc::Status GraphServiceRouter::Commit(grpc::ServerContext* context,
   }
   
   response->set_ok(true);
-  std::cout << "[GraphD] Commit: " << txn_id_str << " (keys=" << txn_ctx.write_set.size() << ")" << std::endl;
+  std::cerr << "[GraphD] Commit: " << txn_id_str << " (keys=" << txn_ctx.write_set.size() << ")" << std::endl;
   return grpc::Status::OK;
 }
 
@@ -1781,7 +1781,7 @@ grpc::Status GraphServiceRouter::Rollback(grpc::ServerContext* context,
   }
   
   response->set_ok(true);
-  std::cout << "[GraphD] Rollback: " << txn_id_str << std::endl;
+  std::cerr << "[GraphD] Rollback: " << txn_id_str << std::endl;
   return grpc::Status::OK;
 }
 
@@ -1849,7 +1849,7 @@ Status GraphServiceRouter::InitializeDualModePartition(
   
   partition_strategy_ = std::make_unique<cedar::dtx::DualModePartitionStrategy>(config);
   
-  std::cout << "[GraphD] Dual-mode partition strategy initialized: " 
+  std::cerr << "[GraphD] Dual-mode partition strategy initialized: " 
             << partition_strategy_->Name() << std::endl;
   
   return Status::OK();
@@ -1862,7 +1862,7 @@ Status GraphServiceRouter::SetPartitionMode(cedar::dtx::DualModePartitionStrateg
   
   partition_strategy_->SetMode(mode);
   
-  std::cout << "[GraphD] Partition mode switched to: " 
+  std::cerr << "[GraphD] Partition mode switched to: " 
             << partition_strategy_->Name() << std::endl;
   
   return Status::OK();

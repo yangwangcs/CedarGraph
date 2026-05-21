@@ -115,7 +115,7 @@ void ConsoleSink::Write(const LogEntry& entry) {
 }
 
 void ConsoleSink::Flush() {
-  std::cout.flush();
+  std::cerr.flush();
   std::cerr.flush();
 }
 

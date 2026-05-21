@@ -55,7 +55,7 @@ Status PartitionAllocator::RegisterNode(NodeID node_id, const std::string& addre
     BuildConsistentHashRing();
   }
   
-  std::cout << "[PartitionAllocator] Node " << node_id << " registered at " << address << std::endl;
+  std::cerr << "[PartitionAllocator] Node " << node_id << " registered at " << address << std::endl;
   return Status::OK();
 }
 
@@ -79,7 +79,7 @@ Status PartitionAllocator::UnregisterNode(NodeID node_id) {
     allocation.followers.erase(it, allocation.followers.end());
   }
   
-  std::cout << "[PartitionAllocator] Node " << node_id << " unregistered, "
+  std::cerr << "[PartitionAllocator] Node " << node_id << " unregistered, "
             << affected_partitions.size() << " partitions need reallocation" << std::endl;
   
   return Status::OK();
@@ -141,7 +141,7 @@ Status PartitionAllocator::AllocateAllPartitions() {
     return Status::InvalidArgument("No available nodes");
   }
   
-  std::cout << "[PartitionAllocator] Allocating " << total_partitions_ 
+  std::cerr << "[PartitionAllocator] Allocating " << total_partitions_ 
             << " partitions to " << nodes_.size() << " nodes" << std::endl;
   
   allocations_.clear();
@@ -162,7 +162,7 @@ Status PartitionAllocator::AllocateAllPartitions() {
     allocations_[i] = alloc;
   }
   
-  std::cout << "[PartitionAllocator] Allocation complete" << std::endl;
+  std::cerr << "[PartitionAllocator] Allocation complete" << std::endl;
   return Status::OK();
 }
 
@@ -173,7 +173,7 @@ Status PartitionAllocator::Rebalance() {
     return Status::OK();  // 不需要重新平衡
   }
   
-  std::cout << "[PartitionAllocator] Starting rebalance..." << std::endl;
+  std::cerr << "[PartitionAllocator] Starting rebalance..." << std::endl;
   
   // 计算当前负载方差
   double variance_before = CalculateClusterLoadVariance();
@@ -182,7 +182,7 @@ Status PartitionAllocator::Rebalance() {
   auto migrations = ComputeMigrationPlan();
   
   if (migrations.empty()) {
-    std::cout << "[PartitionAllocator] No rebalancing needed" << std::endl;
+    std::cerr << "[PartitionAllocator] No rebalancing needed" << std::endl;
     return Status::OK();
   }
   
@@ -199,7 +199,7 @@ Status PartitionAllocator::Rebalance() {
   
   double variance_after = CalculateClusterLoadVariance();
   
-  std::cout << "[PartitionAllocator] Rebalance plan: " << migrations.size() 
+  std::cerr << "[PartitionAllocator] Rebalance plan: " << migrations.size() 
             << " migrations, variance: " << variance_before << " -> " << variance_after << std::endl;
   
   return Status::OK();
@@ -265,7 +265,7 @@ Status PartitionAllocator::MigratePartition(PartitionID partition_id, NodeID new
     new_it->second.leader_count++;
   }
   
-  std::cout << "[PartitionAllocator] Migrated partition " << partition_id 
+  std::cerr << "[PartitionAllocator] Migrated partition " << partition_id 
             << " from node " << old_leader << " to node " << new_leader << std::endl;
   
   return Status::OK();
