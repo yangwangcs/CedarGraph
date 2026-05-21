@@ -55,6 +55,8 @@ struct FailoverConfig {
   uint32_t max_failover_retries = 3;
   bool enable_read_from_follower = true;
   bool enable_sticky_session = true;
+
+  bool CanFailover() const { return enable_auto_failover; }
 };
 
 // =============================================================================
@@ -163,7 +165,7 @@ class FailoverManager {
   FailoverConfig config_;
   std::shared_ptr<StorageHealthMonitor> health_monitor_;
   
-  mutable std::mutex nodes_mutex_;
+  mutable std::recursive_mutex nodes_mutex_;
   std::unordered_map<std::string, StorageNode> nodes_;
   std::string current_leader_;
   

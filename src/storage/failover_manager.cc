@@ -105,7 +105,7 @@ Status FailoverManager::RegisterNode(const std::string& node_id,
     return Status::InvalidArgument("Address cannot be empty");
   }
   
-  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
   
   StorageNode node;
   node.node_id = node_id;
@@ -129,7 +129,7 @@ Status FailoverManager::RegisterNode(const std::string& node_id,
 }
 
 Status FailoverManager::DeregisterNode(const std::string& node_id) {
-  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
   
   auto it = nodes_.find(node_id);
   if (it == nodes_.end()) {
@@ -152,7 +152,7 @@ Status FailoverManager::DeregisterNode(const std::string& node_id) {
 // =============================================================================
 
 StatusOr<StorageNode> FailoverManager::GetLeader() const {
-  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
   
   if (current_leader_.empty()) {
     return Status::NotFound("No leader elected");
@@ -167,7 +167,7 @@ StatusOr<StorageNode> FailoverManager::GetLeader() const {
 }
 
 std::vector<StorageNode> FailoverManager::GetHealthyFollowers() const {
-  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
   
   std::vector<StorageNode> followers;
   for (const auto& [id, node] : nodes_) {
@@ -181,7 +181,18 @@ std::vector<StorageNode> FailoverManager::GetHealthyFollowers() const {
 }
 
 StatusOr<StorageNode> FailoverManager::GetNodeForRead() {
-  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
+  
+  // If failover is disabled, only use leader
+  if (!config_.CanFailover()) {
+    if (!current_leader_.empty()) {
+      auto it = nodes_.find(current_leader_);
+      if (it != nodes_.end() && it->second.health == governance::HealthStatus::kHealthy) {
+        return it->second;
+      }
+    }
+    return Status::NotFound("No healthy leader available");
+  }
   
   // If read from follower is disabled, only use leader
   if (!config_.enable_read_from_follower && !current_leader_.empty()) {
@@ -216,7 +227,7 @@ StatusOr<StorageNode> FailoverManager::GetNodeForWrite() {
 }
 
 std::vector<StorageNode> FailoverManager::GetAllNodes() const {
-  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
   
   std::vector<StorageNode> result;
   result.reserve(nodes_.size());
@@ -233,7 +244,7 @@ std::vector<StorageNode> FailoverManager::GetAllNodes() const {
 
 Status FailoverManager::TriggerManualFailover(const std::string& from_node_id,
                                               const std::string& to_node_id) {
-  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
   
   if (from_node_id != current_leader_) {
     return Status::InvalidArgument("Can only failover from current leader");
@@ -276,7 +287,7 @@ void FailoverManager::OnHealthChanged(const std::string& node_id,
     return;
   }
   
-  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
   
   auto it = nodes_.find(node_id);
   if (it == nodes_.end()) return;
@@ -309,6 +320,8 @@ void FailoverManager::PerformFailover(const std::string& failed_node_id) {
 }
 
 void FailoverManager::SelectNewLeader() {
+  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
+  
   std::string new_leader;
   
   for (const auto& [id, node] : nodes_) {
