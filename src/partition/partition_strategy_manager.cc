@@ -54,6 +54,8 @@ Status PartitionStrategyManager::SetActiveStrategy(StrategyType type) {
       target_name = "MTHStream";
       break;
     case StrategyType::AUTO:
+      // TODO(#partition-001): Implement AUTO strategy that picks the best
+      // partitioning approach based on workload characteristics.
       return Status::NotSupported("AUTO strategy not yet implemented");
     default:
       return Status::InvalidArgument("Unknown strategy type");

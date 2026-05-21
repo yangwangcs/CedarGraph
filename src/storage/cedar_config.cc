@@ -468,14 +468,13 @@ void CedarConfig::MergeFrom(const CedarConfig& other) {
 // ============================================================================
 
 Status CedarConfig::LoadFromFile(const std::string& path) {
-  // 这里可以实现 JSON/YAML 配置文件解析
-  // 简化版本：直接返回不支持
+  // TODO(#config-001): Implement JSON/YAML configuration file parsing.
   (void)path;
   return Status::NotSupported("Configuration file loading not yet implemented");
 }
 
 Status CedarConfig::SaveToFile(const std::string& path) const {
-  // 这里可以实现 JSON/YAML 配置文件保存
+  // TODO(#config-002): Implement JSON/YAML configuration file saving.
   (void)path;
   return Status::NotSupported("Configuration file saving not yet implemented");
 }

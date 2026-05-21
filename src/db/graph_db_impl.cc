@@ -259,7 +259,7 @@ Status CedarGraphDBImpl::Flush(const FlushOptions& options) {
 }
 
 Status CedarGraphDBImpl::CompactRange(const CompactRangeOptions& options) {
-  // Full compaction requires SST merge infrastructure.
+  // TODO(#storage-001): Implement full SST merge compaction for CompactRange.
   // For now, ForceFlush can be used to trigger memtable compaction.
   (void)options;
   return Status::NotSupported("CompactRange", "SST merge not yet implemented");

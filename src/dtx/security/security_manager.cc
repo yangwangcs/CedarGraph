@@ -236,6 +236,7 @@ StatusOr<AuthToken> Authenticator::ValidateToken(const std::string& token_str) {
 }
 
 StatusOr<AuthToken> Authenticator::RefreshToken(const std::string& refresh_token) {
+  // TODO(#security-001): Implement refresh token rotation and expiry.
   (void)refresh_token;
   return Status::NotSupported("Refresh token not implemented");
 }
