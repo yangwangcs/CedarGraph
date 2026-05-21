@@ -145,26 +145,29 @@ Value ExpressionEvaluator::EvaluateComparison(const ComparisonExpr& expr,
 Value ExpressionEvaluator::EvaluateLogical(const LogicalExpr& expr,
                                             const Record& record) {
   auto left_val = Evaluate(*expr.left, record);
-  bool left_bool = left_val.GetBool();
+  bool left_bool = left_val.IsNull() ? false : left_val.GetBool();
 
   if (expr.op == LogicalExpr::Op::AND) {
     if (!left_bool) {
       return Value(false);  // Short-circuit
     }
     auto right_val = Evaluate(*expr.right, record);
-    return Value(right_val.GetBool());
+    bool right_bool = right_val.IsNull() ? false : right_val.GetBool();
+    return Value(right_bool);
   } else {  // OR
     if (left_bool) {
       return Value(true);  // Short-circuit
     }
     auto right_val = Evaluate(*expr.right, record);
-    return Value(right_val.GetBool());
+    bool right_bool = right_val.IsNull() ? false : right_val.GetBool();
+    return Value(right_bool);
   }
 }
 
 Value ExpressionEvaluator::EvaluateNot(const NotExpr& expr, const Record& record) {
   auto val = Evaluate(*expr.operand, record);
-  return Value(!val.GetBool());
+  bool bool_val = val.IsNull() ? false : val.GetBool();
+  return Value(!bool_val);
 }
 
 Value ExpressionEvaluator::EvaluateArithmetic(const ArithmeticExpr& expr,

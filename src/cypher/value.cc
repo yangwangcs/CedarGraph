@@ -431,6 +431,7 @@ Duration Value::DiffTimestamp(const Value& other) const {
 }
 
 bool Value::GetBool() const {
+  if (!IsBool()) return false;
   return std::get<bool>(value_);
 }
 
