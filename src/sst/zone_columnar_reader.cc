@@ -338,19 +338,22 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   // Parse block header (40 bytes)
   if (result.size() < BlockHeader::kSize) return nullptr;
   const char* p = result.data();
-  uint32_t row_count = *reinterpret_cast<const uint32_t*>(p);
+  uint32_t row_count;
+  std::memcpy(&row_count, p, sizeof(row_count));
   p += 4;
   
   // Zone sizes
   uint32_t zone_sizes[5];
   for (int i = 0; i < 5; i++) {
-    zone_sizes[i] = *reinterpret_cast<const uint32_t*>(p);
+    std::memcpy(&zone_sizes[i], p, sizeof(zone_sizes[i]));
     p += 4;
   }
   
-  uint64_t min_entity = *reinterpret_cast<const uint64_t*>(p);
+  uint64_t min_entity;
+  std::memcpy(&min_entity, p, sizeof(min_entity));
   p += 8;
-  uint64_t max_entity = *reinterpret_cast<const uint64_t*>(p);
+  uint64_t max_entity;
+  std::memcpy(&max_entity, p, sizeof(max_entity));
   
   (void)row_count;  // Unused for now
   (void)min_entity;
@@ -381,22 +384,25 @@ CedarKey ZoneColumnarSstReader::ReconstructKeyFromBlock(
   // Parse entity_id from zone 0
   uint64_t entity_id = 0;
   if (block.zone_sizes[0] >= (row_idx + 1) * 8) {
-    entity_id = *reinterpret_cast<const uint64_t*>(
-        block.data.data() + block.zone_offsets[0] + row_idx * 8);
+    std::memcpy(&entity_id,
+                block.data.data() + block.zone_offsets[0] + row_idx * 8,
+                sizeof(entity_id));
   }
   
   // Parse timestamp from zone 1 (uint64_t)
   uint64_t timestamp_val = 0;
   if (block.zone_sizes[1] >= (row_idx + 1) * 8) {
-    timestamp_val = *reinterpret_cast<const uint64_t*>(
-        block.data.data() + block.zone_offsets[1] + row_idx * 8);
+    std::memcpy(&timestamp_val,
+                block.data.data() + block.zone_offsets[1] + row_idx * 8,
+                sizeof(timestamp_val));
   }
   
   // Parse target_id from zone 2 (uint64_t)
   uint64_t target_id = 0;
   if (block.zone_sizes[2] >= (row_idx + 1) * 8) {
-    target_id = *reinterpret_cast<const uint64_t*>(
-        block.data.data() + block.zone_offsets[2] + row_idx * 8);
+    std::memcpy(&target_id,
+                block.data.data() + block.zone_offsets[2] + row_idx * 8,
+                sizeof(target_id));
   }
   
   // Parse metadata from zone 3 (raw 8 bytes per row)
@@ -408,16 +414,21 @@ CedarKey ZoneColumnarSstReader::ReconstructKeyFromBlock(
   
   size_t meta_offset = block.zone_offsets[3] + row_idx * 8;
   if (block.zone_sizes[3] >= (row_idx + 1) * 8) {
-    column_id = *reinterpret_cast<const uint16_t*>(
-        block.data.data() + meta_offset);
-    sequence = *reinterpret_cast<const uint16_t*>(
-        block.data.data() + meta_offset + 2);
-    entity_type = *reinterpret_cast<const uint8_t*>(
-        block.data.data() + meta_offset + 4);
-    flags = *reinterpret_cast<const uint8_t*>(
-        block.data.data() + meta_offset + 5);
-    part_id = *reinterpret_cast<const uint16_t*>(
-        block.data.data() + meta_offset + 6);
+    std::memcpy(&column_id,
+                block.data.data() + meta_offset,
+                sizeof(column_id));
+    std::memcpy(&sequence,
+                block.data.data() + meta_offset + 2,
+                sizeof(sequence));
+    std::memcpy(&entity_type,
+                block.data.data() + meta_offset + 4,
+                sizeof(entity_type));
+    std::memcpy(&flags,
+                block.data.data() + meta_offset + 5,
+                sizeof(flags));
+    std::memcpy(&part_id,
+                block.data.data() + meta_offset + 6,
+                sizeof(part_id));
   }
   
   return CedarKey(entity_id, 
@@ -644,14 +655,39 @@ ZoneColumnarSstReader::BatchGetRange(
   return results;
 }
 
-// For compatibility with old code - not implemented in V2
 CedarKey ZoneColumnarSstReader::ReconstructKey(uint32_t row_idx) const {
-  (void)row_idx;
+  if (!opened_ || row_idx >= footer_.row_count) {
+    return CedarKey();
+  }
+  uint32_t start_row = 0;
+  for (size_t i = 0; i < block_index_.size(); ++i) {
+    const auto& entry = block_index_[i];
+    if (row_idx < start_row + entry.row_count) {
+      auto block = LoadBlock(static_cast<uint32_t>(i));
+      if (!block) return CedarKey();
+      uint32_t local_idx = row_idx - start_row;
+      return ReconstructKeyFromBlock(*block, local_idx);
+    }
+    start_row += entry.row_count;
+  }
   return CedarKey();
 }
 
 std::optional<Descriptor> ZoneColumnarSstReader::GetValueByRow(uint32_t row_idx) const {
-  (void)row_idx;
+  if (!opened_ || row_idx >= footer_.row_count) {
+    return std::nullopt;
+  }
+  uint32_t start_row = 0;
+  for (size_t i = 0; i < block_index_.size(); ++i) {
+    const auto& entry = block_index_[i];
+    if (row_idx < start_row + entry.row_count) {
+      auto block = LoadBlock(static_cast<uint32_t>(i));
+      if (!block) return std::nullopt;
+      uint32_t local_idx = row_idx - start_row;
+      return GetValueByRow(*block, local_idx);
+    }
+    start_row += entry.row_count;
+  }
   return std::nullopt;
 }
 

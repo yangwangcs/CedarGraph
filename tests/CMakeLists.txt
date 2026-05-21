@@ -73,6 +73,10 @@ gtest_discover_tests(test_recursive_lock)
 add_executable(test_cedar_graph_storage storage/test_cedar_graph_storage.cc)
 target_link_libraries(test_cedar_graph_storage ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cedar_graph_storage)
+
+add_executable(test_failover_races storage/test_failover_races.cc)
+target_link_libraries(test_failover_races ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_failover_races)
 add_cedar_test(test_cedar_update)
 add_cedar_test(test_cedar_update_validation)
 add_cedar_test(test_cedar_update_e2e)
@@ -189,6 +193,10 @@ gtest_discover_tests(test_storage_service_impl)
 # add_cedar_test(test_sstv2_integration)
 # add_cedar_test(test_large_sst)
 # add_cedar_test(test_small_file_compaction)
+
+add_executable(test_zone_columnar_reader sst/test_zone_columnar_reader.cc)
+target_link_libraries(test_zone_columnar_reader ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_zone_columnar_reader)
 
 # Governance tests
 add_executable(test_service_registry governance/test_service_registry.cc)
