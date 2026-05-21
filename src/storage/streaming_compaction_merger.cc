@@ -245,7 +245,9 @@ class StreamingCompactionMerger {
   bool IsDuplicate(const CedarKey& a, const CedarKey& b) const {
     return a.entity_id() == b.entity_id() &&
            a.timestamp().value() == b.timestamp().value() &&
-           a.target_id() == b.target_id();
+           a.target_id() == b.target_id() &&
+           a.column_id() == b.column_id() &&
+           a.entity_type() == b.entity_type();
   }
 
   bool IsTombstone(const CedarKey& key) const {

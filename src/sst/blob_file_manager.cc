@@ -223,20 +223,22 @@ Status BlobFileManager::ReadBlob(uint32_t file_id,
                                  uint32_t offset, 
                                  uint32_t size,
                                  std::string* data) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  
-  // 获取或打开 blob 文件
   RandomAccessFile* file = nullptr;
-  auto it = read_files_.find(file_id);
-  if (it != read_files_.end()) {
-    file = it->second;
-  } else {
-    std::string path = GetBlobFilePath(file_id);
-    cedar::Status s = env_->NewRandomAccessFile(path, &file);
-    if (!s.ok()) {
-      return Status::IOError("BlobFileManager", s.ToString());
+  
+  // 获取或打开 blob 文件（仅在此阶段持有锁）
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = read_files_.find(file_id);
+    if (it != read_files_.end()) {
+      file = it->second;
+    } else {
+      std::string path = GetBlobFilePath(file_id);
+      cedar::Status s = env_->NewRandomAccessFile(path, &file);
+      if (!s.ok()) {
+        return Status::IOError("BlobFileManager", s.ToString());
+      }
+      read_files_[file_id] = file;
     }
-    read_files_[file_id] = file;
   }
   
   // 跳过文件头 (12 bytes) + offset

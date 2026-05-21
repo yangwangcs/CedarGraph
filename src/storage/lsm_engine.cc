@@ -572,20 +572,23 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
   }
   
   if (!all_entries.empty()) {
-    // 按时间戳降序排序
-    std::sort(all_entries.begin(), all_entries.end(),
-              [](const auto& a, const auto& b) {
-                return a.first.timestamp().value() > b.first.timestamp().value();
-              });
+    // 增量处理：直接遍历找最佳匹配，避免全量排序
+    std::optional<Descriptor> best_descriptor;
+    uint64_t best_ts = 0;
     
-    // 找到指定时间的版本（<= timestamp 的最新版本）
     for (const auto& [key, descriptor] : all_entries) {
-      if (key.timestamp().value() <= timestamp.value()) {
-        if (query_cache_) {
-          query_cache_->Put(entity_id, column_id, timestamp.value(), descriptor);
-        }
-        return descriptor;
+      uint64_t ts = key.timestamp().value();
+      if (ts <= timestamp.value() && ts >= best_ts) {
+        best_ts = ts;
+        best_descriptor = descriptor;
       }
+    }
+    
+    if (best_descriptor.has_value()) {
+      if (query_cache_) {
+        query_cache_->Put(entity_id, column_id, timestamp.value(), best_descriptor);
+      }
+      return best_descriptor;
     }
   }
   
@@ -1032,10 +1035,18 @@ LsmEngine::BatchGetRangeOptimized(const std::vector<uint64_t>& entity_ids,
   
   // 3. 从 SST 文件批量查询
   if (compaction_engine_) {
-    // 获取所有相关的 SST 文件（使用第一个 entity 获取文件列表）
-    // 注意：这里假设所有 entity 的数据分布在相同的文件中
-    auto files = compaction_engine_->GetFilesForEntity(
-        entity_ids[0], column_id, static_cast<uint8_t>(entity_type));
+    // 获取所有 entity 相关的 SST 文件并合并去重
+    std::unordered_set<std::string> file_paths_seen;
+    std::vector<ZoneSstMeta> files;
+    for (uint64_t eid : entity_ids) {
+      auto entity_files = compaction_engine_->GetFilesForEntity(
+          eid, column_id, static_cast<uint8_t>(entity_type));
+      for (const auto& meta : entity_files) {
+        if (file_paths_seen.insert(meta.path).second) {
+          files.push_back(meta);
+        }
+      }
+    }
     
     // 过滤时间范围相关的文件
     std::vector<ZoneSstMeta> relevant_files;
@@ -1666,6 +1677,9 @@ void LsmEngine::TrackColumnId(uint64_t entity_id, uint16_t column_id) {
     size_t idx = batch_buffer_index_.fetch_add(1);
     if (idx < kTrackBatchSize) {
       batch_buffer_[idx] = {entity_id, column_id};
+    } else {
+      // Buffer overflow guard: prevent unbounded index growth
+      batch_buffer_index_.fetch_sub(1);
     }
     return;
   }

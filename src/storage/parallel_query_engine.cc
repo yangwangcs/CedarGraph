@@ -177,6 +177,7 @@ ParallelQueryEngine::QueryRangeParallel(const RangeQueryRequest& request,
   uint64_t shard_size = range_size / num_shards;
   
   std::vector<std::vector<RangeQueryResult>> shard_results(num_shards);
+  std::mutex shard_results_mutex;
   std::atomic<int> completed{0};
   
   for (int i = 0; i < num_shards; ++i) {
@@ -184,7 +185,7 @@ ParallelQueryEngine::QueryRangeParallel(const RangeQueryRequest& request,
     uint64_t shard_end = (i == num_shards - 1) ? request.end_entity_id 
                                                 : shard_start + shard_size;
     
-    thread_pool_->Schedule([this, &request, shard_start, shard_end, &shard_results, i, &completed]() {
+    thread_pool_->Schedule([this, &request, shard_start, shard_end, &shard_results, &shard_results_mutex, i, &completed]() {
       std::vector<RangeQueryResult> results;
       for (uint64_t id = shard_start; id < shard_end; ++id) {
         auto value = this->QuerySingle(id, request.column_id, request.entity_type);
@@ -192,7 +193,10 @@ ParallelQueryEngine::QueryRangeParallel(const RangeQueryRequest& request,
           results.push_back({id, request.column_id, *value});
         }
       }
-      shard_results[i] = std::move(results);
+      {
+        std::lock_guard<std::mutex> lock(shard_results_mutex);
+        shard_results[i] = std::move(results);
+      }
       completed.fetch_add(1, std::memory_order_release);
     });
   }

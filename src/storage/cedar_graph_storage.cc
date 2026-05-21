@@ -501,6 +501,8 @@ Status CedarGraphStorage::PutEdge(const WriteOptions& options,
   
   s = rep_->engine->Put(edge_in_key, empty_desc, txn_version);
   if (!s.ok()) {
+    // Rollback: delete the forward edge to maintain consistency
+    rep_->engine->Delete(edge_out_key, txn_version);
     return s;
   }
   

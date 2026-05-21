@@ -479,10 +479,9 @@ BatchResult BatchExecutor::WriteTransactional(const WriteBatch& batch,
 ReadBatch BatchExecutor::ExecuteReadBatch(const ReadBatch& batch) {
   ReadBatch result;
   
-  VSLMemTable* memtable = lsm_engine_->GetMemTable();
-  if (!memtable) {
+  if (!lsm_engine_) {
     ReadBatch::ReadResult res;
-    res.status = Status::NotFound("BatchExecutor", "memtable not available");
+    res.status = Status::InvalidArgument("BatchExecutor", "LSM engine not available");
     result.SetResult(0, res);
     return result;
   }
@@ -490,10 +489,29 @@ ReadBatch BatchExecutor::ExecuteReadBatch(const ReadBatch& batch) {
   size_t index = 0;
   batch.Iterate([&](const ReadBatch::ReadRequest& req) {
     ReadBatch::ReadResult res;
-    // 简化实现：直接从 MemTable 读取
-    // 注意：这里使用的是旧版 CedarMemTable 接口，需要适配
-    std::string value;
-    bool is_deleted;
+    
+    // Query at specific timestamp, or latest if timestamp is 0
+    if (req.timestamp.value() == 0) {
+      auto all = lsm_engine_->GetAll(req.entity_id, req.entity_type, req.column_id);
+      if (!all.empty()) {
+        res.descriptor = all[0].descriptor;
+        res.version_timestamp = all[0].timestamp;
+        res.status = Status::OK();
+      } else {
+        res.status = Status::NotFound("BatchExecutor", "no data found");
+      }
+    } else {
+      auto desc_opt = lsm_engine_->GetAtTime(req.entity_id, req.entity_type,
+                                              req.column_id, req.timestamp);
+      if (desc_opt.has_value()) {
+        res.descriptor = desc_opt.value();
+        res.version_timestamp = req.timestamp;
+        res.status = Status::OK();
+      } else {
+        res.status = Status::NotFound("BatchExecutor", "no data found");
+      }
+    }
+    
     result.SetResult(index++, res);
   });
   

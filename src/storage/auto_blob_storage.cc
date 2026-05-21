@@ -41,10 +41,18 @@ Status AutoBlobStorage::PutString(uint64_t entity_id, uint16_t col_id, const std
 }
 
 Status AutoBlobStorage::PutInlineString(uint64_t entity_id, uint16_t col_id, const std::string& value) {
+    // 拒绝超过4字节的字符串，防止静默截断
+    if (value.size() > 4) {
+        return Status::InvalidArgument("AutoBlobStorage",
+            "inline string too long (" + std::to_string(value.size()) +
+            " > 4 bytes); use Blob storage for large strings");
+    }
+    
     // 将字符串编码到整数（最多4字节）
     uint32_t encoded = 0;
-    size_t len = std::min(value.size(), size_t(4));
-    memcpy(&encoded, value.data(), len);
+    if (!value.empty()) {
+        memcpy(&encoded, value.data(), value.size());
+    }
     
     CedarKey key = CedarKey::Vertex(entity_id, col_id, Timestamp(0));
     Descriptor desc = Descriptor::InlineInt(col_id, static_cast<int32_t>(encoded));

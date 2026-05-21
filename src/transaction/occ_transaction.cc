@@ -235,17 +235,21 @@ Status OCCTransaction::Get(uint64_t entity_id,
   std::lock_guard<std::mutex> lock(mutex_);
   
   // 1. 检查写集 (读己之写)
-  std::string write_key = std::to_string(entity_id) + 
-                          std::to_string(static_cast<int>(entity_type)) +
-                          std::to_string(column_id);
+  // 使用带分隔符的复合键，避免字符串拼接碰撞（如 1+23+4 = 12+3+4）
+  auto MakeWriteSetKey = [](uint64_t eid, EntityType etype, uint16_t cid) -> std::string {
+    return std::to_string(eid) + ":" + std::to_string(static_cast<int>(etype)) + ":" + std::to_string(cid);
+  };
   
-  for (const auto& write_entry : write_set_) {
-    if (write_entry.entity_id == entity_id &&
-        write_entry.entity_type == entity_type &&
-        write_entry.column_id == column_id) {
-      *descriptor = write_entry.descriptor;
-      *version_ts = read_timestamp_;
-      return Status::OK();
+  std::string target_key = MakeWriteSetKey(entity_id, entity_type, column_id);
+  if (write_set_keys_.find(target_key) != write_set_keys_.end()) {
+    for (const auto& write_entry : write_set_) {
+      if (write_entry.entity_id == entity_id &&
+          write_entry.entity_type == entity_type &&
+          write_entry.column_id == column_id) {
+        *descriptor = write_entry.descriptor;
+        *version_ts = read_timestamp_;
+        return Status::OK();
+      }
     }
   }
   
@@ -377,6 +381,12 @@ Status OCCTransaction::Put(uint64_t entity_id,
   CedarKey temp_key = MakeKey(entity_id, entity_type, column_id, ts, target_id);
   write_set_.push_back({entity_id, entity_type, column_id, descriptor, temp_key, ts, txn_version, target_id});
   
+  // Track composite key for fast read-your-writes lookup
+  auto MakeWriteSetKey = [](uint64_t eid, EntityType etype, uint16_t cid) -> std::string {
+    return std::to_string(eid) + ":" + std::to_string(static_cast<int>(etype)) + ":" + std::to_string(cid);
+  };
+  write_set_keys_.insert(MakeWriteSetKey(entity_id, entity_type, column_id));
+  
   return Status::OK();
 }
 
@@ -412,6 +422,12 @@ Status OCCTransaction::PutBatch(const std::vector<WriteSetEntry>& entries) {
     if (!updated) {
       write_set_.push_back(entry);
     }
+    
+    // Track composite key for fast read-your-writes lookup
+    auto MakeWriteSetKey = [](uint64_t eid, EntityType etype, uint16_t cid) -> std::string {
+      return std::to_string(eid) + ":" + std::to_string(static_cast<int>(etype)) + ":" + std::to_string(cid);
+    };
+    write_set_keys_.insert(MakeWriteSetKey(entry.entity_id, entry.entity_type, entry.column_id));
     
     // 添加到 WAL 批次
     // 修复: 传递 txn_version 给 WAL

@@ -16,6 +16,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <iostream>
 
 namespace cedar {
 
@@ -567,6 +569,11 @@ Status ManifestManager::LoadCurrentVersion(std::shared_ptr<Version>* version,
     ManifestEdit edit;
     Status s = edit.DecodeFrom(&slice);
     if (!s.ok()) {
+      static std::atomic<uint64_t> corrupted_count{0};
+      corrupted_count.fetch_add(1, std::memory_order_relaxed);
+      std::cerr << "[Manifest WARNING] corrupted record at offset "
+                << file.tellg() << ": " << s.ToString()
+                << " (total corrupted: " << corrupted_count.load() << ")" << std::endl;
       continue;  // Skip corrupted records
     }
 
@@ -598,7 +605,11 @@ Status ManifestManager::ApplyEdit(const ManifestEdit& edit,
   }
   
   // 应用编辑到版本
-  // Full version creation requires VersionSet management.
+  if (new_version) {
+    auto version = std::make_shared<Version>(next_version_id_.fetch_add(1), 0);
+    version->ApplyEdit(edit);
+    *new_version = version;
+  }
   
   return Status::OK();
 }
