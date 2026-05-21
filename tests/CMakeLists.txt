@@ -189,6 +189,10 @@ add_executable(test_distributed_batch cluster/test_distributed_batch.cc)
 target_link_libraries(test_distributed_batch ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_distributed_batch)
 
+add_executable(test_in_neighbors graph/test_in_neighbors.cc)
+target_link_libraries(test_in_neighbors ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_in_neighbors)
+
 add_executable(test_cluster_connection cluster/test_cluster_connection.cc)
 target_link_libraries(test_cluster_connection ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cluster_connection)

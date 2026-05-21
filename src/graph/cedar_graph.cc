@@ -82,12 +82,21 @@ std::vector<Neighbor> CedarGraph::GetInNeighbors(uint64_t vertex_id,
                                                  uint16_t edge_type,
                                                  Timestamp start_time,
                                                  Timestamp end_time) {
-  // Requires reverse index support
-  (void)vertex_id;
-  (void)edge_type;
+  std::vector<Neighbor> result;
+  
+  if (!storage_) {
+    return result;
+  }
+  
   (void)start_time;
-  (void)end_time;
-  return {};
+  
+  // Scan EdgeIn index for all edges pointing to vertex_id
+  auto edges = storage_->ScanEdgesWithFolding(vertex_id, EntityType::EdgeIn, edge_type, end_time);
+  for (const auto& e : edges) {
+    result.push_back(Neighbor{e.target_id, e.edge_type, e.timestamp, std::nullopt});
+  }
+  
+  return result;
 }
 
 // ========== Transaction-aware Query Implementation ==========
