@@ -427,11 +427,15 @@ class QueryServiceImpl::Impl {
   }
   
   bool AcquireQuerySlot() {
-    if (current_queries_.load() >= options_.max_concurrent_queries) {
-      return false;
-    }
-    
-    current_queries_++;
+    uint32_t current = current_queries_.load(std::memory_order_relaxed);
+    do {
+      if (current >= options_.max_concurrent_queries) {
+        return false;
+      }
+    } while (!current_queries_.compare_exchange_weak(
+        current, current + 1,
+        std::memory_order_relaxed,
+        std::memory_order_relaxed));
     return true;
   }
   
