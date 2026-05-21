@@ -353,7 +353,7 @@ public:
     // ===== braft 集成接口 =====
     
     // 应用 Raft 命令（由 StateMachine 调用）
-    void ApplyRaftCommand(const struct RaftCommand& cmd);
+    bool ApplyRaftCommand(const struct RaftCommand& cmd);
     
     // 序列化/反序列化状态（用于快照）
     std::string SerializeState() const;

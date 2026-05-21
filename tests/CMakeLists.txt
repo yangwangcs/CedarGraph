@@ -299,6 +299,12 @@ add_executable(test_cypher_api graph/test_cypher_api.cc)
 target_link_libraries(test_cypher_api ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_cypher_api)
 
+add_executable(test_graph_cypher_critical_batch
+    cypher/test_graph_cypher_critical_batch.cc
+)
+target_link_libraries(test_graph_cypher_critical_batch ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_graph_cypher_critical_batch)
+
 add_executable(test_cluster_connection cluster/test_cluster_connection.cc)
 target_link_libraries(test_cluster_connection ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cluster_connection)
@@ -339,6 +345,10 @@ gtest_discover_tests(test_partial_commit_rollback)
 add_executable(test_rollback_replication dtx/test_rollback_replication.cc)
 target_link_libraries(test_rollback_replication ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_rollback_replication)
+
+add_executable(test_dtx_raft_critical dtx/test_dtx_raft_critical.cc)
+target_link_libraries(test_dtx_raft_critical ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_dtx_raft_critical)
 
 add_executable(test_metrics_registry metrics/test_metrics_registry.cc)
 target_link_libraries(test_metrics_registry ${CEDAR_TEST_LIBS})
@@ -430,6 +440,10 @@ gtest_discover_tests(test_storage_subquery)
 add_executable(test_parallel_compaction_scheduler storage/test_parallel_compaction_scheduler.cc)
 target_link_libraries(test_parallel_compaction_scheduler ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_parallel_compaction_scheduler)
+
+add_executable(test_storage_critical_batch storage/test_storage_critical_batch.cc)
+target_link_libraries(test_storage_critical_batch ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_critical_batch)
 
 # Storage Interface Tests
 add_executable(test_storage_interface test_storage_interface.cc)
@@ -527,6 +541,11 @@ add_executable(test_gcn_event_stream gcn/test_gcn_event_stream.cc)
 target_link_libraries(test_gcn_event_stream cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_gcn_event_stream PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_gcn_event_stream)
+
+add_executable(test_gcn_governance_critical gcn/test_gcn_governance_critical.cc)
+target_link_libraries(test_gcn_governance_critical cedar_gcn ${GTEST_MAIN_TARGET})
+target_link_directories(test_gcn_governance_critical PRIVATE /opt/homebrew/lib)
+gtest_discover_tests(test_gcn_governance_critical)
 
 add_executable(test_storage_extensions gcn/test_storage_extensions.cc)
 target_link_libraries(test_storage_extensions ${CEDAR_TEST_LIBS})

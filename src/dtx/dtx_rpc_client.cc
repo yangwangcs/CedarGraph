@@ -43,7 +43,12 @@ DTXRpcClient::DTXRpcClient(const DTXRpcConfig& config)
   LOG(WARNING) << "DTXRpcClient initialized but DTXService has no server "
                << "implementation in the current codebase. RPCs will fail "
                << "with UNIMPLEMENTED unless a custom server is provided.";
-  credentials_ = cedar::dtx::CreateClientCredentialsFromEnv();
+  if (config.tls_config.enabled) {
+    credentials_ = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(
+        config.tls_config);
+  } else {
+    credentials_ = cedar::dtx::CreateClientCredentialsFromEnv();
+  }
 }
 
 DTXRpcClient::~DTXRpcClient() = default;

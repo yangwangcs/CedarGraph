@@ -19,11 +19,39 @@
 #include <braft/util.h>
 #include <butil/logging.h>
 
+#include <gflags/gflags.h>
+
 #include <cstring>
 #include <filesystem>
 
+DEFINE_int64(raft_propose_timeout_ms, 5000, "Raft proposal timeout");
+
 namespace cedar {
 namespace dtx {
+
+namespace {
+
+class RaftCircuitBreaker {
+ public:
+  bool IsOpen() const {
+    return std::chrono::steady_clock::now() < open_until_;
+  }
+
+  void RecordSuccess() { consecutive_failures_ = 0; }
+
+  void RecordFailure() {
+    ++consecutive_failures_;
+    if (consecutive_failures_ >= 5) {
+      open_until_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    }
+  }
+
+ private:
+  size_t consecutive_failures_ = 0;
+  std::chrono::steady_clock::time_point open_until_;
+};
+
+}  // namespace
 
 // =============================================================================
 // StorageLogEntry Serialization
@@ -346,19 +374,28 @@ void StoragePartitionStateMachine::on_apply(braft::Iterator& iter) {
                                       entry.write_descriptors, entry.commit_ts);
       if (!status.ok()) {
         LOG(ERROR) << "Apply PREPARE failed at index=" << iter.index()
-                   << " txn_id=" << entry.txn_id << ": " << status.ToString();
+                   << " txn_id=" << entry.txn_id << ": " << status.ToString()
+                   << " — stepping down";
+        iter.set_error_and_rollback();
+        return;
       }
     } else if (entry.type == StorageLogEntry::Type::kCommit) {
       auto status = storage_->Commit(entry.txn_id, entry.commit_ts);
       if (!status.ok()) {
         LOG(ERROR) << "Apply COMMIT failed at index=" << iter.index()
-                   << " txn_id=" << entry.txn_id << ": " << status.ToString();
+                   << " txn_id=" << entry.txn_id << ": " << status.ToString()
+                   << " — stepping down";
+        iter.set_error_and_rollback();
+        return;
       }
     } else if (entry.type == StorageLogEntry::Type::kAbort) {
       auto status = storage_->Abort(entry.txn_id);
       if (!status.ok()) {
         LOG(ERROR) << "Apply ABORT failed at index=" << iter.index()
-                   << " txn_id=" << entry.txn_id << ": " << status.ToString();
+                   << " txn_id=" << entry.txn_id << ": " << status.ToString()
+                   << " — stepping down";
+        iter.set_error_and_rollback();
+        return;
       }
     } else {
       LOG(ERROR) << "Unknown log entry type: " << static_cast<int>(entry.type)
@@ -713,6 +750,10 @@ class BraftPartitionNode::Impl {
   }
 
   Status Propose(const StorageLogEntry& entry) {
+    if (circuit_breaker_.IsOpen()) {
+      return Status::IOError("BRaftPartitionNode", "circuit breaker open");
+    }
+
     std::lock_guard<std::mutex> lock(node_mutex_);
     if (!node_ || !node_->is_leader()) {
       return Status::NotLeader("Not leader");
@@ -731,12 +772,19 @@ class BraftPartitionNode::Impl {
     node_->apply(task);
 
     auto future = promise->get_future();
-    if (future.wait_for(std::chrono::seconds(5)) ==
+    if (future.wait_for(std::chrono::milliseconds(FLAGS_raft_propose_timeout_ms)) ==
         std::future_status::timeout) {
+      circuit_breaker_.RecordFailure();
       return Status::IOError("BRaftPartitionNode", "propose timeout");
     }
 
-    return future.get();
+    auto status = future.get();
+    if (!status.ok()) {
+      circuit_breaker_.RecordFailure();
+    } else {
+      circuit_breaker_.RecordSuccess();
+    }
+    return status;
   }
 
   StatusOr<uint64_t> ReadIndex(std::chrono::milliseconds timeout) {
@@ -828,6 +876,8 @@ class BraftPartitionNode::Impl {
       std::chrono::steady_clock::time_point::min()};
   std::atomic<bool> shutdown_lease_thread_{false};
   std::thread lease_renewal_thread_;
+
+  RaftCircuitBreaker circuit_breaker_;
 };
 
 // =============================================================================

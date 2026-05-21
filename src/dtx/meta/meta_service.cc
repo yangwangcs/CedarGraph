@@ -996,67 +996,77 @@ NodeID MetadataService::GetLeader() const {
     return leader.value_or(kInvalidNodeID);
 }
 
-void MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
+bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
     switch (cmd.type) {
         case RaftCommandType::kCreateSpace: {
             auto space = SpaceDef::Deserialize(cmd.payload);
-            if (space.ok()) {
-                state_machine_.ApplyCreateSpace(space.value());
+            if (!space.ok()) {
+                std::cerr << "[MetadataService] Failed to deserialize space: "
+                          << space.status().ToString() << std::endl;
+                return false;
             }
-            break;
+            state_machine_.ApplyCreateSpace(space.value());
+            return true;
         }
         case RaftCommandType::kDropSpace:
             state_machine_.ApplyDropSpace(cmd.payload);
-            break;
+            return true;
         case RaftCommandType::kUpdateNode: {
             auto info = NodeInfo::Deserialize(cmd.payload);
             if (info.ok()) {
                 state_machine_.ApplyRegisterNode(info.value());
-                break;
+                return true;
             }
             auto status = NodeStatus::Deserialize(cmd.payload);
             if (status.ok()) {
                 state_machine_.ApplyUpdateNodeStatus(status.value());
+                return true;
             }
-            break;
+            std::cerr << "[MetadataService] Failed to deserialize node info/status"
+                      << std::endl;
+            return false;
         }
         case RaftCommandType::kUpdateAssignment: {
             size_t p1 = cmd.payload.find('|');
             size_t p2 = cmd.payload.find('|', p1 + 1);
-            if (p1 != std::string::npos && p2 != std::string::npos) {
-                try {
-                    std::string space_name = cmd.payload.substr(0, p1);
-                    unsigned long pid_raw = std::stoul(cmd.payload.substr(p1 + 1, p2 - p1 - 1));
-                    unsigned long leader_raw = std::stoul(cmd.payload.substr(p2 + 1));
-                    if (pid_raw > std::numeric_limits<PartitionID>::max() ||
-                        leader_raw > std::numeric_limits<NodeID>::max()) {
-                        std::cerr << "[MetadataService] kUpdateAssignment value out of range"
-                                  << std::endl;
-                        break;
-                    }
-                    PartitionID pid = static_cast<PartitionID>(pid_raw);
-                    NodeID leader = static_cast<NodeID>(leader_raw);
-                    auto [version, old_leader] = state_machine_.ApplyUpdatePartitionLeader(space_name, pid, leader);
-                    if (version > 0) {
-                        PartitionMapChange change;
-                        change.space_name = space_name;
-                        change.partition_id = pid;
-                        change.change_type = PartitionChangeType::kLeaderChanged;
-                        change.old_leader = old_leader;
-                        change.new_leader = leader;
-                        change.version = version;
-                        change.timestamp = std::chrono::system_clock::now();
-                        NotifyPartitionChange(change);
-                    }
-                } catch (const std::exception& e) {
-                    std::cerr << "[MetadataService] Invalid kUpdateAssignment payload: "
-                              << e.what() << std::endl;
-                }
+            if (p1 == std::string::npos || p2 == std::string::npos) {
+                std::cerr << "[MetadataService] Invalid kUpdateAssignment format"
+                          << std::endl;
+                return false;
             }
-            break;
+            try {
+                std::string space_name = cmd.payload.substr(0, p1);
+                unsigned long pid_raw = std::stoul(cmd.payload.substr(p1 + 1, p2 - p1 - 1));
+                unsigned long leader_raw = std::stoul(cmd.payload.substr(p2 + 1));
+                if (pid_raw > std::numeric_limits<PartitionID>::max() ||
+                    leader_raw > std::numeric_limits<NodeID>::max()) {
+                    std::cerr << "[MetadataService] kUpdateAssignment value out of range"
+                              << std::endl;
+                    return false;
+                }
+                PartitionID pid = static_cast<PartitionID>(pid_raw);
+                NodeID leader = static_cast<NodeID>(leader_raw);
+                auto [version, old_leader] = state_machine_.ApplyUpdatePartitionLeader(space_name, pid, leader);
+                if (version > 0) {
+                    PartitionMapChange change;
+                    change.space_name = space_name;
+                    change.partition_id = pid;
+                    change.change_type = PartitionChangeType::kLeaderChanged;
+                    change.old_leader = old_leader;
+                    change.new_leader = leader;
+                    change.version = version;
+                    change.timestamp = std::chrono::system_clock::now();
+                    NotifyPartitionChange(change);
+                }
+                return true;
+            } catch (const std::exception& e) {
+                std::cerr << "[MetadataService] Invalid kUpdateAssignment payload: "
+                          << e.what() << std::endl;
+                return false;
+            }
         }
         default:
-            break;
+            return true;
     }
 }
 

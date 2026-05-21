@@ -32,6 +32,7 @@
 
 #include "cedar/core/status.h"
 #include "cedar/core/threading.h"
+#include "cedar/dtx/raft/grpc_tls.h"
 #include "cedar/dtx/types.h"
 #include "dtx_protocol.grpc.pb.h"
 
@@ -61,6 +62,9 @@ struct DTXRpcConfig {
 
   // Health check interval
   uint64_t health_check_interval_ms = 1000;
+
+  // TLS configuration for DTX replication
+  raft::TlsConfig tls_config;
 };
 
 // =============================================================================

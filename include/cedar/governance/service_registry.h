@@ -88,6 +88,10 @@ std::string ServiceEventTypeToString(ServiceEventType type);
 struct ServiceEvent {
   ServiceEventType type;   // Event type
   ServiceInfo service;     // Service information snapshot at event time
+
+  ServiceEvent() = default;
+  ServiceEvent(ServiceEventType t, const ServiceInfo& s)
+      : type(t), service(s) {}
 };
 
 // =============================================================================

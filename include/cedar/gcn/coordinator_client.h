@@ -22,7 +22,9 @@
 #include <optional>
 #include <vector>
 
+#include "cedar/core/status.h"
 #include "cedar/coordinator/location_table.h"
+#include "cedar/core/status.h"
 
 namespace cedar {
 namespace gcn {
@@ -42,10 +44,10 @@ class CoordinatorClient {
                                                   uint64_t query_time);
 
   // Report a locally-held cache window to the coordinator.
-  void ReportCache(const coordinator::CacheWindow& window);
+  cedar::Status ReportCache(const coordinator::CacheWindow& window);
 
   // Send a heartbeat containing all currently cached windows.
-  void Heartbeat(const std::vector<coordinator::CacheWindow>& windows);
+  cedar::Status Heartbeat(const std::vector<coordinator::CacheWindow>& windows);
 
  private:
   std::shared_ptr<grpc::Channel> channel_;

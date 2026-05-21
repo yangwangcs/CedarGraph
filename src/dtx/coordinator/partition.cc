@@ -273,17 +273,34 @@ NodeID PartitionManager::GetPartitionLeader(PartitionID pid) const {
 
 Status PartitionManager::SetPartitionLeader(PartitionID pid, NodeID node_id) {
   std::unique_lock<std::shared_mutex> lock(meta_mutex_);
+  std::unique_lock<std::shared_mutex> node_lock(node_partition_mutex_);
   
   auto it = partition_metas_.find(pid);
   if (it == partition_metas_.end()) {
     return Status::NotFound("PartitionManager", "Partition not found");
   }
   
+  NodeID old_node = it->second->primary_node;
   it->second->primary_node = node_id;
   
-  // 更新节点->分区映射
-  std::unique_lock<std::shared_mutex> node_lock(node_partition_mutex_);
-  node_partitions_[node_id].push_back(pid);
+  // Atomically remove from old node, add to new node
+  if (old_node != kInvalidNodeID && old_node != node_id) {
+    auto old_it = node_partitions_.find(old_node);
+    if (old_it != node_partitions_.end()) {
+      auto& vec = old_it->second;
+      vec.erase(std::remove(vec.begin(), vec.end(), pid), vec.end());
+      if (vec.empty()) {
+        node_partitions_.erase(old_it);
+      }
+    }
+  }
+  
+  if (node_id != kInvalidNodeID) {
+    auto& vec = node_partitions_[node_id];
+    if (std::find(vec.begin(), vec.end(), pid) == vec.end()) {
+      vec.push_back(pid);
+    }
+  }
   
   return Status::OK();
 }

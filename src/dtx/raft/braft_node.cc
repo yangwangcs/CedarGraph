@@ -21,6 +21,8 @@
 #include <brpc/channel.h>
 #include <brpc/server.h>
 
+#include <gflags/gflags.h>
+
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -30,8 +32,34 @@
 #include <future>
 #include <shared_mutex>
 
+DECLARE_int64(raft_propose_timeout_ms);
+
 namespace cedar {
 namespace dtx {
+
+namespace {
+
+class RaftCircuitBreaker {
+ public:
+  bool IsOpen() const {
+    return std::chrono::steady_clock::now() < open_until_;
+  }
+
+  void RecordSuccess() { consecutive_failures_ = 0; }
+
+  void RecordFailure() {
+    ++consecutive_failures_;
+    if (consecutive_failures_ >= 5) {
+      open_until_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    }
+  }
+
+ private:
+  size_t consecutive_failures_ = 0;
+  std::chrono::steady_clock::time_point open_until_;
+};
+
+}  // namespace
 
 // =============================================================================
 // MetaRaftStateMachine Implementation
@@ -74,7 +102,12 @@ void MetaRaftStateMachine::on_apply(braft::Iterator& iter) {
         cmd.index = iter.index();
         
         if (meta_service_) {
-            meta_service_->ApplyRaftCommand(cmd);
+            if (!meta_service_->ApplyRaftCommand(cmd)) {
+                LOG(ERROR) << "ApplyRaftCommand failed at index=" << iter.index()
+                           << " — stepping down";
+                iter.set_error_and_rollback();
+                return;
+            }
         }
         
         last_term_ = iter.term();
@@ -345,6 +378,10 @@ public:
     };
     
     ::cedar::Status Propose(const RaftCommand& command) {
+        if (circuit_breaker_.IsOpen()) {
+            return ::cedar::Status::IOError("BRaftNode", "circuit breaker open");
+        }
+
         {
             std::lock_guard<std::mutex> lock(node_mutex_);
             if (!node_ || !node_->is_leader()) {
@@ -374,11 +411,18 @@ public:
         }
         
         auto future = promise->get_future();
-        if (future.wait_for(std::chrono::seconds(5)) == std::future_status::timeout) {
+        if (future.wait_for(std::chrono::milliseconds(FLAGS_raft_propose_timeout_ms)) == std::future_status::timeout) {
+          circuit_breaker_.RecordFailure();
           return ::cedar::Status::IOError("BRaftNode", "propose timeout");
         }
         
-        return future.get();
+        auto status = future.get();
+        if (!status.ok()) {
+          circuit_breaker_.RecordFailure();
+        } else {
+          circuit_breaker_.RecordSuccess();
+        }
+        return status;
     }
     
     ::cedar::Status AddPeer(const std::string& peer_address) {
@@ -430,6 +474,8 @@ private:
     std::unique_ptr<MetaRaftStateMachine> state_machine_;
     BRaftNode::Options options_;
     bool initialized_;
+
+    RaftCircuitBreaker circuit_breaker_;
 };
 
 // =============================================================================
