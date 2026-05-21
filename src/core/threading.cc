@@ -9,6 +9,8 @@
 #include <thread>
 #include <vector>
 
+#include "cedar/core/logging.h"
+
 namespace cedar {
 
 // ============================================================================
@@ -104,7 +106,13 @@ class ThreadPool::Impl {
         tasks_.pop();
         ++active_tasks_;
       }
-      task();
+      try {
+        task();
+      } catch (const std::exception& e) {
+        CEDAR_LOG_ERROR() << "ThreadPool task exception: " << e.what() << "\n";
+      } catch (...) {
+        CEDAR_LOG_ERROR() << "ThreadPool task exception: unknown\n";
+      }
       {
         std::unique_lock<std::mutex> lock(mutex_);
         --active_tasks_;
@@ -166,7 +174,13 @@ class BackgroundWorker::Impl {
         task = std::move(tasks_.front());
         tasks_.pop();
       }
-      task();
+      try {
+        task();
+      } catch (const std::exception& e) {
+        CEDAR_LOG_ERROR() << "BackgroundWorker task exception: " << e.what() << "\n";
+      } catch (...) {
+        CEDAR_LOG_ERROR() << "BackgroundWorker task exception: unknown\n";
+      }
     }
   }
 

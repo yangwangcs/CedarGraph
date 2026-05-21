@@ -286,14 +286,22 @@ class ConfigManagerImpl {
                              std::chrono::system_clock::now().time_since_epoch())
                              .count();
 
-    for (const auto& [watch_id, watch_key] : watch_keys_) {
-      if (watch_key.empty() || key == watch_key ||
-          key.find(watch_key + ".") == 0) {
-        auto it = watchers_.find(watch_id);
-        if (it != watchers_.end()) {
-          it->second(event);
+    std::vector<ConfigChangeCallback> callbacks_to_invoke;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      for (const auto& [watch_id, watch_key] : watch_keys_) {
+        if (watch_key.empty() || key == watch_key ||
+            key.find(watch_key + ".") == 0) {
+          auto it = watchers_.find(watch_id);
+          if (it != watchers_.end()) {
+            callbacks_to_invoke.push_back(it->second);
+          }
         }
       }
+    }
+
+    for (auto& callback : callbacks_to_invoke) {
+      callback(event);
     }
   }
 };
@@ -420,37 +428,43 @@ Status ConfigManager::LoadFromString(const std::string& content) {
 }
 
 Status ConfigManager::ApplyEnvironmentOverrides() {
-  std::lock_guard<std::mutex> lock(impl_->mutex_);
+  std::vector<std::tuple<std::string, std::string, std::string>> notifications;
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex_);
 
-  // Iterate through environment variables
-  char** env_ptr = environ;
-  while (env_ptr && *env_ptr) {
-    std::string env_var(*env_ptr);
-    size_t eq_pos = env_var.find('=');
-    if (eq_pos == std::string::npos) {
-      ++env_ptr;
-      continue;
-    }
-
-    std::string var_name = env_var.substr(0, eq_pos);
-    std::string var_value = env_var.substr(eq_pos + 1);
-
-    std::string key = EnvVarToConfigKey(var_name);
-    if (!key.empty()) {
-      // Get old value before updating
-      std::string old_value;
-      auto node = SimpleYamlParser::FindNode(impl_->root_, key);
-      if (node && node->is_scalar) {
-        old_value = node->value;
+    // Iterate through environment variables
+    char** env_ptr = environ;
+    while (env_ptr && *env_ptr) {
+      std::string env_var(*env_ptr);
+      size_t eq_pos = env_var.find('=');
+      if (eq_pos == std::string::npos) {
+        ++env_ptr;
+        continue;
       }
-      SimpleYamlParser::SetNodeValue(impl_->root_, key, var_value);
-      impl_->UpdateFlattened();
-      impl_->NotifyWatchers(key, old_value, var_value,
-                            ConfigChangeType::kValueChanged);
+
+      std::string var_name = env_var.substr(0, eq_pos);
+      std::string var_value = env_var.substr(eq_pos + 1);
+
+      std::string key = EnvVarToConfigKey(var_name);
+      if (!key.empty()) {
+        // Get old value before updating
+        std::string old_value;
+        auto node = SimpleYamlParser::FindNode(impl_->root_, key);
+        if (node && node->is_scalar) {
+          old_value = node->value;
+        }
+        SimpleYamlParser::SetNodeValue(impl_->root_, key, var_value);
+        impl_->UpdateFlattened();
+        notifications.emplace_back(key, old_value, var_value);
+      }
+      ++env_ptr;
     }
-    ++env_ptr;
   }
 
+  for (auto& [key, old_value, new_value] : notifications) {
+    impl_->NotifyWatchers(key, old_value, new_value,
+                          ConfigChangeType::kValueChanged);
+  }
   return Status::OK();
 }
 
@@ -572,20 +586,23 @@ bool ConfigManager::HasKey(const std::string& key) const {
 
 void ConfigManager::SetString(const std::string& key,
                               const std::string& value) {
-  std::lock_guard<std::mutex> lock(impl_->mutex_);
-
   std::string old_value;
-  auto node = SimpleYamlParser::FindNode(impl_->root_, key);
-  if (node && node->is_scalar) {
-    old_value = node->value;
+  ConfigChangeType change_type;
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex_);
+
+    auto node = SimpleYamlParser::FindNode(impl_->root_, key);
+    if (node && node->is_scalar) {
+      old_value = node->value;
+    }
+
+    SimpleYamlParser::SetNodeValue(impl_->root_, key, value);
+    impl_->UpdateFlattened();
+
+    change_type = old_value.empty()
+                      ? ConfigChangeType::kValueAdded
+                      : ConfigChangeType::kValueChanged;
   }
-
-  SimpleYamlParser::SetNodeValue(impl_->root_, key, value);
-  impl_->UpdateFlattened();
-
-  ConfigChangeType change_type = old_value.empty()
-                                     ? ConfigChangeType::kValueAdded
-                                     : ConfigChangeType::kValueChanged;
   impl_->NotifyWatchers(key, old_value, value, change_type);
 }
 
@@ -623,27 +640,32 @@ void ConfigManager::SetStringArray(const std::string& key,
 }
 
 bool ConfigManager::RemoveKey(const std::string& key) {
-  std::lock_guard<std::mutex> lock(impl_->mutex_);
+  std::string old_value;
+  bool removed = false;
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex_);
 
-  // Note: Full removal from tree structure is complex with the current
-  // implementation. For now, we'll just remove from flattened map and
-  // mark the node as non-scalar.
-  auto it = impl_->flattened_.find(key);
-  if (it != impl_->flattened_.end()) {
-    std::string old_value = it->second;
-    impl_->flattened_.erase(it);
+    // Note: Full removal from tree structure is complex with the current
+    // implementation. For now, we'll just remove from flattened map and
+    // mark the node as non-scalar.
+    auto it = impl_->flattened_.find(key);
+    if (it != impl_->flattened_.end()) {
+      old_value = it->second;
+      impl_->flattened_.erase(it);
 
-    auto node = SimpleYamlParser::FindNode(impl_->root_, key);
-    if (node) {
-      node->is_scalar = false;
-      node->value.clear();
+      auto node = SimpleYamlParser::FindNode(impl_->root_, key);
+      if (node) {
+        node->is_scalar = false;
+        node->value.clear();
+      }
+      removed = true;
     }
-
-    impl_->NotifyWatchers(key, old_value, "", ConfigChangeType::kValueRemoved);
-    return true;
   }
 
-  return false;
+  if (removed) {
+    impl_->NotifyWatchers(key, old_value, "", ConfigChangeType::kValueRemoved);
+  }
+  return removed;
 }
 
 Status ConfigManager::Validate(const std::string& schema_path) {
@@ -670,50 +692,62 @@ Status ConfigManager::ValidateBasic(
 }
 
 Status ConfigManager::Merge(const ConfigManager& other) {
-  std::lock_guard<std::mutex> lock(impl_->mutex_);
-  std::lock_guard<std::mutex> other_lock(other.impl_->mutex_);
+  std::vector<std::tuple<std::string, std::string, std::string>> notifications;
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex_);
+    std::lock_guard<std::mutex> other_lock(other.impl_->mutex_);
 
-  for (const auto& [key, value] : other.impl_->flattened_) {
-    std::string old_value;
-    auto it = impl_->flattened_.find(key);
-    if (it != impl_->flattened_.end()) {
-      old_value = it->second;
+    for (const auto& [key, value] : other.impl_->flattened_) {
+      std::string old_value;
+      auto it = impl_->flattened_.find(key);
+      if (it != impl_->flattened_.end()) {
+        old_value = it->second;
+      }
+
+      SimpleYamlParser::SetNodeValue(impl_->root_, key, value);
+      notifications.emplace_back(key, old_value, value);
     }
 
-    SimpleYamlParser::SetNodeValue(impl_->root_, key, value);
+    impl_->UpdateFlattened();
+  }
 
+  for (auto& [key, old_value, new_value] : notifications) {
     ConfigChangeType change_type = old_value.empty()
                                        ? ConfigChangeType::kValueAdded
                                        : ConfigChangeType::kValueChanged;
-    impl_->NotifyWatchers(key, old_value, value, change_type);
+    impl_->NotifyWatchers(key, old_value, new_value, change_type);
   }
-
-  impl_->UpdateFlattened();
   return Status::OK();
 }
 
 Status ConfigManager::MergeWithPrefix(const ConfigManager& other,
                                       const std::string& prefix) {
-  std::lock_guard<std::mutex> lock(impl_->mutex_);
-  std::lock_guard<std::mutex> other_lock(other.impl_->mutex_);
+  std::vector<std::tuple<std::string, std::string, std::string>> notifications;
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex_);
+    std::lock_guard<std::mutex> other_lock(other.impl_->mutex_);
 
-  for (const auto& [key, value] : other.impl_->flattened_) {
-    std::string prefixed_key = prefix + "." + key;
-    std::string old_value;
-    auto it = impl_->flattened_.find(prefixed_key);
-    if (it != impl_->flattened_.end()) {
-      old_value = it->second;
+    for (const auto& [key, value] : other.impl_->flattened_) {
+      std::string prefixed_key = prefix + "." + key;
+      std::string old_value;
+      auto it = impl_->flattened_.find(prefixed_key);
+      if (it != impl_->flattened_.end()) {
+        old_value = it->second;
+      }
+
+      SimpleYamlParser::SetNodeValue(impl_->root_, prefixed_key, value);
+      notifications.emplace_back(prefixed_key, old_value, value);
     }
 
-    SimpleYamlParser::SetNodeValue(impl_->root_, prefixed_key, value);
+    impl_->UpdateFlattened();
+  }
 
+  for (auto& [key, old_value, new_value] : notifications) {
     ConfigChangeType change_type = old_value.empty()
                                        ? ConfigChangeType::kValueAdded
                                        : ConfigChangeType::kValueChanged;
-    impl_->NotifyWatchers(prefixed_key, old_value, value, change_type);
+    impl_->NotifyWatchers(key, old_value, new_value, change_type);
   }
-
-  impl_->UpdateFlattened();
   return Status::OK();
 }
 

@@ -87,107 +87,122 @@ class ServiceRegistryImpl {
       return Status::InvalidArgument("Invalid port number");
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    ServiceEvent event;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
 
-    // Check if service already exists
-    auto it = services_.find(info.id);
-    if (it != services_.end()) {
-      return Status::Conflict("Service with ID already exists: " + info.id);
+      // Check if service already exists
+      auto it = services_.find(info.id);
+      if (it != services_.end()) {
+        return Status::Conflict("Service with ID already exists: " + info.id);
+      }
+
+      // Create service info with timestamps
+      ServiceInfo service_info = info;
+      service_info.register_time_ms = CurrentTimeMillis();
+      service_info.last_heartbeat_ms = service_info.register_time_ms;
+
+      // Set initial status if unknown
+      if (service_info.status == ServiceStatus::kUnknown) {
+        service_info.status = ServiceStatus::kStarting;
+      }
+
+      // Store service
+      services_[service_info.id] = service_info;
+      services_by_name_[service_info.name].insert(service_info.id);
+
+      event = ServiceEvent{ServiceEventType::kRegistered, service_info};
     }
 
-    // Create service info with timestamps
-    ServiceInfo service_info = info;
-    service_info.register_time_ms = CurrentTimeMillis();
-    service_info.last_heartbeat_ms = service_info.register_time_ms;
-
-    // Set initial status if unknown
-    if (service_info.status == ServiceStatus::kUnknown) {
-      service_info.status = ServiceStatus::kStarting;
-    }
-
-    // Store service
-    services_[service_info.id] = service_info;
-    services_by_name_[service_info.name].insert(service_info.id);
-
-    // Notify watchers
-    ServiceEvent event{ServiceEventType::kRegistered, service_info};
-    NotifyWatchers(service_info.name, event);
-
+    NotifyWatchers(event.service.name, event);
     return Status::OK();
   }
 
   // Deregister a service
   Status Deregister(const std::string& service_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::string service_name;
+    ServiceEvent event;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
 
-    auto it = services_.find(service_id);
-    if (it == services_.end()) {
-      return Status::NotFound("Service not found: " + service_id);
-    }
-
-    ServiceInfo service_info = it->second;
-    std::string service_name = service_info.name;
-
-    // Remove from name index
-    auto name_it = services_by_name_.find(service_name);
-    if (name_it != services_by_name_.end()) {
-      name_it->second.erase(service_id);
-      if (name_it->second.empty()) {
-        services_by_name_.erase(name_it);
+      auto it = services_.find(service_id);
+      if (it == services_.end()) {
+        return Status::NotFound("Service not found: " + service_id);
       }
+
+      ServiceInfo service_info = it->second;
+      service_name = service_info.name;
+
+      // Remove from name index
+      auto name_it = services_by_name_.find(service_name);
+      if (name_it != services_by_name_.end()) {
+        name_it->second.erase(service_id);
+        if (name_it->second.empty()) {
+          services_by_name_.erase(name_it);
+        }
+      }
+
+      // Remove from main map
+      services_.erase(it);
+
+      event = ServiceEvent{ServiceEventType::kDeregistered, service_info};
     }
 
-    // Remove from main map
-    services_.erase(it);
-
-    // Notify watchers
-    ServiceEvent event{ServiceEventType::kDeregistered, service_info};
     NotifyWatchers(service_name, event);
-
     return Status::OK();
   }
 
   // Update service status
   Status UpdateStatus(const std::string& service_id, ServiceStatus new_status) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    ServiceEvent event;
+    bool should_notify = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
 
-    auto it = services_.find(service_id);
-    if (it == services_.end()) {
-      return Status::NotFound("Service not found: " + service_id);
+      auto it = services_.find(service_id);
+      if (it == services_.end()) {
+        return Status::NotFound("Service not found: " + service_id);
+      }
+
+      ServiceStatus old_status = it->second.status;
+      if (old_status != new_status) {
+        it->second.status = new_status;
+        event = ServiceEvent{ServiceEventType::kStatusChanged, it->second};
+        should_notify = true;
+      }
     }
 
-    ServiceStatus old_status = it->second.status;
-    if (old_status != new_status) {
-      it->second.status = new_status;
-
-      // Notify watchers if status changed
-      ServiceEvent event{ServiceEventType::kStatusChanged, it->second};
-      NotifyWatchers(it->second.name, event);
+    if (should_notify) {
+      NotifyWatchers(event.service.name, event);
     }
-
     return Status::OK();
   }
 
   // Record heartbeat
   Status Heartbeat(const std::string& service_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    ServiceEvent event;
+    bool should_notify = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
 
-    auto it = services_.find(service_id);
-    if (it == services_.end()) {
-      return Status::NotFound("Service not found: " + service_id);
-    }
+      auto it = services_.find(service_id);
+      if (it == services_.end()) {
+        return Status::NotFound("Service not found: " + service_id);
+      }
 
-    it->second.last_heartbeat_ms = CurrentTimeMillis();
-    
-    // Auto-transition from Starting to Healthy on first heartbeat
-    if (it->second.status == ServiceStatus::kStarting) {
-      it->second.status = ServiceStatus::kHealthy;
+      it->second.last_heartbeat_ms = CurrentTimeMillis();
       
-      // Notify watchers of status change
-      ServiceEvent event{ServiceEventType::kStatusChanged, it->second};
-      NotifyWatchers(it->second.name, event);
+      // Auto-transition from Starting to Healthy on first heartbeat
+      if (it->second.status == ServiceStatus::kStarting) {
+        it->second.status = ServiceStatus::kHealthy;
+        event = ServiceEvent{ServiceEventType::kStatusChanged, it->second};
+        should_notify = true;
+      }
     }
 
+    if (should_notify) {
+      NotifyWatchers(event.service.name, event);
+    }
     return Status::OK();
   }
 
@@ -364,6 +379,7 @@ class ServiceRegistryImpl {
   void NotifyWatchers(const std::string& service_name, const ServiceEvent& event) {
     std::vector<ServiceWatchCallback> callbacks_to_invoke;
     {
+      std::lock_guard<std::mutex> lock(mutex_);
       auto it = watches_by_name_.find(service_name);
       if (it != watches_by_name_.end()) {
         for (int64_t watch_id : it->second) {
@@ -406,24 +422,28 @@ class ServiceRegistryImpl {
       stale_threshold = stale_threshold_ms_;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<ServiceEvent> events_to_notify;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
 
-    int64_t now = CurrentTimeMillis();
+      int64_t now = CurrentTimeMillis();
 
-    for (auto& pair : services_) {
-      ServiceInfo& info = pair.second;
-      
-      // Only check healthy or starting services
-      if (info.status == ServiceStatus::kHealthy || info.status == ServiceStatus::kStarting) {
-        int64_t time_since_heartbeat = now - info.last_heartbeat_ms;
-        if (time_since_heartbeat > stale_threshold) {
-          info.status = ServiceStatus::kUnhealthy;
-          
-          // Notify watchers
-          ServiceEvent event{ServiceEventType::kStatusChanged, info};
-          NotifyWatchers(info.name, event);
+      for (auto& pair : services_) {
+        ServiceInfo& info = pair.second;
+        
+        // Only check healthy or starting services
+        if (info.status == ServiceStatus::kHealthy || info.status == ServiceStatus::kStarting) {
+          int64_t time_since_heartbeat = now - info.last_heartbeat_ms;
+          if (time_since_heartbeat > stale_threshold) {
+            info.status = ServiceStatus::kUnhealthy;
+            events_to_notify.emplace_back(ServiceEventType::kStatusChanged, info);
+          }
         }
       }
+    }
+
+    for (auto& event : events_to_notify) {
+      NotifyWatchers(event.service.name, event);
     }
   }
 

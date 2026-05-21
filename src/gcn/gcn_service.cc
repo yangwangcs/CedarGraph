@@ -44,12 +44,16 @@ GcnServiceImpl::GcnServiceImpl(
   }
 }
 
-GcnServiceImpl::~GcnServiceImpl() {
+void GcnServiceImpl::Shutdown() {
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     stream_closed_ = true;
   }
   queue_cv_.notify_all();
+}
+
+GcnServiceImpl::~GcnServiceImpl() {
+  Shutdown();
 }
 
 void GcnServiceImpl::EnqueueEvent(const CDCEvent& event) {
@@ -123,14 +127,11 @@ grpc::Status GcnServiceImpl::OnEventStream(
     CDCEvent event;
     {
       std::unique_lock<std::mutex> lock(queue_mutex_);
-      bool has_event = queue_cv_.wait_for(
-          lock, std::chrono::milliseconds(100),
+      queue_cv_.wait(
+          lock,
           [this] { return !pending_events_.empty() || stream_closed_; });
-      if (!has_event && pending_events_.empty()) {
-        break;
-      }
       if (pending_events_.empty()) {
-        continue;
+        break;
       }
       event = pending_events_.front();
       pending_events_.pop();

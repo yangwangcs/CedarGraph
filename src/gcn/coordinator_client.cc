@@ -56,8 +56,8 @@ std::optional<coordinator::CacheWindow> CoordinatorClient::Locate(
   return window;
 }
 
-void CoordinatorClient::ReportCache(const coordinator::CacheWindow& window) {
-  if (!channel_) return;
+cedar::Status CoordinatorClient::ReportCache(const coordinator::CacheWindow& window) {
+  if (!channel_) return cedar::Status::InvalidArgument("No channel");
 
   auto stub = cedar::meta::MetaService::NewStub(channel_);
   cedar::meta::ReportCacheRequest req;
@@ -73,12 +73,16 @@ void CoordinatorClient::ReportCache(const coordinator::CacheWindow& window) {
   grpc::ClientContext ctx;
   ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
 
-  (void)stub->ReportCache(&ctx, req, &resp);
+  grpc::Status status = stub->ReportCache(&ctx, req, &resp);
+  if (!status.ok()) {
+    return cedar::Status::IOError("ReportCache RPC failed: " + status.error_message());
+  }
+  return cedar::Status::OK();
 }
 
-void CoordinatorClient::Heartbeat(
+cedar::Status CoordinatorClient::Heartbeat(
     const std::vector<coordinator::CacheWindow>& windows) {
-  if (!channel_) return;
+  if (!channel_) return cedar::Status::InvalidArgument("No channel");
 
   auto stub = cedar::meta::MetaService::NewStub(channel_);
   cedar::meta::GcnHeartbeatRequest req;
@@ -97,7 +101,11 @@ void CoordinatorClient::Heartbeat(
   grpc::ClientContext ctx;
   ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
 
-  (void)stub->GcnHeartbeat(&ctx, req, &resp);
+  grpc::Status status = stub->GcnHeartbeat(&ctx, req, &resp);
+  if (!status.ok()) {
+    return cedar::Status::IOError("GcnHeartbeat RPC failed: " + status.error_message());
+  }
+  return cedar::Status::OK();
 }
 
 }  // namespace gcn

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 
 #include "cedar/core/status.h"
 #include "cedar/gcn/tmv_engine.h"
@@ -41,16 +42,20 @@ class EventApplier {
   // drains the reorder buffer for any contiguous next versions.
   cedar::Status ApplyUnordered(const GraphCDCEvent& event);
 
-  uint64_t applied_version() const { return applied_version_; }
+  uint64_t applied_version() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return applied_version_;
+  }
 
  private:
   TMVEngine* tmv_engine_;
   uint64_t applied_version_ = 0;
   std::map<uint64_t, GraphCDCEvent> reorder_buffer_;
   static constexpr size_t kMaxReorderBuffer = 100000;
+  mutable std::mutex mutex_;
 
   cedar::Status ApplyInternal(const GraphCDCEvent& event);
-  void DrainBuffer();
+  void DrainBufferUnlocked();
 };
 
 }  // namespace gcn

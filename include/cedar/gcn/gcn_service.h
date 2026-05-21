@@ -55,6 +55,9 @@ class GcnServiceImpl final : public GcnService::Service {
   GcnServiceImpl(const GcnServiceImpl&) = delete;
   GcnServiceImpl& operator=(const GcnServiceImpl&) = delete;
 
+  // Signal all active streams to close.
+  void Shutdown();
+
   // Enqueue a CDC event to be streamed to connected clients.
   void EnqueueEvent(const CDCEvent& event);
 

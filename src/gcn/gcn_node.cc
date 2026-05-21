@@ -109,14 +109,15 @@ GcnNode::~GcnNode() {
   // Register peers in ScatterGatherRouter for multi-GCN routing
   auto router = std::make_shared<gcn::ScatterGatherRouter>();
   for (const auto& addr : peer_addresses_) {
-    auto channel = grpc::CreateChannel(addr, grpc::InsecureChannelCredentials());
+    auto channel = grpc::CreateChannel(
+        addr, cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv());
     router->RegisterPeer(addr, channel);
   }
   service_impl_->SetScatterGatherRouter(router);
 
   // Create CoordinatorClient connection to metad
   auto coordinator_channel = grpc::CreateChannel(
-      FLAGS_gcn_coordinator, grpc::InsecureChannelCredentials());
+      FLAGS_gcn_coordinator, cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv());
   coordinator_client_ =
       std::make_unique<gcn::CoordinatorClient>(coordinator_channel);
   coordinator_client_->SetGcnNodeId(
@@ -202,7 +203,10 @@ void GcnNode::HeartbeatLoop() {
       // construct real CacheWindow vectors from the engine and pass them here.
       // For now we send an empty heartbeat so MetaD knows this GCN is alive.
       std::vector<coordinator::CacheWindow> windows;
-      coordinator_client_->Heartbeat(windows);
+      auto status = coordinator_client_->Heartbeat(windows);
+      if (!status.ok()) {
+        CEDAR_LOG_WARN() << "GCN heartbeat failed: " << status.ToString() << "\n";
+      }
     }
     // Advance watermark based on a safe time-based heuristic.
     // (Production-grade watermark should come from min active query time or CDC commit pointer.)

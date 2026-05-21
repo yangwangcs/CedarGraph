@@ -10,6 +10,7 @@ namespace gcn {
 EventApplier::EventApplier(TMVEngine* engine) : tmv_engine_(engine) {}
 
 cedar::Status EventApplier::ApplyOrdered(const GraphCDCEvent& event) {
+  std::lock_guard<std::mutex> lock(mutex_);
   cedar::Status s = ApplyInternal(event);
   if (s.ok()) {
     applied_version_ = event.commit_version;
@@ -18,13 +19,14 @@ cedar::Status EventApplier::ApplyOrdered(const GraphCDCEvent& event) {
 }
 
 cedar::Status EventApplier::ApplyUnordered(const GraphCDCEvent& event) {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (event.commit_version == applied_version_ + 1) {
     cedar::Status s = ApplyInternal(event);
     if (!s.ok()) {
       return s;
     }
     applied_version_ = event.commit_version;
-    DrainBuffer();
+    DrainBufferUnlocked();
   } else {
     if (reorder_buffer_.size() >= kMaxReorderBuffer) {
       CEDAR_LOG_ERROR() << "EventApplier reorder buffer overflow (size="
@@ -57,7 +59,7 @@ cedar::Status EventApplier::ApplyInternal(const GraphCDCEvent& event) {
   return cedar::Status::OK();
 }
 
-void EventApplier::DrainBuffer() {
+void EventApplier::DrainBufferUnlocked() {
   while (!reorder_buffer_.empty()) {
     auto it = reorder_buffer_.begin();
     if (it->first == applied_version_ + 1) {
