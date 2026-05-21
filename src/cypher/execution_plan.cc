@@ -141,6 +141,11 @@ std::string ExecutionPlan::Explain() const {
   return root_->Explain(0);
 }
 
+std::unique_ptr<ExecutionPlan> ExecutionPlan::Clone() const {
+  auto cloned_root = std::shared_ptr<PhysicalOperator>(root_->Clone());
+  return std::make_unique<ExecutionPlan>(cloned_root);
+}
+
 // ============================================================================
 // ProduceResults
 // ============================================================================
@@ -174,6 +179,19 @@ ResultSet ProduceResults::GetResultSet() {
   return result_set_;
 }
 
+std::unique_ptr<PhysicalOperator> ProduceResults::Clone() const {
+  auto clone = std::make_unique<ProduceResults>(columns_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->result_set_.records.clear();
+  clone->result_set_.error.reset();
+  clone->result_set_.rows_affected = 0;
+  clone->result_set_.rows_returned = 0;
+  clone->result_set_.execution_time_us = 0;
+  return clone;
+}
+
 // ============================================================================
 // NodeScan with Storage Integration
 // ============================================================================
@@ -198,7 +216,7 @@ bool NodeScan::Init(ExecutionContext* ctx) {
   if (ctx->get_all_entities_fn) {
     node_ids_ = ctx->get_all_entities_fn(min_entity_id, max_entity_id, 1);
   } else if (ctx->graph) {
-    node_ids_ = ctx->graph->GetAllEntities(min_entity_id, max_entity_id, 1);
+    node_ids_ = ctx->graph->ScanVertices(ctx->time_range.first, ctx->time_range.second);
   } else {
     // Fallback: simple sequential range
     node_ids_.reserve(max_entity_id - min_entity_id + 1);
@@ -242,6 +260,16 @@ std::string NodeScan::GetDetails() const {
   }
   details += " (" + std::to_string(node_ids_.size()) + " nodes)";
   return details;
+}
+
+std::unique_ptr<PhysicalOperator> NodeScan::Clone() const {
+  auto clone = std::make_unique<NodeScan>(variable_, label_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->current_index_ = 0;
+  clone->node_ids_.clear();
+  return clone;
 }
 
 // ============================================================================
@@ -406,6 +434,18 @@ std::string Expand::GetDetails() const {
   return details;
 }
 
+std::unique_ptr<PhysicalOperator> Expand::Clone() const {
+  auto clone = std::make_unique<Expand>(
+      from_variable_, rel_variable_, to_variable_, direction_, rel_type_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->current_record_.reset();
+  clone->neighbor_index_ = 0;
+  clone->neighbors_.clear();
+  return clone;
+}
+
 // ============================================================================
 // Filter Implementation
 // ============================================================================
@@ -443,6 +483,14 @@ bool Filter::EvaluatePredicate(const Record& record) {
 
 std::string Filter::GetDetails() const {
   return "predicate";
+}
+
+std::unique_ptr<PhysicalOperator> Filter::Clone() const {
+  auto clone = std::make_unique<Filter>(predicate_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  return clone;
 }
 
 // ============================================================================
@@ -488,6 +536,14 @@ std::shared_ptr<Record> Project::Next() {
 
 std::string Project::GetDetails() const {
   return std::to_string(projections_.size()) + " projections";
+}
+
+std::unique_ptr<PhysicalOperator> Project::Clone() const {
+  auto clone = std::make_unique<Project>(projections_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  return clone;
 }
 
 // ============================================================================
@@ -763,6 +819,17 @@ void Sort::DoSort() {
     });
 }
 
+std::unique_ptr<PhysicalOperator> Sort::Clone() const {
+  auto clone = std::make_unique<Sort>(sort_items_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->buffered_records_.clear();
+  clone->current_index_ = 0;
+  clone->sorted_ = false;
+  return clone;
+}
+
 // ============================================================================
 // Limit Implementation
 // ============================================================================
@@ -790,6 +857,15 @@ std::shared_ptr<Record> Limit::Next() {
 
 std::string Limit::GetDetails() const {
   return std::to_string(limit_);
+}
+
+std::unique_ptr<PhysicalOperator> Limit::Clone() const {
+  auto clone = std::make_unique<Limit>(limit_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->count_ = 0;
+  return clone;
 }
 
 // ============================================================================
@@ -821,6 +897,16 @@ std::shared_ptr<Record> Skip::Next() {
 
 std::string Skip::GetDetails() const {
   return std::to_string(skip_);
+}
+
+std::unique_ptr<PhysicalOperator> Skip::Clone() const {
+  auto clone = std::make_unique<Skip>(skip_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->skipped_ = 0;
+  clone->initialized_ = false;
+  return clone;
 }
 
 // ============================================================================
@@ -861,6 +947,15 @@ size_t Distinct::ComputeKeyHash(const Record& record) {
     }
   }
   return h;
+}
+
+std::unique_ptr<PhysicalOperator> Distinct::Clone() const {
+  auto clone = std::make_unique<Distinct>(keys_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->seen_hashes_.clear();
+  return clone;
 }
 
 // ============================================================================
@@ -998,6 +1093,17 @@ void Aggregate::DoAggregate() {
     
     buffered_records_.push_back(result);
   }
+}
+
+std::unique_ptr<PhysicalOperator> Aggregate::Clone() const {
+  auto clone = std::make_unique<Aggregate>(items_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->buffered_records_.clear();
+  clone->current_index_ = 0;
+  clone->aggregated_ = false;
+  return clone;
 }
 
 }  // namespace cypher

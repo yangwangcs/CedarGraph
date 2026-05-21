@@ -14,6 +14,7 @@
 
 #include "cedar/graph/cedar_graph.h"
 
+#include <cstdlib>
 #include <queue>
 #include <thread>
 #include <vector>
@@ -379,6 +380,28 @@ std::vector<uint64_t> CedarGraph::GetAllEntities(
   }
   
   return entities;
+}
+
+std::vector<uint64_t> CedarGraph::ScanVertices(Timestamp start, Timestamp end) {
+  std::vector<uint64_t> result;
+  if (!storage_) return result;
+
+  // Use the same configurable range as NodeScan
+  uint64_t min_entity_id = 1;
+  uint64_t max_entity_id = 1000;
+  const char* env_max = std::getenv("CEDAR_SCAN_MAX_ENTITIES");
+  if (env_max) {
+    max_entity_id = std::max(min_entity_id, static_cast<uint64_t>(std::strtoull(env_max, nullptr, 10)));
+  }
+
+  for (uint64_t entity_id = min_entity_id; entity_id <= max_entity_id; ++entity_id) {
+    auto versions = storage_->Scan(entity_id, start, end);
+    if (!versions.empty()) {
+      result.push_back(entity_id);
+    }
+  }
+
+  return result;
 }
 
 std::vector<std::pair<Timestamp, Descriptor>> CedarGraph::GetTimeSeries(

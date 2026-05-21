@@ -282,6 +282,9 @@ class CedarGraph {
       uint64_t max_entity_id = 1000,
       uint64_t step = 1);
   
+  // Scan vertices that actually exist in storage within a time range
+  std::vector<uint64_t> ScanVertices(Timestamp start, Timestamp end);
+  
   // Get time series data for a specific entity
   std::vector<std::pair<Timestamp, Descriptor>> GetTimeSeries(
       uint64_t entity_id,

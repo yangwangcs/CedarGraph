@@ -149,9 +149,17 @@ add_executable(test_plan_cache_thread_safety cypher/test_plan_cache_thread_safet
 target_link_libraries(test_plan_cache_thread_safety ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_plan_cache_thread_safety)
 
+add_executable(test_concurrent_plan_execution cypher/test_concurrent_plan_execution.cc)
+target_link_libraries(test_concurrent_plan_execution ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_concurrent_plan_execution)
+
 add_executable(test_value_type_safety cypher/test_value_type_safety.cc)
 target_link_libraries(test_value_type_safety ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_value_type_safety)
+
+add_executable(test_nodescan_real_data cypher/test_nodescan_real_data.cc)
+target_link_libraries(test_nodescan_real_data ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_nodescan_real_data)
 
 add_executable(test_storage_service_impl dtx/test_storage_service_impl.cc)
 target_link_libraries(test_storage_service_impl ${CEDAR_TEST_LIBS} cedar_queryd)
