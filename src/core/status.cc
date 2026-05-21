@@ -69,6 +69,12 @@ std::string Status::ToString() const {
       case kConflict:
         type = "Conflict: ";
         break;
+      case kUnavailable:
+        type = "Unavailable: ";
+        break;
+      case kCancelled:
+        type = "Cancelled: ";
+        break;
       default:
         snprintf(tmp, sizeof(tmp), "Unknown code(%d): ",
                  static_cast<int>(code()));

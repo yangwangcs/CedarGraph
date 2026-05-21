@@ -517,8 +517,12 @@ Status DistributedExecutor::Execute(
     const std::unordered_map<std::string, cypher::Value>& parameters,
     DistributedExecutionContext* ctx,
     cypher::ResultSet* result) {
-  
+
   auto start = steady_clock::now();
+
+  if (ctx->is_cancelled && ctx->is_cancelled()) {
+    return Status::Cancelled("Query cancelled before execution");
+  }
 
   // Check query timeout (timeout_ms == 0 means immediate timeout)
   if (ctx->timeout_ms == 0) {
@@ -538,6 +542,10 @@ Status DistributedExecutor::Execute(
     return Status::InvalidArgument("Failed to parse query: " + parser.GetError());
   }
 
+  if (ctx->is_cancelled && ctx->is_cancelled()) {
+    return Status::Cancelled("Query cancelled after parsing");
+  }
+
   // Check timeout after parsing
   {
     auto elapsed_ms = duration_cast<milliseconds>(steady_clock::now() - start).count();
@@ -552,24 +560,33 @@ Status DistributedExecutor::Execute(
       return Status::InvalidArgument("Query validation failed: " + v.ToString());
     }
   }
-  
+
+  if (ctx->is_cancelled && ctx->is_cancelled()) {
+    return Status::Cancelled("Query cancelled after validation");
+  }
+
   // Check if single-partition query
   uint32_t partition_id;
   if (IsSinglePartitionQuery(query, parameters, &partition_id)) {
     auto s = ExecuteSinglePartition(query, parameters, partition_id, ctx, result);
+    ctx->stats.execution_time_us =
+        duration_cast<microseconds>(steady_clock::now() - start).count();
     if (s.ok()) {
-      ctx->stats.execution_time_us = 
-          duration_cast<microseconds>(steady_clock::now() - start).count();
       return s;
     }
-    // Fall through to cross-partition if single-partition fails
+    // Propagate error instead of silently falling through
+    return s;
   }
-  
+
+  if (ctx->is_cancelled && ctx->is_cancelled()) {
+    return Status::Cancelled("Query cancelled before cross-partition execution");
+  }
+
   // Execute cross-partition query
   auto s = ExecuteCrossPartition(query, parameters, ctx, result);
-  ctx->stats.execution_time_us = 
+  ctx->stats.execution_time_us =
       duration_cast<microseconds>(steady_clock::now() - start).count();
-  
+
   return s;
 }
 
@@ -599,16 +616,29 @@ Status DistributedExecutor::ExecuteStreaming(
     const std::unordered_map<std::string, cypher::Value>& parameters,
     DistributedExecutionContext* ctx,
     std::function<bool(const cypher::Record&)> record_callback) {
-  
+
+  if (ctx->is_cancelled && ctx->is_cancelled()) {
+    return Status::Cancelled("Query cancelled before streaming execution");
+  }
+
   // Split query into sub-queries
-  auto tasks = SplitQuery(query, parameters);
-  
+  std::vector<SubQueryTask> tasks;
+  Status split_status = SplitQuery(query, parameters, &tasks);
+  if (!split_status.ok()) {
+    return split_status;
+  }
+
+  if (ctx->is_cancelled && ctx->is_cancelled()) {
+    return Status::Cancelled("Query cancelled after split");
+  }
+
   // Execute with streaming callback
   parallel_executor_->ExecuteParallelStreaming(
       tasks, storage_client_, ctx,
       [&record_callback](const SubQueryResult& sub_result) -> bool {
         if (!sub_result.status.ok()) {
-          return true;  // Continue with other partitions
+          // Propagate error by stopping streaming; caller should check statuses.
+          return false;
         }
         for (const auto& record : sub_result.result.records) {
           if (!record_callback(record)) {
@@ -617,7 +647,7 @@ Status DistributedExecutor::ExecuteStreaming(
         }
         return true;
       });
-  
+
   return Status::OK();
 }
 
@@ -881,21 +911,24 @@ Status DistributedExecutor::ExecuteSinglePartition(
     uint32_t partition_id,
     DistributedExecutionContext* ctx,
     cypher::ResultSet* result) {
-  
+
+  if (ctx->is_cancelled && ctx->is_cancelled()) {
+    return Status::Cancelled("Query cancelled before single-partition execution");
+  }
+
   // Leader check
   std::string leader_address;
   Status rs = router_->GetStorageNode(partition_id, &leader_address);
   if (!rs.ok()) return rs;
   rs = router_->CheckIsLeader(partition_id, leader_address);
   if (!rs.ok()) return rs;
-  
+
   // Send query to specific storage node
-  // Storage nodes have embedded query capabilities
   auto node_client = storage_client_->GetNodeClient(partition_id);
   if (!node_client) {
     return Status::NotFound("Storage node not found");
   }
-  
+
   // Execute query on the single partition
   Status s = node_client->ExecuteSubQuery(query, parameters, result);
   if (!s.ok()) {
@@ -912,34 +945,59 @@ Status DistributedExecutor::ExecuteCrossPartition(
     const std::unordered_map<std::string, cypher::Value>& parameters,
     DistributedExecutionContext* ctx,
     cypher::ResultSet* result) {
-  
+
+  if (ctx->is_cancelled && ctx->is_cancelled()) {
+    return Status::Cancelled("Query cancelled before cross-partition execution");
+  }
+
   // Split into sub-queries per partition
-  auto tasks = SplitQuery(query, parameters);
-  
+  std::vector<SubQueryTask> tasks;
+  Status split_status = SplitQuery(query, parameters, &tasks);
+  if (!split_status.ok()) {
+    return split_status;
+  }
+
+  if (ctx->is_cancelled && ctx->is_cancelled()) {
+    return Status::Cancelled("Query cancelled after split");
+  }
+
   // Execute in parallel
   auto sub_results = parallel_executor_->ExecuteParallel(
       tasks, storage_client_, ctx);
-  
+
+  // Propagate first sub-query error instead of silently merging
+  for (const auto& sub : sub_results) {
+    if (!sub.status.ok()) {
+      return Status::IOError("Sub-query failed on partition " +
+                             std::to_string(sub.partition_id) + ": " + sub.status.ToString());
+    }
+  }
+
+  if (ctx->is_cancelled && ctx->is_cancelled()) {
+    return Status::Cancelled("Query cancelled after parallel execution");
+  }
+
   // Merge results
   *result = result_merger_->Merge(sub_results);
-  
+
   return Status::OK();
 }
 
-std::vector<SubQueryTask> DistributedExecutor::SplitQuery(
+Status DistributedExecutor::SplitQuery(
     const std::string& query,
-    const std::unordered_map<std::string, cypher::Value>& parameters) {
-  
-  std::vector<SubQueryTask> tasks;
-  
+    const std::unordered_map<std::string, cypher::Value>& parameters,
+    std::vector<SubQueryTask>* tasks) {
+
+  tasks->clear();
+
   // Get all partitions
-  ClusterState state;
-  if (!meta_client_->GetCachedClusterState()) {
-    return tasks;
+  const ClusterState* cached = meta_client_->GetCachedClusterState();
+  if (!cached) {
+    return Status::NotFound("Cluster state not available");
   }
-  
-  state = *meta_client_->GetCachedClusterState();
-  
+
+  const ClusterState& state = *cached;
+
   // Create a sub-query task for each partition
   uint32_t seq = 0;
   for (const auto& partition : state.partitions) {
@@ -947,21 +1005,23 @@ std::vector<SubQueryTask> DistributedExecutor::SplitQuery(
     task.partition_id = partition.partition_id;
     Status s = router_->GetStorageNode(task.partition_id, &task.storage_node);
     if (!s.ok()) {
-      tasks.clear();
-      return tasks;
+      tasks->clear();
+      return Status::NotFound("Storage node not found for partition " +
+                              std::to_string(task.partition_id) + ": " + s.ToString());
     }
     s = router_->CheckIsLeader(task.partition_id, task.storage_node);
     if (!s.ok()) {
-      tasks.clear();
-      return tasks;
+      tasks->clear();
+      return Status::NotLeader("Leader check failed for partition " +
+                               std::to_string(task.partition_id) + ": " + s.ToString());
     }
     task.sub_query = query;  // Same query for all partitions
     task.parameters = parameters;
     task.sequence = seq++;
-    tasks.push_back(std::move(task));
+    tasks->push_back(std::move(task));
   }
-  
-  return tasks;
+
+  return Status::OK();
 }
 
 Status DistributedExecutor::TraverseOptimized(

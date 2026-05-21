@@ -389,17 +389,92 @@ class RemoteRPCNodeClient : public QueryStorageClient::NodeClient {
   uint32_t partition_id_;
 };
 
+// ============================================================================
+// Circuit breaker helpers
+// ============================================================================
+
+class UnavailableNodeClient : public QueryStorageClient::NodeClient {
+ public:
+  explicit UnavailableNodeClient(const std::string& node_address)
+      : node_address_(node_address) {}
+
+  Status ScanEntity(uint64_t /*entity_id*/,
+                    EntityType /*entity_type*/,
+                    Timestamp /*start_ts*/,
+                    Timestamp /*end_ts*/,
+                    std::vector<std::pair<Timestamp, Descriptor>>* /*results*/) override {
+    return Status::Unavailable("Circuit breaker open for node " + node_address_);
+  }
+
+  Status ExecuteSubQuery(
+      const std::string& /*query_fragment*/,
+      const std::unordered_map<std::string, cypher::Value>& /*parameters*/,
+      cypher::ResultSet* /*result*/) override {
+    return Status::Unavailable("Circuit breaker open for node " + node_address_);
+  }
+
+ private:
+  std::string node_address_;
+};
+
+class CircuitBreakerTrackingNodeClient : public QueryStorageClient::NodeClient {
+ public:
+  CircuitBreakerTrackingNodeClient(
+      QueryStorageClient* client,
+      const std::string& node_address,
+      std::shared_ptr<NodeClient> inner)
+      : client_(client), node_address_(node_address), inner_(std::move(inner)) {}
+
+  Status ScanEntity(uint64_t entity_id,
+                    EntityType entity_type,
+                    Timestamp start_ts,
+                    Timestamp end_ts,
+                    std::vector<std::pair<Timestamp, Descriptor>>* results) override {
+    return inner_->ScanEntity(entity_id, entity_type, start_ts, end_ts, results);
+  }
+
+  Status ExecuteSubQuery(
+      const std::string& query_fragment,
+      const std::unordered_map<std::string, cypher::Value>& parameters,
+      cypher::ResultSet* result) override {
+    Status s = inner_->ExecuteSubQuery(query_fragment, parameters, result);
+    if (client_) {
+      client_->ReportNodeResult(node_address_, s.ok());
+    }
+    return s;
+  }
+
+ private:
+  QueryStorageClient* client_;
+  std::string node_address_;
+  std::shared_ptr<NodeClient> inner_;
+};
+
 std::shared_ptr<QueryStorageClient::NodeClient> QueryStorageClient::GetNodeClient(
     uint32_t partition_id) {
   if (IsLocalPartition(partition_id)) {
     return std::make_shared<NodeClientImpl>(this, partition_id);
+  }
+  std::string address;
+  {
+    std::shared_lock<std::shared_mutex> lock(nodes_mutex_);
+    auto it = partition_routing_.find(partition_id);
+    if (it == partition_routing_.end()) {
+      return nullptr;
+    }
+    address = it->second;
+  }
+  if (CheckCircuitBreaker(address)) {
+    return std::make_shared<UnavailableNodeClient>(address);
   }
   auto channel = GetOrCreateChannel(partition_id);
   if (!channel) {
     // Fallback to local execution if channel unavailable
     return std::make_shared<NodeClientImpl>(this, partition_id);
   }
-  return std::make_shared<RemoteRPCNodeClient>(channel, partition_id);
+  auto inner = std::make_shared<RemoteRPCNodeClient>(channel, partition_id);
+  return std::make_shared<CircuitBreakerTrackingNodeClient>(
+      this, address, std::move(inner));
 }
 
 Status QueryStorageClient::HealthCheck() {
@@ -411,6 +486,23 @@ Status QueryStorageClient::HealthCheck() {
     return Status::OK();
   }
   return Status::IOError("Base client not connected");
+}
+
+std::string QueryStorageClient::GetNodeAddress(uint32_t partition_id) const {
+  std::shared_lock<std::shared_mutex> lock(nodes_mutex_);
+  auto it = partition_routing_.find(partition_id);
+  if (it != partition_routing_.end()) {
+    return it->second;
+  }
+  return "";
+}
+
+void QueryStorageClient::ReportNodeResult(const std::string& node_address, bool success) {
+  if (success) {
+    RecordSuccess(node_address);
+  } else {
+    RecordFailure(node_address);
+  }
 }
 
 QueryStorageClient::Stats QueryStorageClient::GetStats() const {

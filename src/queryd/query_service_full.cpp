@@ -44,13 +44,23 @@ class QueryServiceImpl::Impl {
         options_(options) {}
 
   cedar::Status Init() {
+    // Ensure storage client is initialized with all partition endpoints
+    if (storage_client_ && meta_client_) {
+      const auto* state = meta_client_->GetCachedClusterState();
+      if (state) {
+        for (const auto& partition : state->partitions) {
+          storage_client_->RegisterNode(partition.partition_id, partition.leader_address);
+        }
+      }
+    }
+
     executor_ = std::make_unique<DistributedExecutor>(
         storage_client_.get(),
         meta_client_.get(),
         options_.executor_workers);
-    
+
     plan_cache_ = std::make_unique<QueryPlanCache>(options_.plan_cache_size);
-    
+
     return cedar::Status::OK();
   }
 
@@ -123,6 +133,7 @@ class QueryServiceImpl::Impl {
         start.time_since_epoch()).count();
     ctx.timeout_ms = request->timeout_ms() > 0 ? 
         request->timeout_ms() : options_.max_query_timeout_ms;
+    ctx.is_cancelled = [context]() { return context->IsCancelled(); };
     
     // Parse consistency level
     switch (request->consistency()) {
@@ -172,7 +183,7 @@ class QueryServiceImpl::Impl {
       response->set_success(false);
       response->set_error_msg(s.ToString());
       RecordQueryCompletion(query_id, latency_us, false);
-      return grpc::Status::OK;
+      return grpc::Status(grpc::StatusCode::INTERNAL, s.ToString());
     }
     
     // Build response
@@ -257,7 +268,7 @@ class QueryServiceImpl::Impl {
     if (!s.ok()) {
       response->set_success(false);
       response->set_error_msg(s.ToString());
-      return grpc::Status::OK;
+      return grpc::Status(grpc::StatusCode::INTERNAL, s.ToString());
     }
     
     // Convert paths to response
@@ -292,10 +303,12 @@ class QueryServiceImpl::Impl {
         static_cast<EntityType>(request->entity_type()),
         DistributedExecutionContext::Consistency::kReadYourWrites,
         &versions);
-    response->set_success(s.ok());
     if (!s.ok()) {
+      response->set_success(false);
       response->set_error_msg(s.ToString());
+      return grpc::Status(grpc::StatusCode::INTERNAL, s.ToString());
     }
+    response->set_success(true);
     for (const auto& ve : versions) {
       auto* proto_ve = response->add_versions();
       proto_ve->set_timestamp(static_cast<uint64_t>(ve.timestamp));
@@ -308,16 +321,25 @@ class QueryServiceImpl::Impl {
                     const cedar::query::BatchQueryRequest* request,
                     cedar::query::BatchQueryResponse* response) {
     if (context->IsCancelled()) return Status::CANCELLED;
+    bool all_success = true;
     for (int i = 0; i < request->queries_size(); ++i) {
       auto* result = response->add_results();
       result->set_query_id(request->queries(i).query_id());
       DistributedExecutionContext ctx;
+      ctx.is_cancelled = [context]() { return context->IsCancelled(); };
       cypher::ResultSet rs;
       std::unordered_map<std::string, cypher::Value> parameters;
       auto s = executor_->Execute(request->queries(i).query(), parameters, &ctx, &rs);
       result->set_success(s.ok());
+      if (!s.ok()) {
+        result->set_error_msg(s.ToString());
+        all_success = false;
+      }
     }
-    response->set_success(true);
+    response->set_success(all_success);
+    if (!all_success) {
+      return grpc::Status(grpc::StatusCode::INTERNAL, "One or more batch queries failed");
+    }
     return grpc::Status::OK;
   }
 

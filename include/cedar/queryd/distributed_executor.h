@@ -67,6 +67,9 @@ struct DistributedExecutionContext {
   Timestamp snapshot_ts = 0;
   bool use_snapshot = false;
   
+  // Cancellation check (e.g., grpc::ServerContext::IsCancelled)
+  std::function<bool()> is_cancelled;
+
   // Execution statistics
   struct Stats {
     std::atomic<uint64_t> rows_scanned{0};
@@ -291,9 +294,10 @@ class DistributedExecutor {
       cypher::ResultSet* result);
   
   // Split query into sub-queries per partition
-  std::vector<SubQueryTask> SplitQuery(
+  Status SplitQuery(
       const std::string& query,
-      const std::unordered_map<std::string, cypher::Value>& parameters);
+      const std::unordered_map<std::string, cypher::Value>& parameters,
+      std::vector<SubQueryTask>* tasks);
   
   // Optimize traversal using CedarKey physical clustering
   Status TraverseOptimized(

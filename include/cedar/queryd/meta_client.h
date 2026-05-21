@@ -158,10 +158,10 @@ class QueryMetaClient {
   Status Heartbeat(uint32_t active_queries, uint32_t queued_queries);
   
   // Get cached schema (no RPC)
-  const GraphSchema* GetCachedSchema() const;
-  
+  virtual const GraphSchema* GetCachedSchema() const;
+
   // Get cached cluster state (no RPC)
-  const ClusterState* GetCachedClusterState() const;
+  virtual const ClusterState* GetCachedClusterState() const;
 
  private:
   Options options_;

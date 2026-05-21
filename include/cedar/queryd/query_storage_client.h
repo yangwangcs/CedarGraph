@@ -155,6 +155,12 @@ class QueryStorageClient {
   // Get or create gRPC channel to a remote partition.
   std::shared_ptr<grpc::Channel> GetOrCreateChannel(uint32_t partition_id);
 
+  // Get the registered node address for a partition (empty if unknown).
+  std::string GetNodeAddress(uint32_t partition_id) const;
+
+  // Report success or failure for a node address (used by circuit breaker tracking).
+  void ReportNodeResult(const std::string& node_address, bool success);
+
   // ========== 健康检查与统计 ==========
   
   Status HealthCheck();
