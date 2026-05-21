@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "cedar/types/cedar_types.h"
@@ -287,6 +288,24 @@ class Skip : public PhysicalOperator {
 };
 
 /**
+ * @brief Key used by Distinct to detect duplicates with hash+value equality.
+ */
+struct DistinctKey {
+  size_t hash;
+  std::vector<Value> values;
+  bool operator==(const DistinctKey& o) const {
+    return hash == o.hash && values == o.values;
+  }
+};
+
+/**
+ * @brief Hash functor for DistinctKey (uses precomputed hash).
+ */
+struct KeyHash {
+  size_t operator()(const DistinctKey& k) const { return k.hash; }
+};
+
+/**
  * @brief Distinct operator
  */
 class Distinct : public PhysicalOperator {
@@ -300,9 +319,7 @@ class Distinct : public PhysicalOperator {
   
  private:
   std::vector<std::shared_ptr<Expression>> keys_;
-  std::unordered_set<size_t> seen_hashes_;
-  
-  size_t ComputeKeyHash(const Record& record);
+  std::unordered_set<DistinctKey, KeyHash> seen_keys_;
 };
 
 /**

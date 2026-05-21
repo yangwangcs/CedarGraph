@@ -926,27 +926,23 @@ bool Distinct::Init(ExecutionContext* ctx) {
 
 std::shared_ptr<Record> Distinct::Next() {
   ExpressionEvaluator evaluator(context_);
-  
+
   while (auto record = children_[0]->Next()) {
-    size_t h = ComputeKeyHash(*record);
-    if (seen_hashes_.find(h) == seen_hashes_.end()) {
-      seen_hashes_.insert(h);
+    DistinctKey key;
+    key.hash = 0;
+    for (const auto& expr : keys_) {
+      if (expr) {
+        auto val = evaluator.Evaluate(*expr, *record);
+        key.hash = key.hash * 31 + val.Hash();
+        key.values.push_back(std::move(val));
+      }
+    }
+    if (seen_keys_.find(key) == seen_keys_.end()) {
+      seen_keys_.insert(std::move(key));
       return record;
     }
   }
   return nullptr;
-}
-
-size_t Distinct::ComputeKeyHash(const Record& record) {
-  ExpressionEvaluator evaluator(context_);
-  size_t h = 0;
-  for (const auto& expr : keys_) {
-    if (expr) {
-      auto val = evaluator.Evaluate(*expr, record);
-      h = h * 31 + val.Hash();
-    }
-  }
-  return h;
 }
 
 std::unique_ptr<PhysicalOperator> Distinct::Clone() const {
@@ -954,7 +950,7 @@ std::unique_ptr<PhysicalOperator> Distinct::Clone() const {
   for (const auto& child : children_) {
     clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
   }
-  clone->seen_hashes_.clear();
+  clone->seen_keys_.clear();
   return clone;
 }
 
