@@ -537,7 +537,7 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
   
   // 从本地 levels_ 获取文件列表（当 compaction_engine_ 不可用时）
   if (all_entries.empty()) {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    // mutex_ is already locked by the outer shared_lock at line 457
     for (const auto& level : levels_) {
       for (const auto& meta : level) {
         // 支持跨列存储的文件

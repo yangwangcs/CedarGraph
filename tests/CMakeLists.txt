@@ -66,6 +66,10 @@ add_executable(test_memtable_iterator_race db/test_memtable_iterator_race.cc)
 target_link_libraries(test_memtable_iterator_race ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_memtable_iterator_race)
 
+add_executable(test_recursive_lock db/test_recursive_lock.cc)
+target_link_libraries(test_recursive_lock ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_recursive_lock)
+
 add_executable(test_cedar_graph_storage storage/test_cedar_graph_storage.cc)
 target_link_libraries(test_cedar_graph_storage ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cedar_graph_storage)
