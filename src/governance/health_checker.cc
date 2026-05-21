@@ -730,9 +730,11 @@ class HealthCheckerImpl {
         continue;
       }
 
-      // Handle the request in a simple way (no threading for simplicity)
-      HandleHttpRequest(client_socket);
-      close(client_socket);
+      // Handle the request in a detached thread to avoid blocking the accept loop
+      std::thread([this, client_socket]() {
+        HandleHttpRequest(client_socket);
+        close(client_socket);
+      }).detach();
     }
   }
 

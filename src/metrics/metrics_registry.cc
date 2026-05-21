@@ -34,10 +34,16 @@ Histogram::Histogram(std::vector<double> buckets) : buckets_(std::move(buckets))
 
 void Histogram::Observe(double value) {
   size_t idx = buckets_.size();  // default to +Inf bucket
-  for (size_t i = 0; i < buckets_.size(); ++i) {
-    if (value <= buckets_[i]) {
-      idx = i;
-      break;
+  if (buckets_.size() > 20) {
+    // Use binary search for large bucket counts
+    auto it = std::lower_bound(buckets_.begin(), buckets_.end(), value);
+    idx = static_cast<size_t>(it - buckets_.begin());
+  } else {
+    for (size_t i = 0; i < buckets_.size(); ++i) {
+      if (value <= buckets_[i]) {
+        idx = i;
+        break;
+      }
     }
   }
   bucket_counts_[idx]->fetch_add(1, std::memory_order_relaxed);
