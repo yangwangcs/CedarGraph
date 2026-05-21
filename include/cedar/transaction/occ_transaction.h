@@ -300,6 +300,9 @@ class OCCTransaction {
   // 获取冲突信息 (如果 Commit 返回 Conflict)
   const std::vector<ConflictInfo>& GetConflicts() const { return conflicts_; }
   
+  // 清理事务状态（用于对象池复用）
+  void Cleanup();
+  
  private:
   // ========== 内部方法 ==========
   
@@ -316,9 +319,6 @@ class OCCTransaction {
   // 写入阶段
   Status WriteToMemTable();
   Status WriteToWAL();
-  
-  // 清理
-  void Cleanup();
   
   // 构建 CedarKey
   CedarKey MakeKey(uint64_t entity_id, EntityType type, 

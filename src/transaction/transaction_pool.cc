@@ -46,8 +46,8 @@ OCCTransaction* TransactionPool::Acquire(const TransactionOptions& options) {
     pool_.pop();
     size_.fetch_sub(1, std::memory_order_relaxed);
     
-    // 重置事务状态（简化处理：直接使用新选项）
-    // 注意：这里需要确保事务已结束状态
+    // 清理事务状态，防止读集/写集泄漏到下一次使用
+    txn->Cleanup();
     return txn;
   }
   
