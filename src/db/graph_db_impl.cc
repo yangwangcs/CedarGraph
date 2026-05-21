@@ -378,7 +378,8 @@ Status CedarGraphDBImpl::DropColumnFamily(ColumnFamilyHandle* handle) {
   if ((*it)->engine) {
     (*it)->engine->Close();
   }
-  
+
+  delete handle;
   column_families_.erase(it);
   return Status::OK();
 }
@@ -696,23 +697,32 @@ Status CedarGraphDBImpl::DoCompaction(int level) {
   all_inputs.insert(all_inputs.end(), overlapping_files.begin(),
                     overlapping_files.end());
   
-  // 读取所有输入文件的数据
-  std::vector<std::pair<CedarKey, Descriptor>> all_entries;
+  // 流式合并：使用最小堆避免将所有数据载入内存
+  struct Source {
+    std::unique_ptr<ZoneColumnarSstReader> reader;
+    std::unique_ptr<ZoneColumnarSstReader::Iterator> iter;
+  };
+  std::vector<Source> sources;
+  sources.reserve(all_inputs.size());
+
   for (const auto& file : all_inputs) {
     std::string filepath = db_path_ + "/" + std::to_string(file.file_number) + ".sst";
-    ZoneColumnarSstReader reader(filepath);
-    Status s = reader.Open();
+    auto reader = std::make_unique<ZoneColumnarSstReader>(filepath);
+    Status s = reader->Open();
     if (!s.ok()) {
       return s;
     }
-    auto* iter = reader.NewIterator();
-    for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
-      all_entries.emplace_back(iter->Key(), iter->Value());
+    auto* iter = reader->NewIterator();
+    iter->SeekToFirst();
+    if (iter->Valid()) {
+      sources.push_back({std::move(reader),
+                         std::unique_ptr<ZoneColumnarSstReader::Iterator>(iter)});
+    } else {
+      delete iter;
     }
-    delete iter;
   }
-  
-  if (all_entries.empty()) {
+
+  if (sources.empty()) {
     // 无数据可合并，仅删除输入文件
     std::vector<ManifestEdit> edits;
     for (const auto& file : all_inputs) {
@@ -736,39 +746,73 @@ Status CedarGraphDBImpl::DoCompaction(int level) {
     stats_.compactions.fetch_add(1, std::memory_order_relaxed);
     return Status::OK();
   }
-  
+
   // 按全局排序契约排序（entity_id ASC, type ASC, col_id ASC, target_id ASC,
   // timestamp DESC, sequence ASC）
-  std::sort(all_entries.begin(), all_entries.end(),
-            [](const auto& a, const auto& b) {
-              return a.first.LessForSorting(b.first);
-            });
-  
+  struct HeapEntry {
+    CedarKey key;
+    Descriptor descriptor;
+    size_t source_idx;
+    bool operator>(const HeapEntry& o) const {
+      return o.key.LessForSorting(key);
+    }
+  };
+  std::priority_queue<HeapEntry, std::vector<HeapEntry>, std::greater<>> min_heap;
+
+  // 初始化堆：每个源的第一个条目
+  for (size_t i = 0; i < sources.size(); ++i) {
+    min_heap.push({sources[i].iter->Key(), sources[i].iter->Value(), i});
+  }
+
   // 确定输出层级
   int output_level = (level + 1 < options_.max_levels) ? level + 1 : level;
-  
+
   // 创建新的 SST 文件
   uint64_t new_file_number = version_set_.GetNextFileNumber();
   std::string output_path = db_path_ + "/" + std::to_string(new_file_number) + ".sst";
-  
+
   WritableFile* file = nullptr;
   Status s = env_->NewWritableFile(output_path, &file);
   if (!s.ok()) {
     return s;
   }
-  
+
   auto builder = SstBuilderFactory::Create(file, db_path_);
   uint64_t out_min_entity = UINT64_MAX;
   uint64_t out_max_entity = 0;
   uint64_t out_min_ts = UINT64_MAX;
   uint64_t out_max_ts = 0;
-  
-  for (const auto& [key, desc] : all_entries) {
-    builder->Add(key, desc);
-    out_min_entity = std::min(out_min_entity, key.entity_id());
-    out_max_entity = std::max(out_max_entity, key.entity_id());
-    out_min_ts = std::min(out_min_ts, key.timestamp().value());
-    out_max_ts = std::max(out_max_ts, key.timestamp().value());
+
+  // K路流式合并
+  CedarKey last_key;
+  bool has_last = false;
+  while (!min_heap.empty()) {
+    auto entry = min_heap.top();
+    min_heap.pop();
+
+    // Skip duplicate keys (same entity, type, column, target, timestamp, sequence)
+    if (has_last && entry.key.CompareForSorting(last_key) == 0) {
+      size_t idx = entry.source_idx;
+      sources[idx].iter->Next();
+      if (sources[idx].iter->Valid()) {
+        min_heap.push({sources[idx].iter->Key(), sources[idx].iter->Value(), idx});
+      }
+      continue;
+    }
+    last_key = entry.key;
+    has_last = true;
+
+    builder->Add(entry.key, entry.descriptor);
+    out_min_entity = std::min(out_min_entity, entry.key.entity_id());
+    out_max_entity = std::max(out_max_entity, entry.key.entity_id());
+    out_min_ts = std::min(out_min_ts, entry.key.timestamp().value());
+    out_max_ts = std::max(out_max_ts, entry.key.timestamp().value());
+
+    size_t idx = entry.source_idx;
+    sources[idx].iter->Next();
+    if (sources[idx].iter->Valid()) {
+      min_heap.push({sources[idx].iter->Key(), sources[idx].iter->Value(), idx});
+    }
   }
   
   s = builder->Finish();

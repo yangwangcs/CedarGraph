@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "cedar/sst/zone_columnar_format.h"
+#include "cedar/sst/zone_columnar_format_v2.h"
 
 #include <cstring>
 #include <algorithm>
@@ -667,6 +668,191 @@ Status ZoneColumnarFooter::DecodeFrom(Slice* input) {
 
   pos += 40;  // Skip reserved
 
+  input->remove_prefix(kEncodedSize);
+  return Status::OK();
+}
+
+// =============================================================================
+
+
+// =============================================================================
+// ZoneColumnarHeaderV2 实现
+// =============================================================================
+
+void ZoneColumnarHeaderV2::EncodeTo(std::string* dst) const {
+  char buf[kEncodedSize];
+  size_t pos = 0;
+  EncodeFixed32(buf + pos, magic);
+  pos += 4;
+  EncodeFixed32(buf + pos, version);
+  pos += 4;
+  EncodeFixed64(buf + pos, file_size);
+  pos += 8;
+  EncodeFixed64(buf + pos, min_entity_id);
+  pos += 8;
+  EncodeFixed64(buf + pos, max_entity_id);
+  pos += 8;
+  EncodeFixed64(buf + pos, min_timestamp);
+  pos += 8;
+  EncodeFixed64(buf + pos, max_timestamp);
+  pos += 8;
+  EncodeFixed32(buf + pos, column_id);
+  pos += 4;
+  buf[pos++] = entity_type;
+  buf[pos++] = reserved[0];
+  buf[pos++] = reserved[1];
+  buf[pos++] = reserved[2];
+  EncodeFixed32(buf + pos, header_checksum);
+  pos += 4;
+  EncodeFixed32(buf + pos, padding);
+  pos += 4;
+  dst->append(buf, kEncodedSize);
+}
+
+Status ZoneColumnarHeaderV2::DecodeFrom(Slice* input) {
+  if (input->size() < kEncodedSize) {
+    return Status::Corruption("ZoneColumnarHeaderV2", "truncated header");
+  }
+  const char* p = input->data();
+  size_t pos = 0;
+  magic = DecodeFixed32(p + pos);
+  pos += 4;
+  version = DecodeFixed32(p + pos);
+  pos += 4;
+  file_size = DecodeFixed64(p + pos);
+  pos += 8;
+  min_entity_id = DecodeFixed64(p + pos);
+  pos += 8;
+  max_entity_id = DecodeFixed64(p + pos);
+  pos += 8;
+  min_timestamp = DecodeFixed64(p + pos);
+  pos += 8;
+  max_timestamp = DecodeFixed64(p + pos);
+  pos += 8;
+  column_id = DecodeFixed32(p + pos);
+  pos += 4;
+  entity_type = p[pos++];
+  reserved[0] = p[pos++];
+  reserved[1] = p[pos++];
+  reserved[2] = p[pos++];
+  header_checksum = DecodeFixed32(p + pos);
+  pos += 4;
+  padding = DecodeFixed32(p + pos);
+  pos += 4;
+  input->remove_prefix(kEncodedSize);
+  return Status::OK();
+}
+
+// =============================================================================
+// BlockIndexEntry 实现
+// =============================================================================
+
+void BlockIndexEntry::EncodeTo(std::string* dst) const {
+  char buf[kEncodedSize];
+  size_t pos = 0;
+  EncodeFixed64(buf + pos, min_entity_id);
+  pos += 8;
+  EncodeFixed64(buf + pos, max_entity_id);
+  pos += 8;
+  EncodeFixed64(buf + pos, min_timestamp);
+  pos += 8;
+  EncodeFixed64(buf + pos, max_timestamp);
+  pos += 8;
+  EncodeFixed32(buf + pos, block_offset);
+  pos += 4;
+  EncodeFixed32(buf + pos, block_size);
+  pos += 4;
+  EncodeFixed32(buf + pos, row_count);
+  pos += 4;
+  memset(buf + pos, 0, kEncodedSize - pos);
+  dst->append(buf, kEncodedSize);
+}
+
+Status BlockIndexEntry::DecodeFrom(Slice* input) {
+  if (input->size() < kEncodedSize) {
+    return Status::Corruption("BlockIndexEntry", "truncated entry");
+  }
+  const char* p = input->data();
+  size_t pos = 0;
+  min_entity_id = DecodeFixed64(p + pos);
+  pos += 8;
+  max_entity_id = DecodeFixed64(p + pos);
+  pos += 8;
+  min_timestamp = DecodeFixed64(p + pos);
+  pos += 8;
+  max_timestamp = DecodeFixed64(p + pos);
+  pos += 8;
+  block_offset = DecodeFixed32(p + pos);
+  pos += 4;
+  block_size = DecodeFixed32(p + pos);
+  pos += 4;
+  row_count = DecodeFixed32(p + pos);
+  pos += 4;
+  input->remove_prefix(kEncodedSize);
+  return Status::OK();
+}
+
+// =============================================================================
+// ZoneColumnarFooterV2 实现
+// =============================================================================
+
+void ZoneColumnarFooterV2::EncodeTo(std::string* dst) const {
+  char buf[kEncodedSize];
+  size_t pos = 0;
+  EncodeFixed32(buf + pos, block_index_offset);
+  pos += 4;
+  EncodeFixed32(buf + pos, block_index_size);
+  pos += 4;
+  EncodeFixed32(buf + pos, bloom_filter_offset);
+  pos += 4;
+  EncodeFixed32(buf + pos, bloom_filter_size);
+  pos += 4;
+  EncodeFixed64(buf + pos, row_count);
+  pos += 8;
+  EncodeFixed32(buf + pos, block_count);
+  pos += 4;
+  EncodeFixed32(buf + pos, footer_magic);
+  pos += 4;
+  EncodeFixed32(buf + pos, temporal_filter_offset);
+  pos += 4;
+  EncodeFixed32(buf + pos, temporal_filter_size);
+  pos += 4;
+  EncodeFixed32(buf + pos, reserved);
+  pos += 4;
+  EncodeFixed64(buf + pos, data_checksum);
+  pos += 8;
+  memset(buf + pos, 0, kEncodedSize - pos);
+  dst->append(buf, kEncodedSize);
+}
+
+Status ZoneColumnarFooterV2::DecodeFrom(Slice* input) {
+  if (input->size() < kEncodedSize) {
+    return Status::Corruption("ZoneColumnarFooterV2", "truncated footer");
+  }
+  const char* p = input->data();
+  size_t pos = 0;
+  block_index_offset = DecodeFixed32(p + pos);
+  pos += 4;
+  block_index_size = DecodeFixed32(p + pos);
+  pos += 4;
+  bloom_filter_offset = DecodeFixed32(p + pos);
+  pos += 4;
+  bloom_filter_size = DecodeFixed32(p + pos);
+  pos += 4;
+  row_count = DecodeFixed64(p + pos);
+  pos += 8;
+  block_count = DecodeFixed32(p + pos);
+  pos += 4;
+  footer_magic = DecodeFixed32(p + pos);
+  pos += 4;
+  temporal_filter_offset = DecodeFixed32(p + pos);
+  pos += 4;
+  temporal_filter_size = DecodeFixed32(p + pos);
+  pos += 4;
+  reserved = DecodeFixed32(p + pos);
+  pos += 4;
+  data_checksum = DecodeFixed64(p + pos);
+  pos += 8;
   input->remove_prefix(kEncodedSize);
   return Status::OK();
 }
