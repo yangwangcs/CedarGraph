@@ -264,6 +264,14 @@ add_executable(test_2pc_thread_pool dtx/test_2pc_thread_pool.cc)
 target_link_libraries(test_2pc_thread_pool ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_2pc_thread_pool)
 
+add_executable(test_failover_thread_bound dtx/test_failover_thread_bound.cc)
+target_link_libraries(test_failover_thread_bound ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_failover_thread_bound)
+
+add_executable(test_rpc_thread_bound dtx/test_rpc_thread_bound.cc)
+target_link_libraries(test_rpc_thread_bound ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_rpc_thread_bound)
+
 add_executable(test_partial_commit_rollback dtx/test_partial_commit_rollback.cc)
 target_link_libraries(test_partial_commit_rollback ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_partial_commit_rollback)

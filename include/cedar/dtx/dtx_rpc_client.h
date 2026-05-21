@@ -25,10 +25,13 @@
 #include <mutex>
 #include <atomic>
 #include <functional>
+#include <future>
+#include <vector>
 
 #include <grpcpp/grpcpp.h>
 
 #include "cedar/core/status.h"
+#include "cedar/core/threading.h"
 #include "cedar/dtx/types.h"
 #include "dtx_protocol.grpc.pb.h"
 
@@ -48,6 +51,9 @@ struct DTXRpcConfig {
 
   // Connection pool size per endpoint
   size_t max_channels_per_endpoint = 4;
+
+  // Thread pool size for parallel RPCs
+  size_t max_rpc_threads = 64;
 
   // Retry configuration
   bool enable_retries = true;
@@ -171,6 +177,7 @@ class DTXRpcClient {
   std::unordered_map<NodeID, std::shared_ptr<ParticipantInfo>> participants_;
   std::shared_ptr<grpc::ChannelCredentials> credentials_;
   mutable std::atomic<size_t> round_robin_index_{0};
+  std::unique_ptr<cedar::ThreadPool> thread_pool_;
 };
 
 }  // namespace dtx

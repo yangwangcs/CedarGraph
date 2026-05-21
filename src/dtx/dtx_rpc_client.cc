@@ -38,7 +38,8 @@ std::shared_ptr<grpc::ChannelCredentials> CreateClientCredentialsFromEnv() {
 // =============================================================================
 
 DTXRpcClient::DTXRpcClient(const DTXRpcConfig& config)
-    : config_(config) {
+    : config_(config),
+      thread_pool_(std::make_unique<cedar::ThreadPool>(config.max_rpc_threads)) {
   LOG(WARNING) << "DTXRpcClient initialized but DTXService has no server "
                << "implementation in the current codebase. RPCs will fail "
                << "with UNIMPLEMENTED unless a custom server is provided.";
@@ -267,39 +268,37 @@ std::vector<std::pair<NodeID, cedar::dtx::PrepareResponse>> DTXRpcClient::Prepar
   std::vector<std::pair<NodeID, cedar::dtx::PrepareResponse>> results;
   results.reserve(participant_ids.size());
 
-  std::vector<std::thread> threads;
-  threads.reserve(participant_ids.size());
+  std::vector<std::future<void>> futures;
+  futures.reserve(participant_ids.size());
   std::mutex results_mutex;
 
   for (NodeID participant_id : participant_ids) {
-    try {
-      threads.emplace_back([
-          this, participant_id, &txn_id, &coordinator_id, prepare_version,
-          &reads, &writes, isolation_level, timeout_ms, &results, &results_mutex]() {
-        try {
-          cedar::dtx::PrepareResponse response;
-          Status status = Prepare(participant_id, txn_id, coordinator_id, prepare_version,
-                                 reads, writes, isolation_level, timeout_ms, &response);
-          if (!status.ok()) {
-            response.set_success(false);
-            response.set_error_msg(status.ToString());
-          }
-          std::lock_guard<std::mutex> lock(results_mutex);
-          results.emplace_back(participant_id, std::move(response));
-        } catch (...) {
-          // 捕获所有异常，避免线程崩溃
+    auto promise = std::make_shared<std::promise<void>>();
+    futures.push_back(promise->get_future());
+
+    thread_pool_->Schedule([
+        this, participant_id, &txn_id, &coordinator_id, prepare_version,
+        &reads, &writes, isolation_level, timeout_ms, &results, &results_mutex,
+        promise]() {
+      try {
+        cedar::dtx::PrepareResponse response;
+        Status status = Prepare(participant_id, txn_id, coordinator_id, prepare_version,
+                               reads, writes, isolation_level, timeout_ms, &response);
+        if (!status.ok()) {
+          response.set_success(false);
+          response.set_error_msg(status.ToString());
         }
-      });
-    } catch (...) {
-      for (auto& t : threads) {
-        if (t.joinable()) t.join();
+        std::lock_guard<std::mutex> lock(results_mutex);
+        results.emplace_back(participant_id, std::move(response));
+      } catch (...) {
+        // 捕获所有异常，避免线程崩溃
       }
-      throw;
-    }
+      promise->set_value();
+    });
   }
 
-  for (auto& t : threads) {
-    if (t.joinable()) t.join();
+  for (auto& f : futures) {
+    f.wait();
   }
 
   return results;
@@ -314,38 +313,35 @@ std::vector<std::pair<NodeID, cedar::dtx::CommitResponse>> DTXRpcClient::CommitA
   std::vector<std::pair<NodeID, cedar::dtx::CommitResponse>> results;
   results.reserve(participant_ids.size());
 
-  std::vector<std::thread> threads;
-  threads.reserve(participant_ids.size());
+  std::vector<std::future<void>> futures;
+  futures.reserve(participant_ids.size());
   std::mutex results_mutex;
 
   for (NodeID participant_id : participant_ids) {
-    try {
-      threads.emplace_back([
-          this, participant_id, &txn_id, &coordinator_id, commit_version,
-          &results, &results_mutex]() {
-        try {
-          cedar::dtx::CommitResponse response;
-          Status status = Commit(participant_id, txn_id, coordinator_id, commit_version, &response);
-          if (!status.ok()) {
-            response.set_success(false);
-            response.set_error_msg(status.ToString());
-          }
-          std::lock_guard<std::mutex> lock(results_mutex);
-          results.emplace_back(participant_id, std::move(response));
-        } catch (...) {
-          // 捕获所有异常，避免线程崩溃
+    auto promise = std::make_shared<std::promise<void>>();
+    futures.push_back(promise->get_future());
+
+    thread_pool_->Schedule([
+        this, participant_id, &txn_id, &coordinator_id, commit_version,
+        &results, &results_mutex, promise]() {
+      try {
+        cedar::dtx::CommitResponse response;
+        Status status = Commit(participant_id, txn_id, coordinator_id, commit_version, &response);
+        if (!status.ok()) {
+          response.set_success(false);
+          response.set_error_msg(status.ToString());
         }
-      });
-    } catch (...) {
-      for (auto& t : threads) {
-        if (t.joinable()) t.join();
+        std::lock_guard<std::mutex> lock(results_mutex);
+        results.emplace_back(participant_id, std::move(response));
+      } catch (...) {
+        // 捕获所有异常，避免线程崩溃
       }
-      throw;
-    }
+      promise->set_value();
+    });
   }
 
-  for (auto& t : threads) {
-    if (t.joinable()) t.join();
+  for (auto& f : futures) {
+    f.wait();
   }
 
   return results;
@@ -360,38 +356,35 @@ std::vector<std::pair<NodeID, cedar::dtx::AbortResponse>> DTXRpcClient::AbortAll
   std::vector<std::pair<NodeID, cedar::dtx::AbortResponse>> results;
   results.reserve(participant_ids.size());
 
-  std::vector<std::thread> threads;
-  threads.reserve(participant_ids.size());
+  std::vector<std::future<void>> futures;
+  futures.reserve(participant_ids.size());
   std::mutex results_mutex;
 
   for (NodeID participant_id : participant_ids) {
-    try {
-      threads.emplace_back([
-          this, participant_id, &txn_id, &coordinator_id, &reason,
-          &results, &results_mutex]() {
-        try {
-          cedar::dtx::AbortResponse response;
-          Status status = Abort(participant_id, txn_id, coordinator_id, reason, &response);
-          if (!status.ok()) {
-            response.set_success(false);
-            response.set_error_msg(status.ToString());
-          }
-          std::lock_guard<std::mutex> lock(results_mutex);
-          results.emplace_back(participant_id, std::move(response));
-        } catch (...) {
-          // 捕获所有异常，避免线程崩溃
+    auto promise = std::make_shared<std::promise<void>>();
+    futures.push_back(promise->get_future());
+
+    thread_pool_->Schedule([
+        this, participant_id, &txn_id, &coordinator_id, &reason,
+        &results, &results_mutex, promise]() {
+      try {
+        cedar::dtx::AbortResponse response;
+        Status status = Abort(participant_id, txn_id, coordinator_id, reason, &response);
+        if (!status.ok()) {
+          response.set_success(false);
+          response.set_error_msg(status.ToString());
         }
-      });
-    } catch (...) {
-      for (auto& t : threads) {
-        if (t.joinable()) t.join();
+        std::lock_guard<std::mutex> lock(results_mutex);
+        results.emplace_back(participant_id, std::move(response));
+      } catch (...) {
+        // 捕获所有异常，避免线程崩溃
       }
-      throw;
-    }
+      promise->set_value();
+    });
   }
 
-  for (auto& t : threads) {
-    if (t.joinable()) t.join();
+  for (auto& f : futures) {
+    f.wait();
   }
 
   return results;
