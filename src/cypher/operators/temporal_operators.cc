@@ -1,6 +1,8 @@
 // Copyright (c) 2024 CedarGraph Project
 // Licensed under the MIT License.
 
+#include <iostream>
+
 #include "cedar/cypher/execution_plan.h"
 #include "cedar/cypher/value.h"
 
@@ -214,6 +216,7 @@ std::shared_ptr<Record> TemporalExpand::Next() {
         try {
           edge_type = static_cast<uint32_t>(std::stoi(*rel_type_));
         } catch (...) {
+          std::cerr << "[TemporalOperators] Failed to parse rel_type: " << *rel_type_ << std::endl;
           edge_type = 0;
         }
       }
