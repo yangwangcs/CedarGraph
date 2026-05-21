@@ -167,7 +167,7 @@ Status LsmEngine::Close() {
   
   // 首先关闭 Compaction 引擎，防止在 Flush 期间触发新的 Compaction
   if (compaction_engine_) {
-    std::cout << "[LsmEngine::Close] Closing compaction engine" << std::endl;
+    std::cerr << "[LsmEngine::Close] Closing compaction engine" << std::endl;
     compaction_engine_->WaitForCompactions();
     compaction_engine_->Close();
     compaction_engine_.reset();
@@ -175,16 +175,16 @@ Status LsmEngine::Close() {
   
   // 等待所有后台 Flush 完成
   {
-    std::cout << "[LsmEngine::Close] Waiting for " << active_flush_count_.load() << " active flushes" << std::endl;
+    std::cerr << "[LsmEngine::Close] Waiting for " << active_flush_count_.load() << " active flushes" << std::endl;
     std::unique_lock<std::mutex> lock(flush_completion_mutex_);
     flush_completion_cv_.wait(lock, [this] { return active_flush_count_.load() == 0; });
-    std::cout << "[LsmEngine::Close] All flushes completed" << std::endl;
+    std::cerr << "[LsmEngine::Close] All flushes completed" << std::endl;
   }
 
   {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     if (imm_) {
-      std::cout << "[LsmEngine::Close] Flushing imm_" << std::endl;
+      std::cerr << "[LsmEngine::Close] Flushing imm_" << std::endl;
       auto* imm = imm_.get();
       lock.unlock();
       FlushMemTable(imm);
@@ -193,25 +193,25 @@ Status LsmEngine::Close() {
     }
 
     if (mem_ && !mem_->IsEmpty()) {
-      std::cout << "[LsmEngine::Close] Flushing mem_" << std::endl;
+      std::cerr << "[LsmEngine::Close] Flushing mem_" << std::endl;
       auto* mem = mem_.get();
       lock.unlock();
       FlushMemTable(mem);
       lock.lock();
     } else {
-      std::cout << "[LsmEngine::Close] mem_ is empty or null" << std::endl;
+      std::cerr << "[LsmEngine::Close] mem_ is empty or null" << std::endl;
     }
   }
 
   // Flush any accumulated entries (accumulated flush mode)
   if (options_.enable_accumulated_flush && !accumulated_entries_.empty()) {
-    std::cout << "[LsmEngine::Close] Flushing accumulated entries" << std::endl;
+    std::cerr << "[LsmEngine::Close] Flushing accumulated entries" << std::endl;
     FlushAccumulated();
   }
 
   // 同步并关闭 WAL，确保所有已提交数据持久化
   if (wal_writer_) {
-    std::cout << "[LsmEngine::Close] Closing WAL" << std::endl;
+    std::cerr << "[LsmEngine::Close] Closing WAL" << std::endl;
     wal_writer_->Close();
     wal_writer_.reset();
   }
@@ -1570,7 +1570,7 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::pair<CedarKey, Descriptor>>
   // 创建单个 SST 文件
   uint64_t file_number = next_file_number_.fetch_add(1);
   std::string filepath = SstFilePath(file_number);
-  std::cout << "[FlushEntriesToSST] Creating SST file: " << filepath << " with " << entries.size() << " entries" << std::endl;
+  std::cerr << "[FlushEntriesToSST] Creating SST file: " << filepath << " with " << entries.size() << " entries" << std::endl;
   
   cedar::WritableFile* file = nullptr;
   cedar::Status ls = env_->NewWritableFile(filepath, &file);
@@ -2529,17 +2529,17 @@ void LsmEngine::PreloadHotEntities() {
 
 Status LsmEngine::LoadSstFiles() {
   if (!std::filesystem::exists(db_path_)) {
-    std::cout << "[LoadSstFiles] DB path does not exist: " << db_path_ << std::endl;
+    std::cerr << "[LoadSstFiles] DB path does not exist: " << db_path_ << std::endl;
     return Status::OK();
   }
 
-  std::cout << "[LoadSstFiles] Loading from: " << db_path_ << std::endl;
+  std::cerr << "[LoadSstFiles] Loading from: " << db_path_ << std::endl;
   int loaded_count = 0;
 
   for (const auto& entry : std::filesystem::directory_iterator(db_path_)) {
     if (entry.is_regular_file() && entry.path().extension() == ".sst") {
       std::string filename = entry.path().filename().string();
-      std::cout << "[LoadSstFiles] Found SST: " << filename << std::endl;
+      std::cerr << "[LoadSstFiles] Found SST: " << filename << std::endl;
       
       size_t dot_pos = filename.find('.');
       if (dot_pos == std::string::npos) continue;
@@ -2563,10 +2563,10 @@ Status LsmEngine::LoadSstFiles() {
       SstReader reader(filepath);
       Status open_status = reader.Open();
       if (!open_status.ok()) {
-        std::cout << "[LoadSstFiles] Failed to open " << filename << ": " << open_status.ToString() << std::endl;
+        std::cerr << "[LoadSstFiles] Failed to open " << filename << ": " << open_status.ToString() << std::endl;
         continue;
       }
-      std::cout << "[LoadSstFiles] Opened " << filename << " successfully" << std::endl;
+      std::cerr << "[LoadSstFiles] Opened " << filename << " successfully" << std::endl;
 
       SSTFileMeta meta;
       meta.file_number = file_number;

@@ -1132,7 +1132,7 @@ void MetadataService::HeartbeatCheckLoop() {
                         try {
                             callback(change);
                         } catch (...) {
-                            // 回调异常不应导致心跳检测线程崩溃
+                            std::cerr << "[MetaD] Heartbeat callback exception" << std::endl;
                         }
                     }
                 }
@@ -1154,7 +1154,7 @@ void MetadataService::NotifyPartitionChange(const PartitionMapChange& change) {
             try {
                 callback(change);
             } catch (...) {
-                // Callback exceptions should not break notification
+                std::cerr << "[MetaD] Partition change callback exception" << std::endl;
             }
         }
     }
@@ -1166,7 +1166,7 @@ void MetadataService::NotifyNodeChange(const NodeChange& change) {
         try {
             callback(change);
         } catch (...) {
-            // Callback exceptions should not break notification
+            std::cerr << "[MetaD] Node change callback exception" << std::endl;
         }
     }
 }
