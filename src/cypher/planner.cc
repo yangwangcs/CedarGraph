@@ -5,13 +5,16 @@
 
 #include <sstream>
 
+#include "cedar/cypher/expression_evaluator.h"
+
 namespace cedar::cypher {
 
 // ============================================================================
 // QueryPlanner::Plan - main entry point
 // ============================================================================
 
-std::unique_ptr<ExecutionPlan> QueryPlanner::Plan(const QueryStatement& query) {
+std::unique_ptr<ExecutionPlan> QueryPlanner::Plan(
+    const QueryStatement& query) {
   // Delegate to ExecutionPlanBuilder for consistency
   auto stmt = std::make_shared<QueryStatement>(query);
   auto root = ExecutionPlanBuilder::Build(stmt);
@@ -26,31 +29,37 @@ std::unique_ptr<ExecutionPlan> QueryPlanner::Plan(const QueryStatement& query) {
 // Clause-level planners
 // ============================================================================
 
-std::shared_ptr<PhysicalOperator> QueryPlanner::PlanClause(
+std::unique_ptr<PhysicalOperator> QueryPlanner::PlanClause(
     const QueryClause& clause,
-    std::shared_ptr<PhysicalOperator> input) {
+    std::unique_ptr<PhysicalOperator> input) {
   switch (clause.clause_type) {
     case ClauseType::MATCH:
-      return PlanMatch(static_cast<const MatchClause&>(clause), std::move(input));
+      return PlanMatch(static_cast<const MatchClause&>(clause),
+                       std::move(input));
     case ClauseType::WHERE:
-      return PlanWhere(static_cast<const WhereClause&>(clause), std::move(input));
+      return PlanWhere(static_cast<const WhereClause&>(clause),
+                       std::move(input));
     case ClauseType::RETURN:
-      return PlanReturn(static_cast<const ReturnClause&>(clause), std::move(input));
+      return PlanReturn(static_cast<const ReturnClause&>(clause),
+                        std::move(input));
     case ClauseType::ORDER_BY:
-      return PlanOrderBy(static_cast<const OrderByClause&>(clause), std::move(input));
+      return PlanOrderBy(static_cast<const OrderByClause&>(clause),
+                         std::move(input));
     case ClauseType::LIMIT:
-      return PlanLimit(static_cast<const LimitClause&>(clause), std::move(input));
+      return PlanLimit(static_cast<const LimitClause&>(clause),
+                       std::move(input));
     case ClauseType::SKIP:
-      return PlanSkip(static_cast<const SkipClause&>(clause), std::move(input));
+      return PlanSkip(static_cast<const SkipClause&>(clause),
+                      std::move(input));
     default:
       last_error_ = "Unsupported clause type";
       return input;
   }
 }
 
-std::shared_ptr<PhysicalOperator> QueryPlanner::PlanMatch(
+std::unique_ptr<PhysicalOperator> QueryPlanner::PlanMatch(
     const MatchClause& match,
-    std::shared_ptr<PhysicalOperator> input) {
+    std::unique_ptr<PhysicalOperator> input) {
   (void)input;  // MATCH is typically the leaf/source
   if (match.patterns.empty()) {
     last_error_ = "MATCH clause has no patterns";
@@ -59,20 +68,20 @@ std::shared_ptr<PhysicalOperator> QueryPlanner::PlanMatch(
   return PlanPathPattern(match.patterns[0], nullptr);
 }
 
-std::shared_ptr<PhysicalOperator> QueryPlanner::PlanWhere(
+std::unique_ptr<PhysicalOperator> QueryPlanner::PlanWhere(
     const WhereClause& where,
-    std::shared_ptr<PhysicalOperator> input) {
+    std::unique_ptr<PhysicalOperator> input) {
   if (!where.condition || !input) {
     return input;
   }
-  auto filter = std::make_shared<Filter>(where.condition);
-  filter->AddChild(input);
+  auto filter = std::make_unique<Filter>(where.condition);
+  filter->AddChild(std::shared_ptr<PhysicalOperator>(input.release()));
   return filter;
 }
 
-std::shared_ptr<PhysicalOperator> QueryPlanner::PlanReturn(
+std::unique_ptr<PhysicalOperator> QueryPlanner::PlanReturn(
     const ReturnClause& ret,
-    std::shared_ptr<PhysicalOperator> input) {
+    std::unique_ptr<PhysicalOperator> input) {
   std::vector<std::string> columns;
   std::vector<std::pair<std::string, std::shared_ptr<Expression>>> projections;
 
@@ -82,11 +91,11 @@ std::shared_ptr<PhysicalOperator> QueryPlanner::PlanReturn(
     projections.push_back({col_name, item.expression});
   }
 
-  std::shared_ptr<PhysicalOperator> root;
+  std::unique_ptr<PhysicalOperator> root;
   if (input) {
-    auto project = std::make_shared<Project>(projections);
-    project->AddChild(input);
-    root = project;
+    auto project = std::make_unique<Project>(projections);
+    project->AddChild(std::shared_ptr<PhysicalOperator>(input.release()));
+    root = std::move(project);
   }
 
   if (ret.distinct && root) {
@@ -94,21 +103,21 @@ std::shared_ptr<PhysicalOperator> QueryPlanner::PlanReturn(
     for (const auto& item : ret.items) {
       distinct_keys.push_back(item.expression);
     }
-    auto distinct = std::make_shared<Distinct>(distinct_keys);
-    distinct->AddChild(root);
-    root = distinct;
+    auto distinct = std::make_unique<Distinct>(distinct_keys);
+    distinct->AddChild(std::shared_ptr<PhysicalOperator>(root.release()));
+    root = std::move(distinct);
   }
 
-  auto produce = std::make_shared<ProduceResults>(columns);
+  auto produce = std::make_unique<ProduceResults>(columns);
   if (root) {
-    produce->AddChild(root);
+    produce->AddChild(std::shared_ptr<PhysicalOperator>(root.release()));
   }
   return produce;
 }
 
-std::shared_ptr<PhysicalOperator> QueryPlanner::PlanOrderBy(
+std::unique_ptr<PhysicalOperator> QueryPlanner::PlanOrderBy(
     const OrderByClause& order_by,
-    std::shared_ptr<PhysicalOperator> input) {
+    std::unique_ptr<PhysicalOperator> input) {
   if (order_by.items.empty() || !input) {
     return input;
   }
@@ -116,14 +125,14 @@ std::shared_ptr<PhysicalOperator> QueryPlanner::PlanOrderBy(
   for (const auto& item : order_by.items) {
     sort_items.push_back({item.expression, item.ascending});
   }
-  auto sort = std::make_shared<Sort>(sort_items);
-  sort->AddChild(input);
+  auto sort = std::make_unique<Sort>(sort_items);
+  sort->AddChild(std::shared_ptr<PhysicalOperator>(input.release()));
   return sort;
 }
 
-std::shared_ptr<PhysicalOperator> QueryPlanner::PlanLimit(
+std::unique_ptr<PhysicalOperator> QueryPlanner::PlanLimit(
     const LimitClause& limit,
-    std::shared_ptr<PhysicalOperator> input) {
+    std::unique_ptr<PhysicalOperator> input) {
   if (!limit.expression || !input) {
     return input;
   }
@@ -134,14 +143,14 @@ std::shared_ptr<PhysicalOperator> QueryPlanner::PlanLimit(
   if (limit_count <= 0) {
     return input;
   }
-  auto limit_op = std::make_shared<Limit>(static_cast<size_t>(limit_count));
-  limit_op->AddChild(input);
+  auto limit_op = std::make_unique<Limit>(static_cast<size_t>(limit_count));
+  limit_op->AddChild(std::shared_ptr<PhysicalOperator>(input.release()));
   return limit_op;
 }
 
-std::shared_ptr<PhysicalOperator> QueryPlanner::PlanSkip(
+std::unique_ptr<PhysicalOperator> QueryPlanner::PlanSkip(
     const SkipClause& skip,
-    std::shared_ptr<PhysicalOperator> input) {
+    std::unique_ptr<PhysicalOperator> input) {
   if (!skip.expression || !input) {
     return input;
   }
@@ -152,8 +161,8 @@ std::shared_ptr<PhysicalOperator> QueryPlanner::PlanSkip(
   if (skip_count <= 0) {
     return input;
   }
-  auto skip_op = std::make_shared<Skip>(static_cast<size_t>(skip_count));
-  skip_op->AddChild(input);
+  auto skip_op = std::make_unique<Skip>(static_cast<size_t>(skip_count));
+  skip_op->AddChild(std::shared_ptr<PhysicalOperator>(input.release()));
   return skip_op;
 }
 
@@ -161,21 +170,23 @@ std::shared_ptr<PhysicalOperator> QueryPlanner::PlanSkip(
 // Pattern and scan planners
 // ============================================================================
 
-std::shared_ptr<PhysicalOperator> QueryPlanner::PlanPathPattern(
+std::unique_ptr<PhysicalOperator> QueryPlanner::PlanPathPattern(
     const PathPattern& pattern,
-    std::shared_ptr<PhysicalOperator> input) {
+    std::unique_ptr<PhysicalOperator> input) {
   (void)input;
   if (pattern.elements.empty()) {
     last_error_ = "Empty path pattern";
     return nullptr;
   }
 
-  std::shared_ptr<PhysicalOperator> current;
+  std::unique_ptr<PhysicalOperator> current;
 
   // First element must be a node
   if (std::holds_alternative<NodePattern>(pattern.elements[0])) {
     const auto& node = std::get<NodePattern>(pattern.elements[0]);
-    current = PlanNodeScan(node);
+    current = std::make_unique<NodeScan>(
+        node.variable,
+        node.labels.empty() ? std::nullopt : std::optional(node.labels[0]));
   } else {
     last_error_ = "Path must start with a node";
     return nullptr;
@@ -189,14 +200,15 @@ std::shared_ptr<PhysicalOperator> QueryPlanner::PlanPathPattern(
       if (i + 1 < pattern.elements.size() &&
           std::holds_alternative<NodePattern>(pattern.elements[i + 1])) {
         const auto& next_node = std::get<NodePattern>(pattern.elements[i + 1]);
-        auto expand = std::make_shared<Expand>(
+        auto expand = std::make_unique<Expand>(
             std::get<NodePattern>(pattern.elements[i - 1]).variable,
             rel.variable,
             next_node.variable,
             rel.direction,
             rel.types.empty() ? std::nullopt : std::optional(rel.types[0]));
-        expand->AddChild(current);
-        current = expand;
+        expand->AddChild(
+            std::shared_ptr<PhysicalOperator>(current.release()));
+        current = std::move(expand);
         i += 2;
       } else {
         i++;
@@ -209,31 +221,27 @@ std::shared_ptr<PhysicalOperator> QueryPlanner::PlanPathPattern(
   return current;
 }
 
-std::shared_ptr<PhysicalOperator> QueryPlanner::PlanNodeScan(
+std::unique_ptr<PhysicalOperator> QueryPlanner::PlanNodeScan(
     const NodePattern& node) {
-  return std::make_shared<NodeScan>(
+  return std::make_unique<NodeScan>(
       node.variable,
       node.labels.empty() ? std::nullopt : std::optional(node.labels[0]));
 }
 
 // ============================================================================
-// Expression helpers (stubs - full implementation would use ExpressionEvaluator)
+// Expression helpers
 // ============================================================================
 
 std::function<bool(const Record&)> QueryPlanner::CreateFilterPredicate(
     const Expression& expr) {
-  (void)expr;
-  // Full implementation requires expression evaluation against records.
-  // For now, return a predicate that always passes.
-  return [](const Record&) { return true; };
+  return ExpressionEvaluator::BuildPredicate(&expr);
 }
 
 Value QueryPlanner::EvaluateExpression(
     const Expression& expr,
     const Record& record) {
-  (void)record;
-  // Stub: return the expression as a string for debugging
-  return Value(ExpressionToString(expr));
+  ExpressionEvaluator evaluator(nullptr);
+  return evaluator.Evaluate(expr, record);
 }
 
 std::string QueryPlanner::ExpressionToString(const Expression& expr) {
@@ -261,7 +269,8 @@ std::string QueryPlanner::ExpressionToString(const Expression& expr) {
         case ComparisonExpr::LE: op = "<="; break;
         case ComparisonExpr::GE: op = ">="; break;
       }
-      return ExpressionToString(*cmp.left) + " " + op + " " + ExpressionToString(*cmp.right);
+      return ExpressionToString(*cmp.left) + " " + op + " " +
+             ExpressionToString(*cmp.right);
     }
     case ExprType::FUNCTION_CALL: {
       auto& fn = static_cast<const FunctionCallExpr&>(expr);
