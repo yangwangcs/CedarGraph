@@ -171,6 +171,7 @@ set(CEDAR_CORE_SOURCES
     src/core/env_posix.cc
     src/core/threading.cc
     src/core/crc32c.cc
+    src/metrics/metrics_registry.cc
     src/types/descriptor.cc
     src/types/cedar_key.cc
 )

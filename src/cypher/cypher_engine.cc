@@ -3,6 +3,7 @@
 #include "cedar/cypher/cypher_engine.h"
 #include "cedar/cypher/parser.h"
 #include "cedar/cypher/fingerprint.h"
+#include "cedar/metrics/metrics_registry.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include <chrono>
 
@@ -18,68 +19,106 @@ CypherEngine::CypherEngine(CedarGraphStorage* storage) : storage_(storage) {
 CypherEngine::~CypherEngine() = default;
 
 ResultSet CypherEngine::Execute(const std::string& query) {
-  // Compute fingerprint for cache key
-  auto fingerprint = ComputeFingerprint(query);
+  auto start = std::chrono::steady_clock::now();
 
-  // Check cache first
-  if (auto cached = GetCachedPlan(fingerprint)) {
+  auto do_execute = [&]() -> ResultSet {
+    // Compute fingerprint for cache key
+    auto fingerprint = ComputeFingerprint(query);
+
+    // Check cache first
+    if (auto cached = GetCachedPlan(fingerprint)) {
+      ExecutionContext ctx;
+      ctx.graph = graph_.get();
+      ctx.gcn_traversal_callback = gcn_traversal_callback_;
+      return cached->Execute(&ctx);
+    }
+    
+    // Parse and create new plan
+    auto plan = ParseAndPlan(query);
+    if (!plan) {
+      ResultSet result;
+      result.SetError(last_error_);
+      return result;
+    }
+    
+    // Execute
     ExecutionContext ctx;
     ctx.graph = graph_.get();
     ctx.gcn_traversal_callback = gcn_traversal_callback_;
-    return cached->Execute(&ctx);
-  }
-  
-  // Parse and create new plan
-  auto plan = ParseAndPlan(query);
-  if (!plan) {
-    ResultSet result;
-    result.SetError(last_error_);
-    return result;
-  }
-  
-  // Execute
-  ExecutionContext ctx;
-  ctx.graph = graph_.get();
-  ctx.gcn_traversal_callback = gcn_traversal_callback_;
-  auto* raw_plan = plan.get();
-  CachePlan(fingerprint, std::move(plan));
-  return raw_plan->Execute(&ctx);
+    auto* raw_plan = plan.get();
+    CachePlan(fingerprint, std::move(plan));
+    return raw_plan->Execute(&ctx);
+  };
+
+  ResultSet result = do_execute();
+
+  auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - start).count();
+  using cedar::metrics::MetricsRegistry;
+  MetricsRegistry::Instance().GetOrCreateCounter(
+      "cypher_queries_total", "Total Cypher queries executed")
+      ->Increment();
+  MetricsRegistry::Instance().GetOrCreateHistogram(
+      "cypher_query_latency_us", "Query latency in microseconds",
+      {1000, 5000, 10000, 50000, 100000, 500000, 1000000})
+      ->Observe(static_cast<double>(elapsed_us));
+
+  return result;
 }
 
 ResultSet CypherEngine::Execute(const std::string& query,
                                  const std::map<std::string, Value>& parameters) {
-  // Compute fingerprint for cache key
-  auto fingerprint = ComputeFingerprint(query);
+  auto start = std::chrono::steady_clock::now();
 
-  // Check cache first
-  if (auto cached = GetCachedPlan(fingerprint)) {
+  auto do_execute = [&]() -> ResultSet {
+    // Compute fingerprint for cache key
+    auto fingerprint = ComputeFingerprint(query);
+
+    // Check cache first
+    if (auto cached = GetCachedPlan(fingerprint)) {
+      ExecutionContext ctx;
+      ctx.graph = graph_.get();
+      ctx.gcn_traversal_callback = gcn_traversal_callback_;
+      for (const auto& [k, v] : parameters) {
+        ctx.SetVariable(k, v);
+      }
+      return cached->Execute(&ctx);
+    }
+    
+    // Parse and create new plan
+    auto plan = ParseAndPlan(query);
+    if (!plan) {
+      ResultSet result;
+      result.SetError(last_error_);
+      return result;
+    }
+    
+    // Execute with parameters bound to context variables
     ExecutionContext ctx;
     ctx.graph = graph_.get();
     ctx.gcn_traversal_callback = gcn_traversal_callback_;
     for (const auto& [k, v] : parameters) {
       ctx.SetVariable(k, v);
     }
-    return cached->Execute(&ctx);
-  }
-  
-  // Parse and create new plan
-  auto plan = ParseAndPlan(query);
-  if (!plan) {
-    ResultSet result;
-    result.SetError(last_error_);
-    return result;
-  }
-  
-  // Execute with parameters bound to context variables
-  ExecutionContext ctx;
-  ctx.graph = graph_.get();
-  ctx.gcn_traversal_callback = gcn_traversal_callback_;
-  for (const auto& [k, v] : parameters) {
-    ctx.SetVariable(k, v);
-  }
-  auto* raw_plan = plan.get();
-  CachePlan(fingerprint, std::move(plan));
-  return raw_plan->Execute(&ctx);
+    auto* raw_plan = plan.get();
+    CachePlan(fingerprint, std::move(plan));
+    return raw_plan->Execute(&ctx);
+  };
+
+  ResultSet result = do_execute();
+
+  auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - start).count();
+  using cedar::metrics::MetricsRegistry;
+  MetricsRegistry::Instance().GetOrCreateCounter(
+      "cypher_queries_total", "Total Cypher queries executed")
+      ->Increment();
+  MetricsRegistry::Instance().GetOrCreateHistogram(
+      "cypher_query_latency_us", "Query latency in microseconds",
+      {1000, 5000, 10000, 50000, 100000, 500000, 1000000})
+      ->Observe(static_cast<double>(elapsed_us));
+
+  return result;
 }
 
 bool CypherEngine::IsValid(const std::string& query) {
