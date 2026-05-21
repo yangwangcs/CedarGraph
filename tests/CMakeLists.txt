@@ -36,6 +36,13 @@ endmacro()
 # Cypher tests
 add_subdirectory(cypher)
 
+# SET/DELETE parsing test
+add_executable(test_set_delete_parsing
+    cypher/test_set_delete_parsing.cc
+)
+target_link_libraries(test_set_delete_parsing cedar cedar_cypher cedar_queryd gtest pthread)
+gtest_discover_tests(test_set_delete_parsing)
+
 # Queryd tests
 add_executable(test_subquery_execution queryd/test_subquery_execution.cc)
 target_link_libraries(test_subquery_execution ${CEDAR_TEST_LIBS})
@@ -270,6 +277,10 @@ gtest_discover_tests(test_out_neighbors_edge_type)
 add_executable(test_pushdown_predicate graph/test_pushdown_predicate.cc)
 target_link_libraries(test_pushdown_predicate ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_pushdown_predicate)
+
+add_executable(test_cypher_api graph/test_cypher_api.cc)
+target_link_libraries(test_cypher_api ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_cypher_api)
 
 add_executable(test_cluster_connection cluster/test_cluster_connection.cc)
 target_link_libraries(test_cluster_connection ${CEDAR_TEST_LIBS})

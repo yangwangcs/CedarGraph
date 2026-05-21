@@ -27,6 +27,15 @@ bool QueryValidator::ValidateQueryStatement(const QueryStatement& stmt) {
       if (!ValidateWhereClause(*where)) return false;
     } else if (auto* ret = dynamic_cast<const ReturnClause*>(clause.get())) {
       if (!ValidateReturnClause(*ret)) return false;
+    } else if (auto* set_clause = dynamic_cast<const SetClause*>(clause.get())) {
+      for (const auto& item : set_clause->items) {
+        if (!ValidateExpression(*item.target)) return false;
+        if (!ValidateExpression(*item.value)) return false;
+      }
+    } else if (auto* del_clause = dynamic_cast<const DeleteClause*>(clause.get())) {
+      for (const auto& expr : del_clause->expressions) {
+        if (!ValidateExpression(*expr)) return false;
+      }
     }
     all_pushed_vars.insert(all_pushed_vars.end(),
                            pushed_vars.begin(), pushed_vars.end());

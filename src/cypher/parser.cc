@@ -530,15 +530,50 @@ std::shared_ptr<OrderByClause> CypherParser::ParseOrderByClause() {
 }
 
 std::shared_ptr<SetClause> CypherParser::ParseSetClause() {
-  // Stub: SET clause parsing not yet fully implemented
-  SkipWhitespaceAndComments();
-  return std::make_shared<SetClause>();
+  auto clause = std::make_shared<SetClause>();
+  do {
+    SkipWhitespaceAndComments();
+    auto target = ParsePrimaryExpression();
+    if (!target) {
+      error_ = "Expected target expression in SET clause";
+      return nullptr;
+    }
+    if (target->expr_type != ExprType::VARIABLE &&
+        target->expr_type != ExprType::PROPERTY) {
+      error_ = "SET target must be a variable or property access";
+      return nullptr;
+    }
+    SkipWhitespaceAndComments();
+    if (!ExpectSymbol('=')) {
+      return nullptr;
+    }
+    auto value = ParseExpression();
+    if (!value) {
+      error_ = "Expected expression after = in SET clause";
+      return nullptr;
+    }
+    SetClause::SetItem item;
+    item.target = target;
+    item.value = value;
+    clause->items.push_back(item);
+    SkipWhitespaceAndComments();
+  } while (MatchSymbol(','));
+  return clause;
 }
 
 std::shared_ptr<DeleteClause> CypherParser::ParseDeleteClause() {
-  // Stub: DELETE clause parsing not yet fully implemented
-  SkipWhitespaceAndComments();
-  return std::make_shared<DeleteClause>();
+  auto clause = std::make_shared<DeleteClause>();
+  do {
+    SkipWhitespaceAndComments();
+    std::string ident = ParseIdentifier();
+    if (ident.empty()) {
+      error_ = "Expected variable name in DELETE clause";
+      return nullptr;
+    }
+    clause->expressions.push_back(std::make_shared<VariableExpr>(ident));
+    SkipWhitespaceAndComments();
+  } while (MatchSymbol(','));
+  return clause;
 }
 
 // ============================================================================
