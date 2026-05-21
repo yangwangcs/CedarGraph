@@ -56,22 +56,12 @@ std::vector<Neighbor> CedarGraph::GetOutNeighbors(uint64_t vertex_id,
     return result;
   }
   
-  // Use ScanMemTableOnly for fast queries
-  const size_t MAX_VERSIONS = 10;
-  auto versions = storage_->ScanMemTableOnly(vertex_id, start_time, end_time, MAX_VERSIONS);
+  (void)start_time;
   
-  for (const auto& [ts, desc] : versions) {
-    Neighbor neighbor;
-    neighbor.id = vertex_id;
-    neighbor.edge_type = edge_type;
-    neighbor.timestamp = ts;
-    
-    // Extract value from descriptor
-    if (auto int_val = desc.AsInlineInt()) {
-      neighbor.value = *int_val;
-    }
-    
-    result.push_back(neighbor);
+  // Scan EdgeOut index for all edges from vertex_id, filtering by edge_type
+  auto edges = storage_->ScanEdgesWithFolding(vertex_id, EntityType::EdgeOut, edge_type, end_time);
+  for (const auto& e : edges) {
+    result.push_back(Neighbor{e.target_id, e.edge_type, e.timestamp, std::nullopt});
   }
   
   return result;

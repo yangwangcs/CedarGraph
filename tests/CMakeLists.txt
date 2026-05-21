@@ -214,6 +214,10 @@ add_executable(test_in_neighbors graph/test_in_neighbors.cc)
 target_link_libraries(test_in_neighbors ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_in_neighbors)
 
+add_executable(test_out_neighbors_edge_type graph/test_out_neighbors_edge_type.cc)
+target_link_libraries(test_out_neighbors_edge_type ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_out_neighbors_edge_type)
+
 add_executable(test_cluster_connection cluster/test_cluster_connection.cc)
 target_link_libraries(test_cluster_connection ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cluster_connection)
