@@ -62,6 +62,12 @@ class CypherEngine {
   // 获取缓存统计
   size_t GetCacheSize() const;
   
+  // 获取缓存计划 (thread-safe, returns shared_ptr to keep plan alive)
+  std::shared_ptr<ExecutionPlan> GetCachedPlan(const std::string& fingerprint);
+  
+  // 缓存计划 (thread-safe)
+  void CachePlan(const std::string& fingerprint, std::unique_ptr<ExecutionPlan> plan);
+  
   // Set GCN traversal callback for routing edge expansions to GCN
   void SetGcnTraversalCallback(
       std::function<std::vector<uint64_t>(uint64_t entity_id, uint32_t edge_type, uint64_t query_time)> callback);
@@ -83,16 +89,12 @@ class CypherEngine {
   std::unique_ptr<QueryValidator> validator_;
   
   // 查询计划缓存
-  std::map<std::string, std::unique_ptr<ExecutionPlan>> plan_cache_;
+  mutable std::shared_mutex plan_cache_mutex_;
+  std::unordered_map<std::string, std::shared_ptr<ExecutionPlan>> plan_cache_;
   
   // 解析和生成执行计划
   std::unique_ptr<ExecutionPlan> ParseAndPlan(const std::string& query);
   
-  // 从缓存获取计划
-  ExecutionPlan* GetCachedPlan(const std::string& fingerprint);
-  
-  // 缓存计划
-  void CachePlan(const std::string& fingerprint, std::unique_ptr<ExecutionPlan> plan);
 };
 
 }  // namespace cypher

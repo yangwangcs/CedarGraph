@@ -124,6 +124,10 @@ add_executable(test_transaction_pool transaction/test_transaction_pool.cc)
 target_link_libraries(test_transaction_pool ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_transaction_pool)
 
+add_executable(test_plan_cache_thread_safety cypher/test_plan_cache_thread_safety.cc)
+target_link_libraries(test_plan_cache_thread_safety ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_plan_cache_thread_safety)
+
 add_executable(test_storage_service_impl dtx/test_storage_service_impl.cc)
 target_link_libraries(test_storage_service_impl ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_storage_service_impl)

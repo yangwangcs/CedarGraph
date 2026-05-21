@@ -101,10 +101,12 @@ void CypherEngine::SetGcnTraversalCallback(
 }
 
 void CypherEngine::ClearCache() {
+  std::unique_lock<std::shared_mutex> lock(plan_cache_mutex_);
   plan_cache_.clear();
 }
 
 size_t CypherEngine::GetCacheSize() const {
+  std::shared_lock<std::shared_mutex> lock(plan_cache_mutex_);
   return plan_cache_.size();
 }
 
@@ -136,17 +138,20 @@ std::unique_ptr<ExecutionPlan> CypherEngine::ParseAndPlan(const std::string& que
   return std::make_unique<ExecutionPlan>(root);
 }
 
-ExecutionPlan* CypherEngine::GetCachedPlan(const std::string& fingerprint) {
+std::shared_ptr<ExecutionPlan> CypherEngine::GetCachedPlan(
+    const std::string& fingerprint) {
+  std::shared_lock<std::shared_mutex> lock(plan_cache_mutex_);
   auto it = plan_cache_.find(fingerprint);
   if (it != plan_cache_.end()) {
-    return it->second.get();
+    return it->second;
   }
   return nullptr;
 }
 
-void CypherEngine::CachePlan(const std::string& fingerprint, 
+void CypherEngine::CachePlan(const std::string& fingerprint,
                              std::unique_ptr<ExecutionPlan> plan) {
-  plan_cache_[fingerprint] = std::move(plan);
+  std::unique_lock<std::shared_mutex> lock(plan_cache_mutex_);
+  plan_cache_[fingerprint] = std::shared_ptr<ExecutionPlan>(plan.release());
 }
 
 }  // namespace cypher
