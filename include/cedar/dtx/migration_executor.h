@@ -211,6 +211,9 @@ class MigrationTask {
   
   DTxRpcClient* rpc_client_ = nullptr;
   PartitionManager* partition_mgr_ = nullptr;
+  
+  // Migration ID returned by the target node's PartitionMigrationService
+  std::string external_migration_id_;
 };
 
 // =============================================================================

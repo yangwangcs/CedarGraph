@@ -21,7 +21,10 @@
 
 #include <grpcpp/grpcpp.h>
 #include <atomic>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <queue>
 #include <thread>
 
 #include "cedar/coordinator/location_table.h"
@@ -103,6 +106,19 @@ public:
 private:
     MetadataService* meta_service_;
     coordinator::VertexLocationTable location_table_;
+    
+    // Active WatchPartitionMap streams
+    struct WatchStream {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::queue<cedar::meta::PartitionMapChange> pending_changes;
+        bool cancelled = false;
+    };
+    mutable std::mutex watchers_mutex_;
+    std::vector<std::weak_ptr<WatchStream>> active_watchers_;
+    std::queue<cedar::meta::PartitionMapChange> pending_broadcasts_;
+    
+    void OnPartitionChange(const PartitionMapChange& change);
     
     // 类型转换 helpers
     SpaceDef FromProto(const cedar::meta::SpaceDef& proto);

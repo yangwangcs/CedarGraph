@@ -1,7 +1,9 @@
 #include "cedar/dtx/meta_service.h"
+#include "cedar/dtx/meta_service_impl.h"
 #include <chrono>
 #include <thread>
 #include <sstream>
+#include <cstring>
 
 namespace cedar {
 namespace dtx {
@@ -362,9 +364,51 @@ StatusOr<LabelSchema> LabelSchema::Deserialize(const std::string& data) {
 
 // MetadataStateMachine implementation
 void MetadataService::MetadataStateMachine::Apply(const LogEntry& entry) {
-    // In real implementation, deserialize entry.data and apply the command
-    // For now, just track the index
+    auto cmd_result = MetaCommand::Deserialize(entry.data);
+    if (cmd_result.ok()) {
+        ApplyCommand(cmd_result.value());
+    }
     last_applied_index_.store(entry.index);
+}
+
+void MetadataService::MetadataStateMachine::ApplyCommand(const MetaCommand& cmd) {
+    switch (cmd.type) {
+        case MetaCommandType::kCreateSpace: {
+            auto space = SpaceDef::Deserialize(cmd.data);
+            if (space.ok()) ApplyCreateSpace(space.value());
+            break;
+        }
+        case MetaCommandType::kDropSpace:
+            ApplyDropSpace(cmd.data);
+            break;
+        case MetaCommandType::kRegisterNode: {
+            auto info = NodeInfo::Deserialize(cmd.data);
+            if (info.ok()) ApplyRegisterNode(info.value());
+            break;
+        }
+        case MetaCommandType::kUpdateNodeStatus: {
+            auto status = NodeStatus::Deserialize(cmd.data);
+            if (status.ok()) ApplyUpdateNodeStatus(status.value());
+            break;
+        }
+        case MetaCommandType::kUpdatePartitionLeader: {
+            if (cmd.data.size() < sizeof(uint32_t)) break;
+            size_t pos = 0;
+            auto space_result = ReadString(cmd.data, pos);
+            if (!space_result.ok()) break;
+            std::string space_name = space_result.value();
+            if (pos + sizeof(PartitionID) + sizeof(NodeID) > cmd.data.size()) break;
+            PartitionID pid;
+            std::memcpy(&pid, cmd.data.data() + pos, sizeof(pid));
+            pos += sizeof(pid);
+            NodeID leader;
+            std::memcpy(&leader, cmd.data.data() + pos, sizeof(leader));
+            ApplyUpdatePartitionLeader(space_name, pid, leader);
+            break;
+        }
+        default:
+            break;
+    }
 }
 
 Snapshot MetadataService::MetadataStateMachine::CreateSnapshot() {
@@ -457,7 +501,7 @@ void MetadataService::MetadataStateMachine::ApplyUpdateNodeStatus(const NodeStat
     }
 }
 
-void MetadataService::MetadataStateMachine::ApplyUpdatePartitionLeader(
+std::pair<uint64_t, NodeID> MetadataService::MetadataStateMachine::ApplyUpdatePartitionLeader(
     const std::string& space_name, PartitionID partition_id, NodeID new_leader) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     auto it = partition_maps_.find(space_name);
@@ -465,10 +509,13 @@ void MetadataService::MetadataStateMachine::ApplyUpdatePartitionLeader(
         auto& partition_map = it->second;
         auto assign_it = partition_map.assignments.find(partition_id);
         if (assign_it != partition_map.assignments.end()) {
+            NodeID old_leader = assign_it->second.leader_node;
             assign_it->second.leader_node = new_leader;
             assign_it->second.version++;
+            return {assign_it->second.version, old_leader};
         }
     }
+    return {0, kInvalidNodeID};
 }
 
 StatusOr<SpaceDef> MetadataService::MetadataStateMachine::GetSpace(const std::string& name) const {
@@ -864,7 +911,18 @@ Status MetadataService::UpdatePartitionLeader(const std::string& space_name,
                                                PartitionID partition_id,
                                                NodeID new_leader) {
     if (config_.test_mode) {
-        state_machine_.ApplyUpdatePartitionLeader(space_name, partition_id, new_leader);
+        auto [version, old_leader] = state_machine_.ApplyUpdatePartitionLeader(space_name, partition_id, new_leader);
+        if (version > 0) {
+            PartitionMapChange change;
+            change.space_name = space_name;
+            change.partition_id = partition_id;
+            change.change_type = PartitionChangeType::kLeaderChanged;
+            change.old_leader = old_leader;
+            change.new_leader = new_leader;
+            change.version = version;
+            change.timestamp = std::chrono::system_clock::now();
+            NotifyPartitionChange(change);
+        }
         return Status::OK();
     }
     RaftCommand cmd;
@@ -978,7 +1036,18 @@ void MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
                     }
                     PartitionID pid = static_cast<PartitionID>(pid_raw);
                     NodeID leader = static_cast<NodeID>(leader_raw);
-                    state_machine_.ApplyUpdatePartitionLeader(space_name, pid, leader);
+                    auto [version, old_leader] = state_machine_.ApplyUpdatePartitionLeader(space_name, pid, leader);
+                    if (version > 0) {
+                        PartitionMapChange change;
+                        change.space_name = space_name;
+                        change.partition_id = pid;
+                        change.change_type = PartitionChangeType::kLeaderChanged;
+                        change.old_leader = old_leader;
+                        change.new_leader = leader;
+                        change.version = version;
+                        change.timestamp = std::chrono::system_clock::now();
+                        NotifyPartitionChange(change);
+                    }
                 } catch (const std::exception& e) {
                     std::cerr << "[MetadataService] Invalid kUpdateAssignment payload: "
                               << e.what() << std::endl;
@@ -1036,6 +1105,30 @@ void MetadataService::HeartbeatCheckLoop() {
         }
         
         std::this_thread::sleep_for(std::chrono::seconds(config_.heartbeat_check_interval_sec));
+    }
+}
+
+void MetadataService::NotifyPartitionChange(const PartitionMapChange& change) {
+    std::lock_guard<std::mutex> lock(callbacks_mutex_);
+    for (const auto& [space_name, callback] : partition_callbacks_) {
+        if (space_name.empty() || space_name == change.space_name) {
+            try {
+                callback(change);
+            } catch (...) {
+                // Callback exceptions should not break notification
+            }
+        }
+    }
+}
+
+void MetadataService::NotifyNodeChange(const NodeChange& change) {
+    std::lock_guard<std::mutex> lock(callbacks_mutex_);
+    for (const auto& callback : node_callbacks_) {
+        try {
+            callback(change);
+        } catch (...) {
+            // Callback exceptions should not break notification
+        }
     }
 }
 

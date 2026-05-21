@@ -226,37 +226,82 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
   std::string migration_id;
   uint32_t partition_id = 0;
   
-  // Read all data chunks from the stream
-  while (reader->Read(&request)) {
-    // On first read, store migration info
-    if (migration_id.empty()) {
-      migration_id = request.migration_id();
-      partition_id = request.partition_id();
-      
-      // Find the task
-      ServiceMigrationTask* task = FindTask(migration_id);
-      if (!task) {
-        response->set_success(false);
-        response->set_error_msg("Migration not found: " + migration_id);
-        response->set_bytes_received(total_bytes_received);
-        return ::grpc::Status(::grpc::StatusCode::NOT_FOUND, 
-                              "Migration not found: " + migration_id);
-      }
-      
-      // Check if we can receive data
-      {
-        std::lock_guard<std::mutex> lock(task->mutex);
-        if (!CanSyncData(task->status)) {
-          response->set_success(false);
-          response->set_error_msg("Migration not in syncable state: " + 
-                                  std::to_string(task->status));
-          response->set_bytes_received(total_bytes_received);
-          return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
-                                "Migration not in syncable state");
-        }
-      }
+  // Read first request to identify the migration
+  if (!reader->Read(&request)) {
+    response->set_success(false);
+    response->set_error_msg("No data received in stream");
+    response->set_bytes_received(0);
+    return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "Empty data stream");
+  }
+  
+  migration_id = request.migration_id();
+  partition_id = request.partition_id();
+  
+  // Find the task once and hold reference for the entire stream
+  ServiceMigrationTask* task = FindTask(migration_id);
+  if (!task) {
+    response->set_success(false);
+    response->set_error_msg("Migration not found: " + migration_id);
+    response->set_bytes_received(0);
+    return ::grpc::Status(::grpc::StatusCode::NOT_FOUND,
+                          "Migration not found: " + migration_id);
+  }
+  
+  // Hold task lock across entire streaming loop
+  std::lock_guard<std::mutex> lock(task->mutex);
+  
+  if (!CanSyncData(task->status)) {
+    response->set_success(false);
+    response->set_error_msg("Migration not in syncable state: " +
+                            std::to_string(task->status));
+    response->set_bytes_received(0);
+    return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
+                          "Migration not in syncable state");
+  }
+  
+  // Process first chunk
+  if (request.partition_id() != partition_id) {
+    response->set_success(false);
+    response->set_error_msg("Partition ID mismatch in data stream");
+    response->set_bytes_received(0);
+    return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT,
+                          "Partition ID mismatch");
+  }
+  
+  if (options_.verify_checksum && request.checksum() != 0) {
+    const uint8_t* data = reinterpret_cast<const uint8_t*>(request.data().data());
+    uint64_t computed = ComputeChecksum(data, request.data().size());
+    if (computed != request.checksum()) {
+      response->set_success(false);
+      response->set_error_msg("Checksum mismatch at offset 0");
+      response->set_bytes_received(0);
+      return ::grpc::Status(::grpc::StatusCode::DATA_LOSS, "Checksum mismatch");
     }
-    
+  }
+  
+  if (task->data_buffer.size() + request.data().size() > options_.max_buffer_size) {
+    response->set_success(false);
+    response->set_error_msg("Buffer size limit exceeded");
+    response->set_bytes_received(0);
+    return ::grpc::Status(::grpc::StatusCode::RESOURCE_EXHAUSTED,
+                          "Buffer size limit exceeded");
+  }
+  
+  size_t current_size = task->data_buffer.size();
+  task->data_buffer.resize(current_size + request.data().size());
+  std::memcpy(task->data_buffer.data() + current_size,
+              request.data().data(),
+              request.data().size());
+  task->current_offset = request.offset() + request.data().size();
+  task->bytes_transferred += request.data().size();
+  total_bytes_received += request.data().size();
+  if (task->bytes_total > 0) {
+    task->progress_percent = static_cast<uint32_t>(
+        (task->bytes_transferred * 100) / task->bytes_total);
+  }
+  
+  // Continue reading remaining chunks while holding the lock
+  while (reader->Read(&request)) {
     // Verify partition ID consistency
     if (request.partition_id() != partition_id) {
       response->set_success(false);
@@ -266,81 +311,66 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
                             "Partition ID mismatch");
     }
     
+    // Check task state before each chunk
+    if (!CanSyncData(task->status)) {
+      response->set_success(false);
+      response->set_error_msg("Migration not in syncable state: " +
+                              std::to_string(task->status));
+      response->set_bytes_received(total_bytes_received);
+      return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
+                            "Migration not in syncable state");
+    }
+    
     // Verify checksum if enabled
     if (options_.verify_checksum && request.checksum() != 0) {
       const uint8_t* data = reinterpret_cast<const uint8_t*>(request.data().data());
       uint64_t computed = ComputeChecksum(data, request.data().size());
       if (computed != request.checksum()) {
         response->set_success(false);
-        response->set_error_msg("Checksum mismatch at offset " + 
+        response->set_error_msg("Checksum mismatch at offset " +
                                 std::to_string(request.offset()));
         response->set_bytes_received(total_bytes_received);
         return ::grpc::Status(::grpc::StatusCode::DATA_LOSS, "Checksum mismatch");
       }
     }
     
-    // Process the data chunk
-    ServiceMigrationTask* task = FindTask(migration_id);
-    if (!task) {
+    // Check buffer size limit
+    if (task->data_buffer.size() + request.data().size() > options_.max_buffer_size) {
       response->set_success(false);
-      response->set_error_msg("Migration disappeared during sync: " + migration_id);
+      response->set_error_msg("Buffer size limit exceeded");
       response->set_bytes_received(total_bytes_received);
-      return ::grpc::Status(::grpc::StatusCode::INTERNAL, "Migration lost");
+      return ::grpc::Status(::grpc::StatusCode::RESOURCE_EXHAUSTED,
+                            "Buffer size limit exceeded");
     }
     
-    {
-      std::lock_guard<std::mutex> lock(task->mutex);
-      
-      // Check buffer size limit
-      if (task->data_buffer.size() + request.data().size() > options_.max_buffer_size) {
-        response->set_success(false);
-        response->set_error_msg("Buffer size limit exceeded");
-        response->set_bytes_received(total_bytes_received);
-        return ::grpc::Status(::grpc::StatusCode::RESOURCE_EXHAUSTED, 
-                              "Buffer size limit exceeded");
-      }
-      
-      // Append data to buffer
-      size_t current_size = task->data_buffer.size();
-      task->data_buffer.resize(current_size + request.data().size());
-      std::memcpy(task->data_buffer.data() + current_size, 
-                  request.data().data(), 
-                  request.data().size());
-      
-      // Update offset and byte count
-      task->current_offset = request.offset() + request.data().size();
-      task->bytes_transferred += request.data().size();
-      total_bytes_received += request.data().size();
-      
-      // Update progress
-      if (task->bytes_total > 0) {
-        task->progress_percent = static_cast<uint32_t>(
-            (task->bytes_transferred * 100) / task->bytes_total);
-      }
-    }
+    // Append data to buffer
+    size_t chunk_size = task->data_buffer.size();
+    task->data_buffer.resize(chunk_size + request.data().size());
+    std::memcpy(task->data_buffer.data() + chunk_size,
+                request.data().data(),
+                request.data().size());
     
-    // Update global stats
-    {
-      std::lock_guard<std::mutex> lock(stats_mutex_);
-      stats_.total_bytes_transferred += request.data().size();
+    // Update offset and byte count
+    task->current_offset = request.offset() + request.data().size();
+    task->bytes_transferred += request.data().size();
+    total_bytes_received += request.data().size();
+    
+    // Update progress
+    if (task->bytes_total > 0) {
+      task->progress_percent = static_cast<uint32_t>(
+          (task->bytes_transferred * 100) / task->bytes_total);
     }
   }
   
-  // Check if we received any data
-  if (migration_id.empty()) {
-    response->set_success(false);
-    response->set_error_msg("No data received in stream");
-    response->set_bytes_received(0);
-    return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "Empty data stream");
+  // Update global stats
+  {
+    std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+    stats_.total_bytes_transferred += total_bytes_received;
   }
   
   // Update task status to CATCHING_UP after initial sync
-  ServiceMigrationTask* task = FindTask(migration_id);
-  if (task) {
-    std::lock_guard<std::mutex> lock(task->mutex);
-    if (task->status == cedar::migration::SYNCING) {
-      task->status = cedar::migration::CATCHING_UP;
-    }
+  if (task->status == cedar::migration::SYNCING) {
+    task->status = cedar::migration::CATCHING_UP;
   }
   
   response->set_success(true);

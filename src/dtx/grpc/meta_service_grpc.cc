@@ -218,6 +218,7 @@ void MetaServiceGrpcImpl::OnPartitionChange(const PartitionMapChange& change) {
         std::chrono::system_clock::to_time_t(change.timestamp));
     
     std::lock_guard<std::mutex> lock(watchers_mutex_);
+    bool has_active = false;
     for (auto it = active_watchers_.begin(); it != active_watchers_.end();) {
         auto stream = it->lock();
         if (!stream) {
@@ -229,7 +230,11 @@ void MetaServiceGrpcImpl::OnPartitionChange(const PartitionMapChange& change) {
             stream->pending_changes.push(proto_change);
         }
         stream->cv.notify_one();
+        has_active = true;
         ++it;
+    }
+    if (!has_active) {
+        pending_broadcasts_.push(proto_change);
     }
 }
 
@@ -243,7 +248,13 @@ grpc::Status MetaServiceGrpcImpl::WatchPartitionMap(grpc::ServerContext* context
     {
         std::lock_guard<std::mutex> lock(watchers_mutex_);
         active_watchers_.push_back(stream);
+        // Drain any pending broadcasts that arrived before this watcher connected
+        while (!pending_broadcasts_.empty()) {
+            stream->pending_changes.push(pending_broadcasts_.front());
+            pending_broadcasts_.pop();
+        }
     }
+    stream->cv.notify_one();
     
     while (!context->IsCancelled()) {
         std::unique_lock<std::mutex> lock(stream->mutex);
