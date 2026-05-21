@@ -43,8 +43,8 @@ std::vector<Neighbor> CedarGraph::GetOutNeighborsAsOf(uint64_t vertex_id,
     }
     return result;
   }
-  // Fallback: use traditional GetOutNeighbors with precise time range
-  return GetOutNeighbors(vertex_id, edge_type, as_of_time, Timestamp(as_of_time.value() + 1));
+  // Fallback: use traditional GetOutNeighbors with full history up to as_of_time
+  return GetOutNeighbors(vertex_id, edge_type, Timestamp::Min(), as_of_time);
 }
 
 std::vector<Neighbor> CedarGraph::GetOutNeighborsBetween(uint64_t vertex_id,
@@ -75,13 +75,49 @@ std::optional<Neighbor> CedarGraph::GetOutNeighborsAtVersion(uint64_t vertex_id,
   // 首先获取所有版本
   auto all_versions = GetOutNeighborsAllVersions(vertex_id, edge_type);
   
-  // 按版本查找（假设版本按时间戳递增）
-  // Full version indexing requires a dedicated version_number index.
-  if (version < all_versions.size()) {
-    return all_versions[version].second;
+  if (all_versions.empty()) {
+    return std::nullopt;
+  }
+  
+  // Sort by timestamp and pick N-th distinct version
+  std::sort(all_versions.begin(), all_versions.end(),
+    [](const auto& a, const auto& b) { return a.first < b.first; });
+  
+  std::vector<Neighbor> distinct;
+  Timestamp last_ts = Timestamp::Max();
+  for (const auto& [ts, neighbor] : all_versions) {
+    if (ts != last_ts) {
+      distinct.push_back(neighbor);
+      last_ts = ts;
+    }
+  }
+  
+  if (version < distinct.size()) {
+    return distinct[version];
   }
   
   return std::nullopt;
+}
+
+static bool CheckAllenRelation(AllenRelation relation,
+                                  Timestamp a_start, Timestamp a_end,
+                                  Timestamp b_start, Timestamp b_end) {
+  switch (relation) {
+    case AllenRelation::BEFORE:       return a_end < b_start;
+    case AllenRelation::AFTER:        return a_start > b_end;
+    case AllenRelation::MEETS:        return a_end == b_start;
+    case AllenRelation::MET_BY:       return a_start == b_end;
+    case AllenRelation::OVERLAPS:     return a_start < b_start && a_end > b_start && a_end < b_end;
+    case AllenRelation::OVERLAPPED_BY:return b_start < a_start && b_end > a_start && b_end < a_end;
+    case AllenRelation::DURING:       return a_start > b_start && a_end < b_end;
+    case AllenRelation::CONTAINS:     return a_start < b_start && a_end > b_end;
+    case AllenRelation::STARTS:       return a_start == b_start && a_end < b_end;
+    case AllenRelation::STARTED_BY:   return a_start == b_start && a_end > b_end;
+    case AllenRelation::FINISHES:     return a_end == b_end && a_start > b_start;
+    case AllenRelation::FINISHED_BY:  return a_end == b_end && a_start < b_start;
+    case AllenRelation::EQUALS:       return a_start == b_start && a_end == b_end;
+  }
+  return false;
 }
 
 std::vector<Neighbor> CedarGraph::GetOutNeighborsWithRelation(
@@ -93,23 +129,17 @@ std::vector<Neighbor> CedarGraph::GetOutNeighborsWithRelation(
   std::vector<Neighbor> results;
   
   // 获取候选邻居
-  auto candidates = GetOutNeighbors(vertex_id, edge_type, 0, Timestamp::Max());
+  auto candidates = GetOutNeighbors(vertex_id, edge_type, Timestamp::Min(), Timestamp::Max());
   
   // 使用Allen谓词过滤
   for (const auto& neighbor : candidates) {
     // 假设邻居有一个有效时间范围 [neighbor.timestamp, neighbor.timestamp + 1)
-    // 实际上应该从存储中获取完整的时态元数据
     Timestamp neighbor_start = neighbor.timestamp;
-    Timestamp neighbor_end = Timestamp(neighbor.timestamp.value() + 1);  // 简化处理
+    Timestamp neighbor_end = Timestamp(neighbor.timestamp.value() + 1);
     
-    // Real Allen relation filtering requires TMV interval metadata.
-    // For now, all candidates are returned.
-    (void)relation;
-    (void)neighbor_start;
-    (void)neighbor_end;
-    (void)other_start;
-    (void)other_end;
-    results.push_back(neighbor);
+    if (CheckAllenRelation(relation, neighbor_start, neighbor_end, other_start, other_end)) {
+      results.push_back(neighbor);
+    }
   }
   
   return results;

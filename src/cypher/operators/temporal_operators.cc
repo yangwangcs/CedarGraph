@@ -170,6 +170,16 @@ TemporalExpand::TemporalExpand(std::string from_variable,
 
 bool TemporalExpand::Init(ExecutionContext* ctx) {
   context_ = ctx;
+  if (ctx->temporal_clause) {
+    auto range = ctx->temporal_clause->GetTimeRange(nullptr);
+    if (range.has_value()) {
+      query_start_ = range->first;
+      query_end_ = range->second;
+    }
+  } else {
+    query_start_ = ctx->time_range.first;
+    query_end_ = ctx->time_range.second;
+  }
   if (!children_.empty()) {
     if (!children_[0]->Init(ctx)) {
       return false;
@@ -212,32 +222,57 @@ std::shared_ptr<Record> TemporalExpand::Next() {
         auto neighbor_ids = context_->gcn_traversal_callback(
             from_id, edge_type, context_->query_timestamp.value());
         for (uint64_t nid : neighbor_ids) {
-          neighbors_.emplace_back(nid ^ Timestamp(0).value(), nid, from_id);
+          uint64_t rel_hash = std::hash<std::string>{}(
+              std::to_string(from_id) + ":" + std::to_string(nid) + ":" + std::to_string(Timestamp(0).value()));
+          neighbors_.emplace_back(rel_hash, nid, from_id);
         }
       } else if (direction_ == Direction::INCOMING && context_->get_in_neighbors_fn) {
         auto neighbor_list = context_->get_in_neighbors_fn(
             from_id, static_cast<uint16_t>(edge_type), query_start_, query_end_);
         for (const auto& n : neighbor_list) {
-          neighbors_.emplace_back(n.id ^ n.timestamp.value(), n.id, from_id);
+          uint64_t rel_hash = std::hash<std::string>{}(
+              std::to_string(from_id) + ":" + std::to_string(n.id) + ":" + std::to_string(n.timestamp.value()));
+          neighbors_.emplace_back(rel_hash, n.id, from_id);
         }
       } else if (direction_ != Direction::INCOMING && context_->get_out_neighbors_fn) {
         auto neighbor_list = context_->get_out_neighbors_fn(
             from_id, static_cast<uint16_t>(edge_type), query_start_, query_end_);
         for (const auto& n : neighbor_list) {
-          neighbors_.emplace_back(n.id ^ n.timestamp.value(), n.id, from_id);
+          uint64_t rel_hash = std::hash<std::string>{}(
+              std::to_string(from_id) + ":" + std::to_string(n.id) + ":" + std::to_string(n.timestamp.value()));
+          neighbors_.emplace_back(rel_hash, n.id, from_id);
         }
       } else if (context_->graph) {
         if (direction_ == Direction::INCOMING) {
           auto neighbor_list = context_->graph->GetInNeighbors(
               from_id, static_cast<uint16_t>(edge_type), query_start_, query_end_);
           for (const auto& n : neighbor_list) {
-            neighbors_.emplace_back(n.id ^ n.timestamp.value(), n.id, from_id);
+            uint64_t rel_hash = std::hash<std::string>{}(
+                std::to_string(from_id) + ":" + std::to_string(n.id) + ":" + std::to_string(n.timestamp.value()));
+            neighbors_.emplace_back(rel_hash, n.id, from_id);
+          }
+        } else if (direction_ == Direction::BOTH) {
+          auto out_list = context_->graph->GetOutNeighbors(
+              from_id, static_cast<uint16_t>(edge_type), query_start_, query_end_);
+          for (const auto& n : out_list) {
+            uint64_t rel_hash = std::hash<std::string>{}(
+                std::to_string(from_id) + ":" + std::to_string(n.id) + ":" + std::to_string(n.timestamp.value()));
+            neighbors_.emplace_back(rel_hash, n.id, from_id);
+          }
+          auto in_list = context_->graph->GetInNeighbors(
+              from_id, static_cast<uint16_t>(edge_type), query_start_, query_end_);
+          for (const auto& n : in_list) {
+            uint64_t rel_hash = std::hash<std::string>{}(
+                std::to_string(from_id) + ":" + std::to_string(n.id) + ":" + std::to_string(n.timestamp.value()));
+            neighbors_.emplace_back(rel_hash, n.id, from_id);
           }
         } else {
           auto neighbor_list = context_->graph->GetOutNeighbors(
               from_id, static_cast<uint16_t>(edge_type), query_start_, query_end_);
           for (const auto& n : neighbor_list) {
-            neighbors_.emplace_back(n.id ^ n.timestamp.value(), n.id, from_id);
+            uint64_t rel_hash = std::hash<std::string>{}(
+                std::to_string(from_id) + ":" + std::to_string(n.id) + ":" + std::to_string(n.timestamp.value()));
+            neighbors_.emplace_back(rel_hash, n.id, from_id);
           }
         }
       }
@@ -341,6 +376,14 @@ bool SnapshotScan::Init(ExecutionContext* ctx) {
 std::shared_ptr<Record> SnapshotScan::Next() {
   while (current_index_ < node_ids_.size()) {
     uint64_t node_id = node_ids_[current_index_++];
+
+    // Check entity existence at snapshot time
+    if (context_ && context_->graph) {
+      auto versions = context_->graph->GetTimeSeries(node_id, snapshot_time_, snapshot_time_);
+      if (versions.empty()) {
+        continue;
+      }
+    }
 
     Node node;
     node.id = node_id;

@@ -231,7 +231,7 @@ std::shared_ptr<TemporalClause> CypherParser::ParseContainedInClause() {
   }
   
   auto clause = std::make_shared<TemporalClause>();
-  clause->modifier = TemporalModifierType::OVERLAPS;
+  clause->modifier = TemporalModifierType::CONTAINED_IN;
   clause->start_time = ParseTimestampExpression();
   
   SkipWhitespaceAndComments();
@@ -474,7 +474,8 @@ TimestampExpression CypherParser::ParseTimestampExpression() {
     return TimestampExpression::Literal(val);
   }
   
-  // Default: return null expression
+  // Default: return null expression with error
+  error_ = "Unknown timestamp expression type";
   return TimestampExpression();
 }
 

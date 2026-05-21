@@ -187,9 +187,16 @@ std::shared_ptr<ExecutionPlan> CypherEngine::GetCachedPlan(
   return nullptr;
 }
 
+static constexpr size_t kMaxPlanCacheSize = 1000;
+
 void CypherEngine::CachePlan(const std::string& fingerprint,
                              std::unique_ptr<ExecutionPlan> plan) {
   std::unique_lock<std::shared_mutex> lock(plan_cache_mutex_);
+  if (plan_cache_.size() >= kMaxPlanCacheSize) {
+    if (!plan_cache_.empty()) {
+      plan_cache_.erase(plan_cache_.begin());
+    }
+  }
   plan_cache_[fingerprint] = std::shared_ptr<ExecutionPlan>(plan.release());
 }
 

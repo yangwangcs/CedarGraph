@@ -399,6 +399,17 @@ std::shared_ptr<Record> Expand::Next() {
           for (const auto& n : neighbor_list) {
             neighbors_.emplace_back(n.id, n.timestamp);
           }
+        } else if (direction_ == Direction::BOTH) {
+          auto out_list = context_->graph->GetOutNeighbors(
+              from_id, edge_type, Timestamp(0), Timestamp::Max());
+          for (const auto& n : out_list) {
+            neighbors_.emplace_back(n.id, n.timestamp);
+          }
+          auto in_list = context_->graph->GetInNeighbors(
+              from_id, edge_type, Timestamp(0), Timestamp::Max());
+          for (const auto& n : in_list) {
+            neighbors_.emplace_back(n.id, n.timestamp);
+          }
         } else {
           auto neighbor_list = context_->graph->GetOutNeighbors(
               from_id, edge_type, Timestamp(0), Timestamp::Max());
@@ -425,7 +436,8 @@ std::shared_ptr<Record> Expand::Next() {
     
     // Add relationship
     Relationship rel;
-    rel.id = target_id ^ ts.value();  // Simple hash for relationship id
+    rel.id = std::hash<std::string>{}(
+        std::to_string(from_id) + ":" + std::to_string(target_id) + ":" + std::to_string(ts.value()));
     rel.start_id = from_id;
     rel.end_id = target_id;
     rel.type = rel_type_.value_or("CONNECTED_TO");
@@ -843,6 +855,10 @@ void Sort::DoSort() {
         if (val_a.IsNull()) return !ascending;
         if (val_b.IsNull()) return ascending;
         
+        if (val_a.Type() != val_b.Type()) {
+          return ascending ? (val_a.Type() < val_b.Type()) : (val_a.Type() > val_b.Type());
+        }
+        
         if (val_a < val_b) return ascending;
         if (val_a > val_b) return !ascending;
       }
@@ -1031,9 +1047,18 @@ void Aggregate::DoAggregate() {
     groups[group_key].push_back(*record);
   }
   
-  // If no grouping, use a single empty-key group
+  // If no grouping and no input records, use a single empty-key group
   if (groups.empty()) {
-    groups[""];  // Empty group
+    bool has_group_by = false;
+    for (const auto& item : items_) {
+      if (item.group_by_key.has_value()) {
+        has_group_by = true;
+        break;
+      }
+    }
+    if (!has_group_by) {
+      groups[""];  // Empty group only for non-GROUP BY queries
+    }
   }
   
   // Compute aggregates per group

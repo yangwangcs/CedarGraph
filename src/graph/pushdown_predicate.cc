@@ -40,7 +40,7 @@ bool PropertyFilter::Evaluate(const Descriptor& desc) const {
       case FilterOp::LE: return v <= fv;
       case FilterOp::GT: return v > fv;
       case FilterOp::GE: return v >= fv;
-      default: return true;  // 不支持的运算符默认通过
+      default: return false;  // 不支持的运算符默认拒绝
     }
   }
   
@@ -63,7 +63,7 @@ bool PropertyFilter::Evaluate(const Descriptor& desc) const {
         case FilterOp::GT: return v > fv;
         case FilterOp::GE: return v >= fv;
         case FilterOp::LIKE: return v.find(fv) != std::string::npos;
-        default: return true;
+        default: return false;
       }
     }
   }

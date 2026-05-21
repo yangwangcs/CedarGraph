@@ -93,7 +93,7 @@ std::optional<NodeView> CedarScan::GetNode(uint64_t node_id) const {
   if (interval_result.has_value()) {
     if (!*interval_result) {
       // 区间锚点确定实体在查询时间点不存在
-      anchor_stats_.deleted_skipped++;
+      anchor_stats_.deleted_skipped.fetch_add(1);
       return std::nullopt;
     }
     // 区间锚点确认存在，继续查询详细数据
@@ -229,7 +229,7 @@ CedarScan::AnchorStats CedarScan::anchor_stats_;
 std::optional<StateAnchor> CedarScan::CheckEntityStateViaAnchor(
     uint64_t entity_id, EntityType entity_type) const {
   if (!engine_) {
-    anchor_stats_.anchor_misses++;
+    anchor_stats_.anchor_misses.fetch_add(1);
     return std::nullopt;
   }
   
@@ -250,7 +250,7 @@ std::optional<StateAnchor> CedarScan::CheckEntityStateViaAnchor(
   
   if (!result.has_value()) {
     // 锚点不存在：实体可能从未被创建，或是旧数据（无锚点）
-    anchor_stats_.anchor_misses++;
+    anchor_stats_.anchor_misses.fetch_add(1);
     return std::nullopt;
   }
   
@@ -260,7 +260,7 @@ std::optional<StateAnchor> CedarScan::CheckEntityStateViaAnchor(
   // 解析锚点描述符
   auto anchor_opt = LifecycleDescriptor::ParseStateAnchor(anchor_desc);
   if (!anchor_opt.has_value()) {
-    anchor_stats_.anchor_misses++;
+    anchor_stats_.anchor_misses.fetch_add(1);
     return std::nullopt;
   }
   
@@ -271,12 +271,12 @@ std::optional<StateAnchor> CedarScan::CheckEntityStateViaAnchor(
   Timestamp anchor_time = anchor_key.timestamp();
   if (anchor_time > snapshot_ts_) {
     // 锚点是在查询时间点之后创建的，对当前查询无效
-    anchor_stats_.anchor_misses++;
+    anchor_stats_.anchor_misses.fetch_add(1);
     return std::nullopt;
   }
   
   // 锚点命中
-  anchor_stats_.anchor_hits++;
+  anchor_stats_.anchor_hits.fetch_add(1);
   
   // 从 target_id 恢复 last_update（如果存储了的话）
   // 注意：target_id 可能存储了 last_update，用于更精确的时间判断
@@ -291,7 +291,7 @@ bool CedarScan::EntityExistsFast(uint64_t entity_id, EntityType entity_type) con
     return anchor->IsActive();
   }
   // 锚点未命中，回退到传统查询
-  anchor_stats_.fallback_queries++;
+  anchor_stats_.fallback_queries.fetch_add(1);
   return EntityExistsTraditional(entity_id, entity_type);
 }
 
@@ -323,7 +323,7 @@ std::vector<bool> CedarScan::BatchCheckEntitiesViaAnchor(
   if (!engine_) {
     // 引擎不可用，全部返回 true（保守策略，让上层继续检查）
     results.assign(entity_ids.size(), true);
-    anchor_stats_.anchor_misses += entity_ids.size();
+    anchor_stats_.anchor_misses.fetch_add(entity_ids.size());
     return results;
   }
   
@@ -334,7 +334,7 @@ std::vector<bool> CedarScan::BatchCheckEntitiesViaAnchor(
       // 锚点命中：只有 Active 状态才认为存在
       results.push_back(anchor->IsActive());
       if (anchor->IsDeleted()) {
-        anchor_stats_.deleted_skipped++;
+        anchor_stats_.deleted_skipped.fetch_add(1);
       }
     } else {
       // 锚点未命中：返回 true，让上层使用传统方法验证

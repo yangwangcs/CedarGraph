@@ -76,7 +76,12 @@ void SharedIOContext::CacheBlock(const std::string& file_path, size_t block_idx,
       if (it->second.expired()) {
         it = block_cache_.erase(it);
       } else {
-        ++it;
+        if (auto block = it->second.lock()) {
+          if (block->ref_count.load() > 0) {
+            block->ref_count.fetch_sub(1);
+          }
+        }
+        it = block_cache_.erase(it);
       }
     }
   }

@@ -244,6 +244,28 @@ class CedarScan {
   Timestamp snapshot_time() const { return snapshot_ts_; }
   LsmEngine* engine() const { return engine_; }
 
+  // ========== 锚点统计指标 ==========
+  struct AnchorStats {
+    std::atomic<uint64_t> anchor_hits{0};        // 锚点命中次数
+    std::atomic<uint64_t> anchor_misses{0};      // 锚点未命中次数
+    std::atomic<uint64_t> deleted_skipped{0};    // 通过锚点跳过的删除实体数
+    std::atomic<uint64_t> fallback_queries{0};   // 回退到传统查询的次数
+    
+    double HitRate() const {
+      uint64_t total = anchor_hits.load() + anchor_misses.load();
+      return total > 0 ? static_cast<double>(anchor_hits.load()) / total : 0.0;
+    }
+  };
+
+  // Anchor stats (public for testing)
+  static AnchorStats& GetAnchorStats() { return anchor_stats_; }
+  static void ResetAnchorStats() {
+    anchor_stats_.anchor_hits.store(0);
+    anchor_stats_.anchor_misses.store(0);
+    anchor_stats_.deleted_skipped.store(0);
+    anchor_stats_.fallback_queries.store(0);
+  }
+
  private:
   CedarScan(Timestamp ts, LsmEngine* engine) 
       : snapshot_ts_(ts), engine_(engine) {}
@@ -278,22 +300,6 @@ class CedarScan {
    */
   std::vector<bool> BatchCheckEntitiesViaAnchor(
       const std::vector<uint64_t>& entity_ids, EntityType entity_type) const;
-  
-  // ========== 锚点统计指标 ==========
-  struct AnchorStats {
-    uint64_t anchor_hits = 0;        // 锚点命中次数
-    uint64_t anchor_misses = 0;      // 锚点未命中次数
-    uint64_t deleted_skipped = 0;    // 通过锚点跳过的删除实体数
-    uint64_t fallback_queries = 0;   // 回退到传统查询的次数
-    
-    double HitRate() const {
-      uint64_t total = anchor_hits + anchor_misses;
-      return total > 0 ? static_cast<double>(anchor_hits) / total : 0.0;
-    }
-  };
-  
-  static AnchorStats& GetAnchorStats() { return anchor_stats_; }
-  static void ResetAnchorStats() { anchor_stats_ = AnchorStats(); }
   
   static AnchorStats anchor_stats_;
   

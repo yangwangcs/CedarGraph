@@ -57,12 +57,12 @@ std::vector<Neighbor> CedarGraph::GetOutNeighbors(uint64_t vertex_id,
     return result;
   }
   
-  (void)start_time;
-  
   // Scan EdgeOut index for all edges from vertex_id, filtering by edge_type
   auto edges = storage_->ScanEdgesWithFolding(vertex_id, EntityType::EdgeOut, edge_type, end_time);
   for (const auto& e : edges) {
-    result.push_back(Neighbor{e.target_id, e.edge_type, e.timestamp, std::nullopt});
+    if (e.timestamp >= start_time) {
+      result.push_back(Neighbor{e.target_id, e.edge_type, e.timestamp, std::nullopt});
+    }
   }
   
   return result;
@@ -79,12 +79,12 @@ std::vector<Neighbor> CedarGraph::GetInNeighbors(uint64_t vertex_id,
     return result;
   }
   
-  (void)start_time;
-  
   // Scan EdgeIn index for all edges pointing to vertex_id
   auto edges = storage_->ScanEdgesWithFolding(vertex_id, EntityType::EdgeIn, edge_type, end_time);
   for (const auto& e : edges) {
-    result.push_back(Neighbor{e.target_id, e.edge_type, e.timestamp, std::nullopt});
+    if (e.timestamp >= start_time) {
+      result.push_back(Neighbor{e.target_id, e.edge_type, e.timestamp, std::nullopt});
+    }
   }
   
   return result;
@@ -166,9 +166,7 @@ std::vector<std::pair<Timestamp, int32_t>> CedarGraph::GetVertexHistory(
     return history;
   }
 
-  (void)column_id;
-  
-  auto versions = storage_->Scan(vertex_id, start_time, end_time);
+  auto versions = storage_->Scan(vertex_id, EntityType::Vertex, column_id, start_time, end_time);
 
   for (const auto& [ts, desc] : versions) {
     if (auto int_val = desc.AsInlineInt()) {
@@ -300,11 +298,10 @@ std::vector<Neighbor> CedarGraph::GetEdgeHistory(
     return history;
   }
 
-  auto results = storage_->Scan(src_id, start_time, end_time);
-
-  for (const auto& [ts, desc] : results) {
-    if (auto int_val = desc.AsInlineInt()) {
-      history.emplace_back(dst_id, edge_type, ts, *int_val);
+  auto edges = storage_->ScanEdgesWithFolding(src_id, EntityType::EdgeOut, edge_type, end_time);
+  for (const auto& e : edges) {
+    if (e.target_id == dst_id && e.timestamp >= start_time) {
+      history.emplace_back(dst_id, edge_type, e.timestamp, std::nullopt);
     }
   }
 

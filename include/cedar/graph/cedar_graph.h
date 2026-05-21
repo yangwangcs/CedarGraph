@@ -35,7 +35,14 @@ class OCCTransaction;
 struct TransactionOptions;
 
 // Forward declarations for temporal types
-enum class AllenRelation;
+enum class AllenRelation {
+  BEFORE, AFTER, MEETS, MET_BY,
+  OVERLAPS, OVERLAPPED_BY,
+  DURING, CONTAINS,
+  STARTS, STARTED_BY,
+  FINISHES, FINISHED_BY,
+  EQUALS
+};
 
 namespace cypher {
   class CypherEngine;
