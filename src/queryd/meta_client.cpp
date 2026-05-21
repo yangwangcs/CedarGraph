@@ -178,16 +178,50 @@ Status QueryMetaClient::WatchClusterChanges(
 }
 
 Status QueryMetaClient::RegisterQueryD(const std::string& listen_address) {
-  (void)listen_address;
-  // Stubbed: RegisterQueryD RPC removed from meta_service.proto
+  if (!channel_) {
+    return Status::IOError("Channel not initialized");
+  }
+
+  auto stub = cedar::meta::MetaService::NewStub(channel_);
+  grpc::ClientContext context;
+  cedar::meta::RegisterQueryDRequest request;
+  cedar::meta::RegisterQueryDResponse response;
+
+  request.set_listen_address(listen_address);
+  context.set_deadline(std::chrono::system_clock::now() + options_.rpc_timeout);
+
+  grpc::Status status = stub->RegisterQueryD(&context, request, &response);
+  if (!status.ok()) {
+    return Status::IOError("RegisterQueryD failed: " + status.error_message());
+  }
+  if (!response.success()) {
+    return Status::InvalidArgument(response.error_msg());
+  }
   return Status::OK();
 }
 
 Status QueryMetaClient::Heartbeat(uint32_t active_queries,
                                   uint32_t queued_queries) {
-  (void)active_queries;
-  (void)queued_queries;
-  // Stubbed: QueryDHeartbeat RPC removed from meta_service.proto
+  if (!channel_) {
+    return Status::IOError("Channel not initialized");
+  }
+
+  auto stub = cedar::meta::MetaService::NewStub(channel_);
+  grpc::ClientContext context;
+  cedar::meta::QueryDHeartbeatRequest request;
+  cedar::meta::QueryDHeartbeatResponse response;
+
+  request.set_active_queries(active_queries);
+  request.set_queued_queries(queued_queries);
+  context.set_deadline(std::chrono::system_clock::now() + options_.rpc_timeout);
+
+  grpc::Status status = stub->QueryDHeartbeat(&context, request, &response);
+  if (!status.ok()) {
+    return Status::IOError("QueryDHeartbeat failed: " + status.error_message());
+  }
+  if (!response.success()) {
+    return Status::InvalidArgument(response.error_msg());
+  }
   return Status::OK();
 }
 
