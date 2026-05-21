@@ -915,7 +915,7 @@ int main(int argc, char* argv[]) {
         config_path = argv[++i];
       }
     } else if (arg == "--help" || arg == "-h") {
-      std::cout << "CedarGraph Storage Server (storaged) - With gRPC\n"
+      std::cerr << "CedarGraph Storage Server (storaged) - With gRPC\n"
                 << "Usage: " << argv[0] << " --config <config_file>\n"
                 << "\n"
                 << "Options:\n"
@@ -935,17 +935,17 @@ int main(int argc, char* argv[]) {
   
   StorageConfig config = ParseConfigFile(config_path);
   
-  std::cout << "╔════════════════════════════════════════════════════════╗" << std::endl;
-  std::cout << "║     CedarGraph Storage Server (storaged)               ║" << std::endl;
-  std::cout << "║     With gRPC Service + 2PC Support                    ║" << std::endl;
-  std::cout << "╚════════════════════════════════════════════════════════╝" << std::endl;
-  std::cout << std::endl;
-  std::cout << "Configuration:" << std::endl;
-  std::cout << "  Node ID:    " << config.node_id << std::endl;
-  std::cout << "  Bind:       " << config.bind_address << std::endl;
-  std::cout << "  Data Dir:   " << config.data_dir << std::endl;
-  std::cout << "  MetaD:      " << config.metad_endpoints.size() << " endpoints" << std::endl;
-  std::cout << std::endl;
+  std::cerr << "╔════════════════════════════════════════════════════════╗" << std::endl;
+  std::cerr << "║     CedarGraph Storage Server (storaged)               ║" << std::endl;
+  std::cerr << "║     With gRPC Service + 2PC Support                    ║" << std::endl;
+  std::cerr << "╚════════════════════════════════════════════════════════╝" << std::endl;
+  std::cerr << std::endl;
+  std::cerr << "Configuration:" << std::endl;
+  std::cerr << "  Node ID:    " << config.node_id << std::endl;
+  std::cerr << "  Bind:       " << config.bind_address << std::endl;
+  std::cerr << "  Data Dir:   " << config.data_dir << std::endl;
+  std::cerr << "  MetaD:      " << config.metad_endpoints.size() << " endpoints" << std::endl;
+  std::cerr << std::endl;
   
   // Initialize StoragePartitionManager
   std::unique_ptr<cedar::dtx::StoragePartitionManager> partition_manager = 
@@ -968,7 +968,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   
-  std::cout << "[1/3] Partition manager initialized" << std::endl;
+  std::cerr << "[1/3] Partition manager initialized" << std::endl;
   
   // Create and start gRPC server
   StorageServiceImpl grpc_service(partition_manager.get());
@@ -987,9 +987,9 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   
-  std::cout << "[2/3] gRPC server listening on " << config.bind_address << std::endl;
-  std::cout << "[3/3] Running..." << std::endl;
-  std::cout << std::endl;
+  std::cerr << "[2/3] gRPC server listening on " << config.bind_address << std::endl;
+  std::cerr << "[3/3] Running..." << std::endl;
+  std::cerr << std::endl;
   
   // Monitor and print stats, with periodic flush
   std::thread stats_thread([&partition_manager]() {
@@ -1008,7 +1008,7 @@ int main(int argc, char* argv[]) {
 
       if (ticks % 10 == 0) {
         auto stats = storage->GetStats();
-        std::cout << "[Stats] partitions=" << partition_manager->GetPartitionCount()
+        std::cerr << "[Stats] partitions=" << partition_manager->GetPartitionCount()
                   << " memtable=" << stats.memtable_size / 1000
                   << "KB sst=" << stats.sst_count
                   << " data=" << (stats.sst_size / 1024 / 1024) << "MB"
@@ -1016,7 +1016,7 @@ int main(int argc, char* argv[]) {
       }
     }
     // Signal received: shutdown gRPC server to unblock Wait()
-    std::cout << "\nShutting down storaged..." << std::endl;
+    std::cerr << "\nShutting down storaged..." << std::endl;
     if (g_grpc_server) {
       g_grpc_server->Shutdown();
     }
@@ -1026,13 +1026,13 @@ int main(int argc, char* argv[]) {
   g_grpc_server->Wait();
   
   // Shutdown
-  std::cout << std::endl << "Shutting down..." << std::endl;
+  std::cerr << std::endl << "Shutting down..." << std::endl;
   
   g_running = false;
   stats_thread.join();
   
   partition_manager->Shutdown();
   
-  std::cout << "Storage server shutdown complete." << std::endl;
+  std::cerr << "Storage server shutdown complete." << std::endl;
   return 0;
 }

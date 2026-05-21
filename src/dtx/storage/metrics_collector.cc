@@ -110,7 +110,7 @@ void ConsoleSink::Write(const LogEntry& entry) {
   if (entry.level >= LogLevel::kError) {
     std::cerr << entry.ToText() << std::endl;
   } else {
-    std::cout << entry.ToText() << std::endl;
+    std::cerr << entry.ToText() << std::endl;
   }
 }
 
@@ -453,7 +453,7 @@ void LogNotifier::Notify(const Alert& alert) {
   }
   
   if (alert.is_resolved) {
-    std::cout << oss.str() << " [RESOLVED]" << std::endl;
+    std::cerr << oss.str() << " [RESOLVED]" << std::endl;
   } else {
     std::cerr << oss.str() << " [FIRED]" << std::endl;
   }

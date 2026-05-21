@@ -67,14 +67,14 @@ GrpcConnectionPool::~GrpcConnectionPool() {
 }
 
 Status GrpcConnectionPool::Initialize(const std::vector<std::string>& endpoints) {
-  std::cout << "[ConnectionPool] Initializing with " << endpoints.size() 
+  std::cerr << "[ConnectionPool] Initializing with " << endpoints.size() 
             << " endpoints..." << std::endl;
   
   endpoints_ = endpoints;
   
   // 为每个端点创建最小连接数
   for (const auto& endpoint : endpoints_) {
-    std::cout << "  Creating connections for: " << endpoint << std::endl;
+    std::cerr << "  Creating connections for: " << endpoint << std::endl;
     
     for (size_t i = 0; i < config_.min_connections_per_endpoint; ++i) {
       auto conn = CreateConnection(endpoint);
@@ -85,7 +85,7 @@ Status GrpcConnectionPool::Initialize(const std::vector<std::string>& endpoints)
     }
   }
   
-  std::cout << "[ConnectionPool] Created " << available_connections_.size() 
+  std::cerr << "[ConnectionPool] Created " << available_connections_.size() 
             << " initial connections" << std::endl;
   
   // 启动后台线程
@@ -219,7 +219,7 @@ void GrpcConnectionPool::Release(std::shared_ptr<PooledChannel> channel) {
 }
 
 Status GrpcConnectionPool::WarmupConnections() {
-  std::cout << "[ConnectionPool] Warming up connections..." << std::endl;
+  std::cerr << "[ConnectionPool] Warming up connections..." << std::endl;
   
   // 对每个端点执行一次简单调用以建立连接
   for (const auto& endpoint : endpoints_) {
@@ -231,7 +231,7 @@ Status GrpcConnectionPool::WarmupConnections() {
     }
   }
   
-  std::cout << "[ConnectionPool] Warmup completed" << std::endl;
+  std::cerr << "[ConnectionPool] Warmup completed" << std::endl;
   return Status::OK();
 }
 
@@ -267,7 +267,7 @@ GrpcConnectionPool::Stats GrpcConnectionPool::GetStats() const {
 }
 
 void GrpcConnectionPool::Shutdown() noexcept {
-  std::cout << "[ConnectionPool] Shutting down..." << std::endl;
+  std::cerr << "[ConnectionPool] Shutting down..." << std::endl;
   
   shutdown_ = true;
   cv_.notify_all();
@@ -296,7 +296,7 @@ void GrpcConnectionPool::Shutdown() noexcept {
   }
   endpoint_connections_.clear();
   
-  std::cout << "[ConnectionPool] Shutdown completed" << std::endl;
+  std::cerr << "[ConnectionPool] Shutdown completed" << std::endl;
 }
 
 void GrpcConnectionPool::HealthCheckLoop() {
@@ -319,7 +319,7 @@ void GrpcConnectionPool::HealthCheckLoop() {
         healthy_queue.push(conn);
       } else {
         // 不健康的连接会被丢弃，后续会创建新连接
-        std::cout << "[ConnectionPool] Removing unhealthy connection to " 
+        std::cerr << "[ConnectionPool] Removing unhealthy connection to " 
                   << conn->GetAddress() << std::endl;
       }
     }
@@ -362,7 +362,7 @@ void GrpcConnectionPool::IdleCleanupLoop() {
     available_connections_ = std::move(keep_queue);
     
     if (removed > 0) {
-      std::cout << "[ConnectionPool] Cleaned up " << removed 
+      std::cerr << "[ConnectionPool] Cleaned up " << removed 
                 << " idle connections" << std::endl;
     }
   }

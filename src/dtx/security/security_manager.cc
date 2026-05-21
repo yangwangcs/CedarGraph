@@ -839,7 +839,7 @@ void AuditLogger::WriteLoop() {
         oss << "}";
         
         if (config_.log_to_console) {
-          std::cout << oss.str() << std::endl;
+          std::cerr << oss.str() << std::endl;
         }
         
         if (log_file_.is_open()) {

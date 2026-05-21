@@ -45,7 +45,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
   config_ = config;
   node_id_ = config.node_id;
   
-  std::cout << "Initializing StorageServer (node_id=" << node_id_ 
+  std::cerr << "Initializing StorageServer (node_id=" << node_id_ 
             << ", address=" << config.listen_address << ")" << std::endl;
   
   // Initialize braft partition replication manager first
@@ -133,7 +133,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
   dtx_builder.RegisterService(dtx_service_impl_.get());
   dtx_grpc_server_ = dtx_builder.BuildAndStart();
   if (dtx_grpc_server_) {
-    std::cout << "DTX replication gRPC server started on " << dtx_listen_address << std::endl;
+    std::cerr << "DTX replication gRPC server started on " << dtx_listen_address << std::endl;
   } else {
     std::cerr << "Warning: Failed to start DTX replication gRPC server" << std::endl;
   }
@@ -147,7 +147,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
     if (s.ok()) {
       cross_dc_replicator_->SetStorage(partition_manager_.GetSharedStorage());
       cross_dc_replicator_->Start();
-      std::cout << "CrossDCReplicator started for DC: " << config_.local_dc_id << std::endl;
+      std::cerr << "CrossDCReplicator started for DC: " << config_.local_dc_id << std::endl;
     } else {
       std::cerr << "Warning: Failed to initialize CrossDCReplicator: " << s.ToString() << std::endl;
     }
@@ -161,7 +161,7 @@ void StorageServer::Serve() {
     return;
   }
   
-  std::cout << "Starting StorageServer on " << config_.listen_address << std::endl;
+  std::cerr << "Starting StorageServer on " << config_.listen_address << std::endl;
   
   // Build and start gRPC server
   grpc::ServerBuilder builder;
@@ -180,7 +180,7 @@ void StorageServer::Serve() {
     return;
   }
   
-  std::cout << "gRPC server started successfully on " << config_.listen_address << std::endl;
+  std::cerr << "gRPC server started successfully on " << config_.listen_address << std::endl;
   
   // Start heartbeat loop if MetaD client is connected
   if (meta_client_ && meta_client_->IsConnected()) {
@@ -193,7 +193,7 @@ void StorageServer::Serve() {
   std::unique_lock<std::mutex> lock(shutdown_mutex_);
   shutdown_cv_.wait(lock, [this]() { return !running_.load(); });
   
-  std::cout << "StorageServer stopped" << std::endl;
+  std::cerr << "StorageServer stopped" << std::endl;
 }
 
 Status StorageServer::Shutdown() {
@@ -201,7 +201,7 @@ Status StorageServer::Shutdown() {
     return Status::OK();
   }
   
-  std::cout << "Shutting down StorageServer..." << std::endl;
+  std::cerr << "Shutting down StorageServer..." << std::endl;
   
   // Signal shutdown
   shutdown_cv_.notify_all();
@@ -215,7 +215,7 @@ Status StorageServer::Shutdown() {
   if (dtx_grpc_server_) {
     dtx_grpc_server_->Shutdown();
     dtx_grpc_server_->Wait();
-    std::cout << "DTX gRPC server stopped" << std::endl;
+    std::cerr << "DTX gRPC server stopped" << std::endl;
   }
 
   // Shutdown cross-DC replicator
@@ -227,7 +227,7 @@ Status StorageServer::Shutdown() {
   if (grpc_server_) {
     grpc_server_->Shutdown();
     grpc_server_->Wait();
-    std::cout << "gRPC server stopped" << std::endl;
+    std::cerr << "gRPC server stopped" << std::endl;
   }
   
   // Shutdown MetaD client
@@ -248,7 +248,7 @@ Status StorageServer::Shutdown() {
     raft_manager_->Shutdown();
   }
   
-  std::cout << "StorageServer shutdown complete" << std::endl;
+  std::cerr << "StorageServer shutdown complete" << std::endl;
   return Status::OK();
 }
 
@@ -257,14 +257,14 @@ Status StorageServer::RegisterToMetaD() {
     return Status::IOError("MetaD client not initialized");
   }
   
-  std::cout << "Registering with MetaD at " << config_.metad_address << std::endl;
+  std::cerr << "Registering with MetaD at " << config_.metad_address << std::endl;
   
   auto status = meta_client_->RegisterNode();
   if (!status.ok()) {
     return status;
   }
   
-  std::cout << "Registered with MetaD successfully" << std::endl;
+  std::cerr << "Registered with MetaD successfully" << std::endl;
   
   // Fetch partition assignment and initialize raft groups
   auto nodes_result = meta_client_->GetAliveNodes();
@@ -345,7 +345,7 @@ Status StorageServer::RegisterToMetaD() {
       continue;
     }
     
-    std::cout << "Created raft group for partition " << pid << " with " << peers.size() << " peers" << std::endl;
+    std::cerr << "Created raft group for partition " << pid << " with " << peers.size() << " peers" << std::endl;
   }
   
   return Status::OK();

@@ -594,7 +594,7 @@ Status PartitionStorage::RecoverFromWAL() {
   }
   
   if (recovered_commits > 0 || recovered_aborts > 0) {
-    std::cout << "[PartitionStorage] Recovered " << recovered_commits << " commits and "
+    std::cerr << "[PartitionStorage] Recovered " << recovered_commits << " commits and "
               << recovered_aborts << " aborts from WAL for partition " << partition_id_ << std::endl;
   }
   
