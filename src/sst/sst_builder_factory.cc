@@ -21,7 +21,7 @@
 #include "cedar/core/env.h"
 
 // Zone-Columnar Builder V2（唯一实现）
-#include "zone_columnar_builder_v2.cc"
+#include "cedar/sst/zone_columnar_builder_v2.h"
 
 namespace cedar {
 

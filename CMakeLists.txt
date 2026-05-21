@@ -311,6 +311,7 @@ set(CEDAR_SST_SOURCES
     src/sst/blob_file.cc
     src/sst/sst_builder_factory.cc
     src/sst/zone_columnar_builder.cc
+    src/sst/zone_columnar_builder_v2.cc
     src/sst/zone_columnar_format.cc
     src/sst/zone_columnar_reader.cc
 )
