@@ -32,7 +32,8 @@ namespace dtx {
 // =============================================================================
 
 Optimized2PCEngine::Optimized2PCEngine(const TwoPCConfig& config)
-    : config_(config) {
+    : config_(config),
+      thread_pool_(std::make_unique<ThreadPool>(config.parallel_threads)) {
 }
 
 Optimized2PCEngine::~Optimized2PCEngine() {
@@ -123,6 +124,12 @@ void Optimized2PCEngine::Shutdown() noexcept {
   }
   
   shutdown_.store(true);
+  
+  // Shutdown thread pool first (waits for all queued tasks to finish)
+  if (thread_pool_) {
+    thread_pool_->WaitForAll();
+    thread_pool_.reset();
+  }
   
   // Wake up all waiting threads
   pipeline_cv_.notify_all();
@@ -470,13 +477,15 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   ctx->state.store(TransactionContext::State::kPreparing);
   auto prepare_start = std::chrono::steady_clock::now();
 
-  // Phase 1: Prepare (parallel RPC via explicit threads)
+  // Phase 1: Prepare (parallel RPC via thread pool)
+  std::vector<std::promise<bool>> prepare_promises(participants.size());
   std::vector<std::future<bool>> prepare_futures;
-  std::vector<std::thread> prepare_threads;
-  for (auto& client : participants) {
-    auto p = std::make_shared<std::promise<bool>>();
-    auto f = p->get_future();
-    prepare_threads.emplace_back([client, ctx, p]() {
+  prepare_futures.reserve(participants.size());
+  for (auto& p : prepare_promises) {
+    prepare_futures.push_back(p.get_future());
+  }
+  for (size_t i = 0; i < participants.size(); ++i) {
+    thread_pool_->Schedule([client = participants[i], ctx, &prepare_promises, i]() {
       try {
         auto result = client->Prepare(
             ctx->txn_id,
@@ -485,26 +494,24 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
             ctx->commit_ts);
         if (result.ok() && result.ValueOrDie()) {
           ctx->prepare_acks.fetch_add(1);
-          p->set_value(true);
+          prepare_promises[i].set_value(true);
         } else {
           ctx->prepare_nacks.fetch_add(1);
-          p->set_value(false);
+          prepare_promises[i].set_value(false);
         }
       } catch (...) {
         std::cerr << "[2PC] Prepare RPC exception for txn_id=" << ctx->txn_id << std::endl;
         ctx->prepare_nacks.fetch_add(1);
-        p->set_value(false);
+        prepare_promises[i].set_value(false);
       }
     });
-    prepare_futures.push_back(std::move(f));
   }
 
+  // Wait for all prepare tasks to complete
+  for (auto& f : prepare_futures) {
+    f.wait();
+  }
   bool all_prepared = WaitForPrepareQuorum(ctx, prepare_futures);
-
-  // Ensure all prepare threads complete before proceeding
-  for (auto& t : prepare_threads) {
-    if (t.joinable()) t.join();
-  }
 
   auto prepare_end = std::chrono::steady_clock::now();
   auto prepare_latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -517,9 +524,14 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
     ctx->state.store(TransactionContext::State::kAborting);
 
     // Send Abort to participants that prepared successfully
-    std::vector<std::thread> abort_threads;
-    for (auto& client : participants) {
-      abort_threads.emplace_back([client, ctx]() {
+    std::vector<std::promise<void>> abort_promises(participants.size());
+    std::vector<std::future<void>> abort_futures;
+    abort_futures.reserve(participants.size());
+    for (auto& p : abort_promises) {
+      abort_futures.push_back(p.get_future());
+    }
+    for (size_t i = 0; i < participants.size(); ++i) {
+      thread_pool_->Schedule([client = participants[i], ctx, &abort_promises, i]() {
         try {
           auto abort_status = client->Abort(ctx->txn_id);
           if (abort_status.ok()) {
@@ -529,10 +541,11 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
           std::cerr << "[2PC] Abort RPC exception for txn_id=" << ctx->txn_id << std::endl;
           // Abort 异常不应导致线程崩溃
         }
+        abort_promises[i].set_value();
       });
     }
-    for (auto& t : abort_threads) {
-      if (t.joinable()) t.join();
+    for (auto& f : abort_futures) {
+      f.wait();
     }
 
     stats_.aborted_transactions++;
@@ -550,35 +563,35 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   ctx->state.store(TransactionContext::State::kCommitting);
   auto commit_start = std::chrono::steady_clock::now();
 
-  // Phase 2: Commit (parallel RPC via explicit threads)
+  // Phase 2: Commit (parallel RPC via thread pool)
+  std::vector<std::promise<bool>> commit_promises(participants.size());
   std::vector<std::future<bool>> commit_futures;
-  std::vector<std::thread> commit_threads;
-  for (auto& client : participants) {
-    auto p = std::make_shared<std::promise<bool>>();
-    auto f = p->get_future();
-    commit_threads.emplace_back([client, ctx, p]() {
+  commit_futures.reserve(participants.size());
+  for (auto& p : commit_promises) {
+    commit_futures.push_back(p.get_future());
+  }
+  for (size_t i = 0; i < participants.size(); ++i) {
+    thread_pool_->Schedule([client = participants[i], ctx, &commit_promises, i]() {
       try {
         auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
         if (status.ok()) {
           ctx->commit_acks.fetch_add(1);
-          p->set_value(true);
+          commit_promises[i].set_value(true);
         } else {
-          p->set_value(false);
+          commit_promises[i].set_value(false);
         }
       } catch (...) {
         std::cerr << "[2PC] Commit RPC exception for txn_id=" << ctx->txn_id << std::endl;
-        p->set_value(false);
+        commit_promises[i].set_value(false);
       }
     });
-    commit_futures.push_back(std::move(f));
   }
 
+  // Wait for all commit tasks to complete
+  for (auto& f : commit_futures) {
+    f.wait();
+  }
   bool all_committed = WaitForCommitQuorum(ctx, commit_futures);
-
-  // Ensure all commit threads complete before returning
-  for (auto& t : commit_threads) {
-    if (t.joinable()) t.join();
-  }
 
   auto commit_end = std::chrono::steady_clock::now();
   auto commit_latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -710,38 +723,33 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
         
         // Phase 1: Prepare all in parallel
         ctx->state.store(TransactionContext::State::kPreparing);
-        std::cerr << "[Optimized2PCEngine] PipelineWorkerLoop: Creating "
-                  << participants.size() << " prepare threads (thread churn overhead)"
-                  << std::endl;
+        std::vector<std::promise<bool>> prepare_promises(participants.size());
         std::vector<std::future<bool>> prepare_results;
-        std::vector<std::thread> prepare_threads;
-        for (auto& client : participants) {
-          auto p = std::make_shared<std::promise<bool>>();
-          auto f = p->get_future();
-          prepare_threads.emplace_back([client, ctx, p]() {
+        prepare_results.reserve(participants.size());
+        for (auto& p : prepare_promises) {
+          prepare_results.push_back(p.get_future());
+        }
+        for (size_t i = 0; i < participants.size(); ++i) {
+          thread_pool_->Schedule([client = participants[i], ctx, &prepare_promises, i]() {
             try {
               auto result = client->Prepare(ctx->txn_id, ctx->read_set, ctx->write_set, ctx->commit_ts);
               if (result.ok() && result.ValueOrDie()) {
                 ctx->prepare_acks.fetch_add(1);
-                p->set_value(true);
+                prepare_promises[i].set_value(true);
               } else {
                 ctx->prepare_nacks.fetch_add(1);
-                p->set_value(false);
+                prepare_promises[i].set_value(false);
               }
             } catch (...) {
               std::cerr << "[2PC] Prepare RPC exception for txn_id=" << ctx->txn_id << std::endl;
               ctx->prepare_nacks.fetch_add(1);
-              p->set_value(false);
+              prepare_promises[i].set_value(false);
             }
           });
-          prepare_results.push_back(std::move(f));
         }
         
         for (auto& f : prepare_results) {
           f.get();
-        }
-        for (auto& t : prepare_threads) {
-          if (t.joinable()) t.join();
         }
         
         bool all_prepared = (ctx->prepare_acks.load() == static_cast<int>(participants.size()));
@@ -775,33 +783,31 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
         
         // Phase 2: Commit all in parallel
         ctx->state.store(TransactionContext::State::kCommitting);
+        std::vector<std::promise<bool>> commit_promises(participants.size());
         std::vector<std::future<bool>> commit_results;
-        std::vector<std::thread> commit_threads;
-        for (auto& client : participants) {
-          auto p = std::make_shared<std::promise<bool>>();
-          auto f = p->get_future();
-          commit_threads.emplace_back([client, ctx, p]() {
+        commit_results.reserve(participants.size());
+        for (auto& p : commit_promises) {
+          commit_results.push_back(p.get_future());
+        }
+        for (size_t i = 0; i < participants.size(); ++i) {
+          thread_pool_->Schedule([client = participants[i], ctx, &commit_promises, i]() {
             try {
               auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
               if (status.ok()) {
                 ctx->commit_acks.fetch_add(1);
-                p->set_value(true);
+                commit_promises[i].set_value(true);
               } else {
-                p->set_value(false);
+                commit_promises[i].set_value(false);
               }
             } catch (...) {
               std::cerr << "[2PC] Commit RPC exception for txn_id=" << ctx->txn_id << std::endl;
-              p->set_value(false);
+              commit_promises[i].set_value(false);
             }
           });
-          commit_results.push_back(std::move(f));
         }
         
         for (auto& f : commit_results) {
           f.get();
-        }
-        for (auto& t : commit_threads) {
-          if (t.joinable()) t.join();
         }
         
         bool all_committed = (ctx->commit_acks.load() == static_cast<int>(participants.size()));

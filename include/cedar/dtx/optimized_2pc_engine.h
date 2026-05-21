@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "cedar/core/status.h"
+#include "cedar/core/threading.h"
 #include "cedar/dtx/types.h"
 #include "cedar/dtx/production_config.h"
 
@@ -261,6 +262,9 @@ class Optimized2PCEngine {
   std::vector<std::shared_ptr<TransactionContext>> batch_buffer_;
   std::mutex batch_mutex_;
   std::condition_variable batch_cv_;
+  
+  // Thread pool for parallel 2PC RPCs
+  std::unique_ptr<ThreadPool> thread_pool_;
   
   // Worker threads
   std::vector<std::thread> worker_threads_;

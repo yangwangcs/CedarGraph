@@ -201,6 +201,10 @@ add_executable(test_rate_limiter_race queryd/test_rate_limiter_race.cc)
 target_link_libraries(test_rate_limiter_race ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_rate_limiter_race)
 
+add_executable(test_2pc_thread_pool dtx/test_2pc_thread_pool.cc)
+target_link_libraries(test_2pc_thread_pool ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_2pc_thread_pool)
+
 add_executable(test_failover cluster/test_failover.cc)
 target_link_libraries(test_failover ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_failover)
