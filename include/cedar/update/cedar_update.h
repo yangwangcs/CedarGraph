@@ -215,10 +215,10 @@ class CedarUpdate {
   // ===========================================================================
   
   // 第一重 + 第二重：拓扑门 + 时态门
-  CedarStatus ValidateCentralized(LsmEngine* engine);
+  CedarStatus ValidateCentralized(CedarGraphStorage* storage);
   
   // 获取实体快照（利用 CedarKey 结构高效 Seek）
-  EntitySnapshot GetEntitySnapshot(LsmEngine* engine,
+  EntitySnapshot GetEntitySnapshot(CedarGraphStorage* storage,
                                    uint64_t entity_id,
                                    EntityType type,
                                    Timestamp query_time);

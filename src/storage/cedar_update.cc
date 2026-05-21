@@ -282,7 +282,7 @@ CedarStatus CedarUpdate::Apply(CedarGraphStorage* storage) {
   // ========== 严格模式：三重门校验 ==========
   if (strict_level_ >= StrictLevel::CHECK_EXISTS) {
     // 第一重 + 第二重：拓扑门 + 时态门
-    auto status = ValidateCentralized(engine);
+    auto status = ValidateCentralized(storage);
     CEDAR_RETURN_IF_ERROR(status);
   }
   
@@ -303,7 +303,7 @@ CedarStatus CedarUpdate::Apply(LsmEngine* engine) {
 // 集中式严格模式：三重门校验
 // =============================================================================
 
-CedarStatus CedarUpdate::ValidateCentralized(LsmEngine* engine) {
+CedarStatus CedarUpdate::ValidateCentralized(CedarGraphStorage* storage) {
   // 遍历所有记录进行校验
   for (const auto& record : records_) {
     
@@ -316,7 +316,7 @@ CedarStatus CedarUpdate::ValidateCentralized(LsmEngine* engine) {
         auto it = cache_.find(edge.src_id);
         if (it == cache_.end()) {
           auto snapshot = GetEntitySnapshot(
-              engine, edge.src_id, EntityType::Vertex, timestamp_);
+              storage, edge.src_id, EntityType::Vertex, timestamp_);
           it = cache_.emplace(edge.src_id, snapshot).first;
         }
         
@@ -342,7 +342,7 @@ CedarStatus CedarUpdate::ValidateCentralized(LsmEngine* engine) {
         auto it = cache_.find(edge.dst_id);
         if (it == cache_.end()) {
           auto snapshot = GetEntitySnapshot(
-              engine, edge.dst_id, EntityType::Vertex, timestamp_);
+              storage, edge.dst_id, EntityType::Vertex, timestamp_);
           it = cache_.emplace(edge.dst_id, snapshot).first;
         }
         
@@ -373,7 +373,7 @@ CedarStatus CedarUpdate::ValidateCentralized(LsmEngine* engine) {
         auto it = cache_.find(entity_id);
         if (it == cache_.end()) {
           auto snapshot = GetEntitySnapshot(
-              engine, entity_id, record.key.entity_type(), timestamp_);
+              storage, entity_id, record.key.entity_type(), timestamp_);
           it = cache_.emplace(entity_id, snapshot).first;
         }
         
@@ -392,27 +392,24 @@ CedarStatus CedarUpdate::ValidateCentralized(LsmEngine* engine) {
 }
 
 // 获取实体快照（利用 CedarKey 结构高效 Seek）
-EntitySnapshot CedarUpdate::GetEntitySnapshot(LsmEngine* engine,
+EntitySnapshot CedarUpdate::GetEntitySnapshot(CedarGraphStorage* storage,
                                                uint64_t entity_id,
                                                EntityType type,
                                                Timestamp query_time) {
+  (void)type;
+  (void)query_time;
   EntitySnapshot snapshot;
   
-  // 使用 GetAtTime 查询指定时间点的最新版本
-  auto result = engine->GetAtTime(entity_id, type, 0, query_time);
-  
-  if (!result.has_value()) {
+  // 查询实体的所有版本，获取最早创建时间
+  auto versions = storage->Scan(entity_id, Timestamp::Min(), Timestamp::Max());
+  if (!versions.empty()) {
+    snapshot.exists = true;
+    snapshot.create_time = versions.back().first;  // 最早版本（降序排列）
+    snapshot.latest_version_time = versions.front().first;  // 最新版本
+  } else {
     snapshot.exists = false;
-    return snapshot;
+    snapshot.create_time = Timestamp::Max();
   }
-  
-  // 实体存在
-  snapshot.exists = true;
-  snapshot.latest_version_time = query_time;
-  
-  // 获取该实体的最新版本以检查是否为 DELETE
-  // 注意：这里简化处理，实际应该从 Key 中解析 flags
-  // 目前假设 result 的存在即表示实体有效
   
   return snapshot;
 }
