@@ -834,69 +834,8 @@ Status ManifestManager::ArchiveOldManifests(size_t keep_count) {
 }
 
 Status ManifestManager::CompactManifest() {
-  // Manifest 压缩策略：
-  // 1. 读取当前所有版本记录
-  // 2. 只保留最新的完整版本（删除中间版本）
-  // 3. 写入新的 Manifest 文件
-  // 4. 原子切换
-  
-  // 创建新的 Manifest 文件
-  uint64_t new_file_number = manifest_file_number_ + 1;
-  std::string new_manifest_file = db_path_ + "/MANIFEST-" + 
-                                   std::to_string(new_file_number);
-  
-  WritableFile* new_file = nullptr;
-  Status s = env_->NewWritableFile(new_manifest_file, &new_file);
-  if (!s.ok()) {
-    return s;
-  }
-  
-  // 写入头部
-  std::string header;
-  char buf[12];
-  EncodeFixed32(buf, kManifestMagic);
-  EncodeFixed32(buf + 4, kManifestVersion);
-  EncodeFixed32(buf + 8, 0);
-  header.append(buf, 12);
-  
-  s = new_file->Append(header);
-  if (!s.ok()) {
-    delete new_file;
-    return s;
-  }
-  
-  // Writing full version state (instead of all edit records)
-  // requires VersionSet snapshot serialization.
-  
-  // 同步并关闭
-  s = new_file->Sync();
-  if (!s.ok()) {
-    delete new_file;
-    return s;
-  }
-  
-  // 更新 CURRENT 文件
-  s = WriteCurrentFile("MANIFEST-" + std::to_string(new_file_number));
-  if (!s.ok()) {
-    delete new_file;
-    return s;
-  }
-  
-  // 关闭旧文件
-  if (manifest_file_) {
-    manifest_file_->Close();
-    delete manifest_file_;
-  }
-  
-  // 切换到新文件
-  manifest_file_ = new_file;
-  manifest_file_number_ = new_file_number;
-  manifest_filename_ = new_manifest_file;
-  
-  // 归档旧的 Manifest
-  ArchiveOldManifests(5);
-  
-  return Status::OK();
+  // Serialization not yet implemented — compaction would lose all metadata.
+  return Status::NotSupported("Manifest compaction requires VersionSet snapshot serialization");
 }
 
 }  // namespace cedar

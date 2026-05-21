@@ -53,6 +53,19 @@ gtest_discover_tests(test_compaction)
 add_executable(test_manifest_replay db/test_manifest_replay.cc)
 target_link_libraries(test_manifest_replay ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_manifest_replay)
+
+add_executable(test_tombstone_flush db/test_tombstone_flush.cc)
+target_link_libraries(test_tombstone_flush ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_tombstone_flush)
+
+add_executable(test_manifest_compact db/test_manifest_compact.cc)
+target_link_libraries(test_manifest_compact ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_manifest_compact)
+
+add_executable(test_memtable_iterator_race db/test_memtable_iterator_race.cc)
+target_link_libraries(test_memtable_iterator_race ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_memtable_iterator_race)
+
 add_executable(test_cedar_graph_storage storage/test_cedar_graph_storage.cc)
 target_link_libraries(test_cedar_graph_storage ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cedar_graph_storage)
@@ -123,6 +136,10 @@ gtest_discover_tests(test_migration_wal_catchup)
 add_executable(test_transaction_pool transaction/test_transaction_pool.cc)
 target_link_libraries(test_transaction_pool ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_transaction_pool)
+
+add_executable(test_wal_ordering transaction/test_wal_ordering.cc)
+target_link_libraries(test_wal_ordering ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_wal_ordering)
 
 add_executable(test_plan_cache_thread_safety cypher/test_plan_cache_thread_safety.cc)
 target_link_libraries(test_plan_cache_thread_safety ${CEDAR_TEST_LIBS} cedar_queryd)
