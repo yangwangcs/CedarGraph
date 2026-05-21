@@ -230,6 +230,10 @@ add_executable(test_partial_commit_rollback dtx/test_partial_commit_rollback.cc)
 target_link_libraries(test_partial_commit_rollback ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_partial_commit_rollback)
 
+add_executable(test_rollback_replication dtx/test_rollback_replication.cc)
+target_link_libraries(test_rollback_replication ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_rollback_replication)
+
 add_executable(test_metrics_registry metrics/test_metrics_registry.cc)
 target_link_libraries(test_metrics_registry ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_metrics_registry)
