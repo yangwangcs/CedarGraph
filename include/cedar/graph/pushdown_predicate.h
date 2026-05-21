@@ -107,8 +107,8 @@ struct PushdownPredicate {
   
   // 是否只有时间范围过滤
   bool IsTimeOnly() const {
-    return !time_start.has_value() && 
-           !time_end.has_value() &&
+    return time_start.has_value() && 
+           time_end.has_value() &&
            property_filters.empty() &&
            projected_columns.empty() &&
            !aggregate.has_value() &&

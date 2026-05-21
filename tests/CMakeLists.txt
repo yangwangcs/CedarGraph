@@ -174,6 +174,10 @@ add_executable(test_nodescan_real_data cypher/test_nodescan_real_data.cc)
 target_link_libraries(test_nodescan_real_data ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_nodescan_real_data)
 
+add_executable(test_distinct_no_collision cypher/test_distinct_no_collision.cc)
+target_link_libraries(test_distinct_no_collision ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_distinct_no_collision)
+
 add_executable(test_storage_service_impl dtx/test_storage_service_impl.cc)
 target_link_libraries(test_storage_service_impl ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_storage_service_impl)
@@ -238,6 +242,10 @@ gtest_discover_tests(test_in_neighbors)
 add_executable(test_out_neighbors_edge_type graph/test_out_neighbors_edge_type.cc)
 target_link_libraries(test_out_neighbors_edge_type ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_out_neighbors_edge_type)
+
+add_executable(test_pushdown_predicate graph/test_pushdown_predicate.cc)
+target_link_libraries(test_pushdown_predicate ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_pushdown_predicate)
 
 add_executable(test_cluster_connection cluster/test_cluster_connection.cc)
 target_link_libraries(test_cluster_connection ${CEDAR_TEST_LIBS})
