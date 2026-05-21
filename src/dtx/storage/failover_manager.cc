@@ -107,6 +107,7 @@ PartitionFailoverController::~PartitionFailoverController() {
 
 Status PartitionFailoverController::Initialize(const Config& config) {
   config_ = config;
+  failover_worker_pool_ = std::make_unique<cedar::ThreadPool>(16);
   running_.store(true);
   
   lease_thread_ = std::thread(&PartitionFailoverController::LeaseRenewalLoop, this);
@@ -136,21 +137,10 @@ void PartitionFailoverController::Shutdown() noexcept {
     std::cerr << "[FailoverManager] Health thread join exception" << std::endl;
   }
   
-  // Join all failover threads to prevent UAF
-  std::vector<std::thread> threads_to_join;
-  {
-    std::lock_guard<std::mutex> lock(thread_mutex_);
-    threads_to_join = std::move(failover_threads_);
-    failover_threads_.clear();
-  }
-  for (auto& t : threads_to_join) {
-    if (t.joinable()) {
-      try {
-        t.join();
-      } catch (...) {
-        std::cerr << "[FailoverManager] Failover thread join exception" << std::endl;
-      }
-    }
+  // Wait for all queued failover tasks to finish before destruction
+  if (failover_worker_pool_) {
+    failover_worker_pool_->WaitForAll();
+    failover_worker_pool_.reset();
   }
 }
 
@@ -201,14 +191,11 @@ Status PartitionFailoverController::ReportNodeFailure(NodeID node_id) {
     }
   }
   
-  // 在锁外创建线程，避免死锁（线程内部也会获取 partitions_mutex_）
-  {
-    std::lock_guard<std::mutex> lock(thread_mutex_);
-    for (PartitionID pid : pending_failovers) {
-      failover_threads_.emplace_back([this, pid]() {
-        ExecuteFailover(pid);
-      });
-    }
+  // Schedule failover tasks on the bounded worker pool
+  for (PartitionID pid : pending_failovers) {
+    failover_worker_pool_->Schedule([this, pid]() {
+      ExecuteFailover(pid);
+    });
   }
   
   return Status::OK();
@@ -233,8 +220,7 @@ Status PartitionFailoverController::ReportLeaderFailure(PartitionID pid) {
   }
   
   if (should_failover) {
-    std::lock_guard<std::mutex> lock(thread_mutex_);
-    failover_threads_.emplace_back([this, pid]() {
+    failover_worker_pool_->Schedule([this, pid]() {
       ExecuteFailover(pid);
     });
   }
@@ -608,8 +594,8 @@ void PartitionFailoverController::HealthCheckLoop() {
             if (state.current_leader == node_id && !state.is_failover_in_progress) {
               std::cerr << "[Failover] Node " << node_id
                         << " unhealthy, triggering failover for partition " << pid << std::endl;
-              // Launch failover asynchronously (copy pid by value)
-              std::thread([this, pid]() { ReportLeaderFailure(pid); }).detach();
+              // Launch failover asynchronously on the bounded worker pool
+              failover_worker_pool_->Schedule([this, pid]() { ReportLeaderFailure(pid); });
               break;  // One failover at a time per node
             }
           }

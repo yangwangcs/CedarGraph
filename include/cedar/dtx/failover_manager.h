@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "cedar/core/status.h"
+#include "cedar/core/threading.h"
 #include "cedar/dtx/phi_accrual.h"
 #include "cedar/dtx/types.h"
 
@@ -268,12 +269,11 @@ class PartitionFailoverController {
   RouteUpdateCallback route_update_callback_;
   mutable std::mutex route_mutex_;
   
-  // Failover threads tracking (to prevent UAF from detached threads)
-  mutable std::mutex thread_mutex_;
-  std::vector<std::thread> failover_threads_;
-  
   std::thread lease_thread_;
   std::thread health_thread_;
+
+  // Bounded worker pool for failover tasks (prevents unbounded thread spawning)
+  std::unique_ptr<cedar::ThreadPool> failover_worker_pool_;
   
   bool CheckReplicaHealth(NodeID node_id);
   bool PerformActiveHealthCheck(NodeID node_id);
