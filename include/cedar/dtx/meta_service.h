@@ -447,6 +447,11 @@ private:
     std::atomic<bool> running_{false};
     std::thread heartbeat_thread_;
     
+    // Heartbeat rate limiting (token bucket per node)
+    mutable std::mutex heartbeat_tokens_mutex_;
+    std::unordered_map<NodeID, std::pair<std::chrono::steady_clock::time_point, uint32_t>> heartbeat_tokens_;
+    static constexpr uint32_t kMaxHeartbeatsPerSecond = 10;
+
     std::atomic<bool> initialized_{false};
 };
 

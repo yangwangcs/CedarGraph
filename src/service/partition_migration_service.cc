@@ -37,6 +37,20 @@ namespace service {
 
 namespace {
 
+// RAII temp directory guard
+class TempDirGuard {
+ public:
+  explicit TempDirGuard(const std::string& path) : path_(path) {
+    std::filesystem::create_directories(path_);
+  }
+  ~TempDirGuard() {
+    std::filesystem::remove_all(path_);
+  }
+  const std::string& path() const { return path_; }
+ private:
+  std::string path_;
+};
+
 // Generate UUID v4 style string
 std::string GenerateUuid() {
   static thread_local std::mt19937 rng(std::random_device{}());
@@ -432,9 +446,8 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
     
     // Write buffered data to storage before committing
     if (!task->data_buffer.empty() && partition_migrator_ != nullptr) {
-      std::string temp_path = "/tmp/cedar_migration_" + task->migration_id;
-      std::filesystem::create_directories(temp_path);
-      std::string temp_file = temp_path + "/snapshot.bin";
+      TempDirGuard temp_guard("/tmp/cedar_migration_" + task->migration_id);
+      std::string temp_file = temp_guard.path() + "/snapshot.bin";
       std::ofstream ofs(temp_file, std::ios::binary);
       if (ofs) {
         ofs.write(reinterpret_cast<const char*>(task->data_buffer.data()),
@@ -442,7 +455,7 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
         ofs.close();
 
         auto load_status = partition_migrator_->LoadSnapshotForMigration(
-            task->internal_id, temp_path);
+            task->internal_id, temp_guard.path());
         if (!load_status.ok()) {
           task->status = cedar::migration::FAILED;
           task->error_msg = "Snapshot load failed: " + load_status.ToString();
@@ -456,8 +469,6 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
           response->set_final_status(cedar::migration::FAILED);
           return ::grpc::Status(::grpc::StatusCode::INTERNAL, task->error_msg);
         }
-
-        std::filesystem::remove_all(temp_path);
       }
     }
     
@@ -647,7 +658,7 @@ std::vector<std::string> PartitionMigrationServiceImpl::GetActiveMigrationIds() 
 size_t PartitionMigrationServiceImpl::CleanupOldMigrations(std::chrono::hours max_age) {
   auto cutoff = std::chrono::system_clock::now() - max_age;
   std::vector<std::string> to_remove;
-  
+
   {
     std::shared_lock<std::shared_mutex> lock(tasks_mutex_);
     for (const auto& [id, task] : tasks_) {
@@ -656,14 +667,18 @@ size_t PartitionMigrationServiceImpl::CleanupOldMigrations(std::chrono::hours ma
       }
     }
   }
-  
+
   {
     std::unique_lock<std::shared_mutex> lock(tasks_mutex_);
     for (const auto& id : to_remove) {
-      tasks_.erase(id);
+      auto it = tasks_.find(id);
+      if (it != tasks_.end() && IsTerminalStatus(it->second->status) &&
+          it->second->completed_at < cutoff) {
+        tasks_.erase(it);
+      }
     }
   }
-  
+
   return to_remove.size();
 }
 

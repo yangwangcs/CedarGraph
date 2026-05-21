@@ -117,9 +117,12 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
 
   // 启动后台任务
   Status Start();
-  
+
   // 停止
   Status Stop();
+
+  // 刷新分区映射缓存
+  Status RefreshPartitionMap();
 
   // ========== gRPC 方法实现 ==========
   
@@ -210,9 +213,6 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
                                const QueryRouteContext& route_ctx,
                                cedar::query::ResultSet* result);
   
-  // 刷新分区映射缓存
-  void RefreshPartitionMap();
-  
   // 后台刷新线程
   void PartitionMapRefreshLoop();
 
@@ -274,6 +274,8 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   std::chrono::seconds partition_refresh_interval_{30};
   static constexpr uint32_t kNumPartitions = 32768;
   std::string txn_wal_dir_ = "/tmp/cedar_graphd_txn_wal";
+  static constexpr size_t kMaxCachedStubs = 100;
+  static constexpr size_t kMaxActiveTransactions = 10000;
   
   // 双模式分区策略（如果使用）
   std::unique_ptr<cedar::dtx::DualModePartitionStrategy> partition_strategy_;

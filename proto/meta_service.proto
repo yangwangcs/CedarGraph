@@ -22,6 +22,7 @@ message PartitionAssignment {
     repeated uint32 follower_nodes = 4;
     uint64 version = 5;
     int64 last_updated_unix = 6;
+    uint32 state = 7;  // 0=Normal, 1=Migrating, 2=Offline
 }
 
 message SpacePartitionMap {

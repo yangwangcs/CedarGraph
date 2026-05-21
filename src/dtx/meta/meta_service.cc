@@ -1,9 +1,11 @@
 #include "cedar/dtx/meta_service.h"
 #include "cedar/dtx/meta_service_impl.h"
+#include <glog/logging.h>
 #include <chrono>
 #include <thread>
 #include <sstream>
 #include <cstring>
+#include "meta_service.pb.h"
 
 namespace cedar {
 namespace dtx {
@@ -16,7 +18,7 @@ MetaServiceClient::MetaServiceClient() = default;
 MetaServiceClient::~MetaServiceClient() = default;
 
 // =============================================================================
-// Binary Serialization Helpers
+// Protobuf Serialization Helpers
 // =============================================================================
 
 static void AppendString(std::string& out, const std::string& s) {
@@ -40,119 +42,251 @@ static StatusOr<std::string> ReadString(const std::string& data, size_t& pos) {
     return result;
 }
 
-// Serialize implementations
-std::string SpaceDef::Serialize() const {
+namespace {
+
+template <typename Proto>
+std::string SerializeProto(const Proto& proto) {
+    std::string data = proto.SerializeAsString();
     std::string result;
-    AppendString(result, name);
-    result.append(reinterpret_cast<const char*>(&partition_num), sizeof(partition_num));
-    result.append(reinterpret_cast<const char*>(&replica_factor), sizeof(replica_factor));
+    uint32_t len = static_cast<uint32_t>(data.size());
+    result.append(reinterpret_cast<const char*>(&len), sizeof(len));
+    result.append(data);
     return result;
 }
 
-StatusOr<SpaceDef> SpaceDef::Deserialize(const std::string& data) {
+template <typename Proto>
+bool DeserializeProto(const std::string& data, size_t& pos, Proto* proto) {
+    if (pos + sizeof(uint32_t) > data.size()) return false;
+    uint32_t len;
+    std::memcpy(&len, &data[pos], sizeof(len));
+    pos += sizeof(len);
+    if (pos + len > data.size()) return false;
+    bool ok = proto->ParseFromString(data.substr(pos, len));
+    pos += len;
+    return ok;
+}
+
+cedar::meta::SpaceDef ToProto(const SpaceDef& space) {
+    cedar::meta::SpaceDef proto;
+    proto.set_name(space.name);
+    proto.set_partition_num(space.partition_num);
+    proto.set_replica_factor(space.replica_factor);
+    proto.set_created_at_unix(std::chrono::system_clock::to_time_t(space.created_at));
+    return proto;
+}
+
+SpaceDef FromProto(const cedar::meta::SpaceDef& proto) {
     SpaceDef space;
-    size_t pos = 0;
-    auto name_result = ReadString(data, pos);
-    if (!name_result.ok()) return name_result.status();
-    space.name = name_result.value();
-    if (pos + sizeof(partition_num) > data.size()) return Status::InvalidArgument("Corrupt SpaceDef");
-    std::memcpy(&space.partition_num, &data[pos], sizeof(partition_num));
-    pos += sizeof(partition_num);
-    if (pos + sizeof(replica_factor) > data.size()) return Status::InvalidArgument("Corrupt SpaceDef");
-    std::memcpy(&space.replica_factor, &data[pos], sizeof(replica_factor));
+    space.name = proto.name();
+    space.partition_num = proto.partition_num();
+    space.replica_factor = proto.replica_factor();
+    space.created_at = std::chrono::system_clock::from_time_t(proto.created_at_unix());
     return space;
 }
 
-std::string PartitionAssignment::Serialize() const {
-    std::string result;
-    result.append(reinterpret_cast<const char*>(&partition_id), sizeof(partition_id));
-    AppendString(result, space_name);
-    result.append(reinterpret_cast<const char*>(&leader_node), sizeof(leader_node));
-    uint32_t follower_count = static_cast<uint32_t>(follower_nodes.size());
-    result.append(reinterpret_cast<const char*>(&follower_count), sizeof(follower_count));
-    for (auto nid : follower_nodes) {
-        result.append(reinterpret_cast<const char*>(&nid), sizeof(nid));
+cedar::meta::PartitionAssignment ToProto(const PartitionAssignment& assign) {
+    cedar::meta::PartitionAssignment proto;
+    proto.set_partition_id(assign.partition_id);
+    proto.set_space_name(assign.space_name);
+    proto.set_leader_node(assign.leader_node);
+    for (auto nid : assign.follower_nodes) {
+        proto.add_follower_nodes(nid);
     }
-    result.append(reinterpret_cast<const char*>(&version), sizeof(version));
-    uint8_t state_val = static_cast<uint8_t>(state);
-    result.append(reinterpret_cast<const char*>(&state_val), sizeof(state_val));
-    return result;
+    proto.set_version(assign.version);
+    proto.set_last_updated_unix(std::chrono::system_clock::to_time_t(assign.last_updated));
+    proto.set_state(static_cast<uint32_t>(assign.state));
+    return proto;
 }
 
-StatusOr<PartitionAssignment> PartitionAssignment::Deserialize(const std::string& data) {
+PartitionAssignment FromProto(const cedar::meta::PartitionAssignment& proto) {
     PartitionAssignment assign;
-    size_t pos = 0;
-    if (pos + sizeof(partition_id) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
-    std::memcpy(&assign.partition_id, &data[pos], sizeof(partition_id));
-    pos += sizeof(partition_id);
-    auto space_result = ReadString(data, pos);
-    if (!space_result.ok()) return space_result.status();
-    assign.space_name = space_result.value();
-    if (pos + sizeof(leader_node) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
-    std::memcpy(&assign.leader_node, &data[pos], sizeof(leader_node));
-    pos += sizeof(leader_node);
-    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
-    uint32_t follower_count;
-    std::memcpy(&follower_count, &data[pos], sizeof(follower_count));
-    pos += sizeof(follower_count);
-    for (uint32_t i = 0; i < follower_count; ++i) {
-        if (pos + sizeof(NodeID) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
-        NodeID nid;
-        std::memcpy(&nid, &data[pos], sizeof(nid));
-        pos += sizeof(nid);
-        assign.follower_nodes.push_back(nid);
+    assign.partition_id = proto.partition_id();
+    assign.space_name = proto.space_name();
+    assign.leader_node = proto.leader_node();
+    for (int i = 0; i < proto.follower_nodes_size(); ++i) {
+        assign.follower_nodes.push_back(proto.follower_nodes(i));
     }
-    if (pos + sizeof(version) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
-    std::memcpy(&assign.version, &data[pos], sizeof(version));
-    pos += sizeof(version);
-    if (pos + sizeof(uint8_t) > data.size()) return Status::InvalidArgument("Corrupt PartitionAssignment");
-    uint8_t state_val;
-    std::memcpy(&state_val, &data[pos], sizeof(state_val));
-    assign.state = static_cast<State>(state_val);
+    assign.version = proto.version();
+    assign.last_updated = std::chrono::system_clock::from_time_t(proto.last_updated_unix());
+    assign.state = static_cast<PartitionAssignment::State>(proto.state());
     return assign;
 }
 
-std::string SpacePartitionMap::Serialize() const {
-    std::string result;
-    AppendString(result, space_name);
-    result.append(reinterpret_cast<const char*>(&num_partitions), sizeof(num_partitions));
-    result.append(reinterpret_cast<const char*>(&replication_factor), sizeof(replication_factor));
-    uint32_t assign_count = static_cast<uint32_t>(assignments.size());
-    result.append(reinterpret_cast<const char*>(&assign_count), sizeof(assign_count));
-    for (const auto& [pid, assign] : assignments) {
-        std::string assign_data = assign.Serialize();
-        AppendString(result, assign_data);
+cedar::meta::SpacePartitionMap ToProto(const SpacePartitionMap& map) {
+    cedar::meta::SpacePartitionMap proto;
+    proto.set_space_name(map.space_name);
+    proto.set_num_partitions(map.num_partitions);
+    proto.set_replication_factor(map.replication_factor);
+    proto.set_version(map.version);
+    for (const auto& [pid, assign] : map.assignments) {
+        (*proto.mutable_assignments())[pid] = ToProto(assign);
     }
-    result.append(reinterpret_cast<const char*>(&version), sizeof(version));
-    return result;
+    return proto;
+}
+
+SpacePartitionMap FromProto(const cedar::meta::SpacePartitionMap& proto) {
+    SpacePartitionMap map;
+    map.space_name = proto.space_name();
+    map.num_partitions = proto.num_partitions();
+    map.replication_factor = proto.replication_factor();
+    map.version = proto.version();
+    for (const auto& [pid, assign_pb] : proto.assignments()) {
+        map.assignments[pid] = FromProto(assign_pb);
+    }
+    return map;
+}
+
+cedar::meta::NodeInfo ToProto(const NodeInfo& info) {
+    cedar::meta::NodeInfo proto;
+    proto.set_node_id(info.node_id);
+    proto.set_address(info.address);
+    proto.set_data_path(info.data_path);
+    proto.set_num_cpu_cores(info.num_cpu_cores);
+    proto.set_total_memory_bytes(info.total_memory_bytes);
+    proto.set_total_disk_bytes(info.total_disk_bytes);
+    proto.set_registered_at_unix(std::chrono::system_clock::to_time_t(info.registered_at));
+    proto.set_last_heartbeat_unix(std::chrono::system_clock::to_time_t(info.last_heartbeat));
+    switch (info.state) {
+        case NodeInfo::State::kOnline: proto.set_state("ONLINE"); break;
+        case NodeInfo::State::kOffline: proto.set_state("OFFLINE"); break;
+        case NodeInfo::State::kSuspected: proto.set_state("SUSPECTED"); break;
+    }
+    return proto;
+}
+
+NodeInfo FromProto(const cedar::meta::NodeInfo& proto) {
+    NodeInfo info;
+    info.node_id = proto.node_id();
+    info.address = proto.address();
+    info.data_path = proto.data_path();
+    info.num_cpu_cores = proto.num_cpu_cores();
+    info.total_memory_bytes = proto.total_memory_bytes();
+    info.total_disk_bytes = proto.total_disk_bytes();
+    info.registered_at = std::chrono::system_clock::from_time_t(proto.registered_at_unix());
+    info.last_heartbeat = std::chrono::system_clock::from_time_t(proto.last_heartbeat_unix());
+    if (proto.state() == "ONLINE") info.state = NodeInfo::State::kOnline;
+    else if (proto.state() == "OFFLINE") info.state = NodeInfo::State::kOffline;
+    else if (proto.state() == "SUSPECTED") info.state = NodeInfo::State::kSuspected;
+    return info;
+}
+
+cedar::meta::NodeStatus ToProto(const NodeStatus& status) {
+    cedar::meta::NodeStatus proto;
+    proto.set_node_id(status.node_id);
+    proto.set_cpu_usage_percent(status.cpu_usage_percent);
+    proto.set_memory_usage_percent(status.memory_usage_percent);
+    proto.set_disk_usage_percent(status.disk_usage_percent);
+    proto.set_qps(status.qps);
+    proto.set_latency_ms(status.latency_ms);
+    for (auto pid : status.leader_partitions) {
+        proto.add_leader_partitions(pid);
+    }
+    for (auto pid : status.follower_partitions) {
+        proto.add_follower_partitions(pid);
+    }
+    proto.set_timestamp_unix(std::chrono::system_clock::to_time_t(status.timestamp));
+    return proto;
+}
+
+NodeStatus FromProto(const cedar::meta::NodeStatus& proto) {
+    NodeStatus status;
+    status.node_id = proto.node_id();
+    status.cpu_usage_percent = proto.cpu_usage_percent();
+    status.memory_usage_percent = proto.memory_usage_percent();
+    status.disk_usage_percent = proto.disk_usage_percent();
+    status.qps = proto.qps();
+    status.latency_ms = proto.latency_ms();
+    for (int i = 0; i < proto.leader_partitions_size(); ++i) {
+        status.leader_partitions.push_back(proto.leader_partitions(i));
+    }
+    for (int i = 0; i < proto.follower_partitions_size(); ++i) {
+        status.follower_partitions.push_back(proto.follower_partitions(i));
+    }
+    status.timestamp = std::chrono::system_clock::from_time_t(proto.timestamp_unix());
+    return status;
+}
+
+cedar::meta::PropertyDef ToProto(const PropertyDef& def) {
+    cedar::meta::PropertyDef proto;
+    proto.set_name(def.name);
+    proto.set_type(def.type);
+    proto.set_nullable(def.nullable);
+    proto.set_indexed(def.indexed);
+    return proto;
+}
+
+PropertyDef FromProto(const cedar::meta::PropertyDef& proto) {
+    PropertyDef def;
+    def.name = proto.name();
+    def.type = proto.type();
+    def.nullable = proto.nullable();
+    def.indexed = proto.indexed();
+    return def;
+}
+
+cedar::meta::LabelSchema ToProto(const LabelSchema& schema) {
+    cedar::meta::LabelSchema proto;
+    proto.set_name(schema.name);
+    for (const auto& prop : schema.properties) {
+        *proto.add_properties() = ToProto(prop);
+    }
+    for (const auto& idx : schema.indexes) {
+        proto.add_indexes(idx);
+    }
+    return proto;
+}
+
+LabelSchema FromProto(const cedar::meta::LabelSchema& proto) {
+    LabelSchema schema;
+    schema.name = proto.name();
+    for (int i = 0; i < proto.properties_size(); ++i) {
+        schema.properties.push_back(FromProto(proto.properties(i)));
+    }
+    for (int i = 0; i < proto.indexes_size(); ++i) {
+        schema.indexes.push_back(proto.indexes(i));
+    }
+    return schema;
+}
+
+}  // namespace
+
+std::string SpaceDef::Serialize() const {
+    return SerializeProto(ToProto(*this));
+}
+
+StatusOr<SpaceDef> SpaceDef::Deserialize(const std::string& data) {
+    cedar::meta::SpaceDef proto;
+    size_t pos = 0;
+    if (!DeserializeProto(data, pos, &proto)) {
+        return Status::InvalidArgument("Corrupt SpaceDef");
+    }
+    return FromProto(proto);
+}
+
+std::string PartitionAssignment::Serialize() const {
+    return SerializeProto(ToProto(*this));
+}
+
+StatusOr<PartitionAssignment> PartitionAssignment::Deserialize(const std::string& data) {
+    cedar::meta::PartitionAssignment proto;
+    size_t pos = 0;
+    if (!DeserializeProto(data, pos, &proto)) {
+        return Status::InvalidArgument("Corrupt PartitionAssignment");
+    }
+    return FromProto(proto);
+}
+
+std::string SpacePartitionMap::Serialize() const {
+    return SerializeProto(ToProto(*this));
 }
 
 StatusOr<SpacePartitionMap> SpacePartitionMap::Deserialize(const std::string& data) {
-    SpacePartitionMap map;
+    cedar::meta::SpacePartitionMap proto;
     size_t pos = 0;
-    auto name_result = ReadString(data, pos);
-    if (!name_result.ok()) return name_result.status();
-    map.space_name = name_result.value();
-    if (pos + sizeof(num_partitions) > data.size()) return Status::InvalidArgument("Corrupt SpacePartitionMap");
-    std::memcpy(&map.num_partitions, &data[pos], sizeof(num_partitions));
-    pos += sizeof(num_partitions);
-    if (pos + sizeof(replication_factor) > data.size()) return Status::InvalidArgument("Corrupt SpacePartitionMap");
-    std::memcpy(&map.replication_factor, &data[pos], sizeof(replication_factor));
-    pos += sizeof(replication_factor);
-    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt SpacePartitionMap");
-    uint32_t assign_count;
-    std::memcpy(&assign_count, &data[pos], sizeof(assign_count));
-    pos += sizeof(assign_count);
-    for (uint32_t i = 0; i < assign_count; ++i) {
-        auto assign_data = ReadString(data, pos);
-        if (!assign_data.ok()) return assign_data.status();
-        auto assign_result = PartitionAssignment::Deserialize(assign_data.value());
-        if (!assign_result.ok()) return assign_result.status();
-        map.assignments[assign_result.value().partition_id] = assign_result.value();
+    if (!DeserializeProto(data, pos, &proto)) {
+        return Status::InvalidArgument("Corrupt SpacePartitionMap");
     }
-    if (pos + sizeof(version) > data.size()) return Status::InvalidArgument("Corrupt SpacePartitionMap");
-    std::memcpy(&map.version, &data[pos], sizeof(version));
-    return map;
+    return FromProto(proto);
 }
 
 PartitionID SpacePartitionMap::GetPartitionForKey(const CedarKey& key) const {
@@ -172,194 +306,55 @@ StatusOr<PartitionAssignment> SpacePartitionMap::GetAssignment(PartitionID pid) 
 }
 
 std::string NodeInfo::Serialize() const {
-    std::string result;
-    result.append(reinterpret_cast<const char*>(&node_id), sizeof(node_id));
-    AppendString(result, address);
-    AppendString(result, data_path);
-    result.append(reinterpret_cast<const char*>(&num_cpu_cores), sizeof(num_cpu_cores));
-    result.append(reinterpret_cast<const char*>(&total_memory_bytes), sizeof(total_memory_bytes));
-    result.append(reinterpret_cast<const char*>(&total_disk_bytes), sizeof(total_disk_bytes));
-    uint8_t state_val = static_cast<uint8_t>(state);
-    result.append(reinterpret_cast<const char*>(&state_val), sizeof(state_val));
-    return result;
+    return SerializeProto(ToProto(*this));
 }
 
 StatusOr<NodeInfo> NodeInfo::Deserialize(const std::string& data) {
-    NodeInfo info;
+    cedar::meta::NodeInfo proto;
     size_t pos = 0;
-    if (pos + sizeof(node_id) > data.size()) return Status::InvalidArgument("Corrupt NodeInfo");
-    std::memcpy(&info.node_id, &data[pos], sizeof(node_id));
-    pos += sizeof(node_id);
-    auto addr_result = ReadString(data, pos);
-    if (!addr_result.ok()) return addr_result.status();
-    info.address = addr_result.value();
-    auto path_result = ReadString(data, pos);
-    if (!path_result.ok()) return path_result.status();
-    info.data_path = path_result.value();
-    if (pos + sizeof(num_cpu_cores) > data.size()) return Status::InvalidArgument("Corrupt NodeInfo");
-    std::memcpy(&info.num_cpu_cores, &data[pos], sizeof(num_cpu_cores));
-    pos += sizeof(num_cpu_cores);
-    if (pos + sizeof(total_memory_bytes) > data.size()) return Status::InvalidArgument("Corrupt NodeInfo");
-    std::memcpy(&info.total_memory_bytes, &data[pos], sizeof(total_memory_bytes));
-    pos += sizeof(total_memory_bytes);
-    if (pos + sizeof(total_disk_bytes) > data.size()) return Status::InvalidArgument("Corrupt NodeInfo");
-    std::memcpy(&info.total_disk_bytes, &data[pos], sizeof(total_disk_bytes));
-    pos += sizeof(total_disk_bytes);
-    if (pos + sizeof(uint8_t) > data.size()) return Status::InvalidArgument("Corrupt NodeInfo");
-    uint8_t state_val;
-    std::memcpy(&state_val, &data[pos], sizeof(state_val));
-    info.state = static_cast<State>(state_val);
-    return info;
+    if (!DeserializeProto(data, pos, &proto)) {
+        return Status::InvalidArgument("Corrupt NodeInfo");
+    }
+    return FromProto(proto);
 }
 
 std::string NodeStatus::Serialize() const {
-    std::string result;
-    result.append(reinterpret_cast<const char*>(&node_id), sizeof(node_id));
-    result.append(reinterpret_cast<const char*>(&cpu_usage_percent), sizeof(cpu_usage_percent));
-    result.append(reinterpret_cast<const char*>(&memory_usage_percent), sizeof(memory_usage_percent));
-    result.append(reinterpret_cast<const char*>(&disk_usage_percent), sizeof(disk_usage_percent));
-    result.append(reinterpret_cast<const char*>(&qps), sizeof(qps));
-    result.append(reinterpret_cast<const char*>(&latency_ms), sizeof(latency_ms));
-    auto timestamp_sec = std::chrono::system_clock::to_time_t(timestamp);
-    result.append(reinterpret_cast<const char*>(&timestamp_sec), sizeof(timestamp_sec));
-    uint32_t leader_count = static_cast<uint32_t>(leader_partitions.size());
-    result.append(reinterpret_cast<const char*>(&leader_count), sizeof(leader_count));
-    for (auto pid : leader_partitions) {
-        result.append(reinterpret_cast<const char*>(&pid), sizeof(pid));
-    }
-    uint32_t follower_count = static_cast<uint32_t>(follower_partitions.size());
-    result.append(reinterpret_cast<const char*>(&follower_count), sizeof(follower_count));
-    for (auto pid : follower_partitions) {
-        result.append(reinterpret_cast<const char*>(&pid), sizeof(pid));
-    }
-    return result;
+    return SerializeProto(ToProto(*this));
 }
 
 StatusOr<NodeStatus> NodeStatus::Deserialize(const std::string& data) {
-    NodeStatus status;
+    cedar::meta::NodeStatus proto;
     size_t pos = 0;
-    if (pos + sizeof(node_id) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-    std::memcpy(&status.node_id, &data[pos], sizeof(node_id));
-    pos += sizeof(node_id);
-    if (pos + sizeof(cpu_usage_percent) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-    std::memcpy(&status.cpu_usage_percent, &data[pos], sizeof(cpu_usage_percent));
-    pos += sizeof(cpu_usage_percent);
-    if (pos + sizeof(memory_usage_percent) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-    std::memcpy(&status.memory_usage_percent, &data[pos], sizeof(memory_usage_percent));
-    pos += sizeof(memory_usage_percent);
-    if (pos + sizeof(disk_usage_percent) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-    std::memcpy(&status.disk_usage_percent, &data[pos], sizeof(disk_usage_percent));
-    pos += sizeof(disk_usage_percent);
-    if (pos + sizeof(qps) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-    std::memcpy(&status.qps, &data[pos], sizeof(qps));
-    pos += sizeof(qps);
-    if (pos + sizeof(latency_ms) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-    std::memcpy(&status.latency_ms, &data[pos], sizeof(latency_ms));
-    pos += sizeof(latency_ms);
-    if (pos + sizeof(std::time_t) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-    std::time_t timestamp_sec;
-    std::memcpy(&timestamp_sec, &data[pos], sizeof(timestamp_sec));
-    status.timestamp = std::chrono::system_clock::from_time_t(timestamp_sec);
-    pos += sizeof(timestamp_sec);
-    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-    uint32_t leader_count;
-    std::memcpy(&leader_count, &data[pos], sizeof(leader_count));
-    pos += sizeof(leader_count);
-    for (uint32_t i = 0; i < leader_count; ++i) {
-        if (pos + sizeof(PartitionID) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-        PartitionID pid;
-        std::memcpy(&pid, &data[pos], sizeof(pid));
-        pos += sizeof(pid);
-        status.leader_partitions.push_back(pid);
+    if (!DeserializeProto(data, pos, &proto)) {
+        return Status::InvalidArgument("Corrupt NodeStatus");
     }
-    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-    uint32_t follower_count;
-    std::memcpy(&follower_count, &data[pos], sizeof(follower_count));
-    pos += sizeof(follower_count);
-    for (uint32_t i = 0; i < follower_count; ++i) {
-        if (pos + sizeof(PartitionID) > data.size()) return Status::InvalidArgument("Corrupt NodeStatus");
-        PartitionID pid;
-        std::memcpy(&pid, &data[pos], sizeof(pid));
-        pos += sizeof(pid);
-        status.follower_partitions.push_back(pid);
-    }
-    return status;
+    return FromProto(proto);
 }
 
 std::string PropertyDef::Serialize() const {
-    std::string result;
-    AppendString(result, name);
-    AppendString(result, type);
-    result.push_back(nullable ? 1 : 0);
-    result.push_back(indexed ? 1 : 0);
-    return result;
+    return SerializeProto(ToProto(*this));
 }
 
 StatusOr<PropertyDef> PropertyDef::Deserialize(const std::string& data) {
+    cedar::meta::PropertyDef proto;
     size_t pos = 0;
-    PropertyDef def;
-    auto name_data = ReadString(data, pos);
-    if (!name_data.ok()) return Status::InvalidArgument("Corrupt PropertyDef name");
-    def.name = name_data.value();
-
-    auto type_data = ReadString(data, pos);
-    if (!type_data.ok()) return Status::InvalidArgument("Corrupt PropertyDef type");
-    def.type = type_data.value();
-
-    if (pos + 2 > data.size()) return Status::InvalidArgument("Corrupt PropertyDef flags");
-    def.nullable = data[pos++] != 0;
-    def.indexed = data[pos++] != 0;
-    return def;
+    if (!DeserializeProto(data, pos, &proto)) {
+        return Status::InvalidArgument("Corrupt PropertyDef");
+    }
+    return FromProto(proto);
 }
 
 std::string LabelSchema::Serialize() const {
-    std::string result;
-    AppendString(result, name);
-    uint32_t prop_count = static_cast<uint32_t>(properties.size());
-    result.append(reinterpret_cast<const char*>(&prop_count), sizeof(prop_count));
-    for (const auto& prop : properties) {
-        std::string prop_data = prop.Serialize();
-        AppendString(result, prop_data);
-    }
-    uint32_t idx_count = static_cast<uint32_t>(indexes.size());
-    result.append(reinterpret_cast<const char*>(&idx_count), sizeof(idx_count));
-    for (const auto& idx : indexes) {
-        AppendString(result, idx);
-    }
-    return result;
+    return SerializeProto(ToProto(*this));
 }
 
 StatusOr<LabelSchema> LabelSchema::Deserialize(const std::string& data) {
+    cedar::meta::LabelSchema proto;
     size_t pos = 0;
-    LabelSchema schema;
-    auto name_data = ReadString(data, pos);
-    if (!name_data.ok()) return Status::InvalidArgument("Corrupt LabelSchema name");
-    schema.name = name_data.value();
-
-    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt LabelSchema prop count");
-    uint32_t prop_count;
-    std::memcpy(&prop_count, &data[pos], sizeof(prop_count));
-    pos += sizeof(uint32_t);
-
-    for (uint32_t i = 0; i < prop_count; ++i) {
-        auto prop_data = ReadString(data, pos);
-        if (!prop_data.ok()) return Status::InvalidArgument("Corrupt LabelSchema property");
-        auto prop = PropertyDef::Deserialize(prop_data.value());
-        if (!prop.ok()) return prop.status();
-        schema.properties.push_back(prop.value());
+    if (!DeserializeProto(data, pos, &proto)) {
+        return Status::InvalidArgument("Corrupt LabelSchema");
     }
-
-    if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt LabelSchema idx count");
-    uint32_t idx_count;
-    std::memcpy(&idx_count, &data[pos], sizeof(idx_count));
-    pos += sizeof(uint32_t);
-
-    for (uint32_t i = 0; i < idx_count; ++i) {
-        auto idx_data = ReadString(data, pos);
-        if (!idx_data.ok()) return Status::InvalidArgument("Corrupt LabelSchema index");
-        schema.indexes.push_back(idx_data.value());
-    }
-    return schema;
+    return FromProto(proto);
 }
 
 // MetadataStateMachine implementation
@@ -504,6 +499,10 @@ void MetadataService::MetadataStateMachine::ApplyUpdateNodeStatus(const NodeStat
 std::pair<uint64_t, NodeID> MetadataService::MetadataStateMachine::ApplyUpdatePartitionLeader(
     const std::string& space_name, PartitionID partition_id, NodeID new_leader) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
+    auto node_it = nodes_.find(new_leader);
+    if (node_it == nodes_.end()) {
+        return {0, kInvalidNodeID};
+    }
     auto it = partition_maps_.find(space_name);
     if (it != partition_maps_.end()) {
         auto& partition_map = it->second;
@@ -648,7 +647,7 @@ std::string MetadataService::MetadataStateMachine::Serialize() const {
     std::string result;
     // Magic + version
     result.append("CMSN", 4);  // Cedar Meta Snapshot
-    uint32_t version = 1;
+    uint32_t version = 2;
     result.append(reinterpret_cast<const char*>(&version), sizeof(version));
     
     // spaces
@@ -724,7 +723,7 @@ Status MetadataService::MetadataStateMachine::Deserialize(const std::string& dat
     uint32_t version;
     std::memcpy(&version, &data[pos], sizeof(version));
     pos += sizeof(version);
-    if (version != 1) {
+    if (version != 2) {
         return Status::InvalidArgument("Unsupported snapshot version");
     }
     
@@ -910,6 +909,10 @@ StatusOr<SpacePartitionMap> MetadataService::GetSpacePartitionMap(const std::str
 Status MetadataService::UpdatePartitionLeader(const std::string& space_name,
                                                PartitionID partition_id,
                                                NodeID new_leader) {
+    auto node = GetNode(new_leader);
+    if (!node.ok()) {
+        return Status::InvalidArgument("New leader is not a registered node");
+    }
     if (config_.test_mode) {
         auto [version, old_leader] = state_machine_.ApplyUpdatePartitionLeader(space_name, partition_id, new_leader);
         if (version > 0) {
@@ -948,6 +951,20 @@ Status MetadataService::Heartbeat(const NodeStatus& status) {
     if (config_.test_mode) {
         state_machine_.ApplyUpdateNodeStatus(status);
         return Status::OK();
+    }
+    // Token bucket rate limiting: max 10 proposals/sec per node
+    {
+        std::lock_guard<std::mutex> lock(heartbeat_tokens_mutex_);
+        auto now = std::chrono::steady_clock::now();
+        auto& [last_refill, tokens] = heartbeat_tokens_[status.node_id];
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_refill).count();
+        tokens = std::min(kMaxHeartbeatsPerSecond,
+                          tokens + static_cast<uint32_t>(elapsed_ms * kMaxHeartbeatsPerSecond / 1000));
+        last_refill = now;
+        if (tokens == 0) {
+            return Status::ResourceExhausted("Heartbeat rate limit exceeded");
+        }
+        --tokens;
     }
     if (!raft_node_) {
         return Status::IOError("Raft node not initialized");
@@ -1072,6 +1089,17 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
 
 void MetadataService::OnBecomeLeader() {
     std::cout << "[MetadataService] Node " << config_.node_id << " became leader" << std::endl;
+
+    // Notify watchers on leader change
+    PartitionMapChange change;
+    change.space_name = "";
+    change.partition_id = kInvalidPartitionID;
+    change.change_type = PartitionChangeType::kLeaderChanged;
+    change.old_leader = kInvalidNodeID;
+    change.new_leader = config_.node_id;
+    change.version = 0;
+    change.timestamp = std::chrono::system_clock::now();
+    NotifyPartitionChange(change);
 }
 
 void MetadataService::OnStepDown() {
@@ -1110,10 +1138,12 @@ void MetadataService::HeartbeatCheckLoop() {
                     }
                 }
             }
+        } catch (const std::exception& e) {
+            LOG(ERROR) << "[MetaD] HeartbeatCheckLoop exception: " << e.what();
         } catch (...) {
-            // 心跳检测循环异常不应导致后台线程崩溃
+            LOG(ERROR) << "[MetaD] HeartbeatCheckLoop unknown exception";
         }
-        
+
         std::this_thread::sleep_for(std::chrono::seconds(config_.heartbeat_check_interval_sec));
     }
 }

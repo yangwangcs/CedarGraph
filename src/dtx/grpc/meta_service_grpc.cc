@@ -6,6 +6,15 @@
 
 namespace {
 
+grpc::StatusCode MapStatusToGrpcCode(const cedar::Status& status) {
+    if (status.IsInvalidArgument()) return grpc::StatusCode::INVALID_ARGUMENT;
+    if (status.IsNotFound()) return grpc::StatusCode::NOT_FOUND;
+    if (status.IsResourceExhausted()) return grpc::StatusCode::RESOURCE_EXHAUSTED;
+    if (status.IsNotSupportedError()) return grpc::StatusCode::UNIMPLEMENTED;
+    if (status.IsIOError()) return grpc::StatusCode::UNAVAILABLE;
+    return grpc::StatusCode::INTERNAL;
+}
+
  cedar::dtx::PartitionAssignment PartitionAssignmentFromProto(
     const cedar::meta::PartitionAssignment& proto) {
    cedar::dtx::PartitionAssignment assignment;
@@ -42,13 +51,27 @@ grpc::Status MetaServiceGrpcImpl::CreateSpace(grpc::ServerContext* context,
     const cedar::meta::CreateSpaceRequest* request,
     cedar::meta::CreateSpaceResponse* response) {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (request->space().name().empty()) {
+        response->set_success(false);
+        response->set_error_msg("Space name cannot be empty");
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Space name cannot be empty");
+    }
     SpaceDef space;
     space.name = request->space().name();
     space.partition_num = request->space().partition_num();
     space.replica_factor = request->space().replica_factor();
+    auto alive_nodes = meta_service_->GetAliveNodes();
+    if (space.replica_factor > alive_nodes.size()) {
+        response->set_success(false);
+        response->set_error_msg("Replica factor exceeds alive node count");
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Replica factor exceeds alive node count");
+    }
     auto status = meta_service_->CreateSpace(space);
     response->set_success(status.ok());
-    if (!status.ok()) response->set_error_msg(status.ToString());
+    if (!status.ok()) {
+        response->set_error_msg(status.ToString());
+        return grpc::Status(MapStatusToGrpcCode(status), status.ToString());
+    }
     return grpc::Status::OK;
 }
 
@@ -60,12 +83,12 @@ grpc::Status MetaServiceGrpcImpl::GetSpace(grpc::ServerContext* context,
     response->set_success(result.ok());
     if (!result.ok()) {
         response->set_error_msg(result.status().ToString());
-    } else {
-        auto* space = response->mutable_space();
-        space->set_name(result.value().name);
-        space->set_partition_num(result.value().partition_num);
-        space->set_replica_factor(result.value().replica_factor);
+        return grpc::Status(MapStatusToGrpcCode(result.status()), result.status().ToString());
     }
+    auto* space = response->mutable_space();
+    space->set_name(result.value().name);
+    space->set_partition_num(result.value().partition_num);
+    space->set_replica_factor(result.value().replica_factor);
     return grpc::Status::OK;
 }
 
@@ -73,21 +96,21 @@ grpc::Status MetaServiceGrpcImpl::GetPartitionAssignment(grpc::ServerContext* co
     const cedar::meta::GetPartitionAssignmentRequest* request,
     cedar::meta::GetPartitionAssignmentResponse* response) {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
-    auto result = meta_service_->GetPartitionAssignment(request->space_name(), 
+    auto result = meta_service_->GetPartitionAssignment(request->space_name(),
                                                         request->partition_id());
     response->set_success(result.ok());
     if (!result.ok()) {
         response->set_error_msg(result.status().ToString());
-    } else {
-        auto* assign = response->mutable_assignment();
-        assign->set_partition_id(result.value().partition_id);
-        assign->set_space_name(result.value().space_name);
-        assign->set_leader_node(result.value().leader_node);
-        for (auto nid : result.value().follower_nodes) {
-            assign->add_follower_nodes(nid);
-        }
-        assign->set_version(result.value().version);
+        return grpc::Status(MapStatusToGrpcCode(result.status()), result.status().ToString());
     }
+    auto* assign = response->mutable_assignment();
+    assign->set_partition_id(result.value().partition_id);
+    assign->set_space_name(result.value().space_name);
+    assign->set_leader_node(result.value().leader_node);
+    for (auto nid : result.value().follower_nodes) {
+        assign->add_follower_nodes(nid);
+    }
+    assign->set_version(result.value().version);
     return grpc::Status::OK;
 }
 
@@ -99,24 +122,24 @@ grpc::Status MetaServiceGrpcImpl::GetSpacePartitionMap(grpc::ServerContext* cont
     response->set_success(result.ok());
     if (!result.ok()) {
         response->set_error_msg(result.status().ToString());
-    } else {
-        auto* map = response->mutable_partition_map();
-        const auto& pmap = result.value();
-        map->set_space_name(pmap.space_name);
-        map->set_num_partitions(pmap.num_partitions);
-        map->set_replication_factor(pmap.replication_factor);
-        map->set_version(pmap.version);
-        // Fill assignments
-        for (const auto& [pid, assign] : pmap.assignments) {
-            auto& proto_assign = (*map->mutable_assignments())[pid];
-            proto_assign.set_partition_id(assign.partition_id);
-            proto_assign.set_space_name(assign.space_name);
-            proto_assign.set_leader_node(assign.leader_node);
-            for (NodeID follower : assign.follower_nodes) {
-                proto_assign.add_follower_nodes(follower);
-            }
-            proto_assign.set_version(assign.version);
+        return grpc::Status(MapStatusToGrpcCode(result.status()), result.status().ToString());
+    }
+    auto* map = response->mutable_partition_map();
+    const auto& pmap = result.value();
+    map->set_space_name(pmap.space_name);
+    map->set_num_partitions(pmap.num_partitions);
+    map->set_replication_factor(pmap.replication_factor);
+    map->set_version(pmap.version);
+    // Fill assignments
+    for (const auto& [pid, assign] : pmap.assignments) {
+        auto& proto_assign = (*map->mutable_assignments())[pid];
+        proto_assign.set_partition_id(assign.partition_id);
+        proto_assign.set_space_name(assign.space_name);
+        proto_assign.set_leader_node(assign.leader_node);
+        for (NodeID follower : assign.follower_nodes) {
+            proto_assign.add_follower_nodes(follower);
         }
+        proto_assign.set_version(assign.version);
     }
     return grpc::Status::OK;
 }
@@ -131,7 +154,10 @@ grpc::Status MetaServiceGrpcImpl::RegisterNode(grpc::ServerContext* context,
     info.data_path = request->node_info().data_path();
     auto status = meta_service_->RegisterNode(info);
     response->set_success(status.ok());
-    if (!status.ok()) response->set_error_msg(status.ToString());
+    if (!status.ok()) {
+        response->set_error_msg(status.ToString());
+        return grpc::Status(MapStatusToGrpcCode(status), status.ToString());
+    }
     return grpc::Status::OK;
 }
 
@@ -156,7 +182,10 @@ grpc::Status MetaServiceGrpcImpl::Heartbeat(grpc::ServerContext* context,
         static_cast<time_t>(request->status().timestamp_unix()));
     auto s = meta_service_->Heartbeat(status);
     response->set_success(s.ok());
-    if (!s.ok()) response->set_error_msg(s.ToString());
+    if (!s.ok()) {
+        response->set_error_msg(s.ToString());
+        return grpc::Status(MapStatusToGrpcCode(s), s.ToString());
+    }
     return grpc::Status::OK;
 }
 
@@ -168,12 +197,12 @@ grpc::Status MetaServiceGrpcImpl::GetNode(grpc::ServerContext* context,
     response->set_success(result.ok());
     if (!result.ok()) {
         response->set_error_msg(result.status().ToString());
-    } else {
-        auto* info = response->mutable_node_info();
-        info->set_node_id(result.value().node_id);
-        info->set_address(result.value().address);
-        info->set_state(result.value().state == NodeInfo::State::kOnline ? "ONLINE" : "OFFLINE");
+        return grpc::Status(MapStatusToGrpcCode(result.status()), result.status().ToString());
     }
+    auto* info = response->mutable_node_info();
+    info->set_node_id(result.value().node_id);
+    info->set_address(result.value().address);
+    info->set_state(result.value().state == NodeInfo::State::kOnline ? "ONLINE" : "OFFLINE");
     return grpc::Status::OK;
 }
 
@@ -314,6 +343,7 @@ grpc::Status MetaServiceGrpcImpl::CreateLabelSchema(grpc::ServerContext* context
     response->set_success(status.ok());
     if (!status.ok()) {
         response->set_error_msg(status.ToString());
+        return grpc::Status(MapStatusToGrpcCode(status), status.ToString());
     }
     return grpc::Status::OK;
 }

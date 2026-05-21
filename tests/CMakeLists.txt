@@ -507,6 +507,7 @@ add_executable(test_queryd_blockers queryd/test_queryd_blockers.cc)
 target_link_libraries(test_queryd_blockers ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_queryd_blockers)
 
+
 add_executable(test_queryd_critical queryd/test_queryd_critical.cc)
 target_link_libraries(test_queryd_critical ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_queryd_critical)
@@ -592,9 +593,15 @@ target_link_libraries(test_migration_pipeline cedar cedar_graph gRPC::grpc++ ${G
 target_link_directories(test_migration_pipeline PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_migration_pipeline)
 
+
+
 add_executable(test_service_meta_critical
     service/test_service_meta_critical.cc
+    ../src/service/graph_service_router.cc
+    ../src/dtx/grpc/meta_service_grpc.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
 )
-target_link_libraries(test_service_meta_critical cedar cedar_graph cedar_cypher gRPC::grpc++ ${GTEST_MAIN_TARGET} pthread)
+target_link_libraries(test_service_meta_critical cedar cedar_graph cedar_cypher cedar_queryd gRPC::grpc++ glog ${GTEST_MAIN_TARGET} pthread)
 target_link_directories(test_service_meta_critical PRIVATE /opt/homebrew/lib)
-gtest_discover_tests(test_service_meta_critical)
+add_test(NAME test_service_meta_critical COMMAND test_service_meta_critical)

@@ -4,6 +4,7 @@
 
 #include "cedar/service/graph_service_router.h"
 
+#include <glog/logging.h>
 #include <algorithm>
 #include <chrono>
 #include <iostream>
@@ -77,8 +78,7 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   // 初始化 2PC 分布式事务引擎
   auto s = Initialize2PCEngine();
   if (!s.ok()) {
-    std::cerr << "[GraphD] Failed to initialize 2PC engine: " << s.ToString() << std::endl;
-    // Non-fatal: continue without distributed transaction support
+    LOG(FATAL) << "[GraphD] Failed to initialize 2PC engine: " << s.ToString();
   }
   
   return Status::OK();
@@ -1160,6 +1160,12 @@ GraphServiceRouter::GetStorageStub(const std::string& node_addr) {
   if (it != storage_stubs_.end()) {
     return it->second;  // Another thread created it first
   }
+  // Evict oldest entry if cache is full
+  if (storage_stubs_.size() >= kMaxCachedStubs) {
+    auto evict_it = storage_stubs_.begin();
+    storage_channels_.erase(evict_it->first);
+    storage_stubs_.erase(evict_it);
+  }
   storage_stubs_[node_addr] = stub;
   storage_channels_[node_addr] = channel;
   lock.unlock();  // Release lock before blocking I/O
@@ -1466,16 +1472,16 @@ Status GraphServiceRouter::ExecutePartitionQuery(
   return Status::OK();
 }
 
-void GraphServiceRouter::RefreshPartitionMap() {
+Status GraphServiceRouter::RefreshPartitionMap() {
   if (!meta_client_) {
-    return;
+    return Status::OK();
   }
 
   auto result = meta_client_->GetSpacePartitionMap("default");
   if (!result.ok()) {
     std::cerr << "[GraphServiceRouter] Failed to refresh partition map: "
               << result.status().ToString() << std::endl;
-    return;
+    return result.status();
   }
 
   const auto& partition_map = result.value();
@@ -1512,13 +1518,20 @@ void GraphServiceRouter::RefreshPartitionMap() {
 }
 
 void GraphServiceRouter::PartitionMapRefreshLoop() {
+  std::chrono::seconds backoff(1);
   while (running_) {
     for (int i = 0; i < partition_refresh_interval_.count() && running_; ++i) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     if (!running_) break;
-    
-    RefreshPartitionMap();
+
+    auto status = RefreshPartitionMap();
+    if (!status.ok()) {
+      backoff = std::min(backoff * 2, std::chrono::seconds(300));
+      std::this_thread::sleep_for(backoff);
+    } else {
+      backoff = std::chrono::seconds(1);
+    }
   }
 }
 
@@ -1661,10 +1674,17 @@ grpc::Status GraphServiceRouter::BeginTransaction(grpc::ServerContext* context,
     return grpc::Status::CANCELLED;
   }
   (void)request;
-  
+
+  {
+    std::lock_guard<std::mutex> lock(active_txns_mutex_);
+    if (active_transactions_.size() >= kMaxActiveTransactions) {
+      return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, "Too many active transactions");
+    }
+  }
+
   auto txn_id = next_txn_id_.fetch_add(1);
   std::string txn_id_str = std::to_string(txn_id);
-  
+
   {
     std::lock_guard<std::mutex> lock(active_txns_mutex_);
     ActiveTransaction txn_ctx;
