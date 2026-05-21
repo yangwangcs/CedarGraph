@@ -512,21 +512,35 @@ Status PartitionMigrator::VerifyConsistency(MigrationTask& task) {
   if (!config_.verify_checksum) {
     return Status::OK();
   }
-  
+
   std::string source_checksum, target_checksum;
   auto status = CalculateChecksum(task.partition_id, &source_checksum);
   if (!status.ok()) return status;
-  
-  // Target checksum: in a full implementation this would be fetched
-  // from the target node via RPC. For now, skip if not available.
-  if (target_checksum.empty()) {
+
+  if (!migration_stub_) {
     return Status::OK();
   }
-  
-  if (!VerifyChecksum(source_checksum, target_checksum)) {
-    return Status::Corruption("Checksum mismatch after migration");
+
+  ::grpc::ClientContext context;
+  cedar::migration::FetchChecksumRequest request;
+  cedar::migration::FetchChecksumResponse response;
+
+  request.set_partition_id(task.partition_id);
+  ::grpc::Status grpc_status = migration_stub_->FetchChecksum(
+      &context, request, &response);
+  if (!grpc_status.ok()) {
+    return Status::IOError("FetchChecksum RPC failed: " +
+                           grpc_status.error_message());
   }
-  
+  if (!response.success()) {
+    return Status::IOError("FetchChecksum failed: " + response.error_msg());
+  }
+  target_checksum = response.checksum();
+
+  if (!VerifyChecksum(source_checksum, target_checksum)) {
+    return Status::Corruption("Migration checksum mismatch");
+  }
+
   return Status::OK();
 }
 

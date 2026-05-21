@@ -535,6 +535,35 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
   return ::grpc::Status::OK;
 }
 
+::grpc::Status PartitionMigrationServiceImpl::FetchChecksum(
+    ::grpc::ServerContext* context,
+    const ::cedar::migration::FetchChecksumRequest* request,
+    ::cedar::migration::FetchChecksumResponse* response) {
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+
+  if (partition_migrator_ == nullptr) {
+    response->set_success(false);
+    response->set_error_msg("Partition migrator not available");
+    return ::grpc::Status(::grpc::StatusCode::UNAVAILABLE,
+                          "Partition migrator not available");
+  }
+
+  std::string checksum;
+  auto status = partition_migrator_->CalculateChecksum(
+      static_cast<dtx::PartitionID>(request->partition_id()), &checksum);
+  if (!status.ok()) {
+    response->set_success(false);
+    response->set_error_msg(status.ToString());
+    return ::grpc::Status(::grpc::StatusCode::INTERNAL, status.ToString());
+  }
+
+  response->set_checksum(checksum);
+  response->set_success(true);
+  return ::grpc::Status::OK;
+}
+
 // =============================================================================
 // Administrative Methods
 // =============================================================================

@@ -133,6 +133,10 @@ add_executable(test_migration_checksum dtx/test_migration_checksum.cc)
 target_link_libraries(test_migration_checksum ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_migration_checksum)
 
+add_executable(test_migration_checksum_verify dtx/test_migration_checksum_verify.cc)
+target_link_libraries(test_migration_checksum_verify ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_migration_checksum_verify)
+
 add_executable(test_migration_wal_catchup dtx/test_migration_wal_catchup.cc)
 target_link_libraries(test_migration_wal_catchup ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_migration_wal_catchup)
@@ -233,6 +237,19 @@ gtest_discover_tests(test_cluster_connection)
 add_executable(test_rate_limiter_race queryd/test_rate_limiter_race.cc)
 target_link_libraries(test_rate_limiter_race ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_rate_limiter_race)
+
+add_executable(test_partition_routing_consistency queryd/test_partition_routing_consistency.cc)
+target_link_libraries(test_partition_routing_consistency ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_partition_routing_consistency)
+
+add_executable(test_meta_registration
+    queryd/test_meta_registration.cc
+    ../src/queryd/meta_client.cpp
+    ${CMAKE_BINARY_DIR}/generated_proto/meta_service.pb.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/meta_service.grpc.pb.cc
+)
+target_link_libraries(test_meta_registration ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_meta_registration)
 
 add_executable(test_2pc_thread_pool dtx/test_2pc_thread_pool.cc)
 target_link_libraries(test_2pc_thread_pool ${CEDAR_TEST_LIBS})

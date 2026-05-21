@@ -159,6 +159,12 @@ class PartitionMigrationServiceImpl final
       const ::cedar::migration::GetMigrationStatusRequest* request,
       ::cedar::migration::GetMigrationStatusResponse* response) override;
   
+  // Fetch partition checksum for verification
+  ::grpc::Status FetchChecksum(
+      ::grpc::ServerContext* context,
+      const ::cedar::migration::FetchChecksumRequest* request,
+      ::cedar::migration::FetchChecksumResponse* response) override;
+  
   // Administrative methods
   
   // Cancel a migration

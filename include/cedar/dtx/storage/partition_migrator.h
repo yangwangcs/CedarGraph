@@ -217,6 +217,7 @@ class PartitionMigrator {
       std::shared_ptr<cedar::migration::PartitionMigrationService::Stub> stub);
 
   friend class PartitionMigrationEndToEndTest;
+  friend class MigrationChecksumVerifyTest;
 
   // Checksum verification (public for testing and external validation)
   Status CalculateChecksum(PartitionID pid, std::string* checksum);

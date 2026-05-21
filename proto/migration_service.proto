@@ -119,6 +119,20 @@ message GetMigrationStatusResponse {
 }
 
 // ============================================================================
+// Fetch Checksum Request/Response
+// ============================================================================
+
+message FetchChecksumRequest {
+  uint32 partition_id = 1;
+}
+
+message FetchChecksumResponse {
+  string checksum = 1;
+  bool success = 2;
+  string error_msg = 3;
+}
+
+// ============================================================================
 // Partition Migration Service
 // ============================================================================
 
@@ -137,4 +151,7 @@ service PartitionMigrationService {
   
   // Get current migration status
   rpc GetMigrationStatus(GetMigrationStatusRequest) returns (GetMigrationStatusResponse);
+  
+  // Fetch partition checksum for verification
+  rpc FetchChecksum(FetchChecksumRequest) returns (FetchChecksumResponse);
 }
