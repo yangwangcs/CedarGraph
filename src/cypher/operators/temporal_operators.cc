@@ -133,6 +133,19 @@ bool TemporalNodeScan::MatchesVersion(const Node& node) const {
   return true;
 }
 
+std::unique_ptr<PhysicalOperator> TemporalNodeScan::Clone() const {
+  auto clone = std::make_unique<TemporalNodeScan>(
+      variable_, label_, modifier_, start_time_, end_time_, version_number_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->current_index_ = 0;
+  clone->node_ids_.clear();
+  clone->query_start_ = 0;
+  clone->query_end_ = Timestamp::Max();
+  return clone;
+}
+
 // ============================================================================
 // TemporalExpand
 // ============================================================================
@@ -255,6 +268,21 @@ bool TemporalExpand::IsPathContinuous(const std::vector<Relationship>& path) con
   return true;
 }
 
+std::unique_ptr<PhysicalOperator> TemporalExpand::Clone() const {
+  auto clone = std::make_unique<TemporalExpand>(
+      from_variable_, rel_variable_, to_variable_, direction_, modifier_,
+      rel_type_, path_semantics_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->current_record_.reset();
+  clone->neighbor_index_ = 0;
+  clone->neighbors_.clear();
+  clone->query_start_ = 0;
+  clone->query_end_ = Timestamp::Max();
+  return clone;
+}
+
 // ============================================================================
 // SnapshotScan
 // ============================================================================
@@ -308,6 +336,16 @@ std::shared_ptr<Record> SnapshotScan::Next() {
 
 std::string SnapshotScan::GetDetails() const {
   return variable_;
+}
+
+std::unique_ptr<PhysicalOperator> SnapshotScan::Clone() const {
+  auto clone = std::make_unique<SnapshotScan>(variable_, label_, snapshot_time_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->current_index_ = 0;
+  clone->node_ids_.clear();
+  return clone;
 }
 
 // ============================================================================
@@ -371,6 +409,18 @@ std::shared_ptr<Record> VersionScan::Next() {
 
 std::string VersionScan::GetDetails() const {
   return variable_;
+}
+
+std::unique_ptr<PhysicalOperator> VersionScan::Clone() const {
+  auto clone = std::make_unique<VersionScan>(variable_, label_, specific_version_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->current_node_index_ = 0;
+  clone->current_version_index_ = 0;
+  clone->node_ids_.clear();
+  clone->current_versions_.clear();
+  return clone;
 }
 
 }  // namespace cypher

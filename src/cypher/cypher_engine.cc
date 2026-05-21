@@ -30,7 +30,7 @@ ResultSet CypherEngine::Execute(const std::string& query) {
       ExecutionContext ctx;
       ctx.graph = graph_.get();
       ctx.gcn_traversal_callback = gcn_traversal_callback_;
-      return cached->Execute(&ctx);
+      return cached->Clone()->Execute(&ctx);
     }
     
     // Parse and create new plan
@@ -82,7 +82,7 @@ ResultSet CypherEngine::Execute(const std::string& query,
       for (const auto& [k, v] : parameters) {
         ctx.SetVariable(k, v);
       }
-      return cached->Execute(&ctx);
+      return cached->Clone()->Execute(&ctx);
     }
     
     // Parse and create new plan

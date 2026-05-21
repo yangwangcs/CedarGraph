@@ -103,6 +103,11 @@ class PhysicalOperator {
   virtual std::string Explain(int indent = 0) const;
   
   /**
+   * @brief Clone the operator (deep copy with reset state)
+   */
+  virtual std::unique_ptr<PhysicalOperator> Clone() const = 0;
+  
+  /**
    * @brief Add child operator
    */
   void AddChild(std::shared_ptr<PhysicalOperator> child) {
@@ -129,6 +134,7 @@ class NodeScan : public PhysicalOperator {
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "NodeScan"; }
   std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::string variable_;
@@ -153,6 +159,7 @@ class Expand : public PhysicalOperator {
   void Reset() override;
   std::string GetName() const override { return "Expand"; }
   std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::string from_variable_;
@@ -177,6 +184,7 @@ class Filter : public PhysicalOperator {
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "Filter"; }
   std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::shared_ptr<Expression> predicate_;
@@ -195,6 +203,7 @@ class Project : public PhysicalOperator {
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "Project"; }
   std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::vector<std::pair<std::string, std::shared_ptr<Expression>>> projections_;
@@ -212,6 +221,7 @@ class ProduceResults : public PhysicalOperator {
   std::string GetName() const override { return "ProduceResults"; }
   
   ResultSet GetResultSet();
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::vector<std::string> columns_;
@@ -228,6 +238,7 @@ class Sort : public PhysicalOperator {
   bool Init(ExecutionContext* ctx) override;
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "Sort"; }
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::vector<std::pair<std::shared_ptr<Expression>, bool>> sort_items_;
@@ -249,6 +260,7 @@ class Limit : public PhysicalOperator {
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "Limit"; }
   std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   size_t limit_;
@@ -266,6 +278,7 @@ class Skip : public PhysicalOperator {
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "Skip"; }
   std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   size_t skip_;
@@ -283,6 +296,7 @@ class Distinct : public PhysicalOperator {
   bool Init(ExecutionContext* ctx) override;
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "Distinct"; }
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::vector<std::shared_ptr<Expression>> keys_;
@@ -312,6 +326,7 @@ class Aggregate : public PhysicalOperator {
   bool Init(ExecutionContext* ctx) override;
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "Aggregate"; }
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::vector<AggregationItem> items_;
@@ -345,6 +360,7 @@ class TemporalNodeScan : public PhysicalOperator {
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "TemporalNodeScan"; }
   std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::string variable_;
@@ -389,6 +405,7 @@ class TemporalExpand : public PhysicalOperator {
   void Reset() override;
   std::string GetName() const override { return "TemporalExpand"; }
   std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::string from_variable_;
@@ -427,6 +444,7 @@ class SnapshotScan : public PhysicalOperator {
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "SnapshotScan"; }
   std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::string variable_;
@@ -452,6 +470,7 @@ class VersionScan : public PhysicalOperator {
   std::shared_ptr<Record> Next() override;
   std::string GetName() const override { return "VersionScan"; }
   std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
   
  private:
   std::string variable_;
@@ -535,6 +554,11 @@ class ExecutionPlan {
    * @brief Get root operator
    */
   std::shared_ptr<PhysicalOperator> GetRoot() const { return root_; }
+  
+  /**
+   * @brief Clone the execution plan (deep copy with reset state)
+   */
+  std::unique_ptr<ExecutionPlan> Clone() const;
   
  private:
   std::shared_ptr<PhysicalOperator> root_;
