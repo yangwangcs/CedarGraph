@@ -137,6 +137,8 @@ Status WalBatchWriter::DoFlush(std::vector<WalBatchEntry>& entries) {
       case WalBatchEntry::ABORT:
         s = wal_writer_->WriteAbort(entry.txn_id, entry.timestamp);
         break;
+      default:
+        return Status::InvalidArgument("WalBatchWriter", "Unknown entry type");
     }
     
     if (!s.ok()) {

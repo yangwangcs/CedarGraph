@@ -21,6 +21,11 @@
 #include <iomanip>
 #include <sstream>
 
+#if defined(__APPLE__) || defined(__linux__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 #include "cedar/core/crc32c.h"
 
 namespace cedar {
@@ -1174,7 +1179,16 @@ Status SizeTieredCompactionEngine::SaveManifest() {
   }
   
   file.close();
-  
+
+  // Ensure data is durably written before atomic rename
+#if defined(__APPLE__) || defined(__linux__)
+  int fd = ::open(tmp_path.c_str(), O_RDONLY);
+  if (fd >= 0) {
+    ::fsync(fd);
+    ::close(fd);
+  }
+#endif
+
   // 原子重命名
   std::error_code ec;
   std::filesystem::rename(tmp_path, manifest_path, ec);

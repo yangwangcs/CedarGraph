@@ -45,12 +45,17 @@ void BackpressureController::UpdateHealth(const std::string& gcn_id,
                                           double health_score) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto& slot = slots_[gcn_id];
-  if (health_score < 30.0) {
-    slot.max_concurrency.store(4, std::memory_order_relaxed);
-  } else if (health_score < 60.0) {
-    slot.max_concurrency.store(8, std::memory_order_relaxed);
+  constexpr double kCriticalHealthThreshold = 30.0;
+  constexpr double kDegradedHealthThreshold = 60.0;
+  constexpr uint32_t kCriticalConcurrency = 4;
+  constexpr uint32_t kDegradedConcurrency = 8;
+  constexpr uint32_t kHealthyConcurrency = 16;
+  if (health_score < kCriticalHealthThreshold) {
+    slot.max_concurrency.store(kCriticalConcurrency, std::memory_order_relaxed);
+  } else if (health_score < kDegradedHealthThreshold) {
+    slot.max_concurrency.store(kDegradedConcurrency, std::memory_order_relaxed);
   } else {
-    slot.max_concurrency.store(16, std::memory_order_relaxed);
+    slot.max_concurrency.store(kHealthyConcurrency, std::memory_order_relaxed);
   }
 }
 

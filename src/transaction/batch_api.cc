@@ -298,6 +298,9 @@ WalBatch WriteBatch::ToWalBatch(Timestamp timestamp, uint64_t sequence, Timestam
         // 修复: 传递 txn_version 给 WAL
         wal_batch.Delete(key, txn_version);
         break;
+      default:
+        std::cerr << "[BatchApi] Unknown batch operation type: " << static_cast<int>(entry.type) << std::endl;
+        break;
     }
   }
   

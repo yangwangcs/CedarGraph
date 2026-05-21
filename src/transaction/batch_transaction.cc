@@ -72,6 +72,11 @@ Status BatchTransactionExecutor::Execute() {
         break;
       }
       
+      default: {
+        txn->Abort();
+        delete txn;
+        return Status::InvalidArgument("BatchTransaction", "Unknown operation type");
+      }
       case OpType::GET: {
         Descriptor desc;
         Timestamp ver;

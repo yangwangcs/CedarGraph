@@ -59,8 +59,9 @@ GcnNode::~GcnNode() {
   }
 
   // Create WatermarkGc and start it (watermark = 0 means no GC yet)
+  constexpr uint64_t kWatermarkGcIntervalMs = 5000;
   watermark_gc_ = std::make_unique<gcn::WatermarkGc>(engine_.get());
-  watermark_gc_->Start(5000);  // 5-second interval
+  watermark_gc_->Start(kWatermarkGcIntervalMs);
 
   // Create EventApplier
   event_applier_ = std::make_unique<gcn::EventApplier>(engine_.get());
@@ -213,7 +214,8 @@ void GcnNode::HeartbeatLoop() {
     if (watermark_gc_) {
       auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
           std::chrono::system_clock::now().time_since_epoch()).count();
-      watermark_gc_->UpdateWatermark(static_cast<uint64_t>(now_sec - 60));
+      constexpr int64_t kWatermarkLagSeconds = 60;
+      watermark_gc_->UpdateWatermark(static_cast<uint64_t>(now_sec - kWatermarkLagSeconds));
     }
     std::this_thread::sleep_for(
         std::chrono::milliseconds(FLAGS_gcn_heartbeat_interval_ms));

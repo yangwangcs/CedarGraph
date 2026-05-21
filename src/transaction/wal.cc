@@ -341,8 +341,9 @@ Status WalWriter::WriteBatchAsync(const WalBatch& batch, uint64_t* sequence) {
 Status WalWriter::WaitForSequence(uint64_t sequence) {
   // 简单实现: 轮询检查
   // 生产环境可以使用条件变量优化
+  constexpr auto kBusyLoopSleep = std::chrono::microseconds(10);
   while (CurrentSequence() < sequence) {
-    std::this_thread::sleep_for(std::chrono::microseconds(10));
+    std::this_thread::sleep_for(kBusyLoopSleep);
   }
   return Status::OK();
 }

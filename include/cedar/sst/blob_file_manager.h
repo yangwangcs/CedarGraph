@@ -97,6 +97,8 @@ class BlobFileManager {
   uint32_t current_file_id_;
   WritableFile* current_file_;
   size_t current_file_size_;
+  size_t bytes_since_flush_ = 0;
+  static constexpr size_t kFlushThreshold = 64 * 1024;
   
   // 已打开的读取文件缓存
   mutable std::mutex mutex_;
