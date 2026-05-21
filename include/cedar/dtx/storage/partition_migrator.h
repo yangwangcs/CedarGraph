@@ -218,6 +218,11 @@ class PartitionMigrator {
 
   friend class PartitionMigrationEndToEndTest;
 
+  // Checksum verification (public for testing and external validation)
+  Status CalculateChecksum(PartitionID pid, std::string* checksum);
+  bool VerifyChecksum(const std::string& source_checksum,
+                      const std::string& target_checksum);
+
  private:
   void MigrationWorkerLoop();
   void ExecuteMigration(uint64_t migration_id);
@@ -233,9 +238,6 @@ class PartitionMigrator {
   
   // Helper methods
   Status TransferBatch(MigrationTask& task, uint64_t start_key, uint64_t batch_size);
-  Status CalculateChecksum(PartitionID pid, std::string* checksum);
-  bool VerifyChecksum(const std::string& source_checksum, 
-                      const std::string& target_checksum);
   Status StreamSnapshotToTarget(
       const MigrationTask& task, const std::string& snapshot_path);
   Status ReplayWalToTarget(

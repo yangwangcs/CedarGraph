@@ -112,6 +112,10 @@ add_executable(test_partition_migration_end_to_end dtx/test_partition_migration_
 target_link_libraries(test_partition_migration_end_to_end ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_partition_migration_end_to_end)
 
+add_executable(test_migration_checksum dtx/test_migration_checksum.cc)
+target_link_libraries(test_migration_checksum ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_migration_checksum)
+
 add_executable(test_storage_service_impl dtx/test_storage_service_impl.cc)
 target_link_libraries(test_storage_service_impl ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_storage_service_impl)

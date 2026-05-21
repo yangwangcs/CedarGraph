@@ -18,6 +18,9 @@
 
 #include "cedar/dtx/storage/partition_migrator.h"
 #include "cedar/dtx/storage_service_impl.h"
+#include "cedar/core/crc32c.h"
+#include "cedar/sst/zone_columnar_reader.h"
+#include "cedar/storage/lsm_engine.h"
 
 #include <algorithm>
 #include <cmath>
@@ -541,13 +544,64 @@ Status PartitionMigrator::RollbackMigration(MigrationTask& task) {
   return Status::OK();
 }
 
-Status PartitionMigrator::CalculateChecksum(PartitionID pid, 
+Status PartitionMigrator::CalculateChecksum(PartitionID pid,
                                             std::string* checksum) {
-  // Calculate a deterministic pseudo-checksum based on partition metadata
-  // In a full implementation this would scan all keys and hash values
-  std::stringstream ss;
-  ss << "chk_" << pid << "_" << std::chrono::system_clock::now().time_since_epoch().count();
-  *checksum = ss.str();
+  PartitionStorage* storage = partition_manager_->GetPartition(pid);
+  if (!storage) {
+    return Status::NotFound("Partition", std::to_string(pid));
+  }
+
+  auto* shared_storage = storage->GetSharedStorage();
+  if (!shared_storage) {
+    return Status::IOError("Partition", "No shared storage");
+  }
+
+  // Flush memtable to ensure all data is in SST files
+  Status s = shared_storage->ForceFlush();
+  if (!s.ok()) {
+    return Status::IOError("ForceFlush failed", s.ToString());
+  }
+
+  auto* lsm = shared_storage->GetLsmEngine();
+  if (!lsm) {
+    return Status::IOError("Partition", "No LSM engine");
+  }
+
+  uint32_t crc = 0;
+  const auto& levels = lsm->GetSstFiles();
+  for (const auto& level : levels) {
+    for (const auto& meta : level) {
+      std::string filepath = lsm->GetDbPath() + "/" + std::to_string(meta.file_number) + ".sst";
+      ZoneColumnarSstReader reader(filepath);
+      s = reader.Open();
+      if (!s.ok()) {
+        return Status::IOError("Cannot open SST",
+                               filepath + ": " + s.ToString());
+      }
+
+      auto* iter = reader.NewIterator();
+      iter->SeekToFirst();
+      size_t entry_count = 0;
+      for (; iter->Valid(); iter->Next()) {
+        CedarKey key = iter->Key();
+        Descriptor desc = iter->Value();
+        entry_count++;
+
+        char key_buf[CedarKey::kKeySize];
+        key.EncodeTo(key_buf);
+        crc = cedar::crc32c::Extend(crc, key_buf, CedarKey::kKeySize);
+
+        char desc_buf[8];
+        uint64_t raw = desc.AsRaw();
+        std::memcpy(desc_buf, &raw, 8);
+        crc = cedar::crc32c::Extend(crc, desc_buf, 8);
+      }
+      delete iter;
+      reader.Close();
+    }
+  }
+
+  *checksum = std::to_string(crc);
   return Status::OK();
 }
 
