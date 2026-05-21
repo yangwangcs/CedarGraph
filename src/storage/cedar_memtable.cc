@@ -456,6 +456,10 @@ bool CedarMemTable::IsEmpty() const {
   return map_.empty();
 }
 
+CedarMemTable::Iterator* CedarMemTable::NewIterator() const {
+  return new Iterator(this);
+}
+
 std::vector<std::pair<CedarKey, Descriptor>> CedarMemTable::GetSortedEntries() const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
 
@@ -501,10 +505,13 @@ std::vector<std::pair<CedarKey, Descriptor>> CedarMemTable::GetSortedEntries() c
 // Iterator 实现
 
 CedarMemTable::Iterator::Iterator(const CedarMemTable* memtable)
-    : snapshot_(memtable->map_),
-      outer_iter_(snapshot_.begin()),
+    : outer_iter_(snapshot_.begin()),
       inner_idx_(0),
       valid_(false) {
+  std::shared_lock<std::shared_mutex> lock(memtable->mutex_);
+  snapshot_ = memtable->map_;
+  lock.unlock();
+  outer_iter_ = snapshot_.begin();
   if (outer_iter_ != snapshot_.end()) {
     valid_ = true;
   }

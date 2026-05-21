@@ -179,6 +179,7 @@ set(CEDAR_CORE_SOURCES
 # Storage sources
 set(CEDAR_STORAGE_SOURCES
     src/storage/lsm_engine.cc
+    src/storage/cedar_memtable.cc
     src/storage/plan_cache.cc
     src/storage/cedar_config.cc
     src/storage/sst_reader_cache.cc

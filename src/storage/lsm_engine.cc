@@ -2105,9 +2105,7 @@ Status LsmEngine::FlushMemTable(VSLMemTable* mem) {
   all_entries.reserve(mem->size());
   
   mem->Traverse([&](const CedarKey& key, const Descriptor& descriptor) -> bool {
-    if (!descriptor.IsTombstone()) {
-      all_entries.emplace_back(key, descriptor);
-    }
+    all_entries.emplace_back(key, descriptor);
     return true;
   });
   
