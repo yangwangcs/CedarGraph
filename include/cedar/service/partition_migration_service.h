@@ -141,6 +141,12 @@ class PartitionMigrationServiceImpl final
       ::grpc::ServerReader<::cedar::migration::SyncDataRequest>* reader,
       ::cedar::migration::SyncDataResponse* response) override;
   
+  // Replicate a single WAL entry during catch-up phase
+  ::grpc::Status ReplicateWALEntry(
+      ::grpc::ServerContext* context,
+      const ::cedar::migration::ReplicateWALEntryRequest* request,
+      ::cedar::migration::ReplicateWALEntryResponse* response) override;
+  
   // Finalize migration (commit or rollback)
   ::grpc::Status FinalizeMigration(
       ::grpc::ServerContext* context,

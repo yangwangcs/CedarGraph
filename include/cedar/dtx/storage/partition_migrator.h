@@ -223,6 +223,10 @@ class PartitionMigrator {
   bool VerifyChecksum(const std::string& source_checksum,
                       const std::string& target_checksum);
 
+  // WAL catch-up (public for testing)
+  Status CatchUp(MigrationTask& task);
+  Status ReplayWalToTarget(const MigrationTask& task, const std::string& wal_path);
+
  private:
   void MigrationWorkerLoop();
   void ExecuteMigration(uint64_t migration_id);
@@ -230,7 +234,6 @@ class PartitionMigrator {
   // Migration phases
   Status PrepareSource(MigrationTask& task);
   Status CopyData(MigrationTask& task);
-  Status CatchUp(MigrationTask& task);
   Status SwitchTraffic(MigrationTask& task);
   Status VerifyConsistency(MigrationTask& task);
   Status CompleteMigration(MigrationTask& task);
@@ -240,8 +243,6 @@ class PartitionMigrator {
   Status TransferBatch(MigrationTask& task, uint64_t start_key, uint64_t batch_size);
   Status StreamSnapshotToTarget(
       const MigrationTask& task, const std::string& snapshot_path);
-  Status ReplayWalToTarget(
-      const MigrationTask& task, const std::string& wal_path);
   
   std::atomic<bool> running_{false};
   MigrationConfig config_;

@@ -85,6 +85,23 @@ message FinalizeMigrationResponse {
 }
 
 // ============================================================================
+// Replicate WAL Entry Request/Response
+// ============================================================================
+
+message ReplicateWALEntryRequest {
+  string migration_id = 1;
+  uint32 partition_id = 2;
+  uint64 timestamp = 3;
+  uint64 txn_id = 4;
+  bytes op_data = 5;
+}
+
+message ReplicateWALEntryResponse {
+  bool success = 1;
+  string error_msg = 2;
+}
+
+// ============================================================================
 // Get Migration Status Request/Response
 // ============================================================================
 
@@ -111,6 +128,9 @@ service PartitionMigrationService {
   
   // Stream data from source to target
   rpc SyncData(stream SyncDataRequest) returns (SyncDataResponse);
+  
+  // Replicate a single WAL entry during catch-up phase
+  rpc ReplicateWALEntry(ReplicateWALEntryRequest) returns (ReplicateWALEntryResponse);
   
   // Finalize migration (commit or rollback)
   rpc FinalizeMigration(FinalizeMigrationRequest) returns (FinalizeMigrationResponse);

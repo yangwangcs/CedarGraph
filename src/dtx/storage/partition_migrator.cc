@@ -452,8 +452,29 @@ Status PartitionMigrator::ReplayWalToTarget(
     std::string op = wal_data.substr(pos, op_len);
     pos += op_len;
 
-    // For now, just count operations. In a full implementation, these would be
-    // streamed to the target node and replayed there.
+    // Stream WAL entry to target node for replay
+    if (migration_stub_) {
+      ::grpc::ClientContext context;
+      cedar::migration::ReplicateWALEntryRequest request;
+      cedar::migration::ReplicateWALEntryResponse response;
+
+      request.set_migration_id(std::to_string(task.migration_id));
+      request.set_partition_id(task.partition_id);
+      request.set_timestamp(ts);
+      request.set_txn_id(txn_id);
+      request.set_op_data(op);
+
+      ::grpc::Status status = migration_stub_->ReplicateWALEntry(
+          &context, request, &response);
+      if (!status.ok()) {
+        return Status::IOError("WAL replication RPC failed: " +
+                               status.error_message());
+      }
+      if (!response.success()) {
+        return Status::IOError("WAL replication rejected: " +
+                               response.error_msg());
+      }
+    }
     ops_replayed++;
   }
 
