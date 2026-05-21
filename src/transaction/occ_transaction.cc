@@ -633,6 +633,7 @@ void OCCTransaction::Cleanup() {
   write_set_keys_.clear();
   conflicts_.clear();
   wal_batch_.Clear();
+  state_.store(TransactionState::kActive);
 }
 
 CedarKey OCCTransaction::MakeKey(uint64_t entity_id, EntityType type, 
