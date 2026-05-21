@@ -32,9 +32,6 @@ void CedarMemTable::Put(CedarKey key, const Descriptor& descriptor, Timestamp tx
   InternalKey internal_key(key);
   // 修复: 使用传入的 txn_version 创建 MemTableEntry
   uint64_t tgt_id = key.target_id();
-  if (key.entity_id() == 344 && key.entity_type() == EntityType::EdgeOut) {
-    std::cerr << "DEBUG: CedarMemTable::Put entity_id=344, target_id=" << tgt_id << std::endl;
-  }
   MemTableEntry entry(key.timestamp(), descriptor, tgt_id, txn_version);
 
   // 计算大小增量 (估算)
