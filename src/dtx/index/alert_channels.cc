@@ -25,6 +25,7 @@
 #include <iomanip>
 #include <chrono>
 #include <cstring>
+#include <shared_mutex>
 
 namespace cedar {
 namespace dtx {
@@ -75,6 +76,21 @@ static Status EnsureCurlInitialized() {
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
   userp->append(static_cast<char*>(contents), size * nmemb);
   return size * nmemb;
+}
+
+// Curl read callback for SMTP upload
+struct SmtpReadData {
+  const std::string* data;
+  size_t pos{0};
+};
+
+static size_t ReadCallback(void* ptr, size_t size, size_t nmemb, void* userdata) {
+  SmtpReadData* rd = static_cast<SmtpReadData*>(userdata);
+  if (rd->pos >= rd->data->size()) return 0;
+  size_t len = std::min(size * nmemb, rd->data->size() - rd->pos);
+  std::memcpy(ptr, rd->data->data() + rd->pos, len);
+  rd->pos += len;
+  return len;
 }
 
 // ============ DingTalkChannel ============
@@ -431,8 +447,67 @@ std::string EmailChannel::BuildBody(const storage::Alert& alert) {
 }
 
 Status EmailChannel::SendEmail(const std::string& subject, const std::string& body) {
-  // Email sending would require libcurl SMTP or similar
-  // For now, this is a stub that would need full SMTP implementation
+  if (config_.smtp_server.empty() || config_.to.empty()) {
+    LOG(WARNING) << "Email alert: SMTP not configured. Subject: " << subject;
+    healthy_.store(false);
+    return Status::OK();
+  }
+
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    healthy_.store(false);
+    return Status::IOError("Failed to initialize curl");
+  }
+
+  struct curl_slist* recipients = nullptr;
+  for (const auto& addr : config_.to) {
+    recipients = curl_slist_append(recipients, addr.c_str());
+  }
+
+  std::string url = config_.use_tls ? "smtps://" : "smtp://";
+  url += config_.smtp_server + ":" + std::to_string(config_.smtp_port);
+
+  std::ostringstream payload;
+  payload << "To: ";
+  for (size_t i = 0; i < config_.to.size(); ++i) {
+    if (i > 0) payload << ", ";
+    payload << config_.to[i];
+  }
+  payload << "\r\n";
+  payload << "From: " << config_.from << "\r\n";
+  payload << "Subject: " << subject << "\r\n";
+  payload << "\r\n";
+  payload << body << "\r\n";
+
+  std::string payload_str = payload.str();
+  SmtpReadData read_data{&payload_str, 0};
+
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_MAIL_FROM, config_.from.c_str());
+  curl_easy_setopt(curl, CURLOPT_MAIL_RCPT, recipients);
+  if (!config_.username.empty()) {
+    curl_easy_setopt(curl, CURLOPT_USERNAME, config_.username.c_str());
+  }
+  if (!config_.password.empty()) {
+    curl_easy_setopt(curl, CURLOPT_PASSWORD, config_.password.c_str());
+  }
+  curl_easy_setopt(curl, CURLOPT_USE_SSL,
+                   config_.use_tls ? CURLUSESSL_ALL : CURLUSESSL_NONE);
+  curl_easy_setopt(curl, CURLOPT_READDATA, &read_data);
+  curl_easy_setopt(curl, CURLOPT_READFUNCTION, ReadCallback);
+  curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 10000L);
+
+  CURLcode res = curl_easy_perform(curl);
+  curl_slist_free_all(recipients);
+  curl_easy_cleanup(curl);
+
+  if (res != CURLE_OK) {
+    healthy_.store(false);
+    LOG(WARNING) << "Email alert failed: " << curl_easy_strerror(res);
+    return Status::OK();
+  }
+
   healthy_.store(true);
   return Status::OK();
 }

@@ -115,12 +115,19 @@ struct AuthToken {
 
 class Authenticator {
  public:
+  struct Account {
+    std::string username;
+    std::string password;
+    std::vector<std::string> roles;
+  };
+
   struct Config {
     std::string jwt_secret;           // JWT 密钥
     std::chrono::seconds token_ttl{3600};  // Token 有效期
     bool enable_refresh_token{true};
     uint32_t max_login_attempts{5};   // 最大登录尝试次数
     std::chrono::seconds lockout_duration{300};  // 锁定时间
+    std::vector<Account> accounts;    // Config-only user accounts
   };
   
   Authenticator();
@@ -149,6 +156,10 @@ class Authenticator {
   Status UpdatePassword(const std::string& username,
                         const std::string& new_password);
 
+  // JWT generation/validation (public for testing)
+  std::string GenerateJWT(const AuthToken& token);
+  StatusOr<AuthToken> ParseJWT(const std::string& jwt);
+
  private:
   struct UserInfo {
     std::string username;
@@ -168,10 +179,8 @@ class Authenticator {
   std::set<std::string> revoked_tokens_{};
   
   std::string HashPassword(const std::string& password);
-  bool VerifyPassword(const std::string& password, 
+  bool VerifyPassword(const std::string& password,
                       const std::string& hash);
-  std::string GenerateJWT(const AuthToken& token);
-  StatusOr<AuthToken> ParseJWT(const std::string& jwt);
 };
 
 // =============================================================================

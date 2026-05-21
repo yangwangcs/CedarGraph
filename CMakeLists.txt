@@ -275,6 +275,7 @@ set(CEDAR_DTX_SOURCES
     src/dtx/dtx_service_impl.cc
     # src/dtx/service_discovery.cc  # TODO: Fix - references non-existent ServiceDiscovery class
     src/dtx/security/security_manager.cc
+    src/dtx/index/alert_channels.cc
     src/dtx/grpc/migration_executor.cc
     src/dtx/dual_mode_partition_strategy.cc
     src/dtx/partition_config.cc
@@ -431,12 +432,9 @@ set(QUERYD_PROTO_SOURCES
     ${PROTO_OUT_DIR}/meta_service.grpc.pb.cc
 )
 
-# Queryd library (简化版)
+# Queryd library
 add_library(cedar_queryd STATIC 
-    src/queryd/query_storage_client.cpp
-    src/queryd/storage_execution_context.cc
-    src/queryd/distributed_executor.cpp
-    src/queryd/meta_client.cpp
+    ${CEDAR_QUERYD_SOURCES}
     ${QUERYD_PROTO_SOURCES}
 )
 target_include_directories(cedar_queryd PRIVATE 

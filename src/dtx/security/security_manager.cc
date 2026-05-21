@@ -23,6 +23,8 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <openssl/bio.h>
+#include <openssl/buffer.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
@@ -129,9 +131,16 @@ Authenticator::~Authenticator() {
 Status Authenticator::Initialize(const Config& config) {
   config_ = config;
   
-  // Create default users
-  AddUser("admin", "admin123", {"admin"});
-  AddUser("readonly", "readonly123", {"readonly"});
+  if (config_.accounts.empty()) {
+    return Status::InvalidArgument("No accounts configured");
+  }
+  
+  for (const auto& account : config_.accounts) {
+    auto status = AddUser(account.username, account.password, account.roles);
+    if (!status.ok()) {
+      return status;
+    }
+  }
   
   return Status::OK();
 }
@@ -323,78 +332,129 @@ bool Authenticator::VerifyPassword(const std::string& password,
   return hash == (salt + oss.str());
 }
 
+static std::string Base64UrlEncode(const std::string& input) {
+  BIO* b64 = BIO_new(BIO_f_base64());
+  BIO* bio = BIO_new(BIO_s_mem());
+  b64 = BIO_push(b64, bio);
+  BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+  BIO_write(b64, input.data(), static_cast<int>(input.size()));
+  BIO_flush(b64);
+
+  BUF_MEM* buffer_ptr;
+  BIO_get_mem_ptr(b64, &buffer_ptr);
+
+  std::string encoded(buffer_ptr->data, buffer_ptr->length);
+  BIO_free_all(b64);
+
+  for (size_t i = 0; i < encoded.size(); ++i) {
+    if (encoded[i] == '+') encoded[i] = '-';
+    else if (encoded[i] == '/') encoded[i] = '_';
+  }
+  while (!encoded.empty() && encoded.back() == '=') {
+    encoded.pop_back();
+  }
+  return encoded;
+}
+
+static std::string Base64UrlDecode(const std::string& input) {
+  std::string padded = input;
+  for (size_t i = 0; i < padded.size(); ++i) {
+    if (padded[i] == '-') padded[i] = '+';
+    else if (padded[i] == '_') padded[i] = '/';
+  }
+  while (padded.size() % 4 != 0) {
+    padded.push_back('=');
+  }
+
+  BIO* b64 = BIO_new(BIO_f_base64());
+  BIO* bio = BIO_new_mem_buf(padded.data(), static_cast<int>(padded.size()));
+  b64 = BIO_push(b64, bio);
+  BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+
+  std::vector<char> buffer(padded.size());
+  int decoded_len = BIO_read(b64, buffer.data(), static_cast<int>(buffer.size()));
+  BIO_free_all(b64);
+
+  if (decoded_len < 0) return "";
+  return std::string(buffer.data(), decoded_len);
+}
+
 std::string Authenticator::GenerateJWT(const AuthToken& token) {
   std::string header = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
-  
+
   auto time_t = std::chrono::system_clock::to_time_t(token.expires_at);
   std::ostringstream payload;
   payload << "{\"sub\":\"" << token.user_id << "\",";
   payload << "\"name\":\"" << token.user_name << "\",";
   payload << "\"exp\":" << time_t << ",";
   payload << "\"jti\":\"" << token.token_id << "\"}";
-  
-  std::string encoded_header = header;
-  std::string encoded_payload = payload.str();
-  
+
+  std::string encoded_header = Base64UrlEncode(header);
+  std::string encoded_payload = Base64UrlEncode(payload.str());
+
   std::string signature_input = encoded_header + "." + encoded_payload;
-  
+
   unsigned char signature[EVP_MAX_MD_SIZE];
   unsigned int signature_len;
-  HMAC(EVP_sha256(), config_.jwt_secret.data(), config_.jwt_secret.size(),
+  HMAC(EVP_sha256(), config_.jwt_secret.data(),
+       static_cast<int>(config_.jwt_secret.size()),
        reinterpret_cast<const unsigned char*>(signature_input.data()),
-       signature_input.size(), signature, &signature_len);
-  
-  std::ostringstream sig_oss;
-  for (unsigned int i = 0; i < signature_len; i++) {
-    sig_oss << std::hex << std::setw(2) << std::setfill('0') << (int)signature[i];
-  }
-  
-  return encoded_header + "." + encoded_payload + "." + sig_oss.str();
+       static_cast<int>(signature_input.size()), signature, &signature_len);
+
+  std::string encoded_signature = Base64UrlEncode(
+      std::string(reinterpret_cast<const char*>(signature), signature_len));
+
+  return encoded_header + "." + encoded_payload + "." + encoded_signature;
 }
 
 StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
   size_t first_dot = jwt.find('.');
   size_t second_dot = jwt.find('.', first_dot + 1);
-  
+
   if (first_dot == std::string::npos || second_dot == std::string::npos) {
     return Status::InvalidArgument("Invalid JWT format");
   }
-  
-  std::string header = jwt.substr(0, first_dot);
-  std::string payload = jwt.substr(first_dot + 1, second_dot - first_dot - 1);
-  std::string signature = jwt.substr(second_dot + 1);
-  
-  // 验证 HMAC-SHA256 签名
-  std::string signature_input = header + "." + payload;
+
+  std::string encoded_header = jwt.substr(0, first_dot);
+  std::string encoded_payload = jwt.substr(first_dot + 1, second_dot - first_dot - 1);
+  std::string encoded_signature = jwt.substr(second_dot + 1);
+
+  // Verify HMAC-SHA256 signature
+  std::string signature_input = encoded_header + "." + encoded_payload;
   unsigned char expected_sig[EVP_MAX_MD_SIZE];
   unsigned int expected_sig_len;
-  HMAC(EVP_sha256(), config_.jwt_secret.data(), config_.jwt_secret.size(),
+  HMAC(EVP_sha256(), config_.jwt_secret.data(),
+       static_cast<int>(config_.jwt_secret.size()),
        reinterpret_cast<const unsigned char*>(signature_input.data()),
-       signature_input.size(), expected_sig, &expected_sig_len);
-  
-  std::ostringstream sig_oss;
-  for (unsigned int i = 0; i < expected_sig_len; i++) {
-    sig_oss << std::hex << std::setw(2) << std::setfill('0') << (int)expected_sig[i];
-  }
-  
-  if (sig_oss.str() != signature) {
+       static_cast<int>(signature_input.size()), expected_sig, &expected_sig_len);
+
+  std::string expected_encoded_sig = Base64UrlEncode(
+      std::string(reinterpret_cast<const char*>(expected_sig), expected_sig_len));
+
+  if (encoded_signature != expected_encoded_sig) {
     return Status::InvalidArgument("Invalid JWT signature");
   }
-  
-  // 解析 payload 提取字段
+
+  // Decode payload
+  std::string payload = Base64UrlDecode(encoded_payload);
+  if (payload.empty()) {
+    return Status::InvalidArgument("Invalid JWT payload");
+  }
+
+  // Parse payload fields
   AuthToken token;
-  
-  // 提取 jti (token_id)
+
+  // Extract jti (token_id)
   size_t jti_pos = payload.find("\"jti\":\"");
   if (jti_pos != std::string::npos) {
-    size_t jti_start = jti_pos + 6;
+    size_t jti_start = jti_pos + 7;
     size_t jti_end = payload.find("\"", jti_start);
     if (jti_end != std::string::npos) {
       token.token_id = payload.substr(jti_start, jti_end - jti_start);
     }
   }
-  
-  // 提取 sub (user_id)
+
+  // Extract sub (user_id)
   size_t sub_pos = payload.find("\"sub\":\"");
   if (sub_pos != std::string::npos) {
     size_t sub_start = sub_pos + 7;
@@ -403,8 +463,8 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
       token.user_id = payload.substr(sub_start, sub_end - sub_start);
     }
   }
-  
-  // 提取 name (user_name)
+
+  // Extract name (user_name)
   size_t name_pos = payload.find("\"name\":\"");
   if (name_pos != std::string::npos) {
     size_t name_start = name_pos + 8;
@@ -413,8 +473,8 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
       token.user_name = payload.substr(name_start, name_end - name_start);
     }
   }
-  
-  // 提取 exp
+
+  // Extract exp
   size_t exp_pos = payload.find("\"exp\":");
   if (exp_pos == std::string::npos) {
     exp_pos = payload.find("\"exp\" :");
@@ -429,7 +489,7 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
       } catch (...) {}
     }
   }
-  
+
   return token;
 }
 
