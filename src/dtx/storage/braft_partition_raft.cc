@@ -312,14 +312,18 @@ void StoragePartitionStateMachine::on_apply(braft::Iterator& iter) {
 
     std::string data = iter.data().to_string();
     if (data.size() < 1) {
-      LOG(FATAL) << "Corrupt log entry: too small";
+      LOG(ERROR) << "Corrupt log entry: too small at index=" << iter.index()
+                 << " — stepping down";
+      iter.set_error_and_rollback();
       return;
     }
 
     auto entry_result = StorageLogEntry::Deserialize(data);
     if (!entry_result.ok()) {
-      LOG(FATAL) << "Failed to deserialize log entry: "
-                 << entry_result.status().ToString();
+      LOG(ERROR) << "Failed to deserialize log entry: "
+                 << entry_result.status().ToString()
+                 << " — stepping down";
+      iter.set_error_and_rollback();
       return;
     }
 
@@ -357,8 +361,10 @@ void StoragePartitionStateMachine::on_apply(braft::Iterator& iter) {
                    << " txn_id=" << entry.txn_id << ": " << status.ToString();
       }
     } else {
-      LOG(FATAL) << "Unknown log entry type: " << static_cast<int>(entry.type)
-                 << " at index=" << iter.index();
+      LOG(ERROR) << "Unknown log entry type: " << static_cast<int>(entry.type)
+                 << " at index=" << iter.index() << " — stepping down";
+      iter.set_error_and_rollback();
+      return;
     }
 
     last_term_ = iter.term();

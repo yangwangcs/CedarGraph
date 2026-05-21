@@ -47,7 +47,9 @@ void MetaRaftStateMachine::on_apply(braft::Iterator& iter) {
         std::string data = iter.data().to_string();
         
         if (data.size() < sizeof(uint8_t) + sizeof(uint32_t)) {
-            LOG(FATAL) << "Corrupt log entry: size too small at index=" << iter.index();
+            LOG(ERROR) << "Corrupt log entry: size too small at index=" << iter.index()
+                       << " — stepping down";
+            iter.set_error_and_rollback();
             return;
         }
         
@@ -57,7 +59,9 @@ void MetaRaftStateMachine::on_apply(braft::Iterator& iter) {
         memcpy(&payload_len, data.data() + sizeof(uint8_t), sizeof(uint32_t));
         
         if (data.size() < sizeof(uint8_t) + sizeof(uint32_t) + payload_len) {
-            LOG(FATAL) << "Corrupt log entry: payload truncated at index=" << iter.index();
+            LOG(ERROR) << "Corrupt log entry: payload truncated at index=" << iter.index()
+                       << " — stepping down";
+            iter.set_error_and_rollback();
             return;
         }
         

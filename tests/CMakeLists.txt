@@ -262,6 +262,10 @@ gtest_discover_tests(test_consistent_hash)
 # target_link_libraries(test_storage_integration ${CEDAR_TEST_LIBS})
 # gtest_discover_tests(test_storage_integration)
 
+add_executable(test_corrupt_log_recovery raft/test_corrupt_log_recovery.cc)
+target_link_libraries(test_corrupt_log_recovery ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_corrupt_log_recovery)
+
 add_executable(test_cross_dc_replication cluster/test_cross_dc_replication.cc)
 target_link_libraries(test_cross_dc_replication ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cross_dc_replication)
