@@ -362,6 +362,10 @@ add_executable(two_pc_atomicity_test dtx/two_pc_atomicity_test.cc)
 target_link_libraries(two_pc_atomicity_test ${CEDAR_TEST_LIBS})
 gtest_discover_tests(two_pc_atomicity_test)
 
+add_executable(decision_log_recovery_test dtx/decision_log_recovery_test.cc)
+target_link_libraries(decision_log_recovery_test ${CEDAR_TEST_LIBS})
+gtest_discover_tests(decision_log_recovery_test)
+
 add_executable(test_failover_thread_bound dtx/test_failover_thread_bound.cc)
 target_link_libraries(test_failover_thread_bound ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_failover_thread_bound)

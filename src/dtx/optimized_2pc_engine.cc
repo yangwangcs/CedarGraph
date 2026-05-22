@@ -167,6 +167,7 @@ void Optimized2PCEngine::Shutdown() noexcept {
   } catch (...) { std::cerr << "[2PC] Timeout manager shutdown exception" << std::endl; }
   try {
     if (recovery_manager_) {
+      recovery_manager_->SetDecisionLogLoader(nullptr);
       recovery_manager_->Shutdown();
     }
   } catch (...) { std::cerr << "[2PC] Recovery manager shutdown exception" << std::endl; }
@@ -1202,6 +1203,22 @@ void Optimized2PCEngine::SyncRecoveryRpcClient() {
   if (!recovery_manager_) {
     return;
   }
+  
+  recovery_manager_->SetDecisionLogLoader(
+      [this](dtx::TxnID txn_id,
+             std::vector<dtx::PartitionID>* participants,
+             ::cedar::Timestamp* commit_ts) -> Status {
+        CommitDecision decision;
+        Status s = LoadCommitDecision(txn_id, &decision);
+        if (!s.ok()) {
+          std::cerr << "[Optimized2PCEngine] Decision log missing or unreadable for txn=" << txn_id
+                    << ": " << s.ToString() << std::endl;
+          return s;
+        }
+        *participants = std::move(decision.participants);
+        *commit_ts = decision.commit_ts;
+        return Status::OK();
+      });
   
   std::lock_guard<std::mutex> lock(clients_mutex_);
   if (clients_.empty()) {

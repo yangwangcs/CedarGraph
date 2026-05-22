@@ -71,6 +71,11 @@ void TransactionRecoveryManager::SetPartitionResolver(
   partition_resolver_ = std::move(resolver);
 }
 
+void TransactionRecoveryManager::SetDecisionLogLoader(DecisionLogLoader loader) {
+  std::lock_guard<std::mutex> lock(decision_log_loader_mutex_);
+  decision_log_loader_ = std::move(loader);
+}
+
 RecoveryResult TransactionRecoveryManager::StartRecovery(dtx::TxnID txn_id) {
   RecoveryResult result;
   
@@ -86,6 +91,28 @@ RecoveryResult TransactionRecoveryManager::StartRecovery(dtx::TxnID txn_id) {
   }
   
   const auto& record = *record_opt;
+  
+  {
+    std::lock_guard<std::mutex> lock(decision_log_loader_mutex_);
+    if (decision_log_loader_) {
+      std::vector<dtx::PartitionID> participants;
+      ::cedar::Timestamp commit_ts;
+      Status s = decision_log_loader_(txn_id, &participants, &commit_ts);
+      if (!s.ok()) {
+        std::cerr << "[RecoveryManager] Decision log not available for txn=" << txn_id
+                  << ": " << s.ToString() << ", falling back to heuristic" << std::endl;
+      } else {
+        std::cerr << "[RecoveryManager] Decision log found for txn=" << txn_id
+                  << ", driving commit to " << participants.size()
+                  << " participants" << std::endl;
+        result.success = true;
+        result.recommended_action = RecoveryAction::kCommit;
+        result.pending_participants = std::move(participants);
+        result.commit_ts = commit_ts;
+        return result;
+      }
+    }
+  }
   
   // Determine recovery action based on transaction state
   switch (record.state) {

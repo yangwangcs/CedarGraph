@@ -46,6 +46,7 @@ struct RecoveryResult {
   RecoveryAction recommended_action = RecoveryAction::kNone;
   std::string reason;
   std::vector<dtx::PartitionID> pending_participants;
+  ::cedar::Timestamp commit_ts;
 };
 
 // Transaction recovery manager
@@ -62,6 +63,11 @@ class TransactionRecoveryManager : public TimeoutCallback {
   void SetRpcClient(std::shared_ptr<dtx::DTXRpcClient> rpc_client);
   void SetPartitionNodeMap(const std::unordered_map<dtx::PartitionID, dtx::NodeID>& mapping);
   void SetPartitionResolver(std::function<dtx::NodeID(dtx::PartitionID)> resolver);
+  
+  using DecisionLogLoader = std::function<Status(dtx::TxnID txn_id,
+                                                   std::vector<dtx::PartitionID>* participants,
+                                                   ::cedar::Timestamp* commit_ts)>;
+  void SetDecisionLogLoader(DecisionLogLoader loader);
   
   // Start recovery for a transaction
   RecoveryResult StartRecovery(dtx::TxnID txn_id);
@@ -101,6 +107,9 @@ class TransactionRecoveryManager : public TimeoutCallback {
   std::shared_ptr<dtx::DTXRpcClient> rpc_client_;
   std::unordered_map<dtx::PartitionID, dtx::NodeID> partition_node_map_;
   std::function<dtx::NodeID(dtx::PartitionID)> partition_resolver_;
+  
+  DecisionLogLoader decision_log_loader_;
+  mutable std::mutex decision_log_loader_mutex_;
   
   std::atomic<bool> running_{false};
   std::thread recovery_thread_;
