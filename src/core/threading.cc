@@ -80,6 +80,10 @@ class ThreadPool::Impl {
   void Schedule(std::function<void()> task) {
     {
       std::unique_lock<std::mutex> lock(mutex_);
+      if (shutdown_) {
+        CEDAR_LOG_WARN() << "ThreadPool::Schedule rejected: already shutdown";
+        return;
+      }
       tasks_.push(std::move(task));
     }
     cond_.notify_one();
@@ -158,6 +162,10 @@ class BackgroundWorker::Impl {
   void Schedule(std::function<void()> task) {
     {
       std::unique_lock<std::mutex> lock(mutex_);
+      if (shutdown_) {
+        CEDAR_LOG_WARN() << "BackgroundWorker::Schedule rejected: already shutdown";
+        return;
+      }
       tasks_.push(std::move(task));
     }
     cond_.notify_one();
