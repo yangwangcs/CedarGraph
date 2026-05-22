@@ -123,6 +123,11 @@ add_executable(rbac_test dtx/security/rbac_test.cc)
 target_link_libraries(rbac_test ${CEDAR_TEST_LIBS})
 gtest_discover_tests(rbac_test)
 
+# Audit log path restriction tests
+add_executable(audit_log_test dtx/security/audit_log_test.cc)
+target_link_libraries(audit_log_test ${CEDAR_TEST_LIBS})
+gtest_discover_tests(audit_log_test)
+
 # Supporting modules critical batch
 add_executable(test_supporting_critical security/test_supporting_critical.cc)
 target_link_libraries(test_supporting_critical ${CEDAR_TEST_LIBS})

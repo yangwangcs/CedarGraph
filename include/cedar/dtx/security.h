@@ -290,6 +290,7 @@ class AuditLogger {
     bool log_to_console{true};
     uint32_t max_entries{1000000};
     std::vector<AuditAction> filtered_actions;  // 不记录的动作
+    std::string allowed_log_prefix;  // Empty = no restriction (dev only)
   };
   
   AuditLogger();

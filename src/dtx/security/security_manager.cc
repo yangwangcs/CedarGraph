@@ -783,9 +783,18 @@ Status AuditLogger::Initialize(const Config& config) {
   config_ = config;
   
   if (!config_.log_file.empty()) {
+    if (config_.log_file.find("..") != std::string::npos) {
+      return Status::InvalidArgument(
+          "Audit log file path contains '..' directory traversal: " + config_.log_file);
+    }
+    if (!config_.allowed_log_prefix.empty() &&
+        config_.log_file.substr(0, config_.allowed_log_prefix.size()) != config_.allowed_log_prefix) {
+      return Status::InvalidArgument(
+          "Audit log file path must start with: " + config_.allowed_log_prefix);
+    }
     log_file_.open(config_.log_file, std::ios::app);
     if (!log_file_.is_open()) {
-      return Status::IOError("Failed to open audit log file");
+      return Status::IOError("Failed to open audit log file: " + config_.log_file);
     }
   }
   
@@ -886,9 +895,9 @@ Status AuditLogger::ExportToFile(const std::string& filename,
     } else {
       oss << "\"timestamp\":\"invalid\",";
     }
-    oss << "\"user_id\":\"" << entry.user_id << "\",";
+    oss << "\"user_id\":\"" << JsonEscape(entry.user_id) << "\",";
     oss << "\"action\":" << static_cast<int>(entry.action) << ",";
-    oss << "\"resource\":\"" << entry.resource << "\",";
+    oss << "\"resource\":\"" << JsonEscape(entry.resource) << "\",";
     oss << "\"success\":" << (entry.success ? "true" : "false");
     oss << "}";
     
@@ -925,9 +934,9 @@ void AuditLogger::WriteLoop() {
         } else {
           oss << "\"timestamp\":\"invalid\",";
         }
-        oss << "\"user_id\":\"" << entry.user_id << "\",";
+        oss << "\"user_id\":\"" << JsonEscape(entry.user_id) << "\",";
         oss << "\"action\":" << static_cast<int>(entry.action) << ",";
-        oss << "\"resource\":\"" << entry.resource << "\",";
+        oss << "\"resource\":\"" << JsonEscape(entry.resource) << "\",";
         oss << "\"success\":" << (entry.success ? "true" : "false");
         oss << "}";
         
