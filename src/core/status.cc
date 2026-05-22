@@ -19,17 +19,37 @@ namespace cedar {
 const char* Status::CopyState(const char* state) {
   uint32_t size;
   memcpy(&size, state, sizeof(size));
-  char* result = new char[size + 5];
-  memcpy(result, state, size + 5);
+  char* result = new char[static_cast<size_t>(size) + 5];
+  memcpy(result, state, static_cast<size_t>(size) + 5);
   return result;
 }
 
 Status::Status(Code code, const Slice& msg, const Slice& msg2) {
   assert(code != kOk);
-  const uint32_t len1 = static_cast<uint32_t>(msg.size());
-  const uint32_t len2 = static_cast<uint32_t>(msg2.size());
-  const uint32_t size = len1 + (len2 ? (2 + len2) : 0);
-  char* result = new char[size + 5];
+  const size_t len1 = msg.size();
+  const size_t len2 = msg2.size();
+  // Guard against overflow: each message must fit in uint32_t individually,
+  // and total payload must also fit.
+  if (len1 > UINT32_MAX || len2 > UINT32_MAX ||
+      len1 + (len2 ? (2 + len2) : 0) > UINT32_MAX) {
+    // Fallback: truncate messages to safe lengths. We must still create a valid state.
+    const uint32_t safe_len1 = static_cast<uint32_t>(std::min(len1, static_cast<size_t>(UINT32_MAX / 4)));
+    const uint32_t safe_len2 = static_cast<uint32_t>(std::min(len2, static_cast<size_t>(UINT32_MAX / 4)));
+    const uint32_t size = safe_len1 + (safe_len2 ? (2 + safe_len2) : 0);
+    char* result = new char[static_cast<size_t>(size) + 5];
+    memcpy(result, &size, sizeof(size));
+    result[4] = static_cast<char>(code);
+    memcpy(result + 5, msg.data(), safe_len1);
+    if (safe_len2) {
+      result[5 + safe_len1] = ':';
+      result[6 + safe_len1] = ' ';
+      memcpy(result + 7 + safe_len1, msg2.data(), safe_len2);
+    }
+    state_ = result;
+    return;
+  }
+  const uint32_t size = static_cast<uint32_t>(len1 + (len2 ? (2 + len2) : 0));
+  char* result = new char[static_cast<size_t>(size) + 5];
   memcpy(result, &size, sizeof(size));
   result[4] = static_cast<char>(code);
   memcpy(result + 5, msg.data(), len1);

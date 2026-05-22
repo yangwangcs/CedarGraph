@@ -49,6 +49,7 @@ target_link_libraries(test_subquery_execution ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_subquery_execution)
 
 # Core tests
+add_cedar_test(test_status)
 add_cedar_test(test_cedar_key)
 add_cedar_test(test_descriptor)
 add_cedar_test(test_descriptor_schema_version)
