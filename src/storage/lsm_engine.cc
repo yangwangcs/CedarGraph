@@ -67,7 +67,11 @@ LsmEngine::LsmEngine(const std::string& db_path,
 }
 
 LsmEngine::~LsmEngine() {
-  Close();
+  try {
+    Close();
+  } catch (...) {
+    std::cerr << "[LsmEngine] Exception during Close() in destructor — swallowed" << std::endl;
+  }
   // Wait for any pending async flush to prevent UAF
   if (flush_future_.valid()) {
     flush_future_.wait();
@@ -1340,38 +1344,35 @@ void LsmEngine::MaybeScheduleFlush() {
   // 先增加计数再释放锁，避免 Close() 在计数为 0 时看到 imm_ 非空
   active_flush_count_.fetch_add(1);
   lock.unlock();
-  try {
-    flush_future_ = std::async(std::launch::async, [this, imm]() {
+  auto flush_task = [this, imm]() noexcept {
+    try {
       Status s = FlushMemTable(imm);
       if (!s.ok()) {
-        // Flush error silently logged; MemTable cleanup continues.
+        std::cerr << "[LsmEngine] FlushMemTable failed: " << s.ToString() << std::endl;
       }
-      
-      std::unique_lock<std::shared_mutex> cleanup_lock(mutex_);
-      imm_.reset();
-      
-      // Flush 完成后，触发 Compaction 检查
-      if (compaction_engine_) {
-        compaction_engine_->ScheduleCompaction();
-      }
-      
-      // 减少活动 Flush 计数并通知等待者
-      active_flush_count_.fetch_sub(1);
-      flush_completion_cv_.notify_all();
-    });
-  } catch (...) {
-    // 线程创建失败（如资源耗尽），回退到同步 Flush
-    std::cerr << "[MaybeScheduleFlush] Caught unknown exception, falling back to sync flush" << std::endl;
-    Status s = FlushMemTable(imm);
+    } catch (const std::exception& e) {
+      std::cerr << "[LsmEngine] FlushMemTable exception: " << e.what() << std::endl;
+    } catch (...) {
+      std::cerr << "[LsmEngine] FlushMemTable unknown exception" << std::endl;
+    }
+
     {
       std::unique_lock<std::shared_mutex> cleanup_lock(mutex_);
       imm_.reset();
       if (compaction_engine_) {
         compaction_engine_->ScheduleCompaction();
       }
-      active_flush_count_.fetch_sub(1);
-      flush_completion_cv_.notify_all();
     }
+    active_flush_count_.fetch_sub(1);
+    flush_completion_cv_.notify_all();
+  };
+
+  try {
+    flush_future_ = std::async(std::launch::async, flush_task);
+  } catch (const std::exception& e) {
+    std::cerr << "[MaybeScheduleFlush] std::async failed: " << e.what()
+              << " — falling back to sync flush" << std::endl;
+    flush_task();
   }
 }
 
@@ -2734,6 +2735,8 @@ Status LsmEngine::CompactAll() {
   auto_compaction_enabled_.store(false);
   if (auto_compaction_thread_ && auto_compaction_thread_->joinable()) {
     auto_compaction_thread_->join();
+    delete auto_compaction_thread_;
+    auto_compaction_thread_ = nullptr;
   }
   
   // 执行全量合并
@@ -2741,8 +2744,6 @@ Status LsmEngine::CompactAll() {
   
   // 重新启动自动 Compaction 线程
   auto_compaction_enabled_.store(true);
-  delete auto_compaction_thread_;  // Clean up old thread object after join
-  auto_compaction_thread_ = nullptr;
   auto_compaction_thread_ = new std::thread(&LsmEngine::AutoCompactionThread, this);
   
   return s;

@@ -93,6 +93,10 @@ add_executable(test_failover_races storage/test_failover_races.cc)
 target_link_libraries(test_failover_races ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_failover_races)
 
+add_executable(lsm_engine_lifecycle_test storage/lsm_engine_lifecycle_test.cc)
+target_link_libraries(lsm_engine_lifecycle_test ${CEDAR_TEST_LIBS})
+gtest_discover_tests(lsm_engine_lifecycle_test)
+
 add_executable(test_accumulated_buffer_race storage/test_accumulated_buffer_race.cc)
 target_link_libraries(test_accumulated_buffer_race ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_accumulated_buffer_race)
