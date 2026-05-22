@@ -62,7 +62,21 @@ double Histogram::TotalSum() const {
 
 namespace {
 constexpr double kInfMarker = std::numeric_limits<double>::max();
+
+std::string PrometheusEscapeLabel(const std::string& label) {
+  std::string out;
+  out.reserve(label.size());
+  for (char c : label) {
+    switch (c) {
+      case '\\': out += "\\\\"; break;
+      case '"': out += "\\\""; break;
+      case '\n': out += "\\n"; break;
+      default: out += c;
+    }
+  }
+  return out;
 }
+}  // namespace
 
 std::map<double, int64_t> Histogram::BucketCounts() const {
   std::map<double, int64_t> result;
@@ -120,10 +134,11 @@ std::string MetricsRegistry::SerializeMetrics() const {
   for (const auto& [name, counter] : counters_) {
     auto help_it = counter_help_.find(name);
     if (help_it != counter_help_.end()) {
-      out << "# HELP " << name << " " << help_it->second << "\n";
+      out << "# HELP " << PrometheusEscapeLabel(name) << " "
+          << PrometheusEscapeLabel(help_it->second) << "\n";
     }
-    out << "# TYPE " << name << " counter\n";
-    out << name << " " << counter->Value() << "\n";
+    out << "# TYPE " << PrometheusEscapeLabel(name) << " counter\n";
+    out << PrometheusEscapeLabel(name) << " " << counter->Value() << "\n";
   }
 
   // Histograms
@@ -139,16 +154,16 @@ std::string MetricsRegistry::SerializeMetrics() const {
     for (const auto& [le, count] : bucket_counts) {
       cumulative += count;
       if (le == kInfMarker) {
-        out << name << "_bucket{le=\"+Inf\"} ";
+        out << PrometheusEscapeLabel(name) << "_bucket{le=\"+Inf\"} ";
       } else {
-        out << name << "_bucket{le=\"" << std::fixed << std::setprecision(6)
+        out << PrometheusEscapeLabel(name) << "_bucket{le=\"" << std::fixed << std::setprecision(6)
             << le << "\"} ";
       }
       out << cumulative << "\n";
     }
-    out << name << "_sum " << std::fixed << std::setprecision(6)
+    out << PrometheusEscapeLabel(name) << "_sum " << std::fixed << std::setprecision(6)
         << hist->TotalSum() << "\n";
-    out << name << "_count " << hist->TotalCount() << "\n";
+    out << PrometheusEscapeLabel(name) << "_count " << hist->TotalCount() << "\n";
   }
 
   return out.str();

@@ -390,6 +390,10 @@ add_executable(test_metrics_registry metrics/test_metrics_registry.cc)
 target_link_libraries(test_metrics_registry ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_metrics_registry)
 
+add_executable(prometheus_escape_test metrics/prometheus_escape_test.cc)
+target_link_libraries(prometheus_escape_test ${CEDAR_TEST_LIBS})
+gtest_discover_tests(prometheus_escape_test)
+
 add_executable(test_failover cluster/test_failover.cc)
 target_link_libraries(test_failover ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_failover)
