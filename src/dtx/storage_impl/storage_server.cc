@@ -147,6 +147,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
     if (s.ok()) {
       cross_dc_replicator_->SetStorage(partition_manager_.GetSharedStorage());
       cross_dc_replicator_->Start();
+      dtx_service_impl_->SetCrossDCReplicator(cross_dc_replicator_.get());
       std::cerr << "CrossDCReplicator started for DC: " << config_.local_dc_id << std::endl;
     } else {
       std::cerr << "Warning: Failed to initialize CrossDCReplicator: " << s.ToString() << std::endl;

@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
+#include <deque>
+#include <fstream>
 #include <iostream>
 
 #include "cedar/dtx/cross_dc_replicator.h"
@@ -46,7 +49,40 @@ Status CrossDCReplicator::Initialize(
   for (const auto& dc : peer_dcs) {
     auto it = config.remote_dc_endpoints.find(dc);
     if (it != config.remote_dc_endpoints.end()) {
-      auto channel = grpc::CreateChannel(it->second, grpc::InsecureChannelCredentials());
+      std::shared_ptr<grpc::ChannelCredentials> creds;
+      if (config_.tls_enabled && !config_.tls_config.ca_cert_file.empty()) {
+        grpc::SslCredentialsOptions ssl_opts;
+        std::ifstream ca_file(config_.tls_config.ca_cert_file);
+        if (ca_file) {
+          ssl_opts.pem_root_certs = std::string(
+              std::istreambuf_iterator<char>(ca_file),
+              std::istreambuf_iterator<char>());
+        }
+        if (!config_.tls_config.client_cert_file.empty() &&
+            !config_.tls_config.client_key_file.empty()) {
+          std::ifstream cert_file(config_.tls_config.client_cert_file);
+          if (cert_file) {
+            ssl_opts.pem_cert_chain = std::string(
+                std::istreambuf_iterator<char>(cert_file),
+                std::istreambuf_iterator<char>());
+          }
+          std::ifstream key_file(config_.tls_config.client_key_file);
+          if (key_file) {
+            ssl_opts.pem_private_key = std::string(
+                std::istreambuf_iterator<char>(key_file),
+                std::istreambuf_iterator<char>());
+          }
+        }
+        creds = grpc::SslCredentials(ssl_opts);
+      } else {
+        if (!config_.allow_insecure) {
+          std::cerr << "[CrossDCReplicator] FATAL: TLS is required for cross-DC replication. "
+                    << "Set tls_enabled=true or allow_insecure=true (dev only)." << std::endl;
+          return Status::IOError("Cross-DC replication requires TLS or explicit insecure override");
+        }
+        creds = grpc::InsecureChannelCredentials();
+      }
+      auto channel = grpc::CreateChannel(it->second, creds);
       dc_channels_[dc] = channel;
     }
   }
@@ -141,6 +177,21 @@ Status CrossDCReplicator::ReceiveReplication(const ReplicationLog& log) {
         "Cannot receive replication from local DC");
   }
 
+  {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    auto it = dc_statuses_.find(log.source_dc);
+    if (it != dc_statuses_.end()) {
+      if (log.sequence_num <= it->second.last_sequence && it->second.last_sequence != 0) {
+        return Status::InvalidArgument(
+            "Out-of-order replication received: expected seq > " +
+            std::to_string(it->second.last_sequence) + " got " +
+            std::to_string(log.sequence_num) + " from " + log.source_dc);
+      }
+      it->second.last_sequence = log.sequence_num;
+      it->second.replicated_count++;
+    }
+  }
+
   // Apply to local storage if configured
   if (storage_) {
     auto s = storage_->Put(log.key.entity_id(), log.key.timestamp().value(),
@@ -148,13 +199,6 @@ Status CrossDCReplicator::ReceiveReplication(const ReplicationLog& log) {
     if (!s.ok()) {
       return Status::IOError("Storage Put failed in ReceiveReplication: " + s.ToString());
     }
-  }
-
-  std::lock_guard<std::mutex> lock(status_mutex_);
-  auto it = dc_statuses_.find(log.source_dc);
-  if (it != dc_statuses_.end()) {
-    it->second.last_sequence = std::max(it->second.last_sequence, log.sequence_num);
-    it->second.replicated_count++;
   }
 
   return Status::OK();
@@ -238,8 +282,9 @@ void CrossDCReplicator::ReplicationLoop() {
 }
 
 void CrossDCReplicator::ProcessReplicationQueue() {
+  DrainPendingQueue();
+
   std::vector<ReplicationLog> batch;
-  
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     while (!replication_queue_.empty() && batch.size() < config_.batch_size) {
@@ -247,11 +292,10 @@ void CrossDCReplicator::ProcessReplicationQueue() {
       replication_queue_.pop();
     }
   }
-  
+
   for (const auto& log : batch) {
     for (const auto& dc : log.target_dcs) {
-      Status s = ReplicateToDC(log, dc);
-      
+      Status s = SendToRemoteDCWithRetry(log, dc);
       ReplicationCallback callback;
       {
         std::lock_guard<std::mutex> lock(callback_mutex_);
@@ -264,8 +308,77 @@ void CrossDCReplicator::ProcessReplicationQueue() {
           std::cerr << "[CrossDCReplicator] Callback exception" << std::endl;
         }
       }
+      if (!s.ok()) {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        pending_queue_.push_back({log, dc, 0, std::chrono::steady_clock::now()});
+      }
     }
   }
+}
+
+void CrossDCReplicator::DrainPendingQueue() {
+  auto now = std::chrono::steady_clock::now();
+  std::vector<PendingLog> to_retry;
+  {
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    auto it = pending_queue_.begin();
+    while (it != pending_queue_.end()) {
+      if (it->next_attempt <= now) {
+        to_retry.push_back(*it);
+        it = pending_queue_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (auto& entry : to_retry) {
+    Status s = SendToRemoteDCWithRetry(entry.log, entry.dc_id);
+    if (!s.ok()) {
+      entry.retry_count++;
+      auto delay = config_.retry_delay * (1ULL << std::min(entry.retry_count, 6u));
+      entry.next_attempt = now + delay;
+      std::lock_guard<std::mutex> lock(pending_mutex_);
+      pending_queue_.push_back(std::move(entry));
+    }
+    ReplicationCallback callback;
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      callback = replication_callback_;
+    }
+    if (callback) {
+      try {
+        callback(entry.log, s);
+      } catch (...) {
+        std::cerr << "[CrossDCReplicator] Callback exception" << std::endl;
+      }
+    }
+  }
+}
+
+Status CrossDCReplicator::SendToRemoteDCWithRetry(const ReplicationLog& log,
+                                                   const std::string& dc_id) {
+  uint32_t attempts = 0;
+  Status s;
+  while (attempts < config_.max_retry_attempts) {
+    s = SendToRemoteDC(log, dc_id);
+    if (s.ok()) {
+      return Status::OK();
+    }
+    if (s.IsNotSupportedError() || s.IsInvalidArgument() ||
+        s.ToString().find("No gRPC channel") != std::string::npos) {
+      return s;
+    }
+    // Don't retry on timeout — move to pending queue for backoff
+    if (s.ToString().find("Deadline") != std::string::npos ||
+        s.ToString().find("Timeout") != std::string::npos ||
+        s.ToString().find("TIMEOUT") != std::string::npos) {
+      return s;
+    }
+    attempts++;
+    auto delay = config_.retry_delay * (1ULL << std::min(attempts, 6u));
+    std::this_thread::sleep_for(delay);
+  }
+  return s;
 }
 
 Status CrossDCReplicator::ReplicateToDC(const ReplicationLog& log, 
@@ -284,7 +397,8 @@ Status CrossDCReplicator::ReplicateToDC(const ReplicationLog& log,
     if (s.IsNotSupportedError() ||
         s.IsInvalidArgument() ||
         s.ToString().find("No gRPC channel") != std::string::npos ||
-        s.ToString().find("DEADLINE_EXCEEDED") != std::string::npos ||
+        s.ToString().find("Deadline") != std::string::npos ||
+        s.ToString().find("Timeout") != std::string::npos ||
         s.ToString().find("TIMEOUT") != std::string::npos) {
       break;
     }

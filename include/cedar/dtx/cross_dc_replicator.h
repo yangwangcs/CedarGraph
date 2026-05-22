@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -50,6 +51,13 @@ struct DCReplicationConfig {
   bool enable_compression = true;
   uint32_t batch_size = 100;
   std::map<std::string, std::string> remote_dc_endpoints;
+  bool tls_enabled{false};
+  struct {
+    std::string ca_cert_file;
+    std::string client_cert_file;
+    std::string client_key_file;
+  } tls_config;
+  bool allow_insecure{false};
 };
 
 struct ReplicationLog {
@@ -118,9 +126,21 @@ class CrossDCReplicator {
   void ProcessReplicationQueue();
   Status ReplicateToDC(const ReplicationLog& log, const std::string& dc_id);
   Status SendToRemoteDC(const ReplicationLog& log, const std::string& dc_id);
+  Status SendToRemoteDCWithRetry(const ReplicationLog& log,
+                                  const std::string& dc_id);
+  void DrainPendingQueue();
   void UpdateLag(const std::string& dc_id);
   ReplicationLog CreateTimestampBasedResolution(
       const std::vector<ReplicationLog>& logs);
+
+  struct PendingLog {
+    ReplicationLog log;
+    std::string dc_id;
+    uint32_t retry_count{0};
+    std::chrono::steady_clock::time_point next_attempt;
+  };
+  std::deque<PendingLog> pending_queue_;
+  std::mutex pending_mutex_;
 
   DCReplicationConfig config_;
   std::string local_dc_id_;

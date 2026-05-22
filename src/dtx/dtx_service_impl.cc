@@ -68,7 +68,32 @@ DTXServiceImpl::DTXServiceImpl(cedar::CedarGraphStorage* storage,
   (void)context;
   uint64_t last_sequence = 0;
   for (const auto& log : request->logs()) {
-    auto s = ApplySingleLog(log);
+    Status s;
+    if (cross_dc_replicator_) {
+      ReplicationLog replication_log;
+      replication_log.sequence_num = log.sequence_num();
+      auto key_opt = ::cedar::CedarKey::Decode(log.key());
+      if (!key_opt.has_value()) {
+        s = Status::InvalidArgument("Failed to decode CedarKey");
+      } else {
+        replication_log.key = key_opt.value();
+        if (log.value().size() != sizeof(uint64_t)) {
+          s = Status::InvalidArgument("Invalid descriptor size in replication log");
+        } else {
+          uint64_t desc_raw;
+          std::memcpy(&desc_raw, log.value().data(), sizeof(uint64_t));
+          replication_log.value = Descriptor(desc_raw);
+          replication_log.timestamp = Timestamp(log.timestamp());
+          replication_log.source_dc = log.source_dc();
+          for (const auto& target : log.target_dcs()) {
+            replication_log.target_dcs.push_back(target);
+          }
+          s = cross_dc_replicator_->ReceiveReplication(replication_log);
+        }
+      }
+    } else {
+      s = ApplySingleLog(log);
+    }
     if (!s.ok()) {
       response->set_success(false);
       response->set_error_msg(s.ToString());
@@ -90,7 +115,32 @@ DTXServiceImpl::DTXServiceImpl(cedar::CedarGraphStorage* storage,
   uint64_t last_sequence = 0;
   while (reader->Read(&request)) {
     for (const auto& log : request.logs()) {
-      auto s = ApplySingleLog(log);
+      Status s;
+      if (cross_dc_replicator_) {
+        ReplicationLog replication_log;
+        replication_log.sequence_num = log.sequence_num();
+        auto key_opt = ::cedar::CedarKey::Decode(log.key());
+        if (!key_opt.has_value()) {
+          s = Status::InvalidArgument("Failed to decode CedarKey");
+        } else {
+          replication_log.key = key_opt.value();
+          if (log.value().size() != sizeof(uint64_t)) {
+            s = Status::InvalidArgument("Invalid descriptor size in replication log");
+          } else {
+            uint64_t desc_raw;
+            std::memcpy(&desc_raw, log.value().data(), sizeof(uint64_t));
+            replication_log.value = Descriptor(desc_raw);
+            replication_log.timestamp = Timestamp(log.timestamp());
+            replication_log.source_dc = log.source_dc();
+            for (const auto& target : log.target_dcs()) {
+              replication_log.target_dcs.push_back(target);
+            }
+            s = cross_dc_replicator_->ReceiveReplication(replication_log);
+          }
+        }
+      } else {
+        s = ApplySingleLog(log);
+      }
       if (!s.ok()) {
         response->set_success(false);
         response->set_error_msg(s.ToString());

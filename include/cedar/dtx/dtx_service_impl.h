@@ -15,6 +15,7 @@
 #ifndef CEDAR_DTX_SERVICE_IMPL_H_
 #define CEDAR_DTX_SERVICE_IMPL_H_
 
+#include "cedar/dtx/cross_dc_replicator.h"
 #include "dtx_protocol.grpc.pb.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include <grpcpp/grpcpp.h>
@@ -29,6 +30,10 @@ class DTXServiceImpl final : public cedar::dtx::DTXService::Service {
  public:
   explicit DTXServiceImpl(cedar::CedarGraphStorage* storage,
                          cedar::dtx::StorageServiceImpl* storage_service = nullptr);
+
+  void SetCrossDCReplicator(CrossDCReplicator* replicator) {
+    cross_dc_replicator_ = replicator;
+  }
 
   ::grpc::Status Prepare(::grpc::ServerContext* context,
                          const cedar::dtx::PrepareRequest* request,
@@ -56,6 +61,7 @@ class DTXServiceImpl final : public cedar::dtx::DTXService::Service {
  private:
   cedar::CedarGraphStorage* storage_;
   cedar::dtx::StorageServiceImpl* storage_service_ = nullptr;
+  CrossDCReplicator* cross_dc_replicator_ = nullptr;
 
   Status ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log_entry);
 };
