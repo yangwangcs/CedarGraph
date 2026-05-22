@@ -96,7 +96,7 @@ uint32_t ExtendSW(uint32_t crc, const char* data, size_t n) {
 
 #ifdef CEDAR_CRC32C_HW
 
-static inline bool HasHardwareCrc32c() {
+static constexpr bool HasHardwareCrc32c() {
 #if defined(__x86_64__)
   // On x86_64 with SSE4.2 compile flag, assume available.
   return true;
