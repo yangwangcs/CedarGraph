@@ -402,6 +402,10 @@ add_executable(test_dtx_raft_critical dtx/test_dtx_raft_critical.cc)
 target_link_libraries(test_dtx_raft_critical ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_dtx_raft_critical)
 
+add_executable(test_hybrid_logical_clock dtx/test_hybrid_logical_clock.cc)
+target_link_libraries(test_hybrid_logical_clock ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_hybrid_logical_clock)
+
 add_executable(test_metrics_registry metrics/test_metrics_registry.cc)
 target_link_libraries(test_metrics_registry ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_metrics_registry)

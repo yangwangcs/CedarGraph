@@ -55,17 +55,28 @@ HlcTimestamp HybridLogicalClock::Now() {
     }
   } else {
     // Physical clock went backwards (clock skew)
-    // Keep using the last physical time but increment logical counter
-    // This maintains monotonicity
     if (last_logical_ >= kMaxLogicalCounter) {
       // If we've used too many logical values at this physical time,
-      // we have to wait for the physical clock to catch up
-      while (physical <= last_physical_) {
+      // we wait for the physical clock to catch up, but with a bounded retry.
+      const int kMaxWaitIterations = 100;  // ~100us max wait
+      int wait_iter = 0;
+      while (physical <= last_physical_ && wait_iter < kMaxWaitIterations) {
         std::this_thread::sleep_for(std::chrono::microseconds(1));
         physical = GetPhysicalTimeMicros();
+        ++wait_iter;
       }
-      last_physical_ = physical;
-      last_logical_ = 0;
+      if (physical <= last_physical_) {
+        // Clock still hasn't caught up after bounded wait.
+        // Force advance by bumping last_physical_ forward by 1us to maintain progress.
+        // This sacrifices strict physical-time monotonicity but guarantees liveness.
+        last_physical_ += 1;
+        last_logical_ = 0;
+        // In production, emit a metric or log here:
+        // CEDAR_LOG_WARNING() << "HLC forced advance due to persistent clock skew";
+      } else {
+        last_physical_ = physical;
+        last_logical_ = 0;
+      }
     } else {
       last_logical_++;
     }
