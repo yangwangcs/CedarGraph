@@ -44,14 +44,14 @@ static inline void EncodeFixed64(char* buf, uint64_t value) {
   buf[7] = static_cast<char>((value >> 56) & 0xFF);
 }
 
-static inline uint32_t DecodeFixed32(const char* buf) {
+static constexpr uint32_t DecodeFixed32(const char* buf) {
   return static_cast<uint32_t>(static_cast<unsigned char>(buf[0])) |
          (static_cast<uint32_t>(static_cast<unsigned char>(buf[1])) << 8) |
          (static_cast<uint32_t>(static_cast<unsigned char>(buf[2])) << 16) |
          (static_cast<uint32_t>(static_cast<unsigned char>(buf[3])) << 24);
 }
 
-static inline uint64_t DecodeFixed64(const char* buf) {
+static constexpr uint64_t DecodeFixed64(const char* buf) {
   return static_cast<uint64_t>(static_cast<unsigned char>(buf[0])) |
          (static_cast<uint64_t>(static_cast<unsigned char>(buf[1])) << 8) |
          (static_cast<uint64_t>(static_cast<unsigned char>(buf[2])) << 16) |
