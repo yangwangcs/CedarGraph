@@ -279,6 +279,10 @@ add_executable(test_health_checker governance/test_health_checker.cc)
 target_link_libraries(test_health_checker ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_health_checker)
 
+add_executable(health_checker_probe_test governance/health_checker_probe_test.cc)
+target_link_libraries(health_checker_probe_test ${CEDAR_TEST_LIBS})
+gtest_discover_tests(health_checker_probe_test)
+
 add_executable(tls_config_test governance/tls_config_test.cc)
 target_link_libraries(tls_config_test ${CEDAR_TEST_LIBS})
 gtest_discover_tests(tls_config_test)

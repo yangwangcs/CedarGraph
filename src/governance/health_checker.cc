@@ -794,7 +794,8 @@ class HealthCheckerImpl {
     std::string response_body;
     std::string content_type;
 
-    if (request.find("GET /ready") != std::string::npos) {
+    if (request.find("GET /ready") != std::string::npos ||
+        request.find("GET /readyz") != std::string::npos) {
       // Simple ready check - check this before /health since /ready contains "/"
       bool ready = IsReady();
       response_body = ready ? "{\"status\":\"ready\"}" : "{\"status\":\"not ready\"}";
@@ -802,6 +803,7 @@ class HealthCheckerImpl {
       http_code = ready ? 200 : 503;
       status_text = ready ? "OK" : "Service Unavailable";
     } else if (request.find("GET /health") != std::string::npos ||
+               request.find("GET /healthz") != std::string::npos ||
                request.find("GET / ") != std::string::npos) {
       // Return JSON health status
       response_body = ToJson();
