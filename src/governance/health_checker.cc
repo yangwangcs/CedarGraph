@@ -26,6 +26,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "cedar/core/threading.h"
+
 namespace cedar {
 namespace governance {
 
@@ -501,6 +503,9 @@ class HealthCheckerImpl {
     http_host_ = host;
     http_port_ = port;
 
+    // Initialize bounded thread pool for HTTP requests
+    http_thread_pool_ = std::make_unique<cedar::ThreadPool>(kHttpThreadPoolSize);
+
     // Start HTTP server thread
     http_thread_ = std::thread(&HealthCheckerImpl::HttpServerLoop, this);
 
@@ -521,6 +526,11 @@ class HealthCheckerImpl {
 
     if (http_thread_.joinable()) {
       http_thread_.join();
+    }
+
+    // Shut down the thread pool and wait for in-flight requests
+    if (http_thread_pool_) {
+      http_thread_pool_.reset();
     }
   }
 
@@ -721,22 +731,47 @@ class HealthCheckerImpl {
 
       struct sockaddr_in client_addr;
       socklen_t client_len = sizeof(client_addr);
-      
-      int client_socket = accept(http_socket_, reinterpret_cast<struct sockaddr*>(&client_addr), &client_len);
+      int client_socket = accept(http_socket_,
+                                 reinterpret_cast<struct sockaddr*>(&client_addr),
+                                 &client_len);
       if (client_socket < 0) {
-        // Check if we should stop
         std::lock_guard<std::mutex> lock(http_mutex_);
-        if (!http_running_) {
-          break;
-        }
+        if (!http_running_) break;
         continue;
       }
 
-      // Handle the request in a detached thread to avoid blocking the accept loop
-      std::thread([this, client_socket]() {
-        HandleHttpRequest(client_socket);
+      int current = active_http_connections_.fetch_add(1);
+      if (current >= kMaxHttpConnections) {
+        active_http_connections_.fetch_sub(1);
         close(client_socket);
-      }).detach();
+        continue;
+      }
+
+      struct timeval tv;
+      tv.tv_sec = 5;
+      tv.tv_usec = 0;
+      if (setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0 ||
+          setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
+        std::cerr << "[HealthChecker] Failed to set socket timeout" << std::endl;
+      }
+
+      try {
+        http_thread_pool_->Schedule([this, client_socket]() {
+          try {
+            HandleHttpRequest(client_socket);
+          } catch (const std::exception& e) {
+            std::cerr << "[HealthChecker] HandleHttpRequest exception: " << e.what() << std::endl;
+          } catch (...) {
+            std::cerr << "[HealthChecker] HandleHttpRequest unknown exception" << std::endl;
+          }
+          close(client_socket);
+          active_http_connections_.fetch_sub(1);
+        });
+      } catch (...) {
+        active_http_connections_.fetch_sub(1);
+        close(client_socket);
+        std::cerr << "[HealthChecker] Failed to schedule HTTP handler" << std::endl;
+      }
     }
   }
 
@@ -859,6 +894,12 @@ class HealthCheckerImpl {
   int http_port_;
   int http_socket_;
   std::thread http_thread_;
+
+  // HTTP thread pool and connection limiting
+  std::unique_ptr<cedar::ThreadPool> http_thread_pool_;
+  std::atomic<int> active_http_connections_{0};
+  static constexpr int kMaxHttpConnections = 100;
+  static constexpr int kHttpThreadPoolSize = 4;
 };
 
 // =============================================================================
