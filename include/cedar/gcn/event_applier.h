@@ -30,7 +30,7 @@ struct GraphCDCEvent {
 /// Thread-safe; buffers out-of-order events until the gap is filled.
 class EventApplier {
  public:
-  explicit EventApplier(TMVEngine* engine);
+  explicit EventApplier(TMVEngine* engine, size_t max_reorder_buffer = 100000);
 
   // Non-copyable, non-movable
   EventApplier(const EventApplier&) = delete;
@@ -53,7 +53,7 @@ class EventApplier {
   TMVEngine* tmv_engine_;
   uint64_t applied_version_ = 0;
   std::map<uint64_t, GraphCDCEvent> reorder_buffer_;
-  static constexpr size_t kMaxReorderBuffer = 100000;
+  size_t max_reorder_buffer_;
   mutable std::mutex mutex_;
 
   cedar::Status ApplyInternal(const GraphCDCEvent& event);

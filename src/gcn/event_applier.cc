@@ -1,13 +1,15 @@
 #include "cedar/gcn/event_applier.h"
 
+#include <chrono>
+#include <iostream>
 #include <limits>
-
-#include "cedar/core/logging.h"
+#include <thread>
 
 namespace cedar {
 namespace gcn {
 
-EventApplier::EventApplier(TMVEngine* engine) : tmv_engine_(engine) {}
+EventApplier::EventApplier(TMVEngine* engine, size_t max_reorder_buffer)
+    : tmv_engine_(engine), max_reorder_buffer_(max_reorder_buffer) {}
 
 cedar::Status EventApplier::ApplyOrdered(const GraphCDCEvent& event) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -19,7 +21,7 @@ cedar::Status EventApplier::ApplyOrdered(const GraphCDCEvent& event) {
 }
 
 cedar::Status EventApplier::ApplyUnordered(const GraphCDCEvent& event) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
   if (event.commit_version == applied_version_ + 1) {
     cedar::Status s = ApplyInternal(event);
     if (!s.ok()) {
@@ -28,10 +30,19 @@ cedar::Status EventApplier::ApplyUnordered(const GraphCDCEvent& event) {
     applied_version_ = event.commit_version;
     DrainBufferUnlocked();
   } else {
-    if (reorder_buffer_.size() >= kMaxReorderBuffer) {
-      CEDAR_LOG_ERROR() << "EventApplier reorder buffer overflow (size="
-                        << reorder_buffer_.size() << ", max=" << kMaxReorderBuffer << ")\n";
-      return cedar::Status::ResourceExhausted("Reorder buffer full");
+    while (reorder_buffer_.size() >= max_reorder_buffer_) {
+      lock.unlock();
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      lock.lock();
+      if (event.commit_version == applied_version_ + 1) {
+        cedar::Status s = ApplyInternal(event);
+        if (!s.ok()) {
+          return s;
+        }
+        applied_version_ = event.commit_version;
+        DrainBufferUnlocked();
+        return cedar::Status::OK();
+      }
     }
     reorder_buffer_[event.commit_version] = event;
   }
@@ -65,8 +76,8 @@ void EventApplier::DrainBufferUnlocked() {
     if (it->first == applied_version_ + 1) {
       cedar::Status s = ApplyInternal(it->second);
       if (!s.ok()) {
-        CEDAR_LOG_ERROR() << "EventApplier failed to drain buffered event version "
-                          << it->first << ": " << s.ToString() << "\n";
+        std::cerr << "EventApplier failed to drain buffered event version "
+                  << it->first << ": " << s.ToString() << "\n";
         break;
       }
       applied_version_ = it->first;
