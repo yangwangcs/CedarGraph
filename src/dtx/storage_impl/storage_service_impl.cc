@@ -36,6 +36,11 @@ StorageServiceImpl::StorageServiceImpl(StoragePartitionManager* partition_manage
     cypher_engine_ = std::make_unique<cedar::cypher::CypherEngine>(
         partition_manager_->GetSharedStorage());
   }
+  // TODO(wiring): Register ConsensusTransferCallback on PartitionFailoverController
+  // to delegate leader transfers to the Raft layer.  Currently the global
+  // PartitionFailoverController lives in storage_server.cc; it should be wired
+  // here (or there) with a callback that calls raft_manager_->GetRaftGroup(pid)
+  // and then raft_node->TransferLeadershipTo(new_leader).
 }
 
 StorageServiceImpl::~StorageServiceImpl() = default;

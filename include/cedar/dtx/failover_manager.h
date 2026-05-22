@@ -236,6 +236,10 @@ class PartitionFailoverController {
   // 注册路由更新回调
   using RouteUpdateCallback = std::function<void(PartitionID, NodeID new_leader)>;
   void SetRouteUpdateCallback(RouteUpdateCallback callback);
+
+  // Register consensus transfer callback (Raft-based leader transfer)
+  using ConsensusTransferCallback = std::function<Status(PartitionID pid, NodeID new_leader)>;
+  void SetConsensusTransferCallback(ConsensusTransferCallback callback);
   
   // Register node address for health probing
   void RegisterNodeAddress(NodeID node_id, const std::string& address);
@@ -268,6 +272,9 @@ class PartitionFailoverController {
   
   RouteUpdateCallback route_update_callback_;
   mutable std::mutex route_mutex_;
+
+  ConsensusTransferCallback consensus_transfer_callback_;
+  mutable std::mutex consensus_callback_mutex_;
   
   std::thread lease_thread_;
   std::thread health_thread_;

@@ -421,6 +421,12 @@ void PartitionFailoverController::SetRouteUpdateCallback(
   route_update_callback_ = std::move(callback);
 }
 
+void PartitionFailoverController::SetConsensusTransferCallback(
+    ConsensusTransferCallback callback) {
+  std::lock_guard<std::mutex> lock(consensus_callback_mutex_);
+  consensus_transfer_callback_ = std::move(callback);
+}
+
 Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
                                                          NodeID new_leader) {
   NodeID old_leader = kInvalidNodeID;
@@ -431,22 +437,45 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
       return Status::NotFound("Partition not found");
     }
     old_leader = it->second.current_leader;
-    it->second.current_leader = new_leader;
   }
-  
-  // Update routing metadata
-  auto status = UpdatePartitionRoute(pid, new_leader);
-  if (!status.ok()) {
-    // Rollback on failure
+
+  ConsensusTransferCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(consensus_callback_mutex_);
+    callback = consensus_transfer_callback_;
+  }
+  if (callback) {
+    Status consensus_status = callback(pid, new_leader);
+    if (!consensus_status.ok()) {
+      std::cerr << "[FailoverManager] Consensus transfer failed for partition="
+                << pid << " target=" << new_leader
+                << " error=" << consensus_status.ToString() << std::endl;
+      return consensus_status;
+    }
+    {
+      std::lock_guard<std::mutex> plock(partitions_mutex_);
+      auto it = partitions_.find(pid);
+      if (it != partitions_.end()) {
+        it->second.current_leader = new_leader;
+      }
+    }
+    return UpdatePartitionRoute(pid, new_leader);
+  }
+
+  std::cerr << "[FailoverManager] WARNING: No consensus transfer callback registered. "
+            << "Refusing to perform leader switch for partition=" << pid
+            << " in production mode. Marking for manual intervention." << std::endl;
+
+  {
     std::lock_guard<std::mutex> lock(partitions_mutex_);
     auto it = partitions_.find(pid);
     if (it != partitions_.end()) {
-      it->second.current_leader = old_leader;
+      it->second.is_failover_in_progress = false;
     }
-    return status;
   }
-  
-  return Status::OK();
+  return Status::IOError(
+      "No consensus layer available for leader transfer. "
+      "Manual intervention required for partition " + std::to_string(pid));
 }
 
 Status PartitionFailoverController::UpdatePartitionRoute(PartitionID pid,

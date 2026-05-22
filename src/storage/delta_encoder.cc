@@ -43,7 +43,7 @@ std::vector<int64_t> DeltaEncoder::Decode(const std::vector<uint8_t>& encoded) {
 
 std::vector<uint8_t> DeltaEncoder::EncodeVarint(int64_t value) {
   std::vector<uint8_t> result;
-  uint64_t encoded = (value << 1) ^ (value >> 63);
+  uint64_t encoded = (static_cast<uint64_t>(value) << 1) ^ static_cast<uint64_t>(value >> 63);
   
   while (encoded >= 0x80) {
     result.push_back(static_cast<uint8_t>(encoded | 0x80));

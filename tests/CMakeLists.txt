@@ -347,6 +347,10 @@ add_executable(test_failover_thread_bound dtx/test_failover_thread_bound.cc)
 target_link_libraries(test_failover_thread_bound ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_failover_thread_bound)
 
+add_executable(failover_consensus_test dtx/failover_consensus_test.cc)
+target_link_libraries(failover_consensus_test ${CEDAR_TEST_LIBS})
+gtest_discover_tests(failover_consensus_test)
+
 add_executable(test_rpc_thread_bound dtx/test_rpc_thread_bound.cc)
 target_link_libraries(test_rpc_thread_bound ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_rpc_thread_bound)

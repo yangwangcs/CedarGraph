@@ -83,16 +83,28 @@ Status AutoBlobStorage::PutBlobString(uint64_t entity_id, uint16_t col_id, const
     
     CedarKey key_hi = CedarKey::Vertex(entity_id, blob_hi_col, Timestamp(0));
     Descriptor desc_hi = Descriptor::InlineInt(blob_hi_col, static_cast<int32_t>(file_id));
-    engine_->Put(key_hi, desc_hi, Timestamp(0));
+    Status put_s = engine_->Put(key_hi, desc_hi, Timestamp(0));
+    if (!put_s.ok()) {
+      return Status::IOError("AutoBlobStorage", "Failed to write blob file_id: " + put_s.ToString());
+    }
     
     CedarKey key_lo = CedarKey::Vertex(entity_id, blob_lo_col, Timestamp(0));
     Descriptor desc_lo = Descriptor::InlineInt(blob_lo_col, static_cast<int32_t>(offset));
-    engine_->Put(key_lo, desc_lo, Timestamp(0));
+    put_s = engine_->Put(key_lo, desc_lo, Timestamp(0));
+    if (!put_s.ok()) {
+      engine_->Delete(key_hi, Timestamp(0));
+      return Status::IOError("AutoBlobStorage", "Failed to write blob offset: " + put_s.ToString());
+    }
     
     // 在主列存储原始大小（用于读取）
     CedarKey key = CedarKey::Vertex(entity_id, col_id, Timestamp(0));
     Descriptor desc = Descriptor::InlineInt(col_id, static_cast<int32_t>(size));
-    engine_->Put(key, desc, Timestamp(0));
+    put_s = engine_->Put(key, desc, Timestamp(0));
+    if (!put_s.ok()) {
+      engine_->Delete(key_hi, Timestamp(0));
+      engine_->Delete(key_lo, Timestamp(0));
+      return Status::IOError("AutoBlobStorage", "Failed to write blob size: " + put_s.ToString());
+    }
     
     stats_.blob_stores++;
     return Status::OK();

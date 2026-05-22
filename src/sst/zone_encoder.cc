@@ -41,7 +41,7 @@ void VarintCodec::Encode(uint64_t value, std::string& dst) {
 
 size_t VarintCodec::EncodeSigned(int64_t value, char* buf) {
   // ZigZag 编码：将符号位移到最低位
-  uint64_t encoded = (value << 1) ^ (value >> 63);
+  uint64_t encoded = (static_cast<uint64_t>(value) << 1) ^ static_cast<uint64_t>(value >> 63);
   return Encode(encoded, buf);
 }
 
