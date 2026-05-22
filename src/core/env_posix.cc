@@ -828,7 +828,10 @@ Status Env::NewAppendableFile(const std::string& fname, WritableFile** result) {
 }
 
 Status Env::RemoveFile(const std::string& fname) {
-  return DeleteFile(fname);
+  if (::remove(fname.c_str()) != 0) {
+    return PosixError(fname, errno);
+  }
+  return Status::OK();
 }
 
 Status Env::DeleteFile(const std::string& fname) {
