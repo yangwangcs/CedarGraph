@@ -207,6 +207,10 @@ add_executable(test_wal_ordering transaction/test_wal_ordering.cc)
 target_link_libraries(test_wal_ordering ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_wal_ordering)
 
+add_executable(wal_future_test transaction/wal_future_test.cc)
+target_link_libraries(wal_future_test ${CEDAR_TEST_LIBS})
+gtest_discover_tests(wal_future_test)
+
 add_executable(test_pool_state_reset transaction/test_pool_state_reset.cc)
 target_link_libraries(test_pool_state_reset ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_pool_state_reset)

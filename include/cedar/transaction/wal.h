@@ -178,12 +178,14 @@ class WalWriter {
   // 如果启用了组提交，调用会阻塞直到批次被写入
   Status WriteBatch(const WalBatch& batch);
   
-  // 异步提交批量操作，返回一个 future 用于等待完成
-  // 调用者可以通过返回的 sequence 查询写入状态
-  Status WriteBatchAsync(const WalBatch& batch, uint64_t* sequence);
-  
-  // 等待指定序列号的写入完成
-  Status WaitForSequence(uint64_t sequence);
+  // 异步提交结果
+  struct AsyncResult {
+    uint64_t sequence{0};
+    std::future<Status> future;
+  };
+
+  // 异步提交批量操作，返回 sequence + future 用于等待完成
+  Status WriteBatchAsync(const WalBatch& batch, AsyncResult* out);
   
   // ========== 事务接口 ==========
   
@@ -192,11 +194,6 @@ class WalWriter {
   
   // 写入事务回滚记录
   Status WriteAbort(uint64_t txn_id, Timestamp txn_version);
-  
-  // 获取当前序列号
-  uint64_t CurrentSequence() const {
-    return next_sequence_.load(std::memory_order_acquire) - 1;
-  }
   
   // 获取统计信息
   WalStats GetStats() const { return stats_; }

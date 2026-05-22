@@ -315,43 +315,36 @@ Status WalWriter::WriteBatch(const WalBatch& batch) {
       return Status::IOError("WalWriter", "not opened");
     }
   }
+
   if (options_.group_commit_timeout_us > 0) {
-    uint64_t seq;
-    Status s = WriteBatchAsync(batch, &seq);
+    AsyncResult async;
+    Status s = WriteBatchAsync(batch, &async);
     CEDAR_RETURN_IF_ERROR(s);
-    return WaitForSequence(seq);
+    return async.future.get();
   }
+
   std::lock_guard<std::mutex> lock(file_mutex_);
   return WriteInternal(batch);
 }
 
-Status WalWriter::WriteBatchAsync(const WalBatch& batch, uint64_t* sequence) {
-  if (!sequence) {
-    return Status::InvalidArgument("WalWriter", "sequence is null");
+Status WalWriter::WriteBatchAsync(const WalBatch& batch, AsyncResult* out) {
+  if (!out) {
+    return Status::InvalidArgument("WalWriter", "AsyncResult is null");
   }
-  
-  *sequence = next_sequence_.fetch_add(1, std::memory_order_acq_rel);
-  
+
+  out->sequence = next_sequence_.fetch_add(1, std::memory_order_acq_rel);
+
   auto request = std::make_shared<GroupCommitRequest>();
   request->batch = batch;
-  request->sequence = *sequence;
-  
+  request->sequence = out->sequence;
+  out->future = request->promise.get_future();
+
   {
     std::lock_guard<std::mutex> lock(commit_queue_mutex_);
     commit_queue_.push_back(request);
   }
-  
-  commit_cv_.notify_one();
-  return Status::OK();
-}
 
-Status WalWriter::WaitForSequence(uint64_t sequence) {
-  // 简单实现: 轮询检查
-  // 生产环境可以使用条件变量优化
-  constexpr auto kBusyLoopSleep = std::chrono::microseconds(10);
-  while (CurrentSequence() < sequence) {
-    std::this_thread::sleep_for(kBusyLoopSleep);
-  }
+  commit_cv_.notify_one();
   return Status::OK();
 }
 
