@@ -18,7 +18,6 @@
 
 #include "cedar/gcn/gcn_service.h"
 
-#include <chrono>
 
 namespace cedar {
 namespace gcn {

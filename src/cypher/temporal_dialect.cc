@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 #include "cedar/cypher/temporal_dialect.h"
-#include <chrono>
 #include <iomanip>
 #include <sstream>
 

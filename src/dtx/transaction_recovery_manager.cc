@@ -14,7 +14,6 @@
 
 #include "cedar/dtx/transaction_recovery_manager.h"
 
-#include <chrono>
 
 namespace cedar {
 
