@@ -30,19 +30,18 @@ cedar::Status EventApplier::ApplyUnordered(const GraphCDCEvent& event) {
     applied_version_ = event.commit_version;
     DrainBufferUnlocked();
   } else {
-    while (reorder_buffer_.size() >= max_reorder_buffer_) {
-      lock.unlock();
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      lock.lock();
-      if (event.commit_version == applied_version_ + 1) {
-        cedar::Status s = ApplyInternal(event);
-        if (!s.ok()) {
-          return s;
-        }
-        applied_version_ = event.commit_version;
-        DrainBufferUnlocked();
-        return cedar::Status::OK();
+    while (reorder_buffer_.size() >= max_reorder_buffer_ &&
+           event.commit_version != applied_version_ + 1) {
+      buffer_drained_cv_.wait(lock);
+    }
+    if (event.commit_version == applied_version_ + 1) {
+      cedar::Status s = ApplyInternal(event);
+      if (!s.ok()) {
+        return s;
       }
+      applied_version_ = event.commit_version;
+      DrainBufferUnlocked();
+      return cedar::Status::OK();
     }
     reorder_buffer_[event.commit_version] = event;
   }
@@ -82,6 +81,7 @@ void EventApplier::DrainBufferUnlocked() {
       }
       applied_version_ = it->first;
       reorder_buffer_.erase(it);
+      buffer_drained_cv_.notify_all();
     } else {
       break;
     }

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 
 #include "cedar/core/status.h"
@@ -55,6 +56,7 @@ class EventApplier {
   std::map<uint64_t, GraphCDCEvent> reorder_buffer_;
   size_t max_reorder_buffer_;
   mutable std::mutex mutex_;
+  std::condition_variable buffer_drained_cv_;
 
   cedar::Status ApplyInternal(const GraphCDCEvent& event);
   void DrainBufferUnlocked();
