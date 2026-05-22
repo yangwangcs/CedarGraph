@@ -223,7 +223,7 @@ class PosixMmapReadableFile final : public RandomAccessFile {
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) const override {
-    if (offset + n > length_) {
+    if (offset > length_ || n > length_ - offset) {
       *result = Slice();
       return PosixError(filename_, EINVAL);
     }
