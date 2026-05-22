@@ -506,6 +506,10 @@ add_executable(test_storage_interface test_storage_interface.cc)
 target_link_libraries(test_storage_interface ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_storage_interface)
 
+add_executable(test_cedar_config storage/test_cedar_config.cc)
+target_link_libraries(test_cedar_config ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_cedar_config)
+
 # add_executable(test_storage_interface_predicate test_storage_interface_predicate.cc)
 # target_link_libraries(test_storage_interface_predicate ${CEDAR_TEST_LIBS})
 # gtest_discover_tests(test_storage_interface_predicate)
