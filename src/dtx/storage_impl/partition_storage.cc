@@ -181,45 +181,51 @@ Status PartitionStorage::Commit(TxnID txn_id, Timestamp commit_ts) {
     return Status::InvalidArgument("Transaction not in prepared state: " + std::to_string(txn_id));
   }
   
-  // Apply all writes directly to shared_storage_ to avoid recursive mutex deadlock.
-  // We already hold txn_mutex_, so calling Put() (which also locks txn_mutex_)
-  // would deadlock because std::shared_mutex does not support recursive write locks.
+  struct WriteEntry {
+    CedarKey key;
+    Descriptor desc;
+  };
+  std::vector<WriteEntry> validated_writes;
+  validated_writes.reserve(state.write_set.size());
+
   for (const auto& key : state.write_set) {
-    // Verify the key belongs to this partition
     if (ExtractPartitionId(key) != partition_id_) {
-      continue;  // Skip keys not belonging to this partition
+      continue;
     }
-    
-    // Use the original descriptor from the prepared state, not a timestamp placeholder
     Descriptor desc;
     uint64_t key_hash = static_cast<uint64_t>(cedar::dtx::CedarKeyHash{}(key));
     auto desc_it = state.write_descriptors.find(key_hash);
     if (desc_it != state.write_descriptors.end()) {
       desc = desc_it->second;
     }
-    // If no descriptor found, fall back to an empty descriptor (should not happen)
-    
-    CedarKey storage_key = InjectPartitionId(key);
+    validated_writes.push_back({key, desc});
+  }
+
+  size_t written_count = 0;
+  for (const auto& entry : validated_writes) {
+    CedarKey storage_key = InjectPartitionId(entry.key);
     Status s = shared_storage_->Put(
         storage_key.entity_id(),
         storage_key.timestamp().value(),
-        desc,
+        entry.desc,
         commit_ts
     );
-    
     if (!s.ok()) {
-      // Partial commit within a partition is unrecoverable in 2PC.
-      // Log the error and return it so the coordinator can initiate recovery.
-      return Status::IOError("Write failed during commit: " + s.ToString());
+      std::cerr << "[PartitionStorage::Commit] PARTIAL_WRITE txn_id=" << txn_id
+                << " partition=" << partition_id_
+                << " written=" << written_count
+                << " total=" << validated_writes.size()
+                << " error=" << s.ToString() << std::endl;
+      state.status = DistributedTxnState::kCommitting;
+      return Status::IOError(
+          "Partial write during commit — recovery will complete remaining keys: " +
+          s.ToString());
     }
+    written_count++;
   }
-  
+
   state.status = DistributedTxnState::kCommitted;
-  
-  // Write WAL
   WriteTxnWAL(txn_id, "COMMIT");
-  
-  // Remove from prepared transactions after successful commit
   prepared_txns_.erase(it);
   
   return Status::OK();
