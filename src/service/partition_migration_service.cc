@@ -401,7 +401,7 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
     return grpc::Status::CANCELLED;
   }
 
-  // TODO: Apply the WAL entry to the target partition storage.
+  // TODO(#migration-001): Apply the WAL entry to the target partition storage.
   // For now, acknowledge receipt so the source can continue catch-up.
   response->set_success(true);
   return ::grpc::Status::OK;

@@ -811,7 +811,7 @@ grpc::Status GraphServiceRouter::GetSchema(grpc::ServerContext* context,
   }
 
   cedar::meta::GetSchemaRequest meta_req;
-  meta_req.set_space_name("default");  // TODO: multi-space support
+  meta_req.set_space_name("default");  // TODO(#graph-001): multi-space support
   for (const auto& label : request->labels()) {
     meta_req.add_labels(label);
   }

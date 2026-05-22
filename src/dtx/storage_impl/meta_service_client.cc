@@ -263,7 +263,7 @@ Status MetaServiceNodeClient::UpdatePartitionAssignment(
     return Status::IOError("MetaServiceNodeClient not connected");
   }
 
-  // TODO: Implement gRPC call to MetaD for UpdatePartitionAssignment.
+  // TODO(#dtx-001): Implement gRPC call to MetaD for UpdatePartitionAssignment.
   // For now, log the intended update and return OK to allow the migration
   // state machine to proceed. The actual RPC will be added in a follow-up.
   std::cerr << "[MetaServiceNodeClient] UpdatePartitionAssignment stub: "
