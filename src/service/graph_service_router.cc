@@ -440,6 +440,9 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
       case QueryType::SCAN: type_str = "SCAN"; break;
       case QueryType::NEIGHBOR_TRAVERSAL: type_str = "NEIGHBOR_TRAVERSAL"; break;
       case QueryType::AGGREGATE: type_str = "AGGREGATE"; break;
+      default:
+        std::cerr << "[GraphServiceRouter] Unknown query type" << std::endl;
+        break;
     }
     plan << "  Query Type: " << type_str << "\n";
     plan << "  Target Partitions: " << route_ctx.target_partitions.size() << "\n";
@@ -1466,6 +1469,9 @@ Status GraphServiceRouter::ExecutePartitionQuery(
       }
       break;
     }
+    default:
+      std::cerr << "[GraphServiceRouter] Unknown query type" << std::endl;
+      return Status::InvalidArgument("GraphServiceRouter", "Unknown query type");
   }
 
   result->set_total_rows(result->total_rows() + static_cast<int32_t>(rows_added));

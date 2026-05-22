@@ -116,6 +116,9 @@ static bool CheckAllenRelation(AllenRelation relation,
     case AllenRelation::FINISHES:     return a_end == b_end && a_start > b_start;
     case AllenRelation::FINISHED_BY:  return a_end == b_end && a_start < b_start;
     case AllenRelation::EQUALS:       return a_start == b_start && a_end == b_end;
+    default:
+      std::cerr << "[CedarGraphTemporal] Unknown Allen relation" << std::endl;
+      return false;
   }
   return false;
 }

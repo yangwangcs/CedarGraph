@@ -231,6 +231,9 @@ bool StorageInterface::EvaluatePredicate(const PropertyPredicateItem& pred,
     }
     case PropertyPredicateItem::IN:
       return false;
+    default:
+      std::cerr << "[StorageInterface] Unknown predicate op" << std::endl;
+      return false;
   }
   return false;
 }

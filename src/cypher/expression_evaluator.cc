@@ -190,6 +190,9 @@ Value ExpressionEvaluator::EvaluateArithmetic(const ArithmeticExpr& expr,
       case ArithmeticExpr::MOD:
         if (b != 0) return Value(a % b);
         return Value();
+      default:
+        std::cerr << "[ExpressionEvaluator] Unknown arithmetic op" << std::endl;
+        return Value();
     }
   }
 
@@ -205,6 +208,9 @@ Value ExpressionEvaluator::EvaluateArithmetic(const ArithmeticExpr& expr,
     case ArithmeticExpr::MUL: return Value(a * b);
     case ArithmeticExpr::DIV: return Value(b != 0 ? a / b : 0.0);
     case ArithmeticExpr::MOD: return Value(std::fmod(a, b));
+    default:
+      std::cerr << "[ExpressionEvaluator] Unknown arithmetic op" << std::endl;
+      return Value();
   }
 
   return Value();

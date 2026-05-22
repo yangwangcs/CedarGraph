@@ -195,6 +195,9 @@ class FingerprintWriter {
       case ClauseType::DELETE:
         WriteDelete(static_cast<const DeleteClause&>(clause));
         break;
+      default:
+        std::cerr << "[Fingerprint] Unknown clause type" << std::endl;
+        break;
     }
   }
 
@@ -406,6 +409,9 @@ class FingerprintWriter {
         oss_ << "}";
         break;
       }
+      default:
+        std::cerr << "[Fingerprint] Unknown expression type" << std::endl;
+        break;
     }
   }
 
@@ -417,6 +423,9 @@ class FingerprintWriter {
       case ComparisonExpr::GT: return ">";
       case ComparisonExpr::LE: return "<=";
       case ComparisonExpr::GE: return ">=";
+      default:
+        std::cerr << "[Fingerprint] Unknown comparison op" << std::endl;
+        return "=";
     }
     return "=";
   }
@@ -428,6 +437,9 @@ class FingerprintWriter {
       case ArithmeticExpr::MUL: return "*";
       case ArithmeticExpr::DIV: return "/";
       case ArithmeticExpr::MOD: return "%";
+      default:
+        std::cerr << "[Fingerprint] Unknown arithmetic op" << std::endl;
+        return "+";
     }
     return "+";
   }

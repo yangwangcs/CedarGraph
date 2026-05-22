@@ -163,6 +163,9 @@ bool QueryValidator::ValidateExpression(const Expression& expr) {
     case ExprType::LIST_LITERAL:
     case ExprType::MAP_LITERAL:
       return true;
+    default:
+      std::cerr << "[QueryValidator] Unknown expression type" << std::endl;
+      return true;
   }
   return true;
 }
@@ -223,6 +226,9 @@ std::optional<ValueType> QueryValidator::InferExpressionType(const Expression& e
     case ExprType::MAP_LITERAL:
       return ValueType::kMap;
     case ExprType::PARAMETER:
+      return std::nullopt;
+    default:
+      std::cerr << "[QueryValidator] Unknown expression type" << std::endl;
       return std::nullopt;
   }
   return std::nullopt;

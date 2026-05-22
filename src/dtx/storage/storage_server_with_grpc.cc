@@ -134,6 +134,9 @@ std::string SerializeCypherValue(const cedar::cypher::Value& value) {
         }
       }
       break;
+    default:
+      std::cerr << "[StorageServerWithGrpc] Unknown cypher value type tag" << std::endl;
+      return cedar::cypher::Value();
   }
   return cedar::cypher::Value();
 }

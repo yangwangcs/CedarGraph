@@ -434,6 +434,9 @@ void LogNotifier::Notify(const Alert& alert) {
     case AlertSeverity::kWarning: severity_str = "WARNING"; break;
     case AlertSeverity::kCritical: severity_str = "CRITICAL"; break;
     case AlertSeverity::kEmergency: severity_str = "EMERGENCY"; break;
+    default:
+      std::cerr << "[LogNotifier] Unknown alert severity" << std::endl;
+      break;
   }
   
   std::ostringstream oss;

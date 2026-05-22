@@ -103,6 +103,9 @@ cedar::cypher::Value DeserializeCypherValue(const std::string& data) {
         }
       }
       break;
+    default:
+      std::cerr << "[StorageServiceImpl] Unknown cypher value type tag" << std::endl;
+      return cedar::cypher::Value();
   }
   return cedar::cypher::Value();
 }

@@ -150,6 +150,9 @@ cedar::meta::NodeInfo ToProto(const NodeInfo& info) {
         case NodeInfo::State::kOnline: proto.set_state("ONLINE"); break;
         case NodeInfo::State::kOffline: proto.set_state("OFFLINE"); break;
         case NodeInfo::State::kSuspected: proto.set_state("SUSPECTED"); break;
+        default:
+          std::cerr << "[MetaService] Unknown node state" << std::endl;
+          break;
     }
     return proto;
 }

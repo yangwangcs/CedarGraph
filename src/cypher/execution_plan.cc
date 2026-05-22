@@ -1140,6 +1140,9 @@ void Aggregate::DoAggregate() {
           result->Set(item.output_name, Value(collected));
           break;
         }
+        default:
+          std::cerr << "[Aggregate] Unknown aggregation function" << std::endl;
+          break;
       }
     }
     

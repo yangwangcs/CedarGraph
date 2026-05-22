@@ -223,6 +223,10 @@ StatusOr<TaskExecutionStatus> PartitionMigrationExecutor::ExecuteTask(const Bala
         case BalanceTaskType::kRemoveReplica:
             result = ExecuteRemoveReplica(task, &status);
             break;
+        default:
+            std::cerr << "[PartitionMigrationExecutor] Unknown balance task type" << std::endl;
+            result = Status::InvalidArgument("PartitionMigrationExecutor", "Unknown balance task type");
+            break;
     }
     
     status.end_time = std::chrono::system_clock::now();

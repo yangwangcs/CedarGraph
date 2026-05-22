@@ -239,6 +239,9 @@ void MetaServiceGrpcImpl::OnPartitionChange(const PartitionMapChange& change) {
         case PartitionChangeType::kPartitionMigrated:
             proto_change.set_change_type("PARTITION_MIGRATED");
             break;
+        default:
+            std::cerr << "[MetaServiceGrpc] Unknown partition change type" << std::endl;
+            break;
     }
     proto_change.set_old_leader(change.old_leader);
     proto_change.set_new_leader(change.new_leader);

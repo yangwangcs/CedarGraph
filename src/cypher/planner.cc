@@ -268,6 +268,10 @@ std::string QueryPlanner::ExpressionToString(const Expression& expr) {
         case ComparisonExpr::GT: op = ">"; break;
         case ComparisonExpr::LE: op = "<="; break;
         case ComparisonExpr::GE: op = ">="; break;
+        default:
+          std::cerr << "[Planner] Unknown comparison op" << std::endl;
+          op = "=";
+          break;
       }
       return ExpressionToString(*cmp.left) + " " + op + " " +
              ExpressionToString(*cmp.right);

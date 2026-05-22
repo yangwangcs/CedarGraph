@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <iostream>
+
 #include "cedar/driver/transaction_types.h"
 
 namespace cedar {
@@ -34,6 +36,9 @@ std::string ConflictInfo::ToString() const {
       break;
     case ConflictType::kTimeout:
       result = "Transaction timeout";
+      break;
+    default:
+      std::cerr << "[ConflictInfo] Unknown conflict type" << std::endl;
       break;
   }
   

@@ -2,11 +2,13 @@
 //
 // Licensed under the Apache License, Version 2.0
 
+#include <iostream>
+#include <sstream>
+
 #include "cedar/dtx/partition.h"
 #include "cedar/partition/strategies/static_hash_strategy.h"
 #include "cedar/partition/strategies/mth_stream_strategy.h"
 #include "cedar/partition/partition_strategy.h"
-#include <sstream>
 
 namespace cedar {
 namespace dtx {
@@ -85,6 +87,10 @@ PartitionID DualModePartitionStrategy::ComputePartition(const CedarKey& key,
         case EntityType::EdgeIn:
           event.entity_type = 2;
           break;
+        default:
+          std::cerr << "[DualModePartitionStrategy] Unknown entity type" << std::endl;
+          event.entity_type = 0;
+          break;
       }
       
       event.op_type = key.GetOpType();
@@ -128,6 +134,10 @@ PartitionID DualModePartitionStrategy::ComputePartition(const CedarKey& key,
             case EntityType::EdgeIn:
               event.entity_type = 2;
               break;
+            default:
+              std::cerr << "[DualModePartitionStrategy] Unknown entity type" << std::endl;
+              event.entity_type = 0;
+              break;
           }
           
           event.op_type = key.GetOpType();
@@ -151,6 +161,9 @@ PartitionID DualModePartitionStrategy::ComputePartition(const CedarKey& key,
       auto assign = sub_->static_hash->RouteVertex(key.entity_id());
       return static_cast<PartitionID>(assign.partition_id);
     }
+    default:
+      std::cerr << "[DualModePartitionStrategy] Unknown mode" << std::endl;
+      return static_cast<PartitionID>(key.entity_id() % num_partitions);
   }
   
   // Fallback to simple hash
@@ -162,6 +175,9 @@ std::string DualModePartitionStrategy::Name() const {
     case Mode::STATIC_HASH: return "DualMode(StaticHash)";
     case Mode::MTH_STREAM: return "DualMode(MTHStream)";
     case Mode::AUTO: return "DualMode(Auto)";
+    default:
+      std::cerr << "[DualModePartitionStrategy] Unknown mode" << std::endl;
+      return "DualMode(Unknown)";
   }
   return "DualMode(Unknown)";
 }

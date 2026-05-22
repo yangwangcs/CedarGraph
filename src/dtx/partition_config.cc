@@ -72,6 +72,9 @@ std::string PartitionConfigLoader::ModeToString(DualModePartitionStrategy::Mode 
       return "mth_stream";
     case DualModePartitionStrategy::Mode::AUTO:
       return "auto";
+    default:
+      std::cerr << "[PartitionConfigLoader] Unknown mode" << std::endl;
+      return "static_hash";
   }
   return "static_hash";
 }

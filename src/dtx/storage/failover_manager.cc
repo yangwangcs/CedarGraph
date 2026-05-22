@@ -91,6 +91,9 @@ std::string ContainerRuntimeToString(ContainerRuntime runtime) {
     case ContainerRuntime::kSystemd: return "Systemd";
     case ContainerRuntime::kDocker: return "Docker";
     case ContainerRuntime::kUnknown: return "Unknown";
+    default:
+      std::cerr << "[FailoverManager] Unknown container runtime" << std::endl;
+      return "Unknown";
   }
   return "Unknown";
 }

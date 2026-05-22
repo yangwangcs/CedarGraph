@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <iostream>
+
 #include "cedar/driver/retry_policy.h"
 
 #include <random>
@@ -89,6 +91,9 @@ std::chrono::milliseconds RetryPolicy::NextDelay(
       return std::min(
           std::chrono::milliseconds(current.count() * 2),
           config_.max_backoff);
+    default:
+      std::cerr << "[RetryPolicy] Unknown backoff strategy" << std::endl;
+      return std::chrono::milliseconds(0);
   }
   
   return config_.initial_backoff;
