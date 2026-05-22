@@ -14,7 +14,6 @@
 
 #include "cedar/dtx/version_chain.h"
 
-#include <thread>
 #include <algorithm>
 
 namespace cedar {

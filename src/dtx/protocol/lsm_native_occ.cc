@@ -17,7 +17,6 @@
 #include <chrono>
 #include <random>
 #include <shared_mutex>
-#include <thread>
 
 #include "cedar/dtx/twcd_engine.h"
 #include "cedar/dtx/partition.h"

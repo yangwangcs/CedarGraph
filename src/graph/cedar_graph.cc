@@ -16,7 +16,6 @@
 
 #include <cstdlib>
 #include <queue>
-#include <thread>
 #include <vector>
 #include <unordered_set>
 #include <future>
