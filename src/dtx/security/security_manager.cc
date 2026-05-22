@@ -401,15 +401,42 @@ static std::string Base64UrlDecode(const std::string& input) {
   return std::string(buffer.data(), decoded_len);
 }
 
+namespace {
+std::string JsonEscape(const std::string& input) {
+  std::string output;
+  output.reserve(input.size());
+  for (char c : input) {
+    switch (c) {
+      case '"': output += "\\\""; break;
+      case '\\': output += "\\\\"; break;
+      case '\b': output += "\\b"; break;
+      case '\f': output += "\\f"; break;
+      case '\n': output += "\\n"; break;
+      case '\r': output += "\\r"; break;
+      case '\t': output += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          char buf[8];
+          snprintf(buf, sizeof(buf), "\\u%04x", c);
+          output += buf;
+        } else {
+          output += c;
+        }
+    }
+  }
+  return output;
+}
+}  // namespace
+
 std::string Authenticator::GenerateJWT(const AuthToken& token) {
   std::string header = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
 
   auto time_t = std::chrono::system_clock::to_time_t(token.expires_at);
   std::ostringstream payload;
-  payload << "{\"sub\":\"" << token.user_id << "\",";
-  payload << "\"name\":\"" << token.user_name << "\",";
+  payload << "{\"sub\":\"" << JsonEscape(token.user_id) << "\",";
+  payload << "\"name\":\"" << JsonEscape(token.user_name) << "\",";
   payload << "\"exp\":" << time_t << ",";
-  payload << "\"jti\":\"" << token.token_id << "\"}";
+  payload << "\"jti\":\"" << JsonEscape(token.token_id) << "\"}";
 
   std::string encoded_header = Base64UrlEncode(header);
   std::string encoded_payload = Base64UrlEncode(payload.str());
@@ -485,26 +512,56 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
     size_t pos = json.find(key);
     if (pos == std::string::npos) return "";
     pos += key.size();
-    // Skip whitespace and colon
     while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
                                   json[pos] == '\n' || json[pos] == '\r')) {
       pos++;
     }
     if (pos >= json.size() || json[pos] != ':') return "";
-    pos++;  // skip ':'
+    pos++;
     while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
                                   json[pos] == '\n' || json[pos] == '\r')) {
       pos++;
     }
     if (pos >= json.size() || json[pos] != '"') return "";
-    pos++;  // skip opening quote
+    pos++;
     std::string value;
-    while (pos < json.size() && json[pos] != '"') {
-      if (json[pos] == '\\' && pos + 1 < json.size()) {
-        value += json[pos + 1];
+    while (pos < json.size()) {
+      char c = json[pos];
+      if (c == '"') {
+        break;
+      }
+      if (c == '\\' && pos + 1 < json.size()) {
+        char next = json[pos + 1];
+        switch (next) {
+          case '"': value += '"'; break;
+          case '\\': value += '\\'; break;
+          case '/': value += '/'; break;
+          case 'b': value += '\b'; break;
+          case 'f': value += '\f'; break;
+          case 'n': value += '\n'; break;
+          case 'r': value += '\r'; break;
+          case 't': value += '\t'; break;
+          case 'u':
+            if (pos + 5 < json.size()) {
+              std::string hex = json.substr(pos + 2, 4);
+              try {
+                int codepoint = std::stoi(hex, nullptr, 16);
+                if (codepoint < 0x80) {
+                  value += static_cast<char>(codepoint);
+                } else {
+                  value += '?';
+                }
+              } catch (...) {
+                value += '?';
+              }
+              pos += 4;
+            }
+            break;
+          default: value += next; break;
+        }
         pos += 2;
       } else {
-        value += json[pos];
+        value += c;
         pos++;
       }
     }
@@ -534,12 +591,25 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
       pos++;
     }
     if (start == pos) return std::nullopt;
-    try {
-      return std::stoll(json.substr(start, pos - start));
-    } catch (...) {
-      std::cerr << "[SecurityManager] Failed to parse JSON integer" << std::endl;
-      return std::nullopt;
+    // Strict digit validation: manual parse to avoid std::stoll edge cases
+    int64_t result = 0;
+    bool negative = (json[start] == '-');
+    size_t digit_start = negative ? start + 1 : start;
+    for (size_t i = digit_start; i < pos; ++i) {
+      int digit = json[i] - '0';
+      if (negative) {
+        if (result < (std::numeric_limits<int64_t>::min() + digit) / 10) {
+          return std::nullopt;
+        }
+        result = result * 10 - digit;
+      } else {
+        if (result > (std::numeric_limits<int64_t>::max() - digit) / 10) {
+          return std::nullopt;
+        }
+        result = result * 10 + digit;
+      }
     }
+    return result;
   };
 
   AuthToken token;
