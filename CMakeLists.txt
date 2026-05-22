@@ -422,7 +422,7 @@ set(CEDAR_CYPHER_SOURCES
 )
 
 add_library(cedar_cypher STATIC ${CEDAR_CYPHER_SOURCES})
-target_link_libraries(cedar_cypher cedar cedar_graph)
+target_link_libraries(cedar_cypher cedar cedar_graph cedar_queryd)
 
 # Queryd 生成的 protobuf 文件
 set(QUERYD_PROTO_SOURCES
@@ -526,7 +526,7 @@ endif()
 add_executable(storaged_legacy
     src/dtx/storage/storage_server_with_grpc.cc
 )
-target_link_libraries(storaged_legacy cedar cedar_graph cedar_cypher ${LZ4_LIBRARIES} gRPC::grpc++)
+target_link_libraries(storaged_legacy cedar cedar_graph cedar_cypher cedar_queryd ${LZ4_LIBRARIES} gRPC::grpc++)
 if(APPLE)
     target_link_directories(storaged_legacy PRIVATE /opt/homebrew/lib)
 endif()

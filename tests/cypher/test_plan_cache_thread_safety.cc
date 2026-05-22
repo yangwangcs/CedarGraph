@@ -28,6 +28,9 @@ class MockPhysicalOperator : public PhysicalOperator {
   bool Init(ExecutionContext* ctx) override { return true; }
   std::shared_ptr<Record> Next() override { return nullptr; }
   std::string GetName() const override { return "MockOp"; }
+  std::unique_ptr<PhysicalOperator> Clone() const override {
+    return std::make_unique<MockPhysicalOperator>();
+  }
 };
 
 TEST(PlanCacheThreadSafety, ConcurrentReadWrite) {
