@@ -211,16 +211,13 @@ Status BlobFileManager::WriteBlob(const Slice& data,
   
   current_file_size_ += entry_total_size;
   
-  // Batch flush to reduce I/O overhead while ensuring visibility
-  bytes_since_flush_ += entry_total_size;
-  if (bytes_since_flush_ >= kFlushThreshold) {
-    cedar::Status flush_status = current_file_->Flush();
-    if (!flush_status.ok()) {
-      return Status::IOError("BlobFileManager", flush_status.ToString());
-    }
-    bytes_since_flush_ = 0;
+  // Flush to ensure data is visible to concurrent readers
+  cedar::Status flush_status = current_file_->Flush();
+  if (!flush_status.ok()) {
+    return Status::IOError("BlobFileManager", flush_status.ToString());
   }
-  
+  bytes_since_flush_ += entry_total_size;
+
   return Status::OK();
 }
 

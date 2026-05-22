@@ -72,10 +72,10 @@ bool LFNode::MarkDeleted() { return true; }
 bool LFNode::IsMarked() const { return false; }
 
 // ═══════════════════════════════════════════════════════════════════
-// CoarseLockedVSL 实现
+// LockedVSL 实现
 // ═══════════════════════════════════════════════════════════════════
 
-CoarseLockedVSL::CoarseLockedVSL() : max_height_(1), size_(0), rnd_(0) {
+LockedVSL::LockedVSL() : max_height_(1), size_(0), rnd_(0) {
   // Use dummy keys for head and tail
   CedarKey head_key = CedarKey::Vertex(0, 0_vcol, Timestamp(UINT64_MAX));
   CedarKey tail_key = CedarKey::Vertex(UINT64_MAX, 0_vcol, Timestamp(0));
@@ -88,7 +88,7 @@ CoarseLockedVSL::CoarseLockedVSL() : max_height_(1), size_(0), rnd_(0) {
   }
 }
 
-CoarseLockedVSL::~CoarseLockedVSL() {
+LockedVSL::~LockedVSL() {
   LFNode* node = head_->Next(0);
   while (node != tail_) {
     LFNode* next = node->Next(0);
@@ -100,7 +100,7 @@ CoarseLockedVSL::~CoarseLockedVSL() {
 }
 
 // 单线程 Insert
-bool CoarseLockedVSL::Insert(const CedarKey& key, const Descriptor& value, Timestamp txn_version) {
+bool LockedVSL::Insert(const CedarKey& key, const Descriptor& value, Timestamp txn_version) {
   std::lock_guard<std::mutex> lock(mutex_);
   int height = RandomHeight();
   LFNode* new_node = new LFNode(key, value, height, txn_version);
@@ -171,7 +171,7 @@ bool CoarseLockedVSL::Insert(const CedarKey& key, const Descriptor& value, Times
 }
 
 // 优化的 SkipList 查找
-LFNode* CoarseLockedVSL::FindNode(const CedarKey& key, LFNode* preds[], LFNode* succs[]) {
+LFNode* LockedVSL::FindNode(const CedarKey& key, LFNode* preds[], LFNode* succs[]) {
   LFNode* pred = head_;
   int curr_max = max_height_.load(std::memory_order_acquire);
   
@@ -207,7 +207,7 @@ LFNode* CoarseLockedVSL::FindNode(const CedarKey& key, LFNode* preds[], LFNode* 
 }
 
 // 优化的 FindLatestVersion - 使用 SkipList 层级搜索
-LFNode* CoarseLockedVSL::FindLatestVersion(uint64_t entity_id, 
+LFNode* LockedVSL::FindLatestVersion(uint64_t entity_id, 
                                         EntityType entity_type, 
                                         uint16_t column_id) const {
   // 使用 SkipList 层级快速定位
@@ -240,7 +240,7 @@ LFNode* CoarseLockedVSL::FindLatestVersion(uint64_t entity_id,
 }
 
 // 带 target_id 的 FindLatestVersion - 用于 EdgeOut/EdgeIn
-LFNode* CoarseLockedVSL::FindLatestVersion(uint64_t entity_id, 
+LFNode* LockedVSL::FindLatestVersion(uint64_t entity_id, 
                                         EntityType entity_type, 
                                         uint16_t column_id,
                                         uint64_t target_id) const {
@@ -272,7 +272,7 @@ LFNode* CoarseLockedVSL::FindLatestVersion(uint64_t entity_id,
   return nullptr;
 }
 
-std::optional<Descriptor> CoarseLockedVSL::GetAtTime(
+std::optional<Descriptor> LockedVSL::GetAtTime(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id, 
     Timestamp timestamp) const {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -295,7 +295,7 @@ std::optional<Descriptor> CoarseLockedVSL::GetAtTime(
 }
 
 // 带 target_id 的 GetAtTime - 用于 EdgeOut/EdgeIn
-std::optional<Descriptor> CoarseLockedVSL::GetAtTime(
+std::optional<Descriptor> LockedVSL::GetAtTime(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id,
     uint64_t target_id, Timestamp timestamp) const {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -317,7 +317,7 @@ std::optional<Descriptor> CoarseLockedVSL::GetAtTime(
   return std::nullopt;
 }
 
-std::optional<Descriptor> CoarseLockedVSL::GetLatest(
+std::optional<Descriptor> LockedVSL::GetLatest(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id) const {
   std::lock_guard<std::mutex> lock(mutex_);
   LFNode* node = FindLatestVersion(entity_id, entity_type, column_id);
@@ -328,7 +328,7 @@ std::optional<Descriptor> CoarseLockedVSL::GetLatest(
 }
 
 // 带 target_id 的 GetLatest - 用于 EdgeOut/EdgeIn
-std::optional<Descriptor> CoarseLockedVSL::GetLatest(
+std::optional<Descriptor> LockedVSL::GetLatest(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id,
     uint64_t target_id) const {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -339,7 +339,7 @@ std::optional<Descriptor> CoarseLockedVSL::GetLatest(
   return std::nullopt;
 }
 
-std::vector<CoarseLockedVSL::VersionInfo> CoarseLockedVSL::ScanRange(
+std::vector<LockedVSL::VersionInfo> LockedVSL::ScanRange(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id,
     Timestamp start, Timestamp end) const {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -395,7 +395,7 @@ std::vector<CoarseLockedVSL::VersionInfo> CoarseLockedVSL::ScanRange(
   return results;
 }
 
-void CoarseLockedVSL::Traverse(
+void LockedVSL::Traverse(
     std::function<bool(const CedarKey&, const Descriptor&)> callback) const {
   LFNode* node = head_->Next(0);
   
@@ -408,13 +408,13 @@ void CoarseLockedVSL::Traverse(
   }
 }
 
-size_t CoarseLockedVSL::ApproximateMemoryUsage() const {
+size_t LockedVSL::ApproximateMemoryUsage() const {
   size_t total = sizeof(*this);
   total += size_.load(std::memory_order_acquire) * sizeof(LFNode);
   return total;
 }
 
-int CoarseLockedVSL::RandomHeight() {
+int LockedVSL::RandomHeight() {
   int height = 1;
   uint32_t rnd = rnd_.fetch_add(1, std::memory_order_relaxed);
   

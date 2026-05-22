@@ -9,7 +9,7 @@
 namespace cedar {
 namespace gcn {
 
-std::vector<uint64_t> LocalComputeThread::ExecuteBFS(uint64_t root,
+std::vector<uint64_t> LocalComputeUtils::ExecuteBFS(uint64_t root,
                                                      uint64_t query_time,
                                                      uint32_t max_hops,
                                                      TMVEngine* engine) {
@@ -50,7 +50,7 @@ std::vector<uint64_t> LocalComputeThread::ExecuteBFS(uint64_t root,
   return results;
 }
 
-std::vector<uint64_t> LocalComputeThread::ExecuteDFS(uint64_t root,
+std::vector<uint64_t> LocalComputeUtils::ExecuteDFS(uint64_t root,
                                                      uint64_t query_time,
                                                      uint32_t max_hops,
                                                      TMVEngine* engine) {

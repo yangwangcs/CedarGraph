@@ -10,14 +10,14 @@
 namespace cedar {
 namespace gcn {
 
-class NumaArenaPool {
+class ArenaPool {
  public:
-  explicit NumaArenaPool(size_t max_chunks);
-  ~NumaArenaPool();
+  explicit ArenaPool(size_t max_chunks);
+  ~ArenaPool();
 
   // Non-copyable, non-movable
-  NumaArenaPool(const NumaArenaPool&) = delete;
-  NumaArenaPool& operator=(const NumaArenaPool&) = delete;
+  ArenaPool(const ArenaPool&) = delete;
+  ArenaPool& operator=(const ArenaPool&) = delete;
 
   TMVChunk* Alloc();
   void Free(TMVChunk* chunk);

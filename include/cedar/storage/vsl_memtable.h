@@ -1,4 +1,4 @@
-// VSLMemTable - 使用 CoarseLockedVSL 的 MemTable 实现
+// VSLMemTable - 使用 LockedVSL 的 MemTable 实现
 // 完整替换 LockFreeMemTable + VersionChain
 // 使用 Lock-Free CAS 操作实现真正的无锁并发
 
@@ -14,7 +14,7 @@
 
 namespace cedar {
 
-// VSLMemTable - 基于 CoarseLockedVSL 的 MemTable
+// VSLMemTable - 基于 LockedVSL 的 MemTable
 class VSLMemTable {
  public:
   VSLMemTable();
@@ -76,7 +76,7 @@ class VSLMemTable {
   void SetBulkImportMode(bool enabled);
   
  private:
-  std::unique_ptr<CoarseLockedVSL> skiplist_;
+  std::unique_ptr<LockedVSL> skiplist_;
   std::atomic<size_t> size_{0};
   bool bulk_import_mode_ = false;
 };

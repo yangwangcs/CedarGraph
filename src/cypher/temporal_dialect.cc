@@ -136,6 +136,9 @@ int64_t ParseDuration(const std::string& duration_str) {
           microseconds += value * 1000;
           value = 0;
           break;
+        default:
+          // Ignore unknown characters
+          break;
       }
     }
     i++;

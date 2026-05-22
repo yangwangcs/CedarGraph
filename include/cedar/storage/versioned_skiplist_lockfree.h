@@ -80,18 +80,18 @@ class LFNode {
 };
 
 // Lock-Free Versioned SkipList
-// CoarseLockedVSL: a versioned skiplist with a single global mutex.
+// LockedVSL: a versioned skiplist with a single global mutex.
 // Not actually lock-free; renamed to avoid misleading operators.
-class CoarseLockedVSL {
+class LockedVSL {
  public:
   static constexpr int kMaxHeight = 16;
   static constexpr int kBranching = 4;
   
-  CoarseLockedVSL();
-  ~CoarseLockedVSL();
+  LockedVSL();
+  ~LockedVSL();
   
-  CoarseLockedVSL(const CoarseLockedVSL&) = delete;
-  CoarseLockedVSL& operator=(const CoarseLockedVSL&) = delete;
+  LockedVSL(const LockedVSL&) = delete;
+  LockedVSL& operator=(const LockedVSL&) = delete;
   
   // 核心操作 (Lock-Free)
   bool Insert(const CedarKey& key, const Descriptor& value, Timestamp txn_version);

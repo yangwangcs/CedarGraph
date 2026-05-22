@@ -47,7 +47,7 @@ class TMVEngine {
   size_t ChunkCount() const;
 
  private:
-  NumaArenaPool pool_;
+  ArenaPool pool_;
   TMVIndex index_;
 
   bool AppendToEntry(TMVVertexEntry* entry,

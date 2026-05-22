@@ -9,7 +9,7 @@
 
 using namespace cedar::gcn;
 
-TEST(LocalComputeThreadTest, BFSOneHop) {
+TEST(LocalComputeUtilsTest, BFSOneHop) {
   TMVEngine engine(16);
 
   std::vector<TMVEdge> edges;
@@ -20,7 +20,7 @@ TEST(LocalComputeThreadTest, BFSOneHop) {
 
   engine.BootstrapVertex(42, Direction::kOut, edges, true);
 
-  LocalComputeThread compute;
+  LocalComputeUtils compute;
   auto results = compute.ExecuteBFS(42, 100, 1, &engine);
 
   EXPECT_EQ(results.size(), 2u);
@@ -28,7 +28,7 @@ TEST(LocalComputeThreadTest, BFSOneHop) {
   EXPECT_TRUE(std::find(results.begin(), results.end(), 200) != results.end());
 }
 
-TEST(LocalComputeThreadTest, DFSOneHop) {
+TEST(LocalComputeUtilsTest, DFSOneHop) {
   TMVEngine engine(16);
 
   std::vector<TMVEdge> edges;
@@ -39,7 +39,7 @@ TEST(LocalComputeThreadTest, DFSOneHop) {
 
   engine.BootstrapVertex(42, Direction::kOut, edges, true);
 
-  LocalComputeThread compute;
+  LocalComputeUtils compute;
   auto results = compute.ExecuteDFS(42, 100, 1, &engine);
 
   EXPECT_EQ(results.size(), 2u);

@@ -8,14 +8,14 @@ namespace gcn {
 
 class TMVEngine;
 
-class LocalComputeThread {
+class LocalComputeUtils {
  public:
-  LocalComputeThread() = default;
-  ~LocalComputeThread() = default;
+  LocalComputeUtils() = default;
+  ~LocalComputeUtils() = default;
 
   // Non-copyable, non-movable
-  LocalComputeThread(const LocalComputeThread&) = delete;
-  LocalComputeThread& operator=(const LocalComputeThread&) = delete;
+  LocalComputeUtils(const LocalComputeUtils&) = delete;
+  LocalComputeUtils& operator=(const LocalComputeUtils&) = delete;
 
   // Breadth-first search up to max_hops from root at query_time.
   // Returns the set of reachable vertex IDs (excluding root).

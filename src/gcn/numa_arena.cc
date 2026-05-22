@@ -7,7 +7,7 @@
 namespace cedar {
 namespace gcn {
 
-NumaArenaPool::NumaArenaPool(size_t max_chunks) : total_count_(max_chunks) {
+ArenaPool::ArenaPool(size_t max_chunks) : total_count_(max_chunks) {
   chunks_.reserve(max_chunks);
   for (size_t i = 0; i < max_chunks; ++i) {
     void* ptr = nullptr;
@@ -24,14 +24,14 @@ NumaArenaPool::NumaArenaPool(size_t max_chunks) : total_count_(max_chunks) {
   free_count_.store(max_chunks, std::memory_order_relaxed);
 }
 
-NumaArenaPool::~NumaArenaPool() {
+ArenaPool::~ArenaPool() {
   for (TMVChunk* chunk : chunks_) {
     chunk->~TMVChunk();
     free(chunk);
   }
 }
 
-TMVChunk* NumaArenaPool::Alloc() {
+TMVChunk* ArenaPool::Alloc() {
   TMVChunk* head = free_head_.load(std::memory_order_acquire);
   while (head != nullptr) {
     TMVChunk* next = head->next_freelist.load(std::memory_order_acquire);
@@ -55,7 +55,7 @@ TMVChunk* NumaArenaPool::Alloc() {
   return nullptr;
 }
 
-void NumaArenaPool::Free(TMVChunk* chunk) {
+void ArenaPool::Free(TMVChunk* chunk) {
   if (chunk == nullptr) {
     return;
   }
@@ -71,11 +71,11 @@ void NumaArenaPool::Free(TMVChunk* chunk) {
   free_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
-size_t NumaArenaPool::FreeCount() const {
+size_t ArenaPool::FreeCount() const {
   return free_count_.load(std::memory_order_relaxed);
 }
 
-size_t NumaArenaPool::TotalCount() const {
+size_t ArenaPool::TotalCount() const {
   return total_count_;
 }
 
