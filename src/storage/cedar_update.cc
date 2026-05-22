@@ -27,12 +27,12 @@ namespace cedar {
 namespace {
 
 // 计算分区 ID：取低 16 位（等价于 % 65536）
-inline uint16_t ComputePartition(uint64_t entity_id) {
+constexpr uint16_t ComputePartition(uint64_t entity_id) {
   return static_cast<uint16_t>(entity_id);
 }
 
 // 打包 flags：OpType + Distributed 标记
-inline uint8_t PackFlags(uint8_t op_type, bool distributed) {
+constexpr uint8_t PackFlags(uint8_t op_type, bool distributed) {
   uint8_t flags = op_type & cedar::key_flags::kOpTypeMask;
   if (distributed) {
     flags |= cedar::key_flags::kIsDistributed;

@@ -44,26 +44,26 @@ namespace cedar {
 
 /// 计算分区 ID: Hash(entity_id) % MaxPartitions (65536)
 /// 确保同一实体的所有历史版本落在同一物理分片
-static inline uint16_t ComputePartition(uint64_t entity_id) {
+static constexpr uint16_t ComputePartition(uint64_t entity_id) {
   // 默认使用 65536 (2^16) 个分区，直接取低 16 位
   // 这等价于 entity_id % 65536
   return static_cast<uint16_t>(entity_id);
 }
 
 /// 打包 flags：OpType + Distributed 标记
-static inline uint8_t PackCreateFlags(bool distributed = true) {
+static constexpr uint8_t PackCreateFlags(bool distributed = true) {
   uint8_t flags = key_flags::kOpCreate;  // 0x00
   if (distributed) flags |= key_flags::kIsDistributed;
   return flags;
 }
 
-static inline uint8_t PackUpdateFlags(bool distributed = true) {
+static constexpr uint8_t PackUpdateFlags(bool distributed = true) {
   uint8_t flags = key_flags::kOpUpdate;  // 0x01
   if (distributed) flags |= key_flags::kIsDistributed;
   return flags;
 }
 
-static inline uint8_t PackDeleteFlags(bool distributed = true) {
+static constexpr uint8_t PackDeleteFlags(bool distributed = true) {
   uint8_t flags = key_flags::kOpDelete;  // 0x02
   if (distributed) flags |= key_flags::kIsDistributed;
   // 注意：业务 DELETE 不设置 kTombstone (bit 7)
