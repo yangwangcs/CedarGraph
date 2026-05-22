@@ -33,8 +33,10 @@ bool TemporalNodeScan::Init(ExecutionContext* ctx) {
   context_ = ctx;
   node_ids_.clear();
   
-  uint64_t min_entity_id = 1;
-  uint64_t max_entity_id = 1000;
+  constexpr uint64_t kDefaultMinEntityId = 1;
+  constexpr uint64_t kDefaultMaxEntityId = 1000;
+  uint64_t min_entity_id = kDefaultMinEntityId;
+  uint64_t max_entity_id = kDefaultMaxEntityId;
   
   if (ctx->graph) {
     node_ids_ = ctx->graph->GetAllEntities(min_entity_id, max_entity_id, 1);
@@ -362,8 +364,10 @@ SnapshotScan::SnapshotScan(std::string variable,
 bool SnapshotScan::Init(ExecutionContext* ctx) {
   context_ = ctx;
   node_ids_.clear();
-  uint64_t min_entity_id = 1;
-  uint64_t max_entity_id = 1000;
+  constexpr uint64_t kDefaultMinEntityId = 1;
+  constexpr uint64_t kDefaultMaxEntityId = 1000;
+  uint64_t min_entity_id = kDefaultMinEntityId;
+  uint64_t max_entity_id = kDefaultMaxEntityId;
   if (ctx->graph) {
     node_ids_ = ctx->graph->GetAllEntities(min_entity_id, max_entity_id, 1);
   } else {
@@ -437,8 +441,10 @@ bool VersionScan::Init(ExecutionContext* ctx) {
   context_ = ctx;
   node_ids_.clear();
   
-  uint64_t min_entity_id = 1;
-  uint64_t max_entity_id = 1000;
+  constexpr uint64_t kDefaultMinEntityId = 1;
+  constexpr uint64_t kDefaultMaxEntityId = 1000;
+  uint64_t min_entity_id = kDefaultMinEntityId;
+  uint64_t max_entity_id = kDefaultMaxEntityId;
   if (ctx->graph) {
     node_ids_ = ctx->graph->GetAllEntities(min_entity_id, max_entity_id, 1);
   } else {

@@ -13,7 +13,8 @@ StorageBackedExecutionContext::StorageBackedExecutionContext(
   this->get_all_entities_fn = [this](uint64_t min_id, uint64_t max_id, uint64_t step) {
     std::vector<uint64_t> results;
     if (!storage_client_) return results;
-    for (uint64_t id = min_id; id <= max_id && results.size() < 1000; id += step) {
+    constexpr size_t kMaxScanResults = 1000;
+    for (uint64_t id = min_id; id <= max_id && results.size() < kMaxScanResults; id += step) {
       // Partition-aware: only scan entities whose low 16 bits match partition_id
       if (partition_id_ != 0 && (id & 0xFFFF) != partition_id_) {
         continue;

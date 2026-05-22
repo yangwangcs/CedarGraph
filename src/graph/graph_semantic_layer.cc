@@ -71,7 +71,8 @@ void SharedIOContext::CacheBlock(const std::string& file_path, size_t block_idx,
   std::lock_guard<std::mutex> lock(cache_mutex_);
   block_cache_[key] = block;
   
-  if (block_cache_.size() > 1000) {
+  constexpr size_t kBlockCacheLimit = 1000;
+  if (block_cache_.size() > kBlockCacheLimit) {
     for (auto it = block_cache_.begin(); it != block_cache_.end();) {
       if (it->second.expired()) {
         it = block_cache_.erase(it);

@@ -236,8 +236,10 @@ bool NodeScan::Init(ExecutionContext* ctx) {
   
   // Generic node scan - iterate over a configurable entity range.
   // Range can be customized by setting the CEDAR_SCAN_MAX_ENTITIES env var.
-  uint64_t min_entity_id = 1;
-  uint64_t max_entity_id = 1000;
+  constexpr uint64_t kDefaultMinEntityId = 1;
+  constexpr uint64_t kDefaultMaxEntityId = 1000;
+  uint64_t min_entity_id = kDefaultMinEntityId;
+  uint64_t max_entity_id = kDefaultMaxEntityId;
   const char* env_max = std::getenv("CEDAR_SCAN_MAX_ENTITIES");
   if (env_max) {
     max_entity_id = std::max(min_entity_id, static_cast<uint64_t>(std::strtoull(env_max, nullptr, 10)));

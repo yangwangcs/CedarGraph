@@ -385,7 +385,8 @@ std::vector<uint64_t> CedarGraph::GetAllEntities(
   if (min_entity_id > max_entity_id) return entities;
   
   size_t estimated_count = (max_entity_id - min_entity_id) / step + 1;
-  entities.reserve(std::min(estimated_count, static_cast<size_t>(1000000)));
+  constexpr size_t kMaxReserveCount = 1000000;
+  entities.reserve(std::min(estimated_count, static_cast<size_t>(kMaxReserveCount)));
   
   for (uint64_t entity_id = min_entity_id; entity_id <= max_entity_id; entity_id += step) {
     entities.push_back(entity_id);
