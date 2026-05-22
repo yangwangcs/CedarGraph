@@ -262,7 +262,9 @@ size_t WaitForGraph::CleanupExpiredEdges(uint64_t timeout_ms) {
   }
   
   // 在锁内直接移除，避免解锁期间新边被误删
-  for (const auto& [waiter, holder] : edges_to_remove) {
+  for (const auto& edge : edges_to_remove) {
+    auto waiter = edge.first;
+    auto holder = edge.second;
     auto out_it = outgoing_edges_.find(waiter);
     if (out_it != outgoing_edges_.end()) {
       auto& edges = out_it->second;

@@ -1736,7 +1736,7 @@ Status LsmEngine::ReplayWAL(uint64_t start_sequence) {
   file_numbers.reserve(wal_files.size());
   for (const auto& f : wal_files) {
     uint64_t num = 0;
-    if (sscanf(f.c_str(), "%lu.wal", &num) == 1) {
+    if (sscanf(f.c_str(), "%llu.wal", &num) == 1) {
       if (num >= start_sequence) {
         file_numbers.push_back(num);
       }
