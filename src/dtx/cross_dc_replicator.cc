@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <iostream>
+
 #include "cedar/dtx/cross_dc_replicator.h"
 #include "dtx_protocol.grpc.pb.h"
 #include <grpcpp/grpcpp.h>
@@ -24,7 +26,7 @@ CrossDCReplicator::~CrossDCReplicator() {
   try {
     Stop();
   } catch (...) {
-    // 析构函数中异常不应逃逸
+    std::cerr << "[CrossDCReplicator] Destructor exception suppressed" << std::endl;
   }
 }
 
@@ -79,7 +81,7 @@ void CrossDCReplicator::Stop() {
       replication_thread_.join();
     }
   } catch (...) {
-    // join 异常不应逃逸
+    std::cerr << "[CrossDCReplicator] Replication thread join exception" << std::endl;
   }
 }
 
@@ -228,7 +230,7 @@ void CrossDCReplicator::ReplicationLoop() {
     try {
       ProcessReplicationQueue();
     } catch (...) {
-      // 处理循环异常不应导致线程崩溃
+      std::cerr << "[CrossDCReplicator] Replication loop exception" << std::endl;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
@@ -258,7 +260,7 @@ void CrossDCReplicator::ProcessReplicationQueue() {
         try {
           callback(log, s);
         } catch (...) {
-          // callback 异常不应导致复制线程崩溃
+          std::cerr << "[CrossDCReplicator] Callback exception" << std::endl;
         }
       }
     }

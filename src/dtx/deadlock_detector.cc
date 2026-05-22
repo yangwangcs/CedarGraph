@@ -363,15 +363,15 @@ void DistributedDeadlockDetector::Shutdown() noexcept {
       detection_thread_.join();
     }
   } catch (...) {
-    // join() 理论上不应失败，但如果发生，避免异常逃逸
+    std::cerr << "[DeadlockDetector] Detection thread join exception" << std::endl;
   }
-  
+
   try {
     if (cleanup_thread_.joinable()) {
       cleanup_thread_.join();
     }
   } catch (...) {
-    // join() 理论上不应失败，但如果发生，避免异常逃逸
+    std::cerr << "[DeadlockDetector] Cleanup thread join exception" << std::endl;
   }
 }
 

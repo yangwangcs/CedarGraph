@@ -296,7 +296,7 @@ std::vector<std::pair<NodeID, cedar::dtx::PrepareResponse>> DTXRpcClient::Prepar
         std::lock_guard<std::mutex> lock(results_mutex);
         results.emplace_back(participant_id, std::move(response));
       } catch (...) {
-        // 捕获所有异常，避免线程崩溃
+        std::cerr << "[DtxRpcClient] Async task exception for participant " << participant_id << std::endl;
       }
       promise->set_value();
     });
@@ -339,7 +339,7 @@ std::vector<std::pair<NodeID, cedar::dtx::CommitResponse>> DTXRpcClient::CommitA
         std::lock_guard<std::mutex> lock(results_mutex);
         results.emplace_back(participant_id, std::move(response));
       } catch (...) {
-        // 捕获所有异常，避免线程崩溃
+        std::cerr << "[DtxRpcClient] Async task exception for participant " << participant_id << std::endl;
       }
       promise->set_value();
     });
@@ -382,7 +382,7 @@ std::vector<std::pair<NodeID, cedar::dtx::AbortResponse>> DTXRpcClient::AbortAll
         std::lock_guard<std::mutex> lock(results_mutex);
         results.emplace_back(participant_id, std::move(response));
       } catch (...) {
-        // 捕获所有异常，避免线程崩溃
+        std::cerr << "[DtxRpcClient] Async task exception for participant " << participant_id << std::endl;
       }
       promise->set_value();
     });
