@@ -137,8 +137,10 @@ int main(int argc, char* argv[]) {
   grpc::ServerBuilder builder;
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(config.tls);
   if (!creds) {
-    std::cerr << "[GraphD] Failed to create server credentials, using insecure" << std::endl;
-    creds = grpc::InsecureServerCredentials();
+    std::cerr << "[GraphD] FATAL: Failed to create server credentials. "
+              << "TLS is mandatory in production mode. "
+              << "Set tls.enabled=false explicitly for dev/test only." << std::endl;
+    return 1;
   }
   builder.AddListeningPort(server_address, creds);
   builder.RegisterService(static_cast<cedar::query::QueryService::Service*>(router.get()));

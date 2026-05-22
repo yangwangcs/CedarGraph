@@ -284,7 +284,11 @@ class MetaClient {
              const cedar::dtx::raft::TlsConfig& tls)
       : node_id_(node_id), port_(port) {
     auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls);
-    if (!client_creds) client_creds = grpc::InsecureChannelCredentials();
+    if (!client_creds) {
+      throw std::runtime_error(
+          "[StorageD] FATAL: Failed to create client TLS credentials for MetaD connection. "
+          "Set tls.enabled=false explicitly for dev/test only.");
+    }
     auto channel = grpc::CreateChannel(meta_addr, client_creds);
     stub_ = cedar::meta::MetaService::NewStub(channel);
   }
@@ -438,8 +442,10 @@ int main(int argc, char* argv[]) {
   grpc::ServerBuilder builder;
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(config.tls);
   if (!creds) {
-    std::cerr << "[StorageD] Failed to create server credentials, using insecure" << std::endl;
-    creds = grpc::InsecureServerCredentials();
+    std::cerr << "[StorageD] FATAL: Failed to create server credentials. "
+              << "TLS is mandatory in production mode. "
+              << "Set tls.enabled=false explicitly for dev/test only." << std::endl;
+    return 1;
   }
   builder.AddListeningPort(server_address, creds);
   builder.RegisterService(&service_impl);
