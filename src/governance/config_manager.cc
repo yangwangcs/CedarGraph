@@ -19,6 +19,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <sys/stat.h>
 #include <thread>
 
 // For environment variable access
@@ -265,6 +266,7 @@ class ConfigManagerImpl {
   std::unique_ptr<std::thread> hot_reload_thread_;
   std::atomic<bool> hot_reload_enabled_{false};
   int hot_reload_interval_ms_ = 5000;
+  time_t hot_reload_last_mtime_{0};
 
   // Flattened config for fast lookups
   std::map<std::string, std::string> flattened_;
@@ -825,20 +827,29 @@ Status ConfigManager::EnableHotReload(const std::string& filepath,
   impl_->hot_reload_enabled_ = true;
   impl_->source_file_ = filepath;
 
+  impl_->hot_reload_last_mtime_ = 0;
+  {
+    struct stat st;
+    if (stat(impl_->source_file_.c_str(), &st) == 0) {
+      impl_->hot_reload_last_mtime_ = st.st_mtime;
+    }
+  }
+
   impl_->hot_reload_thread_ = std::make_unique<std::thread>([this]() {
     while (impl_->hot_reload_enabled_) {
       std::this_thread::sleep_for(
           std::chrono::milliseconds(impl_->hot_reload_interval_ms_));
-
       if (!impl_->hot_reload_enabled_) {
         break;
       }
-
-      // Check if file has been modified
-      // For simplicity, we just reload - a real implementation would
-      // track file modification times
       if (!impl_->source_file_.empty()) {
-        Reload();
+        struct stat st;
+        if (stat(impl_->source_file_.c_str(), &st) == 0) {
+          if (st.st_mtime != impl_->hot_reload_last_mtime_) {
+            impl_->hot_reload_last_mtime_ = st.st_mtime;
+            Reload();
+          }
+        }
       }
     }
   });
