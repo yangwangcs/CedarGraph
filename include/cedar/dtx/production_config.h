@@ -123,6 +123,9 @@ struct TwoPCConfig {
   bool enable_adaptive_tuning = true;
   int tuning_interval_sec = 60;        // Re-tune every 60 seconds
   double latency_target_ms = 10.0;     // Target latency for auto-tuning
+
+  // Decision log directory for coordinator crash recovery
+  std::string decision_log_dir;  // Directory for coordinator decision logs
 };
 
 // =============================================================================

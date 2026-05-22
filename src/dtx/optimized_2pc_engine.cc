@@ -22,7 +22,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <fcntl.h>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <unistd.h>
 
 namespace cedar {
 namespace dtx {
@@ -373,6 +377,95 @@ Status Optimized2PCEngine::SubmitPipelined(
          : Status::IOError("Transaction aborted");
 }
 
+std::string Optimized2PCEngine::DecisionLogPath(TxnID txn_id) const {
+  std::lock_guard<std::mutex> lock(config_mutex_);
+  return config_.decision_log_dir + "/txn_" + std::to_string(txn_id) + ".decision";
+}
+
+Status Optimized2PCEngine::PersistCommitDecision(const CommitDecision& decision) {
+  std::string decision_log_dir;
+  {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    decision_log_dir = config_.decision_log_dir;
+  }
+  if (decision_log_dir.empty()) {
+    return Status::OK();
+  }
+  if (!decision_log_dir.empty()) {
+    std::filesystem::create_directories(decision_log_dir);
+  }
+  std::string path = decision_log_dir + "/txn_" + std::to_string(decision.txn_id) + ".decision";
+  std::ofstream ofs(path, std::ios::binary);
+  if (!ofs) {
+    return Status::IOError("Cannot write decision log", path);
+  }
+  constexpr uint32_t kMagic = 0x44454301;
+  constexpr uint32_t kVersion = 1;
+  ofs.write(reinterpret_cast<const char*>(&kMagic), sizeof(kMagic));
+  ofs.write(reinterpret_cast<const char*>(&kVersion), sizeof(kVersion));
+  ofs.write(reinterpret_cast<const char*>(&decision.txn_id), sizeof(decision.txn_id));
+  ofs.write(reinterpret_cast<const char*>(&decision.commit_ts), sizeof(decision.commit_ts));
+  uint32_t num_parts = static_cast<uint32_t>(decision.participants.size());
+  ofs.write(reinterpret_cast<const char*>(&num_parts), sizeof(num_parts));
+  for (PartitionID pid : decision.participants) {
+    ofs.write(reinterpret_cast<const char*>(&pid), sizeof(pid));
+  }
+  ofs.flush();
+  if (!ofs) {
+    return Status::IOError("Decision log write incomplete", path);
+  }
+  ofs.close();
+  if (!ofs) {
+    return Status::IOError("Decision log close failed", path);
+  }
+  // fsync for durability
+  int fd = open(path.c_str(), O_RDONLY);
+  if (fd >= 0) {
+    if (fsync(fd) != 0) {
+      close(fd);
+      return Status::IOError("Decision log fsync failed", path);
+    }
+    close(fd);
+  }
+  return Status::OK();
+}
+
+  // TODO(phase1-recovery): Wire this into TransactionRecoveryManager so it
+  // reads the decision log during recovery and drives incomplete commits.
+Status Optimized2PCEngine::LoadCommitDecision(TxnID txn_id, CommitDecision* out) {
+  std::string decision_log_dir;
+  {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    decision_log_dir = config_.decision_log_dir;
+  }
+  if (decision_log_dir.empty()) {
+    return Status::NotFound("Decision logging disabled");
+  }
+  std::string path = decision_log_dir + "/txn_" + std::to_string(txn_id) + ".decision";
+  std::ifstream ifs(path, std::ios::binary);
+  if (!ifs) {
+    return Status::NotFound("Decision log not found", path);
+  }
+  uint32_t magic = 0, version = 0;
+  ifs.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+  ifs.read(reinterpret_cast<char*>(&version), sizeof(version));
+  if (magic != 0x44454301 || version != 1) {
+    return Status::IOError("Decision log format mismatch", path);
+  }
+  ifs.read(reinterpret_cast<char*>(&out->txn_id), sizeof(out->txn_id));
+  ifs.read(reinterpret_cast<char*>(&out->commit_ts), sizeof(out->commit_ts));
+  uint32_t num_parts = 0;
+  ifs.read(reinterpret_cast<char*>(&num_parts), sizeof(num_parts));
+  out->participants.resize(num_parts);
+  for (uint32_t i = 0; i < num_parts; ++i) {
+    PartitionID pid;
+    ifs.read(reinterpret_cast<char*>(&pid), sizeof(pid));
+    out->participants[i] = pid;
+  }
+  out->decision_made = true;
+  return Status::OK();
+}
+
 // =============================================================================
 // Strategy Implementations
 // =============================================================================
@@ -427,6 +520,27 @@ Status Optimized2PCEngine::ExecuteSequential2PC(
   ctx->state.store(TransactionContext::State::kPrepared);
   ctx->prepare_complete_time = std::chrono::steady_clock::now();
 
+  // Persist commit decision before broadcasting
+  CommitDecision decision;
+  decision.txn_id = ctx->txn_id;
+  decision.commit_ts = ctx->commit_ts;
+  decision.participants = GetPartitionIDs(ctx->write_set);
+  Status decision_status = PersistCommitDecision(decision);
+  if (!decision_status.ok()) {
+    std::cerr << "[Optimized2PCEngine] Failed to persist commit decision for txn="
+              << ctx->txn_id << ": " << decision_status.ToString() << std::endl;
+    ctx->state.store(TransactionContext::State::kAborting);
+    // Abort all prepared participants to release locks
+    for (auto& client : participants) {
+      auto abort_status = client->Abort(ctx->txn_id);
+      if (!abort_status.ok()) {
+        std::cerr << "[Optimized2PCEngine] Abort failed for txn=" << ctx->txn_id
+                  << ": " << abort_status.ToString() << std::endl;
+      }
+    }
+    return Status::IOError("Commit decision persistence failed — aborting transaction");
+  }
+
   // Phase 2: Commit (sequential RPC)
   ctx->state.store(TransactionContext::State::kCommitting);
   auto commit_start = std::chrono::steady_clock::now();
@@ -459,12 +573,13 @@ Status Optimized2PCEngine::ExecuteSequential2PC(
 
     return Status::OK();
   } else {
-    // Once commit phase has started, we cannot abort. Some participants
-    // may have already committed. Leave state as kCommitting for recovery.
+    // Commit phase incomplete but decision is persisted.
+    // Recovery will read the decision log and drive remaining participants.
+    ctx->state.store(TransactionContext::State::kCommitting);
     if (recovery_manager_) {
       recovery_manager_->StartRecovery(ctx->txn_id);
     }
-    return Status::IOError("Commit phase failed - recovery required");
+    return Status::IOError("Commit phase incomplete — recovery will complete remaining participants");
   }
 }
 
@@ -555,6 +670,27 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   ctx->state.store(TransactionContext::State::kPrepared);
   ctx->prepare_complete_time = std::chrono::steady_clock::now();
 
+  // Persist commit decision before broadcasting
+  CommitDecision decision;
+  decision.txn_id = ctx->txn_id;
+  decision.commit_ts = ctx->commit_ts;
+  decision.participants = GetPartitionIDs(ctx->write_set);
+  Status decision_status = PersistCommitDecision(decision);
+  if (!decision_status.ok()) {
+    std::cerr << "[Optimized2PCEngine] Failed to persist commit decision for txn="
+              << ctx->txn_id << ": " << decision_status.ToString() << std::endl;
+    ctx->state.store(TransactionContext::State::kAborting);
+    // Abort all prepared participants to release locks
+    for (auto& client : participants) {
+      auto abort_status = client->Abort(ctx->txn_id);
+      if (!abort_status.ok()) {
+        std::cerr << "[Optimized2PCEngine] Abort failed for txn=" << ctx->txn_id
+                  << ": " << abort_status.ToString() << std::endl;
+      }
+    }
+    return Status::IOError("Commit decision persistence failed — aborting transaction");
+  }
+
   if (state_manager_) {
     state_manager_->UpdateState(ctx->txn_id, TxnState::kPrepared);
   }
@@ -615,15 +751,16 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
     
     return Status::OK();
   } else {
-    // Once commit phase has started, we cannot abort. Some participants
-    // may have already committed. Leave state as kCommitting for recovery.
+    // Commit phase incomplete but decision is persisted.
+    // Recovery will read the decision log and drive remaining participants.
+    ctx->state.store(TransactionContext::State::kCommitting);
     if (state_manager_) {
       state_manager_->UpdateState(ctx->txn_id, TxnState::kCommitting);
     }
     if (recovery_manager_) {
       recovery_manager_->StartRecovery(ctx->txn_id);
     }
-    return Status::IOError("Commit phase failed - recovery required");
+    return Status::IOError("Commit phase incomplete — recovery will complete remaining participants");
   }
 }
 
@@ -780,7 +917,39 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
         if (state_manager_) {
           state_manager_->UpdateState(ctx->txn_id, TxnState::kPrepared);
         }
-        
+
+        // Persist commit decision before broadcasting
+        CommitDecision decision;
+        decision.txn_id = ctx->txn_id;
+        decision.commit_ts = ctx->commit_ts;
+        decision.participants = GetPartitionIDs(ctx->write_set);
+        Status decision_status = PersistCommitDecision(decision);
+        if (!decision_status.ok()) {
+          std::cerr << "[Optimized2PCEngine] Failed to persist commit decision for pipelined txn="
+                    << ctx->txn_id << ": " << decision_status.ToString() << std::endl;
+          ctx->state.store(TransactionContext::State::kAborting);
+          // Abort all prepared participants to release locks
+          for (auto& client : participants) {
+            try {
+              auto abort_status = client->Abort(ctx->txn_id);
+              if (!abort_status.ok()) {
+                std::cerr << "[Optimized2PCEngine] Abort failed for txn=" << ctx->txn_id
+                          << ": " << abort_status.ToString() << std::endl;
+              }
+            } catch (...) {
+              std::cerr << "[2PC] Abort RPC exception for txn_id=" << ctx->txn_id << std::endl;
+            }
+          }
+          if (state_manager_) {
+            state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
+          }
+          stats_.aborted_transactions++;
+          if (ctx->done_promise) {
+            ctx->done_promise->set_value();
+          }
+          continue;  // Process next transaction in batch
+        }
+
         // Phase 2: Commit all in parallel
         ctx->state.store(TransactionContext::State::kCommitting);
         std::vector<std::promise<bool>> commit_promises(participants.size());

@@ -971,17 +971,22 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
     }
     
     if (!all_committed) {
-      // Abort all already-committed partitions to maintain atomicity
-      for (auto* p : committed_so_far) {
-        p->Abort(txn_id);  // best-effort rollback
-      }
-      response->set_success(false);
-      std::string error_msg = "Commit failed on one or more partitions: ";
+      // VIOLATION: Do NOT abort already-committed partitions.
+      // Once any partition commits, the transaction is durable.
+      // The remaining partitions must be driven to commit via recovery.
+      std::string error_msg = "Commit failed on one or more partitions after partial commit: ";
       for (const auto& e : errors) {
         error_msg += e + "; ";
       }
+      std::cerr << "[StorageServiceImpl::Commit] PARTIAL_COMMIT txn_id=" << txn_id
+                << " committed=" << committed_so_far.size()
+                << " failed=" << errors.size()
+                << " error=" << error_msg << std::endl;
+
+      response->set_success(false);
       response->set_error_msg(error_msg);
-      return grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
+      // Return UNAVAILABLE so the coordinator retries / triggers recovery
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE, error_msg);
     }
     
     response->set_success(true);

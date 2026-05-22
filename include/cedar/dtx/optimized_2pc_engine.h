@@ -296,6 +296,17 @@ class Optimized2PCEngine {
   AtomicStats stats_;
   mutable std::mutex stats_mutex_;
   
+  // Commit decision log for recovery
+  struct CommitDecision {
+    TxnID txn_id{0};
+    Timestamp commit_ts{0};
+    std::vector<PartitionID> participants;
+    bool decision_made{false};
+  };
+  Status PersistCommitDecision(const CommitDecision& decision);
+  Status LoadCommitDecision(TxnID txn_id, CommitDecision* out);
+  std::string DecisionLogPath(TxnID txn_id) const;
+
   // Adaptive tuning state
   struct TuningState {
     double last_throughput = 0;

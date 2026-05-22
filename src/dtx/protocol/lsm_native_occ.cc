@@ -326,7 +326,6 @@ LndOccCommitResult LndOccEngine::SameTemporalRangeCommit(
     auto result = coordinator->Commit(ctx);
     if (!result.success) {
       overall = result;
-      // In production: trigger rollback on already-committed partitions
     }
   }
   
