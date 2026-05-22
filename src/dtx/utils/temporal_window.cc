@@ -15,7 +15,6 @@
 #include "cedar/dtx/temporal_window.h"
 
 #include <algorithm>
-#include <sstream>
 
 namespace cedar {
 namespace dtx {

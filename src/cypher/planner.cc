@@ -3,7 +3,6 @@
 
 #include "cedar/cypher/planner.h"
 
-#include <sstream>
 
 #include "cedar/cypher/expression_evaluator.h"
 

@@ -2,7 +2,6 @@
 
 #include "cedar/cypher/validator.h"
 
-#include <sstream>
 
 namespace cedar::cypher {
 

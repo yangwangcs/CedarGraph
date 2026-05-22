@@ -14,7 +14,6 @@
 
 #include "cedar/dtx/meta_service_impl.h"
 
-#include <sstream>
 #include <chrono>
 
 namespace cedar {

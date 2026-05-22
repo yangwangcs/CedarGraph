@@ -1,7 +1,6 @@
 #include "cedar/storage/consistent_hash_ring.h"
 
 #include <openssl/evp.h>
-#include <sstream>
 #include <set>
 
 namespace cedar {
