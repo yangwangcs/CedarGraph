@@ -864,7 +864,7 @@ Status ReadFileToString(Env* env, const std::string& fname, std::string* data) {
   SequentialFile* file;
   Status s = env->NewSequentialFile(fname, &file);
   if (!s.ok()) return s;
-  static const size_t kBufferSize = 8192;
+  constexpr size_t kBufferSize = 8192;
   char scratch[kBufferSize];
   while (true) {
     Slice fragment;

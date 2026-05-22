@@ -334,7 +334,7 @@ std::vector<Status> Optimized2PCEngine::Execute2PCBatch(
     return sync->completed.load() >= sync->results.size();
   });
 
-  return std::move(sync->results);
+  return sync->results;
 }
 
 Status Optimized2PCEngine::SubmitPipelined(

@@ -22,8 +22,8 @@
 namespace cedar {
 
 // Manifest 文件魔数和版本
-static const uint32_t kManifestMagic = 0x464D4E00;  // "FMN\0"
-static const uint32_t kManifestVersion = 1;
+constexpr uint32_t kManifestMagic = 0x464D4E00;  // "FMN\0"
+constexpr uint32_t kManifestVersion = 1;
 
 // 编码/解码辅助函数
 static inline void EncodeFixed32(char* buf, uint32_t value) {
