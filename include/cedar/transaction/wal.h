@@ -241,6 +241,9 @@ class WalWriter {
   std::atomic<bool> shutdown_{false};
   std::unique_ptr<std::thread> group_commit_thread_;
   
+  // 保护 current_file_ 的互斥锁
+  std::mutex file_mutex_;
+
   // 统计
   mutable WalStats stats_;
 };

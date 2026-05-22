@@ -266,16 +266,20 @@ Status WalWriter::Close() {
   ProcessGroupCommit();
   
   // 关闭文件
-  if (current_file_) {
-    current_file_->Sync();
-    delete current_file_;
-    current_file_ = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(file_mutex_);
+    if (current_file_) {
+      current_file_->Sync();
+      delete current_file_;
+      current_file_ = nullptr;
+    }
   }
   
   return Status::OK();
 }
 
 Status WalWriter::Sync() {
+  std::lock_guard<std::mutex> lock(file_mutex_);
   if (!current_file_) {
     return Status::IOError("WalWriter", "not opened");
   }
@@ -305,16 +309,19 @@ Status WalWriter::WriteBatch(const WalBatch& batch) {
   if (batch.empty()) {
     return Status::OK();
   }
-  
-  // 如果启用了组提交，加入队列
+  {
+    std::lock_guard<std::mutex> lock(file_mutex_);
+    if (!current_file_) {
+      return Status::IOError("WalWriter", "not opened");
+    }
+  }
   if (options_.group_commit_timeout_us > 0) {
     uint64_t seq;
     Status s = WriteBatchAsync(batch, &seq);
     CEDAR_RETURN_IF_ERROR(s);
     return WaitForSequence(seq);
   }
-  
-  // 直接写入
+  std::lock_guard<std::mutex> lock(file_mutex_);
   return WriteInternal(batch);
 }
 
@@ -465,21 +472,30 @@ void WalWriter::ProcessGroupCommit() {
     return;
   }
   
-  // 合并批次 (简单实现: 逐个写入)
-  // 优化: 可以合并多个小批次为一个大写入
-  for (auto& request : batch) {
-    Status s = WriteInternal(request->batch);
-    request->promise.set_value(s);
+  {
+    std::lock_guard<std::mutex> lock(file_mutex_);
+    // 合并批次 (简单实现: 逐个写入)
+    // 优化: 可以合并多个小批次为一个大写入
+    for (auto& request : batch) {
+      Status s = WriteInternal(request->batch);
+      request->promise.set_value(s);
+      
+      if (!s.ok()) {
+        // 记录错误，但继续处理其他请求
+        fprintf(stderr, "WAL write failed: %s\n", s.ToString().c_str());
+      }
+    }
     
-    if (!s.ok()) {
-      // 记录错误，但继续处理其他请求
-      fprintf(stderr, "WAL write failed: %s\n", s.ToString().c_str());
+    // 批量 fsync
+    if (!batch.empty() && current_file_) {
+      cedar::Status sync_status = current_file_->Sync();
+      if (sync_status.ok()) {
+        stats_.syncs.fetch_add(1, std::memory_order_relaxed);
+      }
     }
   }
   
-  // 批量 fsync
   if (!batch.empty()) {
-    Sync();
     stats_.batches_committed.fetch_add(batch.size(), std::memory_order_relaxed);
   }
 }

@@ -1275,6 +1275,9 @@ void LsmEngine::TraverseTemporalChain(uint64_t entity_id,
 }
 
 Status LsmEngine::ForceFlush() {
+  if (shutdown_.load() || !opened_) {
+    return Status::InvalidArgument("LsmEngine", "engine not open or shutting down");
+  }
   // 等待任何后台 Flush 完成
   while (true) {
     {
@@ -1341,6 +1344,10 @@ void LsmEngine::MaybeScheduleFlush() {
   
   VSLMemTable* imm = imm_.get();
   
+  if (shutdown_.load() || !opened_) {
+    return;
+  }
+
   // 先增加计数再释放锁，避免 Close() 在计数为 0 时看到 imm_ 非空
   active_flush_count_.fetch_add(1);
   lock.unlock();
