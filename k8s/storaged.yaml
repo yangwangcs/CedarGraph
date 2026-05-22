@@ -53,20 +53,20 @@ spec:
           containerPort: 9090
           protocol: TCP
         livenessProbe:
-          exec:
-            command:
-            - /usr/local/bin/cedar_health_monitor.sh
+          httpGet:
+            path: /healthz
+            port: 9559
           initialDelaySeconds: 30
-          periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
-        readinessProbe:
-          exec:
-            command:
-            - /usr/local/bin/cedar_health_monitor.sh
-          initialDelaySeconds: 10
           periodSeconds: 10
           timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9559
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
           failureThreshold: 3
         resources:
           requests:

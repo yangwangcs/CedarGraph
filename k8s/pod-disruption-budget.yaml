@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cedargraph-pdb
+  namespace: cedargraph
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: cedargraph
