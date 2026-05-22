@@ -132,6 +132,11 @@ add_executable(audit_log_test dtx/security/audit_log_test.cc)
 target_link_libraries(audit_log_test ${CEDAR_TEST_LIBS})
 gtest_discover_tests(audit_log_test)
 
+# SecurityManager audit log short path test
+add_executable(test_security_manager dtx/test_security_manager.cc)
+target_link_libraries(test_security_manager ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_security_manager)
+
 # Supporting modules critical batch
 add_executable(test_supporting_critical security/test_supporting_critical.cc)
 target_link_libraries(test_supporting_critical ${CEDAR_TEST_LIBS})

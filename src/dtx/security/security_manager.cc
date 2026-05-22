@@ -788,7 +788,8 @@ Status AuditLogger::Initialize(const Config& config) {
           "Audit log file path contains '..' directory traversal: " + config_.log_file);
     }
     if (!config_.allowed_log_prefix.empty() &&
-        config_.log_file.substr(0, config_.allowed_log_prefix.size()) != config_.allowed_log_prefix) {
+        (config_.log_file.size() < config_.allowed_log_prefix.size() ||
+         config_.log_file.substr(0, config_.allowed_log_prefix.size()) != config_.allowed_log_prefix)) {
       return Status::InvalidArgument(
           "Audit log file path must start with: " + config_.allowed_log_prefix);
     }
