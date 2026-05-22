@@ -26,6 +26,8 @@ struct GraphCDCEvent {
   CDCEventOp op;
 };
 
+/// Applies CDC events to the TMVEngine in commit-order.
+/// Thread-safe; buffers out-of-order events until the gap is filled.
 class EventApplier {
  public:
   explicit EventApplier(TMVEngine* engine);

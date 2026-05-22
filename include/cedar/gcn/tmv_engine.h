@@ -15,6 +15,8 @@ namespace gcn {
 
 enum class Direction : uint8_t { kOut = 0, kIn = 1 };
 
+/// Temporal Multi-Version Engine (TMVEngine) — core graph storage engine
+/// for vertex/edge data with MVCC and directional traversal support.
 class TMVEngine {
  public:
   explicit TMVEngine(size_t max_chunks);

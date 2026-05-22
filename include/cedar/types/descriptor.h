@@ -51,6 +51,7 @@ enum class CompressionType : uint8_t {
 // [48-55] Length: 数据长度
 // [56-57] Compression: 压缩类型
 // [58-63] Reserved: 保留位
+/// Compact 64-bit cell descriptor storing kind, payload, and metadata.
 class Descriptor {
  public:
   // 默认构造（Tombstone）

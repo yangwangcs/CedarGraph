@@ -8,6 +8,7 @@
 namespace cedar {
 namespace queryd {
 
+/// Execution context backed by QueryStorageClient for partition-local scans.
 class StorageBackedExecutionContext : public cypher::ExecutionContext {
  public:
   explicit StorageBackedExecutionContext(
