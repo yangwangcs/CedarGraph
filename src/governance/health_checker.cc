@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstring>
 #include <iomanip>
+#include <iostream>
 #include <netinet/in.h>
 #include <sstream>
 #include <sys/socket.h>
@@ -636,6 +637,7 @@ class HealthCheckerImpl {
         result.message = message_func();
       }
     } catch (...) {
+      std::cerr << "[HealthChecker] Unknown exception during health check" << std::endl;
       result.status = HealthStatus::kUnhealthy;
       result.message = "Health check threw exception";
     }

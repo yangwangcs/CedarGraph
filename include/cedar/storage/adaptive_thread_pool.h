@@ -112,7 +112,7 @@ class Worker {
 template <typename Task>
 class AdaptiveThreadPool {
  public:
-  using TaskResult = typename std::result_of<Task()>::type;
+  using TaskResult = std::invoke_result_t<Task>;
   
   explicit AdaptiveThreadPool(const AdaptiveConfig& config) : config_(config) {
     metrics_.current_threads = 0;

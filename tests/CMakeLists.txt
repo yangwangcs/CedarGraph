@@ -45,7 +45,7 @@ gtest_discover_tests(test_set_delete_parsing)
 
 # Queryd tests
 add_executable(test_subquery_execution queryd/test_subquery_execution.cc)
-target_link_libraries(test_subquery_execution ${CEDAR_TEST_LIBS})
+target_link_libraries(test_subquery_execution ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_subquery_execution)
 
 # Core tests

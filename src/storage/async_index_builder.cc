@@ -15,6 +15,7 @@
 #include "cedar/storage/async_index_builder.h"
 
 #include <chrono>
+#include <iostream>
 #include <thread>
 
 namespace cedar {
@@ -158,6 +159,7 @@ Status AsyncIndexBuilder::SubmitAndWait(const IndexBuildTask& task,
   try {
     *result = future.get();
   } catch (...) {
+    std::cerr << "[AsyncIndexBuilder] Unknown exception while retrieving async index build result" << std::endl;
     return Status::IOError("Failed to get result");
   }
   

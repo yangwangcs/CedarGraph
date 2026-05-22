@@ -4,6 +4,7 @@
 
 #include "cedar/partition/strategies/mth_stream_strategy.h"
 #include "cedar/partition/mth/op_type.h"
+#include <iostream>
 #include <sstream>
 
 namespace cedar {
@@ -74,6 +75,7 @@ Status MTHStreamStrategy::Configure(const std::string& key, const std::string& v
     }
     return Status::OK();
   } catch (...) {
+    std::cerr << "[MTHStreamStrategy] Invalid value for key=" << key << ", value=" << value << std::endl;
     return Status::InvalidArgument("Invalid value for key: " + key);
   }
 }

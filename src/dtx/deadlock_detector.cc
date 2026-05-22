@@ -343,6 +343,7 @@ Status DistributedDeadlockDetector::Initialize(const Config& config) {
       CleanupLoop();
     });
   } catch (...) {
+    std::cerr << "[DeadlockDetector] Initialization exception" << std::endl;
     running_ = false;
     if (detection_thread_.joinable()) {
       detection_thread_.join();

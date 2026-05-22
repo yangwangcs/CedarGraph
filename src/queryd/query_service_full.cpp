@@ -289,7 +289,7 @@ class QueryServiceImpl::Impl {
     (void)context;
     (void)request;
     (void)writer;
-    // TODO: Implement streaming query execution
+    // TODO(#queryd-001): Implement streaming query execution
     return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "StreamQuery not yet implemented");
   }
 

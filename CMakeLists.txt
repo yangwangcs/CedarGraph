@@ -690,7 +690,7 @@ target_link_libraries(test_optimized_temporal_perf cedar ${LZ4_LIBRARIES})
 add_executable(test_distributed_simple
     tests/test_distributed_simple.cpp
 )
-target_link_libraries(test_distributed_simple cedar cedar_cypher ${LZ4_LIBRARIES} gRPC::grpc++)
+target_link_libraries(test_distributed_simple cedar cedar_cypher cedar_queryd ${LZ4_LIBRARIES} gRPC::grpc++)
 
 # Fixed Distributed Test
 add_executable(test_distributed_fixed

@@ -64,6 +64,7 @@ Status CrossDCReplicator::Start() {
       replication_thread_ = std::thread(&CrossDCReplicator::ReplicationLoop, this);
     } catch (...) {
       running_ = false;
+      std::cerr << "[CrossDCReplicator] Failed to start replication thread" << std::endl;
       return Status::IOError("Failed to start replication thread");
     }
   }

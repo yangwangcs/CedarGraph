@@ -4,6 +4,7 @@
 
 #include "cedar/partition/strategies/static_hash_strategy.h"
 
+#include <iostream>
 #include <sstream>
 
 namespace cedar {
@@ -37,6 +38,7 @@ Status StaticHashStrategy::Configure(const std::string& key,
       num_partitions_ = static_cast<uint32_t>(std::stoul(value));
       return Status::OK();
     } catch (...) {
+      std::cerr << "[StaticHashStrategy] Invalid num_partitions value: " << value << std::endl;
       return Status::InvalidArgument("Invalid num_partitions value");
     }
   }
