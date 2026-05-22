@@ -365,12 +365,19 @@ Status Optimized2PCEngine::SubmitPipelined(
   auto timeout = std::chrono::milliseconds(
       config_.prepare_timeout_ms + config_.commit_timeout_ms);
   if (future.wait_for(timeout) == std::future_status::timeout) {
-    ctx->state.store(TransactionContext::State::kAborted);
-    if (state_manager_) {
-      state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
+    // Signal the worker that this transaction should be abandoned.
+    // Use compare-and-swap so we only abort if worker hasn't finished yet.
+    auto expected = TransactionContext::State::kInit;
+    if (ctx->state.compare_exchange_strong(
+            expected, TransactionContext::State::kAborted)) {
+      if (state_manager_) {
+        state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
+      }
+      stats_.timeout_transactions++;
+      return Status::IOError("Transaction timeout");
     }
-    stats_.timeout_transactions++;
-    return Status::IOError("Transaction timeout");
+    // If CAS failed, worker already committed or aborted. Wait for it.
+    future.wait();
   }
 
   return ctx->state.load() == TransactionContext::State::kCommitted
@@ -847,6 +854,14 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
         // deduplicate
         std::sort(participants.begin(), participants.end());
         participants.erase(std::unique(participants.begin(), participants.end()), participants.end());
+
+        // Check if transaction was aborted by timeout before we start
+        if (ctx->state.load() == TransactionContext::State::kAborted) {
+          if (ctx->done_promise) {
+            ctx->done_promise->set_value();
+          }
+          continue;
+        }
         
         if (participants.empty()) {
           ctx->state.store(TransactionContext::State::kAborted);

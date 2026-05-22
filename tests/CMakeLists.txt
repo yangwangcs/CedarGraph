@@ -375,6 +375,10 @@ add_executable(test_2pc_thread_pool dtx/test_2pc_thread_pool.cc)
 target_link_libraries(test_2pc_thread_pool ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_2pc_thread_pool)
 
+add_executable(test_2pc_pipeline_race dtx/test_2pc_pipeline_race.cc)
+target_link_libraries(test_2pc_pipeline_race ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_2pc_pipeline_race)
+
 add_executable(two_pc_atomicity_test dtx/two_pc_atomicity_test.cc)
 target_link_libraries(two_pc_atomicity_test ${CEDAR_TEST_LIBS})
 gtest_discover_tests(two_pc_atomicity_test)
