@@ -6,7 +6,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: cedargraph
+      app.kubernetes.io/part-of: cedargraph
   policyTypes:
     - Ingress
     - Egress
@@ -17,9 +17,24 @@ spec:
               name: cedargraph
       ports:
         - protocol: TCP
-          port: 9559
+          port: 6000
+        - protocol: TCP
+          port: 7000
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9669
   egress:
     - to:
         - namespaceSelector:
             matchLabels:
               name: cedargraph
+      ports:
+        - protocol: TCP
+          port: 6000
+        - protocol: TCP
+          port: 7000
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9669

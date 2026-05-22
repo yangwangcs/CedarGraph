@@ -7,6 +7,7 @@ metadata:
     app: storaged
     app.kubernetes.io/name: storaged
     app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: cedargraph
 spec:
   serviceName: storaged
   replicas: 3
@@ -19,6 +20,7 @@ spec:
         app: storaged
         app.kubernetes.io/name: storaged
         app.kubernetes.io/component: storage
+        app.kubernetes.io/part-of: cedargraph
     spec:
       containers:
       - name: storaged
@@ -55,7 +57,7 @@ spec:
         livenessProbe:
           httpGet:
             path: /healthz
-            port: 9559
+            port: 7000
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
@@ -63,7 +65,7 @@ spec:
         readinessProbe:
           httpGet:
             path: /readyz
-            port: 9559
+            port: 7000
           initialDelaySeconds: 10
           periodSeconds: 5
           timeoutSeconds: 3

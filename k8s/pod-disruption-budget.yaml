@@ -7,4 +7,4 @@ spec:
   minAvailable: 2
   selector:
     matchLabels:
-      app: cedargraph
+      app.kubernetes.io/part-of: cedargraph
