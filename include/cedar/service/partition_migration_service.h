@@ -174,7 +174,7 @@ class PartitionMigrationServiceImpl final
   std::vector<std::string> GetActiveMigrationIds() const;
   
   // Clean up completed/failed migrations older than specified duration
-  size_t CleanupOldMigrations(std::chrono::seconds max_age);
+  size_t CleanupOldMigrations(std::chrono::milliseconds max_age);
   
   // Get service statistics
   struct Stats {

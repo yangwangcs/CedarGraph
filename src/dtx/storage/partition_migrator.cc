@@ -115,7 +115,7 @@ Status PartitionMigrator::Initialize(const MigrationConfig& config) {
   // Start worker threads
   uint32_t num_workers = std::max(1U, config.max_concurrent_batches);
   for (uint32_t i = 0; i < num_workers; ++i) {
-    worker_threads_.push_back(std::make_unique<std::thread>(
+    worker_threads_.emplace_back(std::make_unique<std::thread>(
         &PartitionMigrator::MigrationWorkerLoop, this));
   }
   

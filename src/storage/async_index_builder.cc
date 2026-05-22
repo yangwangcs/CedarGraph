@@ -54,7 +54,7 @@ AsyncIndexBuilder::~AsyncIndexBuilder() {
 
 Status AsyncIndexBuilder::Initialize() {
   for (uint32_t i = 0; i < options_.num_worker_threads; ++i) {
-    workers_.push_back(std::make_unique<std::thread>(
+    workers_.emplace_back(std::make_unique<std::thread>(
         &AsyncIndexBuilder::WorkerThreadLoop, this, i));
   }
   return Status::OK();

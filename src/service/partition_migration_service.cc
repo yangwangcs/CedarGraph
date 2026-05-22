@@ -655,7 +655,7 @@ std::vector<std::string> PartitionMigrationServiceImpl::GetActiveMigrationIds() 
   return result;
 }
 
-size_t PartitionMigrationServiceImpl::CleanupOldMigrations(std::chrono::seconds max_age) {
+size_t PartitionMigrationServiceImpl::CleanupOldMigrations(std::chrono::milliseconds max_age) {
   auto cutoff = std::chrono::system_clock::now() - max_age;
   std::vector<std::string> to_remove;
 

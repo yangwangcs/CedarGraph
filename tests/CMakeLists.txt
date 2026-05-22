@@ -145,8 +145,8 @@ gtest_discover_tests(test_multi_threaded_concurrent_e2e)
 
 # DTX tests (in subdirectories)
 add_executable(test_2pc_recovery dtx/test_2pc_recovery.cpp)
-target_link_libraries(test_2pc_recovery ${CEDAR_TEST_LIBS} glog)
-gtest_discover_tests(test_2pc_recovery)
+target_link_libraries(test_2pc_recovery ${CEDAR_TEST_LIBS})
+add_test(NAME test_2pc_recovery COMMAND test_2pc_recovery)
 
 add_executable(test_meta_service dtx/unit/test_meta_service.cc)
 target_link_libraries(test_meta_service ${CEDAR_TEST_LIBS})
@@ -604,4 +604,7 @@ add_executable(test_service_meta_critical
 )
 target_link_libraries(test_service_meta_critical cedar cedar_graph cedar_cypher cedar_queryd gRPC::grpc++ ${GTEST_MAIN_TARGET} pthread)
 target_link_directories(test_service_meta_critical PRIVATE /opt/homebrew/lib)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(test_service_meta_critical PRIVATE -Wno-vla-cxx-extension)
+endif()
 add_test(NAME test_service_meta_critical COMMAND test_service_meta_critical)

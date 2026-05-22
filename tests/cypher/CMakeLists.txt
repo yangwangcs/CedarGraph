@@ -4,33 +4,33 @@
 add_executable(test_where_clause
     test_where_clause.cc
 )
-target_link_libraries(test_where_clause cedar cedar_cypher gtest pthread)
-gtest_discover_tests(test_where_clause)
+target_link_libraries(test_where_clause cedar cedar_cypher gtest gtest_main pthread)
+add_test(NAME test_where_clause COMMAND test_where_clause)
 
 # Parameterized Query Test
 add_executable(test_parameterized_query
     test_parameterized_queries.cc
 )
-target_link_libraries(test_parameterized_query cedar cedar_cypher gtest pthread)
-gtest_discover_tests(test_parameterized_query)
+target_link_libraries(test_parameterized_query cedar cedar_cypher gtest gtest_main pthread)
+add_test(NAME test_parameterized_query COMMAND test_parameterized_query)
 
 # Parser Test
 add_executable(test_parser
     test_parser.cc
 )
-target_link_libraries(test_parser cedar cedar_cypher gtest pthread)
-gtest_discover_tests(test_parser)
+target_link_libraries(test_parser cedar cedar_cypher gtest gtest_main pthread)
+add_test(NAME test_parser COMMAND test_parser)
 
 # Fingerprint Test
 add_executable(test_fingerprint
     test_fingerprint.cc
 )
-target_link_libraries(test_fingerprint cedar cedar_cypher gtest pthread)
-gtest_discover_tests(test_fingerprint)
+target_link_libraries(test_fingerprint cedar cedar_cypher gtest gtest_main pthread)
+add_test(NAME test_fingerprint COMMAND test_fingerprint)
 
 # Plan Cache Test
 add_executable(test_plan_cache
     test_plan_cache.cc
 )
-target_link_libraries(test_plan_cache cedar cedar_cypher cedar_queryd gtest pthread)
-gtest_discover_tests(test_plan_cache)
+target_link_libraries(test_plan_cache cedar cedar_cypher cedar_queryd gtest gtest_main pthread)
+add_test(NAME test_plan_cache COMMAND test_plan_cache)

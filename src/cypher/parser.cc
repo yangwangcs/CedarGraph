@@ -51,12 +51,12 @@ std::shared_ptr<QueryStatement> CypherParser::ParseStatement() {
     } else if (MatchKeyword("limit")) {
       auto limit_expr = ParseExpression();
       if (limit_expr) {
-        stmt->clauses.push_back(std::make_shared<LimitClause>(limit_expr));
+        stmt->clauses.emplace_back(std::make_shared<LimitClause>(limit_expr));
       }
     } else if (MatchKeyword("skip")) {
       auto skip_expr = ParseExpression();
       if (skip_expr) {
-        stmt->clauses.push_back(std::make_shared<SkipClause>(skip_expr));
+        stmt->clauses.emplace_back(std::make_shared<SkipClause>(skip_expr));
       }
     } else if (MatchKeyword("create")) {
       auto create = ParseCreateClause();
@@ -570,7 +570,7 @@ std::shared_ptr<DeleteClause> CypherParser::ParseDeleteClause() {
       error_ = "Expected variable name in DELETE clause";
       return nullptr;
     }
-    clause->expressions.push_back(std::make_shared<VariableExpr>(ident));
+    clause->expressions.emplace_back(std::make_shared<VariableExpr>(ident));
     SkipWhitespaceAndComments();
   } while (MatchSymbol(','));
   return clause;

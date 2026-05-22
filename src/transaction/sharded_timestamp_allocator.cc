@@ -32,7 +32,7 @@ ShardedTimestampAllocator::ShardedTimestampAllocator(const Options& options)
   
   // 创建分片
   for (size_t i = 0; i < num_shards; ++i) {
-    shards_.push_back(std::make_unique<Shard>());
+    shards_.emplace_back(std::make_unique<Shard>());
     RefillShard(*shards_.back());
   }
 }
@@ -135,7 +135,7 @@ ShardedTxnIdAllocator::ShardedTxnIdAllocator(const Options& options)
   }
   
   for (size_t i = 0; i < num_shards; ++i) {
-    shards_.push_back(std::make_unique<Shard>());
+    shards_.emplace_back(std::make_unique<Shard>());
     RefillShard(*shards_.back());
   }
 }
