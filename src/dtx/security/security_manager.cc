@@ -691,6 +691,28 @@ StatusOr<Role> Authorizer::GetRole(const std::string& role_name) const {
   return it->second;
 }
 
+namespace {
+bool GlobMatch(const std::string& pattern, const std::string& text) {
+  size_t p = 0, t = 0;
+  size_t star = std::string::npos, match = 0;
+  while (t < text.size()) {
+    if (p < pattern.size() && (pattern[p] == text[t] || pattern[p] == '?')) {
+      ++p; ++t;
+    } else if (p < pattern.size() && pattern[p] == '*') {
+      star = p++;
+      match = t;
+    } else if (star != std::string::npos) {
+      p = star + 1;
+      t = ++match;
+    } else {
+      return false;
+    }
+  }
+  while (p < pattern.size() && pattern[p] == '*') ++p;
+  return p == pattern.size();
+}
+}  // namespace
+
 Status Authorizer::CheckPermission(const AuthToken& token,
                                     Permission permission,
                                     const std::string& resource) {
@@ -706,13 +728,13 @@ Status Authorizer::CheckPermission(const AuthToken& token,
         if (!role.allowed_resources.empty() || !role.denied_resources.empty()) {
           bool allowed = false;
           for (const auto& pattern : role.allowed_resources) {
-            if (resource.find(pattern) != std::string::npos) {
+            if (GlobMatch(pattern, resource) || pattern == resource) {
               allowed = true;
               break;
             }
           }
           for (const auto& pattern : role.denied_resources) {
-            if (resource.find(pattern) != std::string::npos) {
+            if (GlobMatch(pattern, resource) || pattern == resource) {
               return Status::IOError("Access denied for resource");
             }
           }
