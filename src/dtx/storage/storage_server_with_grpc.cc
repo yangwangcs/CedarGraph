@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <shared_mutex>
 #include <cstring>
+#include <unistd.h>
 
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/storage/cedar_options.h"
@@ -47,10 +48,11 @@ namespace storage {
 // Global shutdown flag
 std::atomic<bool> g_running{true};
 std::unique_ptr<grpc::Server> g_grpc_server;
+static volatile sig_atomic_t g_signal_received = 0;
 
 void SignalHandler(int signal) {
-  // Async-signal-safe: only touch std::atomic<bool>
   if (signal == SIGINT || signal == SIGTERM) {
+    g_signal_received = signal;
     g_running = false;
   }
 }
@@ -1026,8 +1028,15 @@ int main(int argc, char* argv[]) {
   });
   
   // Wait for gRPC server to finish
-  g_grpc_server->Wait();
-  
+  while (g_running) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (g_signal_received != 0) {
+      const char msg[] = "[StorageServer] Shutdown signal received\n";
+      write(STDERR_FILENO, msg, sizeof(msg) - 1);
+      g_signal_received = 0;
+    }
+  }
+
   // Shutdown
   std::cerr << std::endl << "Shutting down..." << std::endl;
   

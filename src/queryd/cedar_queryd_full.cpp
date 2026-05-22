@@ -2,6 +2,7 @@
 // cedar-queryd - Distributed Query Layer (Full Production Version)
 
 #include <csignal>
+#include <unistd.h>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -60,12 +61,12 @@ static cedar::dtx::raft::TlsConfig LoadTlsConfig(const cedar::governance::Config
 
 std::atomic<bool> g_running{true};
 std::unique_ptr<grpc::Server> g_grpc_server;
+static volatile sig_atomic_t g_queryd_signal = 0;
 
 void SignalHandler(int signal) {
-  (void)signal;
-  g_running = false;
-  if (g_grpc_server) {
-    g_grpc_server->Shutdown();
+  if (signal == SIGINT || signal == SIGTERM) {
+    g_queryd_signal = signal;
+    g_running = false;
   }
 }
 
@@ -766,7 +767,15 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "AlertManager initialized with default rules";
 
   // Wait for shutdown
-  g_grpc_server->Wait();
+  while (g_running) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (g_queryd_signal != 0) {
+      const char msg[] = "[QueryD] Shutdown signal received\n";
+      write(STDERR_FILENO, msg, sizeof(msg) - 1);
+      g_queryd_signal = 0;
+    }
+  }
+  g_grpc_server->Shutdown();
 
   // Cleanup
   health_checker.StopHttpEndpoint();
