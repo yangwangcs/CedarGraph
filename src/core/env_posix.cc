@@ -74,7 +74,7 @@ Status PosixError(const std::string& context, int error_number) {
 // Helper class to limit resource usage to avoid exhaustion.
 class Limiter {
  public:
-  Limiter(int max_acquires)
+  explicit Limiter(int max_acquires)
       :
 #if !defined(NDEBUG)
         max_acquires_(max_acquires),
@@ -246,7 +246,9 @@ class PosixWritableFile final : public WritableFile {
         fd_(fd),
         is_manifest_(IsManifest(filename)),
         filename_(std::move(filename)),
-        dirname_(Dirname(filename_)) {}
+        dirname_(Dirname(filename_)) {
+    std::memset(buf_, 0, sizeof(buf_));
+  }
 
   ~PosixWritableFile() override {
     if (fd_ >= 0) {
@@ -461,7 +463,7 @@ class PosixLogger final : public Logger {
     }
 
     constexpr const int kStackBufferSize = 512;
-    char stack_buffer[kStackBufferSize];
+    char stack_buffer[kStackBufferSize] = {};
 
     int dynamic_buffer_size = 0;
     for (int iteration = 0; iteration < 2; ++iteration) {

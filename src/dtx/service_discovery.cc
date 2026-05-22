@@ -195,7 +195,7 @@ bool ServiceDiscovery::CheckNodeHealth(const StorageNodeInfo& node) {
   memcpy(&addr.sin_addr, &sin->sin_addr, sizeof(addr.sin_addr));
   freeaddrinfo(res);
   
-  int result = connect(sock, (struct sockaddr*)&addr, sizeof(addr));
+  int result = connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
   close(sock);
   
   return result == 0;
@@ -507,7 +507,7 @@ Status ClusterInitializer::WaitForMetaD() {
                sizeof(addr.sin_addr));
         freeaddrinfo(res);
         
-        if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+        if (connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
           close(sock);
           std::cerr << "[ClusterInitializer] MetaD is ready at " << meta_server << std::endl;
           return Status::OK();

@@ -156,8 +156,6 @@ std::shared_ptr<TemporalClause> CypherParser::ParseAtTimeClause() {
 }
 
 std::shared_ptr<TemporalClause> CypherParser::ParseBetweenClause() {
-  size_t save_pos = pos_;
-  
   if (!MatchKeyword("between")) {
     return nullptr;
   }
@@ -183,8 +181,6 @@ std::shared_ptr<TemporalClause> CypherParser::ParseBetweenClause() {
 }
 
 std::shared_ptr<TemporalClause> CypherParser::ParseFromToClause() {
-  size_t save_pos = pos_;
-  
   if (!MatchKeyword("from")) {
     return nullptr;
   }

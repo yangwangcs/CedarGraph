@@ -351,10 +351,10 @@ Value ExpressionEvaluator::EvaluateFunctionCall(const FunctionCallExpr& expr,
   }
 
   if (lower_name == "coalesce") {
-    for (const auto& arg : args) {
-      if (!arg.IsNull()) {
-        return arg;
-      }
+    auto it = std::find_if(args.begin(), args.end(),
+                           [](const Value& v) { return !v.IsNull(); });
+    if (it != args.end()) {
+      return *it;
     }
     return Value();
   }

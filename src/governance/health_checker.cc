@@ -483,7 +483,7 @@ class HealthCheckerImpl {
       }
     }
 
-    if (bind(http_socket_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    if (bind(http_socket_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
       close(http_socket_);
       http_socket_ = -1;
       return Status::IOError("Failed to bind to " + host + ":" + std::to_string(port) +
@@ -722,7 +722,7 @@ class HealthCheckerImpl {
       struct sockaddr_in client_addr;
       socklen_t client_len = sizeof(client_addr);
       
-      int client_socket = accept(http_socket_, (struct sockaddr*)&client_addr, &client_len);
+      int client_socket = accept(http_socket_, reinterpret_cast<struct sockaddr*>(&client_addr), &client_len);
       if (client_socket < 0) {
         // Check if we should stop
         std::lock_guard<std::mutex> lock(http_mutex_);

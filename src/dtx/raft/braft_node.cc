@@ -278,7 +278,7 @@ void MetaRaftStateMachine::on_start_following(const braft::LeaderChangeContext& 
 
 class BRaftNode::Impl {
 public:
-    Impl() : node_(nullptr), initialized_(false) {}
+    Impl() : node_(nullptr), meta_service_(nullptr), initialized_(false) {}
     
     ~Impl() {
         Shutdown();

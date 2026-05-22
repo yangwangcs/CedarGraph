@@ -68,7 +68,11 @@ static inline int64_t CurrentTimeMillis() {
 
 class ServiceRegistryImpl {
  public:
-  ServiceRegistryImpl() : next_watch_id_(1), health_check_running_(false) {}
+  ServiceRegistryImpl()
+      : next_watch_id_(1),
+        health_check_running_(false),
+        health_check_interval_ms_(5000),
+        stale_threshold_ms_(30000) {}
 
   ~ServiceRegistryImpl() { StopHealthCheck(); }
 
