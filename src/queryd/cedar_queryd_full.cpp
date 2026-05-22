@@ -42,7 +42,7 @@ DEFINE_string(meta, "127.0.0.1:9559", "Meta service address");
 DEFINE_string(storage, "127.0.0.1:9779", "Storage service address");
 DEFINE_int32(workers, 16, "Number of executor worker threads");
 DEFINE_int32(max_concurrent, 1000, "Maximum concurrent queries");
-DEFINE_int32(query_timeout, 300000, "Default query timeout in milliseconds");
+DEFINE_int32(query_timeout, 30000, "Default query timeout in milliseconds");
 DEFINE_int32(cache_size, 1000, "Query plan cache size");
 DEFINE_int32(max_message_size, 64, "Maximum gRPC message size in MB");
 DEFINE_string(config, "", "Configuration file path (YAML)");
@@ -207,7 +207,7 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
 
     cedar::queryd::DistributedExecutionContext ctx;
     ctx.query_id = std::to_string(query_id);
-    ctx.timeout_ms = request->timeout_ms() > 0 ? request->timeout_ms() : 300000;
+    ctx.timeout_ms = request->timeout_ms() > 0 ? request->timeout_ms() : 30000;
 
     if (request->explain_only()) {
       std::string explain;

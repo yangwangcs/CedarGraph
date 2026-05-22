@@ -74,7 +74,7 @@ struct Config {
   int node_id = 0;
   int port = 9779;
   std::string bind_address = "0.0.0.0";
-  std::string data_dir = "/tmp/cedar/storaged";
+  std::string data_dir = "/var/lib/cedar/storaged";
   std::string meta_server = "127.0.0.1:9559";
   int heartbeat_interval_sec = 10;
   cedar::dtx::raft::TlsConfig tls;
@@ -122,7 +122,7 @@ Config ParseArgs(int argc, char* argv[]) {
       std::cout << "  -n, --node_id <id>     Node ID (default: 0)" << std::endl;
       std::cout << "  -p, --port <port>      Port to listen on (default: 9779)" << std::endl;
       std::cout << "  -b, --bind <addr>      Bind address (default: 0.0.0.0)" << std::endl;
-      std::cout << "  -d, --data_dir <dir>   Data directory (default: /tmp/cedar/storaged)" << std::endl;
+      std::cout << "  -d, --data_dir <dir>   Data directory (default: /var/lib/cedar/storaged)" << std::endl;
       std::cout << "  -m, --meta <addr>      MetaD server address (default: 127.0.0.1:9559)" << std::endl;
       std::cout << "  -c, --config <path>    Configuration file (YAML)" << std::endl;
       std::cout << "  -h, --help             Show this help" << std::endl;
@@ -281,8 +281,9 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
 class MetaClient {
  public:
   MetaClient(const std::string& meta_addr, int node_id, int port,
+             const std::string& data_dir,
              const cedar::dtx::raft::TlsConfig& tls)
-      : node_id_(node_id), port_(port) {
+      : node_id_(node_id), port_(port), data_dir_(data_dir) {
     auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls);
     if (!client_creds) {
       throw std::runtime_error(
@@ -298,7 +299,7 @@ class MetaClient {
     auto* node_info = request.mutable_node_info();
     node_info->set_node_id(node_id_);
     node_info->set_address("127.0.0.1:" + std::to_string(port_));
-    node_info->set_data_path("/tmp/cedar/storaged/node" + std::to_string(node_id_));
+    node_info->set_data_path(data_dir_ + "/node" + std::to_string(node_id_));
     node_info->set_num_cpu_cores(4);
     node_info->set_total_memory_bytes(8ULL * 1024 * 1024 * 1024);
     node_info->set_total_disk_bytes(100ULL * 1024 * 1024 * 1024);
@@ -346,6 +347,7 @@ class MetaClient {
   std::unique_ptr<cedar::meta::MetaService::Stub> stub_;
   int node_id_;
   int port_;
+  std::string data_dir_;
 };
 
 // 心跳线程
@@ -425,7 +427,7 @@ int main(int argc, char* argv[]) {
   // StorageD operates as a single-node storage engine.
 
   // 3. 注册到 MetaD
-  MetaClient meta_client(config.meta_server, config.node_id, config.port, config.tls);
+  MetaClient meta_client(config.meta_server, config.node_id, config.port, config.data_dir, config.tls);
   if (!meta_client.Register()) {
     std::cerr << "[StorageD] Failed to register with MetaD, continuing anyway..." << std::endl;
     // 不退出，允许离线模式运行
