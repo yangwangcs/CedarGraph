@@ -1084,23 +1084,38 @@ ContainerRuntime ClusterFailoverManager::DetectedRuntime() const {
 }
 
 Status ClusterFailoverManager::RestartViaKubernetes(const FailureEvent& event) {
+  pid_t pid = getpid();
   std::cerr << "[ClusterFailover] K8s restart: sending SIGTERM to self (PID "
-            << getpid() << ") for graceful pod restart. Node=" << event.node_id << std::endl;
-  
-  // 发送 SIGTERM 给自身进程，让 K8s 重新调度 pod
-  // K8s 的 preStop hook 和 grace period 会处理优雅退出
-  int rc = std::raise(SIGTERM);
-  if (rc != 0) {
-    std::cerr << "[ClusterFailover] raise(SIGTERM) failed, trying SIGKILL" << std::endl;
-    rc = std::raise(SIGKILL);
+            << pid << ") for graceful pod restart. Node=" << event.node_id << std::endl;
+
+  constexpr int kMaxTermAttempts = 3;
+  constexpr auto kTermDelay = std::chrono::seconds(2);
+
+  for (int attempt = 1; attempt <= kMaxTermAttempts; ++attempt) {
+    int rc = std::raise(SIGTERM);
     if (rc != 0) {
-      return Status::IOError("Failed to send termination signal to self");
+      std::cerr << "[ClusterFailover] raise(SIGTERM) attempt " << attempt
+                << " failed: " << strerror(errno) << std::endl;
+      if (attempt == kMaxTermAttempts) {
+        return Status::IOError(
+            "Failed to send SIGTERM to self after " +
+            std::to_string(kMaxTermAttempts) + " attempts");
+      }
+      std::this_thread::sleep_for(kTermDelay);
+      continue;
     }
+    std::this_thread::sleep_for(kTermDelay);
+    if (kill(pid, 0) != 0) {
+      std::cerr << "[ClusterFailover] Process no longer responding to kill(0), "
+                << "assuming graceful shutdown is in progress." << std::endl;
+      return Status::OK();
+    }
+    std::cerr << "[ClusterFailover] SIGTERM attempt " << attempt
+              << " sent but process still alive. Retrying..." << std::endl;
   }
-  
-  // 如果 raise 没有立即终止进程（某些信号处理程序可能捕获了 SIGTERM）
-  // 等待一小段时间让 K8s 处理终止
-  std::this_thread::sleep_for(std::chrono::seconds(5));
+
+  std::cerr << "[ClusterFailover] All SIGTERM attempts exhausted. "
+            << "Relying on external orchestrator for final termination." << std::endl;
   return Status::OK();
 }
 
