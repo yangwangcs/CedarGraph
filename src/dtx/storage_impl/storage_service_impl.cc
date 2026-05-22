@@ -999,13 +999,14 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
   } catch (const std::exception& e) {
     std::cerr << "[StorageServiceImpl::Commit] Exception: " << e.what() << std::endl;
     response->set_success(false);
-    response->set_error_msg(std::string("Exception: ") + e.what());
-    return grpc::Status(grpc::StatusCode::INTERNAL, e.what());
+    // Client gets a generic error; detailed log stays server-side
+    response->set_error_msg("Internal server error");
+    return grpc::Status(grpc::StatusCode::INTERNAL, "Internal server error");
   } catch (...) {
     std::cerr << "[StorageServiceImpl::Commit] Unknown exception" << std::endl;
     response->set_success(false);
-    response->set_error_msg("Unknown exception");
-    return grpc::Status(grpc::StatusCode::INTERNAL, "Unknown exception");
+    response->set_error_msg("Internal server error");
+    return grpc::Status(grpc::StatusCode::INTERNAL, "Internal server error");
   }
 }
 
