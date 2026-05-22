@@ -1,7 +1,6 @@
 // Lock-Free Versioned SkipList 实现
 #include "cedar/storage/versioned_skiplist_lockfree.h"
 #include "cedar/storage/active_entity_bitmap.h"
-#include <iostream>
 
 namespace cedar {
 

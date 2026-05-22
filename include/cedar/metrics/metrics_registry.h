@@ -26,7 +26,7 @@
 namespace cedar {
 namespace metrics {
 
-// Simple atomic counter (Prometheus-style, only increases)
+/// Simple atomic counter (Prometheus-style, monotonically increasing).
 class Counter {
  public:
   void Increment() { value_.fetch_add(1, std::memory_order_relaxed); }
@@ -41,7 +41,7 @@ class Counter {
   std::atomic<int64_t> value_{0};
 };
 
-// Simple histogram with fixed buckets
+/// Thread-safe histogram with fixed buckets (Prometheus-style).
 class Histogram {
  public:
   explicit Histogram(std::vector<double> buckets);
@@ -59,7 +59,8 @@ class Histogram {
   std::atomic<int64_t> total_sum_micros_{0};  // Store sum as micros for atomic
 };
 
-// Metrics registry — singleton for the process
+/// Process-wide metrics registry (singleton).
+/// Thread-safe for registration; individual metrics are lock-free.
 class MetricsRegistry {
  public:
   static MetricsRegistry& Instance();

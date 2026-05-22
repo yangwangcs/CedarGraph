@@ -15,7 +15,6 @@
 #include "cedar/dtx/storage/partition_raft_manager.h"
 #include "cedar/dtx/storage_service_impl.h"
 
-#include <iostream>
 
 namespace cedar {
 namespace dtx {

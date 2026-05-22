@@ -1,7 +1,6 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 
 #include "cedar/storage/query_cache.h"
-#include <iostream>
 
 namespace cedar {
 

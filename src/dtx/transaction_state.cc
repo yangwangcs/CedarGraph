@@ -17,7 +17,6 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
-#include <iostream>
 #include <sys/uio.h>
 #include <unistd.h>
 
