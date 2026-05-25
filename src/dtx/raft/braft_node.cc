@@ -347,10 +347,14 @@ public:
     
     std::optional<NodeID> GetLeaderId() const {
         std::lock_guard<std::mutex> lock(node_mutex_);
-        if (!node_ || !node_->is_leader()) {
+        if (!node_) {
             return std::nullopt;
         }
-        return node_->leader_id().idx;
+        braft::PeerId leader = node_->leader_id();
+        if (leader.is_empty()) {
+            return std::nullopt;
+        }
+        return leader.idx;
     }
     
     class ProposeClosure : public braft::Closure {
