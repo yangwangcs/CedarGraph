@@ -2,6 +2,7 @@
 #include "cedar/dtx/meta_service_grpc.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/types/descriptor.h"
+#include "cedar/core/logging.h"
 
 namespace cedar {
 namespace dtx {
@@ -263,6 +264,52 @@ StatusOr<CommitResult> IntegratedCoordinator::Commit(TxnID txn_id) {
 Status IntegratedCoordinator::Abort(TxnID txn_id) {
     auto ctx = GetTxnContext(txn_id);
     if (!ctx) return Status::NotFound("Transaction not found");
+
+    // Send abort to all participants before removing local state
+    for (const auto& participant : ctx->GetParticipants()) {
+        // Get route for partition
+        auto cached_route = route_cache_.GetRoute(config_.space_name, participant);
+        PartitionRoute route;
+        if (cached_route.ok()) {
+            route = cached_route.value();
+        } else {
+            auto assignment = meta_client_->GetPartitionAssignment(config_.space_name, participant);
+            if (!assignment.ok()) {
+                CEDAR_LOG_WARN() << "Abort: failed to get assignment for partition "
+                                 << participant << ": " << assignment.status().ToString();
+                continue;
+            }
+            route.partition_id = participant;
+            route.leader_node = assignment.value().leader_node;
+        }
+
+        // Get leader node info
+        auto node_result = meta_client_->GetNode(route.leader_node);
+        if (!node_result.ok()) {
+            CEDAR_LOG_WARN() << "Abort: failed to get node for partition "
+                             << participant << ": " << node_result.status().ToString();
+            continue;
+        }
+
+        // Create storage client and send abort
+        StorageClient client;
+        StorageClient::ClientConfig client_config;
+        client_config.server_address = node_result.value().address;
+        auto status = client.Initialize(client_config);
+        if (!status.ok()) {
+            CEDAR_LOG_WARN() << "Abort: failed to initialize client for partition "
+                             << participant << ": " << status.ToString();
+            continue;
+        }
+
+        status = client.Abort(txn_id);
+        if (!status.ok()) {
+            // Log but continue — best effort abort of all participants
+            CEDAR_LOG_WARN() << "Abort RPC failed for partition "
+                             << participant << ": " << status.ToString();
+        }
+    }
+
     {
         std::unique_lock<std::shared_mutex> lock(txns_mutex_);
         active_txns_.erase(txn_id);
