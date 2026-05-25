@@ -793,6 +793,11 @@ Status Optimized2PCEngine::ExecutePipelined2PC(
 
 Status Optimized2PCEngine::ExecuteBatched2PC(
     const std::shared_ptr<TransactionContext>& ctx) {
+  // Set up promise/future to avoid busy-waiting for completion.
+  auto done_promise = std::make_shared<std::promise<void>>();
+  ctx->done_promise = done_promise;
+  auto future = done_promise->get_future();
+
   // Add to batch buffer
   {
     std::lock_guard<std::mutex> lock(batch_mutex_);
@@ -804,25 +809,15 @@ Status Optimized2PCEngine::ExecuteBatched2PC(
     }
   }
 
-  // Wait for completion
-  // NOTE: Batched mode currently has no dedicated worker thread; the polling
-  // loop below will wait until the batch is processed by a worker thread or
-  // until timeout. Using 1ms sleep to avoid busy-wait CPU burn.
-  while (ctx->state.load() != TransactionContext::State::kCommitted &&
-         ctx->state.load() != TransactionContext::State::kAborted) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - ctx->start_time).count();
-    if (elapsed > config_.prepare_timeout_ms + config_.commit_timeout_ms) {
-      ctx->state.store(TransactionContext::State::kAborted);
-      if (state_manager_) {
-        state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
-      }
-      stats_.timeout_transactions++;
-      return Status::IOError("Transaction timeout");
+  // Wait for completion with timeout.
+  auto timeout_ms = config_.prepare_timeout_ms + config_.commit_timeout_ms;
+  if (future.wait_for(std::chrono::milliseconds(timeout_ms)) == std::future_status::timeout) {
+    ctx->state.store(TransactionContext::State::kAborted);
+    if (state_manager_) {
+      state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
     }
+    stats_.timeout_transactions++;
+    return Status::IOError("Transaction timeout");
   }
 
   return ctx->state.load() == TransactionContext::State::kCommitted

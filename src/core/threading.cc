@@ -90,12 +90,8 @@ class ThreadPool::Impl {
   }
 
   void WaitForAll() {
-    while (true) {
-      std::unique_lock<std::mutex> lock(mutex_);
-      if (tasks_.empty() && active_tasks_ == 0) break;
-      lock.unlock();
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    cond_.wait(lock, [this] { return tasks_.empty() && active_tasks_ == 0; });
   }
 
  private:
@@ -121,6 +117,7 @@ class ThreadPool::Impl {
         std::unique_lock<std::mutex> lock(mutex_);
         --active_tasks_;
       }
+      cond_.notify_all();
     }
   }
 
