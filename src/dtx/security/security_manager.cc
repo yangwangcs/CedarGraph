@@ -150,6 +150,7 @@ void Authenticator::Shutdown() {
   std::lock_guard<std::mutex> lock(tokens_mutex_);
   active_tokens_.clear();
   revoked_tokens_.clear();
+  refresh_tokens_.clear();
 }
 
 StatusOr<AuthToken> Authenticator::Authenticate(const std::string& username,
@@ -197,12 +198,20 @@ StatusOr<AuthToken> Authenticator::Authenticate(const std::string& username,
   token.roles = user.roles;
   token.issued_at = std::chrono::system_clock::now();
   token.expires_at = token.issued_at + config_.token_ttl;
-  
+
+  if (config_.enable_refresh_token) {
+    token.refresh_token = GenerateRandomString(32);
+    token.refresh_expires_at = token.issued_at + refresh_token_ttl_;
+  }
+
   {
     std::lock_guard<std::mutex> token_lock(tokens_mutex_);
     active_tokens_[token.token_id] = token;
+    if (!token.refresh_token.empty()) {
+      refresh_tokens_[token.refresh_token] = token.token_id;
+    }
   }
-  
+
   return token;
 }
 
@@ -236,22 +245,77 @@ StatusOr<AuthToken> Authenticator::ValidateToken(const std::string& token_str) {
 }
 
 StatusOr<AuthToken> Authenticator::RefreshToken(const std::string& refresh_token) {
-  // TODO(#security-001): Implement refresh token rotation and expiry.
-  (void)refresh_token;
-  return Status::NotSupported("Refresh token not implemented");
+  if (!config_.enable_refresh_token) {
+    return Status::NotSupported("Refresh token is disabled");
+  }
+
+  std::string token_id;
+  {
+    std::lock_guard<std::mutex> lock(tokens_mutex_);
+    auto it = refresh_tokens_.find(refresh_token);
+    if (it == refresh_tokens_.end()) {
+      return Status::InvalidArgument("Invalid refresh token");
+    }
+    token_id = it->second;
+    refresh_tokens_.erase(it);  // Single-use: remove old refresh token
+  }
+
+  AuthToken old_token;
+  {
+    std::lock_guard<std::mutex> lock(tokens_mutex_);
+    auto it = active_tokens_.find(token_id);
+    if (it == active_tokens_.end()) {
+      return Status::InvalidArgument("Token no longer active");
+    }
+    old_token = it->second;
+    if (old_token.IsRefreshExpired()) {
+      active_tokens_.erase(it);
+      return Status::InvalidArgument("Refresh token expired");
+    }
+  }
+
+  // Generate new token pair (rotation)
+  AuthToken new_token;
+  new_token.token_id = GenerateRandomString(32);
+  new_token.user_id = old_token.user_id;
+  new_token.user_name = old_token.user_name;
+  new_token.roles = old_token.roles;
+  new_token.issued_at = std::chrono::system_clock::now();
+  new_token.expires_at = new_token.issued_at + config_.token_ttl;
+  new_token.refresh_token = GenerateRandomString(32);
+  new_token.refresh_expires_at = new_token.issued_at + refresh_token_ttl_;
+
+  {
+    std::lock_guard<std::mutex> lock(tokens_mutex_);
+    active_tokens_.erase(token_id);  // Invalidate old access token
+    active_tokens_[new_token.token_id] = new_token;
+    refresh_tokens_[new_token.refresh_token] = new_token.token_id;
+  }
+
+  return new_token;
 }
 
 Status Authenticator::RevokeToken(const std::string& token) {
   std::lock_guard<std::mutex> lock(tokens_mutex_);
-  
+
   auto result = ParseJWT(token);
   if (!result.ok()) {
     return result.status();
   }
-  
-  revoked_tokens_.insert(result.value().token_id);
-  active_tokens_.erase(result.value().token_id);
-  
+
+  const std::string& token_id = result.value().token_id;
+  revoked_tokens_.insert(token_id);
+  active_tokens_.erase(token_id);
+
+  // Also remove any associated refresh token
+  for (auto it = refresh_tokens_.begin(); it != refresh_tokens_.end(); ) {
+    if (it->second == token_id) {
+      it = refresh_tokens_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
   return Status::OK();
 }
 

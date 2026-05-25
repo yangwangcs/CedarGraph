@@ -98,12 +98,18 @@ struct AuthToken {
   std::vector<std::string> roles;
   std::chrono::system_clock::time_point issued_at;
   std::chrono::system_clock::time_point expires_at;
+  std::string refresh_token;
+  std::chrono::system_clock::time_point refresh_expires_at;
   std::map<std::string, std::string> claims;
-  
+
   bool IsExpired() const {
     return std::chrono::system_clock::now() > expires_at;
   }
-  
+
+  bool IsRefreshExpired() const {
+    return std::chrono::system_clock::now() > refresh_expires_at;
+  }
+
   bool HasRole(const std::string& role) const {
     return std::find(roles.begin(), roles.end(), role) != roles.end();
   }
@@ -173,11 +179,13 @@ class Authenticator {
   Config config_;
   std::mutex users_mutex_;
   std::map<std::string, UserInfo> users_;
-  
+
   std::mutex tokens_mutex_;
   std::map<std::string, AuthToken> active_tokens_;
   std::set<std::string> revoked_tokens_{};
-  
+  std::map<std::string, std::string> refresh_tokens_;  // refresh_token -> token_id
+  std::chrono::seconds refresh_token_ttl_{86400 * 7};  // 7 days default
+
   std::string HashPassword(const std::string& password);
   bool VerifyPassword(const std::string& password,
                       const std::string& hash);
