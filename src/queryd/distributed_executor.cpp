@@ -1056,7 +1056,8 @@ Status DistributedExecutor::TraverseOptimized(
   const uint32_t kMaxVisited = 10000;  // Safety limit
   
   while (!queue.empty() && visited < kMaxVisited) {
-    auto& [current_id, current_path] = queue.front();
+    // Copy out before pop to avoid dangling reference
+    auto [current_id, current_path] = std::move(queue.front());
     queue.pop();
     
     if (current_path->Length() >= max_depth) {
