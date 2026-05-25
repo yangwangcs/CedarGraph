@@ -319,9 +319,12 @@ public:
     StatusOr<SpacePartitionMap> GetSpacePartitionMap(const std::string& space_name) const;
     
     // 更新分区 Leader（由 StorageD 上报）
-    Status UpdatePartitionLeader(const std::string& space_name, 
-                                  PartitionID partition_id, 
+    Status UpdatePartitionLeader(const std::string& space_name,
+                                  PartitionID partition_id,
                                   NodeID new_leader);
+
+    // 更新完整分区 Assignment（由迁移协调器调用）
+    Status UpdatePartitionAssignment(const PartitionAssignment& assignment);
     
     // ===== 节点管理 =====
     
@@ -382,6 +385,8 @@ private:
             const std::string& space_name,
             PartitionID partition_id,
             NodeID new_leader);
+        std::pair<uint64_t, NodeID> ApplyUpdatePartitionAssignment(
+            const PartitionAssignment& assignment);
         
         // 查询方法
         StatusOr<SpaceDef> GetSpace(const std::string& name) const;

@@ -91,6 +91,16 @@ message GetPartitionAssignmentResponse {
     PartitionAssignment assignment = 3;
 }
 
+message UpdatePartitionAssignmentRequest {
+    PartitionAssignment assignment = 1;
+}
+
+message UpdatePartitionAssignmentResponse {
+    bool success = 1;
+    string error_msg = 2;
+    uint64 version = 3;
+}
+
 message GetSpacePartitionMapRequest {
     string space_name = 1;
 }
@@ -225,6 +235,7 @@ service MetaService {
     
     // 分区管理
     rpc GetPartitionAssignment(GetPartitionAssignmentRequest) returns (GetPartitionAssignmentResponse);
+    rpc UpdatePartitionAssignment(UpdatePartitionAssignmentRequest) returns (UpdatePartitionAssignmentResponse);
     rpc GetSpacePartitionMap(GetSpacePartitionMapRequest) returns (GetSpacePartitionMapResponse);
     
     // 节点管理

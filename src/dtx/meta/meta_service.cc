@@ -520,6 +520,26 @@ std::pair<uint64_t, NodeID> MetadataService::MetadataStateMachine::ApplyUpdatePa
     return {0, kInvalidNodeID};
 }
 
+std::pair<uint64_t, NodeID> MetadataService::MetadataStateMachine::ApplyUpdatePartitionAssignment(
+    const PartitionAssignment& assignment) {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    auto it = partition_maps_.find(assignment.space_name);
+    if (it == partition_maps_.end()) {
+        return {0, kInvalidNodeID};
+    }
+    auto& partition_map = it->second;
+    auto assign_it = partition_map.assignments.find(assignment.partition_id);
+    if (assign_it == partition_map.assignments.end()) {
+        return {0, kInvalidNodeID};
+    }
+    NodeID old_leader = assign_it->second.leader_node;
+    assign_it->second = assignment;
+    assign_it->second.version++;
+    assign_it->second.last_updated = std::chrono::system_clock::now();
+    partition_map.version = std::max(partition_map.version, assignment.version + 1);
+    return {assign_it->second.version, old_leader};
+}
+
 StatusOr<SpaceDef> MetadataService::MetadataStateMachine::GetSpace(const std::string& name) const {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = spaces_.find(name);
@@ -935,6 +955,30 @@ Status MetadataService::UpdatePartitionLeader(const std::string& space_name,
     cmd.type = RaftCommandType::kUpdateAssignment;
     std::ostringstream oss;
     oss << space_name << "|" << partition_id << "|" << new_leader;
+    cmd.payload = oss.str();
+    return raft_node_->Propose(cmd);
+}
+
+Status MetadataService::UpdatePartitionAssignment(const PartitionAssignment& assignment) {
+    if (config_.test_mode) {
+        auto [version, old_leader] = state_machine_.ApplyUpdatePartitionAssignment(assignment);
+        if (version > 0) {
+            PartitionMapChange change;
+            change.space_name = assignment.space_name;
+            change.partition_id = assignment.partition_id;
+            change.change_type = PartitionChangeType::kLeaderChanged;
+            change.old_leader = old_leader;
+            change.new_leader = assignment.leader_node;
+            change.version = version;
+            change.timestamp = std::chrono::system_clock::now();
+            NotifyPartitionChange(change);
+        }
+        return Status::OK();
+    }
+    RaftCommand cmd;
+    cmd.type = RaftCommandType::kUpdateAssignment;
+    std::ostringstream oss;
+    oss << assignment.space_name << "|" << assignment.partition_id << "|" << assignment.leader_node;
     cmd.payload = oss.str();
     return raft_node_->Propose(cmd);
 }

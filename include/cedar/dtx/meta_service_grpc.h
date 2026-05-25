@@ -54,7 +54,11 @@ public:
     grpc::Status GetPartitionAssignment(grpc::ServerContext* context,
                                         const cedar::meta::GetPartitionAssignmentRequest* request,
                                         cedar::meta::GetPartitionAssignmentResponse* response) override;
-    
+
+    grpc::Status UpdatePartitionAssignment(grpc::ServerContext* context,
+                                           const cedar::meta::UpdatePartitionAssignmentRequest* request,
+                                           cedar::meta::UpdatePartitionAssignmentResponse* response) override;
+
     grpc::Status GetSpacePartitionMap(grpc::ServerContext* context,
                                       const cedar::meta::GetSpacePartitionMapRequest* request,
                                       cedar::meta::GetSpacePartitionMapResponse* response) override;

@@ -114,6 +114,30 @@ grpc::Status MetaServiceGrpcImpl::GetPartitionAssignment(grpc::ServerContext* co
     return grpc::Status::OK;
 }
 
+grpc::Status MetaServiceGrpcImpl::UpdatePartitionAssignment(grpc::ServerContext* context,
+    const cedar::meta::UpdatePartitionAssignmentRequest* request,
+    cedar::meta::UpdatePartitionAssignmentResponse* response) {
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    auto proto = request->assignment();
+    cedar::dtx::PartitionAssignment assignment;
+    assignment.partition_id = static_cast<cedar::dtx::PartitionID>(proto.partition_id());
+    assignment.space_name = proto.space_name();
+    assignment.leader_node = static_cast<cedar::dtx::NodeID>(proto.leader_node());
+    for (int i = 0; i < proto.follower_nodes_size(); ++i) {
+        assignment.follower_nodes.push_back(
+            static_cast<cedar::dtx::NodeID>(proto.follower_nodes(i)));
+    }
+    assignment.version = proto.version();
+    auto status = meta_service_->UpdatePartitionAssignment(assignment);
+    response->set_success(status.ok());
+    if (!status.ok()) {
+        response->set_error_msg(status.ToString());
+        return grpc::Status(MapStatusToGrpcCode(status), status.ToString());
+    }
+    response->set_version(assignment.version);
+    return grpc::Status::OK;
+}
+
 grpc::Status MetaServiceGrpcImpl::GetSpacePartitionMap(grpc::ServerContext* context,
     const cedar::meta::GetSpacePartitionMapRequest* request,
     cedar::meta::GetSpacePartitionMapResponse* response) {
