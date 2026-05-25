@@ -230,7 +230,12 @@ int64_t CypherParser::ParseInteger() {
   }
   
   while (!IsAtEnd() && std::isdigit(Peek())) {
-    value = value * 10 + (Advance() - '0');
+    int digit = Advance() - '0';
+    if (value > (INT64_MAX - digit) / 10) {
+      error_ = "Integer literal overflows int64_t";
+      return negative ? INT64_MIN : INT64_MAX;
+    }
+    value = value * 10 + digit;
   }
   
   return negative ? -value : value;
