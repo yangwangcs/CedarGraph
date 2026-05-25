@@ -9,6 +9,7 @@
 #include <chrono>
 #include <future>
 #include <sstream>
+#include <unordered_set>
 
 #include "cedar/queryd/query_storage_client.h"  // 更新头文件
 #include "cedar/queryd/meta_client.h"
@@ -679,12 +680,16 @@ Status DistributedExecutor::Traverse(
   start_path->elements.push_back(start_node);
   queue.push({start_node_id, std::move(start_path)});
   
-  uint32_t visited = 0;
+  std::unordered_set<uint64_t> visited_nodes;
   const uint32_t kMaxVisited = 10000;
   
-  while (!queue.empty() && visited < kMaxVisited) {
+  while (!queue.empty() && visited_nodes.size() < kMaxVisited) {
     auto [current_id, current_path] = std::move(queue.front());
     queue.pop();
+
+    if (!visited_nodes.insert(current_id).second) {
+      continue;  // Already visited this node
+    }
     
     if (current_path->Length() >= max_depth) {
       paths->push_back(std::move(current_path));
@@ -733,7 +738,6 @@ Status DistributedExecutor::Traverse(
       queue.push({edge.target_id, std::move(new_path)});
     }
     
-    visited++;
   }
   
   return Status::OK();
@@ -1057,13 +1061,17 @@ Status DistributedExecutor::TraverseOptimized(
   start_path->elements.push_back(start_node);
   queue.push({start_node_id, std::move(start_path)});
   
-  uint32_t visited = 0;
+  std::unordered_set<uint64_t> visited_nodes;
   const uint32_t kMaxVisited = 10000;  // Safety limit
   
-  while (!queue.empty() && visited < kMaxVisited) {
+  while (!queue.empty() && visited_nodes.size() < kMaxVisited) {
     // Copy out before pop to avoid dangling reference
     auto [current_id, current_path] = std::move(queue.front());
     queue.pop();
+
+    if (!visited_nodes.insert(current_id).second) {
+      continue;  // Already visited this node
+    }
     
     if (current_path->Length() >= max_depth) {
       paths->push_back(std::move(current_path));
@@ -1095,7 +1103,6 @@ Status DistributedExecutor::TraverseOptimized(
       queue.push({edge.target_id, std::move(new_path)});
     }
     
-    visited++;
   }
   
   return Status::OK();
