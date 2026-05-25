@@ -88,12 +88,12 @@ Status QueryStorageClient::Get(const CedarKey& key,
 
 Status QueryStorageClient::Put(const CedarKey& key, const Descriptor& descriptor) {
   if (use_base_client_ && base_client_) {
-    // Use underlying dtx::StorageClient
-    // Note: dtx::StorageClient requires txn_version and txn_id
-    // For queries, we might not have transaction context
-    (void)key;
-    (void)descriptor;
-    return Status::NotSupported("Put not supported in query mode");
+    // Use underlying dtx::StorageClient with an auto-generated txn_version
+    // (current wall-clock time) and txn_id = 0 for single-key writes in
+    // query path. Full transactional writes should go through the 2PC engine.
+    uint64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    return base_client_->Put(key, descriptor, Timestamp(now_us), 0);
   }
   
   return Status::NotSupported("Independent mode not implemented");
@@ -101,6 +101,7 @@ Status QueryStorageClient::Put(const CedarKey& key, const Descriptor& descriptor
 
 Status QueryStorageClient::Delete(const CedarKey& key) {
   (void)key;
+  // StorageClient currently has no Delete API.
   return Status::NotSupported("Delete not supported in query mode");
 }
 
