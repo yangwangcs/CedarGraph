@@ -787,7 +787,7 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildScanForPattern(
           
           // Create expand operator
           auto expand = std::make_shared<Expand>(
-              node.variable,  // From the first node
+              std::get<NodePattern>(pattern.elements[i - 1]).variable,  // Previous node
               rel.variable,
               next_node.variable,
               rel.direction,
