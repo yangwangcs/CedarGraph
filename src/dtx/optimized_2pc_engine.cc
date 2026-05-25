@@ -440,8 +440,6 @@ Status Optimized2PCEngine::PersistCommitDecision(const CommitDecision& decision)
   return Status::OK();
 }
 
-  // TODO(phase1-recovery): Wire this into TransactionRecoveryManager so it
-  // reads the decision log during recovery and drives incomplete commits.
 Status Optimized2PCEngine::LoadCommitDecision(TxnID txn_id, CommitDecision* out) {
   std::string decision_log_dir;
   {
