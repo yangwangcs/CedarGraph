@@ -328,6 +328,10 @@ Value ExpressionEvaluator::EvaluateFunctionCall(const FunctionCallExpr& expr,
       std::string str = args[0].GetString();
       std::string from = args[1].GetString();
       std::string to = args[2].GetString();
+      if (from.empty()) {
+        // Cypher semantics: replacing empty string is undefined; return original
+        return Value(str);
+      }
       size_t pos = 0;
       while ((pos = str.find(from, pos)) != std::string::npos) {
         str.replace(pos, from.length(), to);
