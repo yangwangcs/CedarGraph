@@ -221,7 +221,8 @@ Status TransactionRecoveryManager::ApplyRecoveryAction(dtx::TxnID txn_id,
     case RecoveryAction::kAbort:
       return RecoverAsParticipant(txn_id, record);
       
-    case RecoveryAction::kInquire:
+    case RecoveryAction::kInquire: {
+      std::lock_guard<std::mutex> lock(deps_mutex_);
       if (!record.participants.empty()) {
         auto node_it = partition_node_map_.find(record.participants[0]);
         if (node_it != partition_node_map_.end()) {
@@ -229,6 +230,7 @@ Status TransactionRecoveryManager::ApplyRecoveryAction(dtx::TxnID txn_id,
         }
       }
       return Status::InvalidArgument("TransactionRecoveryManager", "no participants to inquire");
+    }
       
     default:
       return Status::OK();
