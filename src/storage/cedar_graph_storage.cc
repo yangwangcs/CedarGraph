@@ -662,7 +662,8 @@ std::vector<std::pair<Timestamp, Descriptor>> CedarGraphStorage::ScanLimit(
     Timestamp end_time,
     size_t max_results) {
   std::vector<std::pair<Timestamp, Descriptor>> results;
-  
+
+  std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
   if (!rep_->engine) {
     return results;
   }
