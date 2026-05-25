@@ -177,31 +177,36 @@ std::vector<SubQueryResult> ParallelExecutor::ExecuteParallel(
   // Submit tasks
   for (size_t i = 0; i < tasks.size(); ++i) {
     auto task = [&tasks, &results, &promises, i, storage_client, ctx, &completed]() {
-      const auto& t = tasks[i];
-      auto& r = results[i];
-      
-      r.partition_id = t.partition_id;
-      r.sequence = t.sequence;
-      
-      auto node_client = storage_client->GetNodeClient(t.partition_id);
-      if (!node_client) {
-          r.status = Status::NotFound("Storage node not found for partition " +
-                                      std::to_string(t.partition_id));
-          promises[i].set_value();
-          completed++;
-          return;
+      try {
+        const auto& t = tasks[i];
+        auto& r = results[i];
+
+        r.partition_id = t.partition_id;
+        r.sequence = t.sequence;
+
+        auto node_client = storage_client->GetNodeClient(t.partition_id);
+        if (!node_client) {
+            r.status = Status::NotFound("Storage node not found for partition " +
+                                        std::to_string(t.partition_id));
+            promises[i].set_value();
+            completed++;
+            return;
+        }
+
+        Status s = node_client->ExecuteSubQuery(t.sub_query, t.parameters, &r.result);
+        r.status = s;
+
+        ctx->stats.storage_nodes_accessed++;
+        ctx->stats.network_roundtrips++;
+      } catch (const std::exception& e) {
+        results[i].status = Status::IOError("ExecuteSubQuery exception: " + std::string(e.what()));
+      } catch (...) {
+        results[i].status = Status::IOError("ExecuteSubQuery unknown exception");
       }
-
-      Status s = node_client->ExecuteSubQuery(t.sub_query, t.parameters, &r.result);
-      r.status = s;
-
-      ctx->stats.storage_nodes_accessed++;
-      ctx->stats.network_roundtrips++;
-      
-      completed++;
       promises[i].set_value();
+      completed++;
     };
-    
+
     {
       std::lock_guard<std::mutex> lock(task_queue_.mutex);
       task_queue_.tasks.push(std::move(task));
