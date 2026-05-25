@@ -1260,13 +1260,15 @@ Status ClusterFailoverManager::ExecuteRecovery(const FailureEvent& event) {
       }
       return Status::IOError("No recovery handler registered for replica promotion");
     }
+    case RecoveryStrategy::kMigratePartition:
+      return Status::NotSupported("Partition migration recovery not yet implemented");
     case RecoveryStrategy::kManualIntervention:
       return Status::IOError("Requires manual intervention");
     default:
       break;
   }
   
-  return Status::OK();
+  return Status::IOError("Unhandled recovery strategy");
 }
 
 bool ClusterFailoverManager::ShouldAttemptRecovery(const FailureEvent& event) {

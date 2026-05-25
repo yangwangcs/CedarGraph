@@ -855,12 +855,17 @@ bool DistributedExecutor::IsSinglePartitionQuery(
         if (it == node.properties.end()) {
           continue;
         }
-        if (it->second->expr_type != cypher::ExprType::LITERAL) {
-          continue;
-        }
-        auto* literal = static_cast<cypher::LiteralExpr*>(it->second.get());
-        if (literal->value.IsInt()) {
-          entity_ids.push_back(static_cast<uint64_t>(literal->value.GetInt()));
+        if (it->second->expr_type == cypher::ExprType::LITERAL) {
+          auto* literal = static_cast<cypher::LiteralExpr*>(it->second.get());
+          if (literal->value.IsInt()) {
+            entity_ids.push_back(static_cast<uint64_t>(literal->value.GetInt()));
+          }
+        } else if (it->second->expr_type == cypher::ExprType::PARAMETER) {
+          auto* param = static_cast<cypher::ParameterExpr*>(it->second.get());
+          auto p_it = parameters.find(param->name);
+          if (p_it != parameters.end() && p_it->second.IsInt()) {
+            entity_ids.push_back(static_cast<uint64_t>(p_it->second.GetInt()));
+          }
         }
       }
     }
@@ -882,17 +887,24 @@ bool DistributedExecutor::IsSinglePartitionQuery(
     if (comp->op != cypher::ComparisonExpr::EQ) {
       continue;
     }
-    if (comp->left->expr_type != cypher::ExprType::PROPERTY ||
-        comp->right->expr_type != cypher::ExprType::LITERAL) {
+    if (comp->left->expr_type != cypher::ExprType::PROPERTY) {
       continue;
     }
     auto* prop = static_cast<cypher::PropertyExpr*>(comp->left.get());
     if (prop->property != "id") {
       continue;
     }
-    auto* literal = static_cast<cypher::LiteralExpr*>(comp->right.get());
-    if (literal->value.IsInt()) {
-      entity_ids.push_back(static_cast<uint64_t>(literal->value.GetInt()));
+    if (comp->right->expr_type == cypher::ExprType::LITERAL) {
+      auto* literal = static_cast<cypher::LiteralExpr*>(comp->right.get());
+      if (literal->value.IsInt()) {
+        entity_ids.push_back(static_cast<uint64_t>(literal->value.GetInt()));
+      }
+    } else if (comp->right->expr_type == cypher::ExprType::PARAMETER) {
+      auto* param = static_cast<cypher::ParameterExpr*>(comp->right.get());
+      auto p_it = parameters.find(param->name);
+      if (p_it != parameters.end() && p_it->second.IsInt()) {
+        entity_ids.push_back(static_cast<uint64_t>(p_it->second.GetInt()));
+      }
     }
   }
   
