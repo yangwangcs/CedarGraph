@@ -1343,12 +1343,13 @@ void LsmEngine::MaybeScheduleFlush() {
   mem_ = std::make_unique<VSLMemTable>();
   
   VSLMemTable* imm = imm_.get();
-  
+
   if (shutdown_.load() || !opened_) {
     return;
   }
 
-  // 先增加计数再释放锁，避免 Close() 在计数为 0 时看到 imm_ 非空
+  // Increment counter BEFORE releasing lock so Close() never sees
+  // imm_ != nullptr with active_flush_count_ == 0.
   active_flush_count_.fetch_add(1);
   lock.unlock();
   auto flush_task = [this, imm]() noexcept {
