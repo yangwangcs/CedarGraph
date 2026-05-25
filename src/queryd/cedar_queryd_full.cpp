@@ -492,7 +492,6 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
                       cedar::query::QueryGrpcStatus* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
-    
     ActiveTransaction txn_ctx;
     {
       std::lock_guard<std::mutex> lock(active_txns_mutex_);
@@ -502,10 +501,9 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
         response->set_message("Transaction not found: " + txn_id_str);
         return grpc::Status::OK;
       }
-      txn_ctx = std::move(it->second);
-      active_transactions_.erase(it);
+      txn_ctx = it->second;  // Copy, do NOT erase yet
     }
-    
+
     if (two_pc_engine_ && txn_ctx.has_writes) {
       auto now_ts = std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -518,7 +516,13 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
         return grpc::Status::OK;
       }
     }
-    
+
+    // Only erase after successful commit
+    {
+      std::lock_guard<std::mutex> lock(active_txns_mutex_);
+      active_transactions_.erase(txn_id_str);
+    }
+
     response->set_ok(true);
     LOG(INFO) << "[QueryD] Commit: " << txn_id_str << " (keys=" << txn_ctx.write_set.size() << ")";
     return grpc::Status::OK;
