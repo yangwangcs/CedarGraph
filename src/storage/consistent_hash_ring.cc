@@ -146,12 +146,19 @@ void ConsistentHashRing::AddVirtualNodes(const std::string& node_id) {
   for (uint32_t i = 0; i < config_.virtual_nodes_per_physical; i++) {
     std::string vnode_key = node_id + "#" + std::to_string(i);
     uint32_t hash = Hash(vnode_key);
-    
+
+    // Linear probing on collision to avoid silent overwrite
+    uint32_t probe = 0;
+    while (ring_.find(hash + probe) != ring_.end() && probe < config_.virtual_nodes_per_physical) {
+      probe++;
+    }
+    hash += probe;
+
     VirtualNode vnode;
     vnode.hash = hash;
     vnode.physical_node = node_id;
     vnode.replica_index = i;
-    
+
     ring_[hash] = vnode;
   }
 }
