@@ -88,6 +88,7 @@ LockedVSL::LockedVSL() : max_height_(1), size_(0), rnd_(0) {
 }
 
 LockedVSL::~LockedVSL() {
+  std::lock_guard<std::mutex> lock(mutex_);
   LFNode* node = head_->Next(0);
   while (node != tail_) {
     LFNode* next = node->Next(0);
