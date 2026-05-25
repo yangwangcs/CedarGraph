@@ -467,6 +467,29 @@ void MetaServiceGrpcServer::Wait() {
 // MetaServiceGrpcClient
 // =============================================================================
 
+// Template helper: if the server says "Not leader", reconnect and retry once.
+template <typename Request, typename Response>
+grpc::Status MetaServiceGrpcClient::RetryRpcOnNotLeader(
+    std::shared_ptr<cedar::meta::MetaService::Stub>& stub,
+    grpc::Status (cedar::meta::MetaService::Stub::*rpc)(grpc::ClientContext*, const Request&, Response*),
+    const Request& request,
+    Response* response,
+    std::chrono::seconds deadline) {
+  if (!response->success() &&
+      response->error_msg().find("Not leader") != std::string::npos) {
+    auto reconnect = TryReconnect();
+    if (reconnect.ok()) {
+      stub = GetStub();
+      if (stub) {
+        grpc::ClientContext context;
+        context.set_deadline(std::chrono::system_clock::now() + deadline);
+        return (stub.get()->*rpc)(&context, request, response);
+      }
+    }
+  }
+  return grpc::Status::OK;
+}
+
 MetaServiceGrpcClient::MetaServiceGrpcClient() = default;
 
 MetaServiceGrpcClient::~MetaServiceGrpcClient() {
@@ -575,7 +598,14 @@ StatusOr<PartitionAssignment> MetaServiceGrpcClient::GetPartitionAssignment(
         }
     }
     if (!response.success()) {
-        return Status::NotFound(response.error_msg());
+        auto retry_status = RetryRpcOnNotLeader(stub, &cedar::meta::MetaService::Stub::GetPartitionAssignment,
+                                                request, &response, std::chrono::seconds(5));
+        if (!retry_status.ok()) {
+            return Status::IOError("MetaD RPC failed: " + retry_status.error_message());
+        }
+        if (!response.success()) {
+            return Status::NotFound(response.error_msg());
+        }
     }
     
     return PartitionAssignmentFromProto(response.assignment());
@@ -608,7 +638,14 @@ StatusOr<SpacePartitionMap> MetaServiceGrpcClient::GetSpacePartitionMap(const st
         }
     }
     if (!response.success()) {
-        return Status::NotFound(response.error_msg());
+        auto retry_status = RetryRpcOnNotLeader(stub, &cedar::meta::MetaService::Stub::GetSpacePartitionMap,
+                                                request, &response, std::chrono::seconds(5));
+        if (!retry_status.ok()) {
+            return Status::IOError("MetaD RPC failed: " + retry_status.error_message());
+        }
+        if (!response.success()) {
+            return Status::NotFound(response.error_msg());
+        }
     }
     
     SpacePartitionMap map;
@@ -650,7 +687,14 @@ StatusOr<NodeInfo> MetaServiceGrpcClient::GetNode(NodeID node_id) {
         }
     }
     if (!response.success()) {
-        return Status::NotFound(response.error_msg());
+        auto retry_status = RetryRpcOnNotLeader(stub, &cedar::meta::MetaService::Stub::GetNode,
+                                                request, &response, std::chrono::seconds(5));
+        if (!retry_status.ok()) {
+            return Status::IOError("MetaD RPC failed: " + retry_status.error_message());
+        }
+        if (!response.success()) {
+            return Status::NotFound(response.error_msg());
+        }
     }
     
     NodeInfo info;
@@ -685,7 +729,14 @@ StatusOr<std::vector<NodeInfo>> MetaServiceGrpcClient::GetAliveNodes() {
         }
     }
     if (!response.success()) {
-        return Status::IOError(response.error_msg());
+        auto retry_status = RetryRpcOnNotLeader(stub, &cedar::meta::MetaService::Stub::GetAliveNodes,
+                                                request, &response, std::chrono::seconds(5));
+        if (!retry_status.ok()) {
+            return Status::IOError("MetaD RPC failed: " + retry_status.error_message());
+        }
+        if (!response.success()) {
+            return Status::IOError(response.error_msg());
+        }
     }
     
     std::vector<NodeInfo> result;
@@ -729,7 +780,14 @@ Status MetaServiceGrpcClient::RegisterNode(const NodeInfo& info) {
         }
     }
     if (!response.success()) {
-        return Status::IOError(response.error_msg());
+        auto retry_status = RetryRpcOnNotLeader(stub, &cedar::meta::MetaService::Stub::RegisterNode,
+                                                request, &response, std::chrono::seconds(5));
+        if (!retry_status.ok()) {
+            return Status::IOError("MetaD RPC failed: " + retry_status.error_message());
+        }
+        if (!response.success()) {
+            return Status::IOError(response.error_msg());
+        }
     }
     return Status::OK();
 }
@@ -763,7 +821,14 @@ Status MetaServiceGrpcClient::Heartbeat(const NodeStatus& status) {
         }
     }
     if (!response.success()) {
-        return Status::IOError(response.error_msg());
+        auto retry_status = RetryRpcOnNotLeader(stub, &cedar::meta::MetaService::Stub::Heartbeat,
+                                                request, &response, std::chrono::seconds(5));
+        if (!retry_status.ok()) {
+            return Status::IOError("MetaD RPC failed: " + retry_status.error_message());
+        }
+        if (!response.success()) {
+            return Status::IOError(response.error_msg());
+        }
     }
     return Status::OK();
 }

@@ -199,6 +199,16 @@ private:
     // 处理连接失败，尝试其他节点
     Status TryReconnect();
     
+    // If the server reports "Not leader", reconnect to another node and
+    // retry the RPC once. Returns the final gRPC status.
+    template <typename Request, typename Response>
+    grpc::Status RetryRpcOnNotLeader(
+        std::shared_ptr<cedar::meta::MetaService::Stub>& stub,
+        grpc::Status (cedar::meta::MetaService::Stub::*rpc)(grpc::ClientContext*, const Request&, Response*),
+        const Request& request,
+        Response* response,
+        std::chrono::seconds deadline);
+    
     std::thread health_monitor_thread_;
     std::atomic<bool> health_monitor_running_{false};
     void HealthMonitorLoop();
