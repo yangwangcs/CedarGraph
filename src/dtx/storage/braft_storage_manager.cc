@@ -128,26 +128,19 @@ std::optional<std::string> StorageBraftManager::GetPartitionLeaderAddress(Partit
 // Closure for async propose
 class ProposeClosure : public braft::Closure {
  public:
-  explicit ProposeClosure(std::shared_ptr<std::promise<Status>> promise)
-      : promise_(std::move(promise)) {}
-  
+  ProposeClosure(std::shared_ptr<std::promise<Status>> promise,
+                 std::shared_ptr<butil::IOBuf> data_holder)
+      : promise_(promise), data_holder_(data_holder) {}
+
   void Run() override {
-    bool expected = false;
-    if (!done_.compare_exchange_strong(expected, true)) {
-      delete this;
-      return;
-    }
-    if (status().ok()) {
-      promise_->set_value(Status::OK());
-    } else {
-      promise_->set_value(Status::IOError("BRaft propose failed", status().error_cstr()));
-    }
+    promise_->set_value(
+        status().ok() ? Status::OK() : Status::IOError(status().error_str()));
     delete this;
   }
-  
+
  private:
   std::shared_ptr<std::promise<Status>> promise_;
-  std::atomic<bool> done_{false};
+  std::shared_ptr<butil::IOBuf> data_holder_;
 };
 
 Status StorageBraftManager::Propose(PartitionID pid, const StorageRaftCommand& cmd) {
@@ -159,16 +152,16 @@ Status StorageBraftManager::Propose(PartitionID pid, const StorageRaftCommand& c
     return Status::NotLeader("Not leader for partition " + std::to_string(pid));
   }
   
-  butil::IOBuf data;
+  auto data = std::make_shared<butil::IOBuf>();
   std::string serialized = cmd.Serialize();
-  data.append(serialized);
-  
+  data->append(serialized);
+
   braft::Task task;
-  task.data = &data;
-  
+  task.data = data.get();
+
   auto promise = std::make_shared<std::promise<Status>>();
-  task.done = new ProposeClosure(promise);
-  
+  task.done = new ProposeClosure(promise, data);
+
   node->apply(task);
   
   auto future = promise->get_future();
