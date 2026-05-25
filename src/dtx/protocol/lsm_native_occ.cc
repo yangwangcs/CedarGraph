@@ -473,17 +473,14 @@ LndOccCommitResult LndOccEngine::FullTwoPhaseCommit(
   
   TXN_METRICS_NETWORK_RETRY(txn_id, all_prepared ? "Prepare success" : "Prepare failed");
   
-  // 如果 Prepare 阶段失败，发送 Abort
+  // 如果 Prepare 阶段失败，发送 Abort 到所有参与者（无论 prepare 是否成功）
   if (!all_prepared) {
-    // 向已 prepared 的参与者发送 Abort
-    for (const auto& result : prepare_results) {
-      if (result.prepared) {
-        auto* client = GetStorageClient(result.partition_id);
-        if (client) {
-          auto abort_result = client->Abort(txn_id);
-          if (!abort_result.ok()) {
-            TXN_METRICS_NETWORK_RETRY(txn_id, "Abort after failed prepare");
-          }
+    for (const auto& pid : participants) {
+      auto* client = GetStorageClient(pid);
+      if (client) {
+        auto abort_result = client->Abort(txn_id);
+        if (!abort_result.ok()) {
+          TXN_METRICS_NETWORK_RETRY(txn_id, "Abort after failed prepare");
         }
       }
     }
