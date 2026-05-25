@@ -230,13 +230,14 @@ void TransactionStateManager::Shutdown() {
   if (shutdown_.exchange(true)) {
     return;
   }
-  
+
+  // Hold mutex while closing WAL to prevent PersistState from seeing
+  // wal_ as non-null after Close()/reset().
+  std::lock_guard<std::mutex> lock(mutex_);
   if (wal_) {
     wal_->Close();
     wal_.reset();
   }
-  
-  std::lock_guard<std::mutex> lock(mutex_);
   transactions_.clear();
 }
 
@@ -397,14 +398,16 @@ Status TransactionStateManager::RecoverFromWAL(const std::string& wal_dir) {
 }
 
 Status TransactionStateManager::PersistState(const TransactionRecord& record) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (shutdown_.load() || !wal_) {
+    return Status::IOError("TransactionStateManager", "shutting down");
+  }
   std::string data;
   record.Serialize(&data);
-  
   Status s = wal_->Append(data);
   if (!s.ok()) {
     return s;
   }
-  
   return wal_->Sync();
 }
 
