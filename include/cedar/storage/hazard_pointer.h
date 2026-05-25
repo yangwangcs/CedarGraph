@@ -26,6 +26,9 @@ class HazardPointerDomain {
   // 分配一个 hazard pointer slot
   HazardPointer<T>* AllocateSlot();
   
+  // Release a slot back to the domain (called by HazardPointerGuard dtor)
+  void ReleaseSlot(HazardPointer<T>* hp);
+  
   // 回收节点
   void Retire(T* node);
   
@@ -83,25 +86,27 @@ template<typename T>
 class HazardPointerGuard {
  public:
   explicit HazardPointerGuard(HazardPointerDomain<T>& domain)
-    : hp_(domain.AllocateSlot()) {}
-  
+    : domain_(domain), hp_(domain.AllocateSlot()) {}
+
   ~HazardPointerGuard() {
     if (hp_) {
       hp_->Clear();
+      domain_.ReleaseSlot(hp_);
     }
   }
-  
+
   void Protect(T* ptr) {
     if (hp_) {
       hp_->Protect(ptr);
     }
   }
-  
+
   T* Get() const {
     return hp_ ? hp_->Get() : nullptr;
   }
-  
+
  private:
+  HazardPointerDomain<T>& domain_;
   HazardPointer<T>* hp_;
 };
 

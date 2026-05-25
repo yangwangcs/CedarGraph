@@ -16,6 +16,16 @@ HazardPointer<T>* HazardPointerDomain<T>::AllocateSlot() {
 }
 
 template<typename T>
+void HazardPointerDomain<T>::ReleaseSlot(HazardPointer<T>* hp) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = std::find(slots_.begin(), slots_.end(), hp);
+  if (it != slots_.end()) {
+    delete *it;
+    slots_.erase(it);
+  }
+}
+
+template<typename T>
 void HazardPointerDomain<T>::Retire(T* node) {
   std::lock_guard<std::mutex> lock(mutex_);
   retired_list_.push_back(node);
