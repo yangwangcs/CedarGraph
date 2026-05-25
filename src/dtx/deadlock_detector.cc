@@ -506,38 +506,31 @@ void DistributedDeadlockDetector::CleanupLoop() {
 
 void DistributedDeadlockDetector::HandleDeadlock(const DeadlockDetectionResult& result) {
   if (!result.has_deadlock) return;
-  
+
   std::lock_guard<std::mutex> lock(handle_mutex_);
-  
+
   TxnID victim = result.victim;
-  
-  // 调用牺牲者处理回调
+
+  // Call victim handler (if any) BEFORE graph mutation
   if (victim_handler_ && victim != 0) {
     try {
       victim_handler_(victim);
-      
       std::lock_guard<std::mutex> stats_lock(stats_mutex_);
       ++stats_.victims_aborted;
     } catch (...) {
       std::cerr << "[DeadlockDetector] Victim handler exception" << std::endl;
     }
   } else if (victim == 0 && !result.cycle.empty()) {
-    // No victim selected - log and attempt to break cycle by removing youngest
     victim = *std::max_element(result.cycle.begin(), result.cycle.end());
+    // If no handler registered, we cannot break the deadlock automatically.
+    std::cerr << "[DeadlockDetector] Deadlock detected but no victim handler."
+              << " Suggested victim: " << victim << std::endl;
   }
-  
-  // 完全注销牺牲者事务，移除其所有等待边
-  // 这确保了等待图中不再包含该事务的任何边
-  if (victim != 0) {
-    graph_->RemoveTxn(victim);
-  }
-  
-  // 移除死锁环中的剩余边（如果还有）
-  for (size_t i = 0; i < result.cycle.size(); ++i) {
-    TxnID current = result.cycle[i];
-    TxnID next = result.cycle[(i + 1) % result.cycle.size()];
-    graph_->RemoveEdge(current, next);
-  }
+
+  // NOTE: We intentionally do NOT call graph_->RemoveTxn or RemoveEdge here.
+  // The victim handler should abort the transaction, which will clean up edges.
+  // CleanupLoop removes expired edges. Direct graph mutation here risks
+  // deadlocking with DetectionLoop's shared_lock on graph_->mutex_.
 }
 
 DistributedDeadlockDetector::Stats DistributedDeadlockDetector::GetStats() const {
