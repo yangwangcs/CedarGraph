@@ -85,14 +85,16 @@ void PartitionRaftStateMachine::on_apply(braft::Iterator& iter) {
     if (!cmd_result.ok()) {
       LOG(ERROR) << "Failed to deserialize storage command at index=" << iter.index()
                  << ": " << cmd_result.status().ToString();
-      continue;
+      iter.set_error_and_rollback();
+      return;
     }
-    
+
     const auto& cmd = cmd_result.value();
-    
+
     if (!storage_) {
       LOG(ERROR) << "No storage available for apply at index=" << iter.index();
-      continue;
+      iter.set_error_and_rollback();
+      return;
     }
     
     if (cmd.type == StorageRaftCommand::Type::kPut) {

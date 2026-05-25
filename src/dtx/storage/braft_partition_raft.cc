@@ -364,7 +364,8 @@ void StoragePartitionStateMachine::on_apply(braft::Iterator& iter) {
     const auto& entry = entry_result.value();
     if (!storage_) {
       LOG(ERROR) << "No storage available for apply at index=" << iter.index();
-      continue;
+      iter.set_error_and_rollback();
+      return;
     }
     if (entry.type == StorageLogEntry::Type::kPut) {
       storage_->Put(entry.key, entry.descriptor.value_or(Descriptor()),
