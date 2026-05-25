@@ -335,8 +335,15 @@ std::optional<Descriptor> LsmEngine::Get(const CedarKey& key) {
       return desc;
     }
   }
+
+  // 3. Query Accumulated Buffer (for accumulated flush mode)
+  auto accumulated = QueryAccumulatedBuffer(key.entity_id(), key.entity_type(),
+                                            key.column_id(), key.timestamp());
+  if (accumulated.has_value()) {
+    return accumulated.value().second;  // return Descriptor
+  }
   
-  // 3. Query SST files via Size-Tiered Compaction Engine
+  // 4. Query SST files via Size-Tiered Compaction Engine
   if (compaction_engine_) {
     // 获取覆盖该 Entity 的所有文件
     auto files = compaction_engine_->GetFilesForEntity(
