@@ -4,6 +4,7 @@
 #include "cedar/queryd/query_storage_client.h"
 
 #include <chrono>
+#include <future>
 #include <thread>
 
 // 包含 dtx StorageClient 头文件
@@ -185,22 +186,45 @@ Status QueryStorageClient::ParallelBatchGet(
   results->clear();
   results->reserve(partition_entity_pairs.size());
   
-  // Sequential implementation for now
-  for (const auto& [partition_id, entity_id] : partition_entity_pairs) {
-    (void)partition_id;
+  if (partition_entity_pairs.empty()) {
+    return Status::OK();
+  }
+  
+  // Limit concurrency to avoid thread explosion on large batches.
+  size_t max_concurrency = std::thread::hardware_concurrency();
+  if (max_concurrency == 0) max_concurrency = 4;
+  
+  // Process in chunks to bound parallelism.
+  size_t index = 0;
+  while (index < partition_entity_pairs.size()) {
+    size_t chunk_size = std::min(max_concurrency, partition_entity_pairs.size() - index);
+    std::vector<std::future<std::tuple<bool, Descriptor, Status>>> futures;
+    futures.reserve(chunk_size);
     
-    CedarKey key;
-    key.SetEntityId(entity_id);
-    key.SetTimestamp(timestamp);
-    key.SetEntityType(static_cast<uint8_t>(entity_type));
-    
-    Descriptor desc;
-    bool found;
-    Status s = Get(key, &desc, &found);
-    if (!s.ok()) {
-      return s;
+    for (size_t i = 0; i < chunk_size; ++i) {
+      uint64_t entity_id = partition_entity_pairs[index + i].second;
+      futures.push_back(std::async(std::launch::async,
+          [this, entity_id, entity_type, timestamp]() {
+            CedarKey key;
+            key.SetEntityId(entity_id);
+            key.SetTimestamp(timestamp);
+            key.SetEntityType(static_cast<uint8_t>(entity_type));
+            Descriptor desc;
+            bool found;
+            Status s = Get(key, &desc, &found);
+            return std::make_tuple(found, std::move(desc), s);
+          }));
     }
-    results->emplace_back(found, std::move(desc));
+    
+    for (auto& f : futures) {
+      auto [found, desc, s] = f.get();
+      if (!s.ok()) {
+        return s;
+      }
+      results->emplace_back(found, std::move(desc));
+    }
+    
+    index += chunk_size;
   }
   
   return Status::OK();
