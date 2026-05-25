@@ -321,8 +321,8 @@ class QueryServiceImpl::Impl {
         [this, writer, &proto_batch, &batch_size, &batch_count, query_id](
             const cypher::Record& record) -> bool {
           if (proto_batch.columns().empty() && !record.values.empty()) {
-            for (const auto& col : record.column_order) {
-              proto_batch.add_columns(col);
+            for (const auto& kv : record.values) {
+              proto_batch.add_columns(kv.first);
             }
           }
           auto* row = proto_batch.add_rows();

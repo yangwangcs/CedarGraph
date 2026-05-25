@@ -27,6 +27,9 @@
 #include <unordered_set>
 
 #include "cedar/dtx/storage/partition_migrator.h"
+#include "cedar/dtx/storage_service_impl.h"
+
+#include <butil/logging.h>
 
 namespace cedar {
 namespace service {
@@ -401,8 +404,62 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
     return grpc::Status::CANCELLED;
   }
 
-  // TODO(#migration-001): Apply the WAL entry to the target partition storage.
-  // For now, acknowledge receipt so the source can continue catch-up.
+  if (!partition_migrator_) {
+    LOG(WARNING) << "ReplicateWALEntry: no PartitionMigrator injected, "
+                 << "cannot apply WAL entry for partition " << request->partition_id();
+    response->set_success(false);
+    response->set_error_msg("PartitionMigrator not initialized");
+    return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
+                          "PartitionMigrator not initialized");
+  }
+
+  auto* partition_manager = partition_migrator_->GetStoragePartitionManager();
+  if (!partition_manager) {
+    LOG(WARNING) << "ReplicateWALEntry: no StoragePartitionManager available, "
+                 << "cannot apply WAL entry for partition " << request->partition_id();
+    response->set_success(false);
+    response->set_error_msg("StoragePartitionManager not initialized");
+    return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
+                          "StoragePartitionManager not initialized");
+  }
+
+  auto* storage = partition_manager->GetPartition(request->partition_id());
+  if (!storage) {
+    response->set_success(false);
+    response->set_error_msg("Partition not found: " +
+                            std::to_string(request->partition_id()));
+    return ::grpc::Status(::grpc::StatusCode::NOT_FOUND,
+                          "Partition not found");
+  }
+
+  const std::string& op = request->op_data();
+  ::cedar::Status s;
+  if (op == "COMMIT") {
+    s = storage->Commit(request->txn_id(),
+                        ::cedar::Timestamp(request->timestamp()));
+  } else if (op == "ABORT") {
+    s = storage->Abort(request->txn_id());
+  } else if (op == "PREPARE") {
+    // PREPARE records cannot be recovered from WAL alone because they do not
+    // include read/write sets. The target should have loaded prepared txn
+    // state from the migration snapshot instead.
+    LOG(INFO) << "ReplicateWALEntry: skipping PREPARE for txn "
+              << request->txn_id() << " (expected from snapshot)";
+    response->set_success(true);
+    return ::grpc::Status::OK;
+  } else {
+    response->set_success(false);
+    response->set_error_msg("Unknown WAL operation: " + op);
+    return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT,
+                          "Unknown WAL operation");
+  }
+
+  if (!s.ok() && !s.IsNotFound()) {
+    response->set_success(false);
+    response->set_error_msg(s.ToString());
+    return ::grpc::Status(::grpc::StatusCode::INTERNAL, s.ToString());
+  }
+
   response->set_success(true);
   return ::grpc::Status::OK;
 }

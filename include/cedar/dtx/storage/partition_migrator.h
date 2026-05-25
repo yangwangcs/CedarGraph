@@ -213,6 +213,7 @@ class PartitionMigrator {
 
   // Dependency injection for data movement
   void SetStoragePartitionManager(StoragePartitionManager* manager);
+  StoragePartitionManager* GetStoragePartitionManager() const { return partition_manager_; }
   void SetMetaServiceClient(MetaServiceNodeClient* meta_client);
   void SetMigrationServiceStub(
       std::shared_ptr<cedar::migration::PartitionMigrationService::Stub> stub);

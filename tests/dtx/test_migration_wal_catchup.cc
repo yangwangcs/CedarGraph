@@ -13,10 +13,12 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <cstring>
 #include <filesystem>
 #include <chrono>
 #include <fstream>
 
+#include "cedar/core/crc32c.h"
 #include "cedar/dtx/storage/partition_migrator.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/storage/cedar_graph_storage.h"
@@ -114,14 +116,19 @@ TEST_F(MigrationWALCatchUpTest, ReplaysWALToTarget) {
   {
     std::ofstream wal_file(wal_path, std::ios::binary);
     ASSERT_TRUE(wal_file.is_open());
+    const uint32_t kWalMagic = 0x57414C01;
     for (int i = 0; i < 5; ++i) {
       uint64_t ts = 1000 + i;
       uint64_t txn_id = 10 + i;
-      uint32_t op_len = 4;
+      std::string op = "COMMIT";
+      uint32_t op_len = static_cast<uint32_t>(op.size());
+      uint32_t crc = cedar::crc32c::Value(op.data(), op.size());
+      wal_file.write(reinterpret_cast<const char*>(&kWalMagic), sizeof(kWalMagic));
       wal_file.write(reinterpret_cast<const char*>(&ts), sizeof(ts));
       wal_file.write(reinterpret_cast<const char*>(&txn_id), sizeof(txn_id));
       wal_file.write(reinterpret_cast<const char*>(&op_len), sizeof(op_len));
-      wal_file.write("OP", op_len);
+      wal_file.write(reinterpret_cast<const char*>(&crc), sizeof(crc));
+      wal_file.write(op.data(), op_len);
     }
     wal_file.close();
   }
