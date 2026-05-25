@@ -2378,18 +2378,23 @@ Status LsmEngine::DoCompaction(int level, const std::vector<SSTFileMeta>& inputs
   }
   BuildColumnFileIndex();
   
-  // 删除旧文件
-  for (const auto& input : inputs) {
-    std::string old_path = SstFilePath(input.file_number);
-    env_->RemoveFile(old_path);
-  }
-  
-  // 更新 Compaction Engine: remove input files, add output file
+  // 1. Update compaction engine metadata FIRST so new readers see new files.
   if (compaction_engine_) {
     for (const auto& input : inputs) {
       compaction_engine_->RemoveSSTFile(input.file_number);
     }
     compaction_engine_->AddSSTFile(*output_meta);
+  }
+
+  // 2. Delete old files AFTER metadata is updated.
+  // Readers with cached handles may still be using them; we rely on
+  // POSIX unlink behavior (file removed from directory but kept on disk
+  // until last fd closed). For mmap, this is safe only if no reader
+  // still has the file mapped. A proper fix requires reference counting
+  // SST files; this reordering is the minimal safe improvement.
+  for (const auto& input : inputs) {
+    std::string old_path = SstFilePath(input.file_number);
+    env_->RemoveFile(old_path);
   }
   
   // 增量更新 Partition Index
