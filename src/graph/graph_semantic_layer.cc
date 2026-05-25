@@ -73,17 +73,20 @@ void SharedIOContext::CacheBlock(const std::string& file_path, size_t block_idx,
   
   constexpr size_t kBlockCacheLimit = 1000;
   if (block_cache_.size() > kBlockCacheLimit) {
+    // Evict only entries whose weak_ptr has expired (no external shared_ptr holders).
+    // If the cache is still over limit after this, it means all blocks are actively
+    // in use; we keep them rather than corrupting active readers.
     for (auto it = block_cache_.begin(); it != block_cache_.end();) {
       if (it->second.expired()) {
         it = block_cache_.erase(it);
       } else {
-        if (auto block = it->second.lock()) {
-          if (block->ref_count.load() > 0) {
-            block->ref_count.fetch_sub(1);
-          }
-        }
-        it = block_cache_.erase(it);
+        ++it;
       }
+    }
+    // Optional: if still over limit, increase limit or log a warning.
+    if (block_cache_.size() > kBlockCacheLimit) {
+      std::cerr << "[SharedIOContext] CacheBlock: all " << block_cache_.size()
+                << " entries are actively held, cannot evict" << std::endl;
     }
   }
 }

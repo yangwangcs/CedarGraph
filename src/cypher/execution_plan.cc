@@ -8,6 +8,7 @@
 #include "cedar/core/logging.h"
 #include "cedar/core/status.h"
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <sstream>
 
@@ -242,7 +243,17 @@ bool NodeScan::Init(ExecutionContext* ctx) {
   uint64_t max_entity_id = kDefaultMaxEntityId;
   const char* env_max = std::getenv("CEDAR_SCAN_MAX_ENTITIES");
   if (env_max) {
-    max_entity_id = std::max(min_entity_id, static_cast<uint64_t>(std::strtoull(env_max, nullptr, 10)));
+    char* end_ptr = nullptr;
+    errno = 0;
+    unsigned long long parsed = std::strtoull(env_max, &end_ptr, 10);
+    if (end_ptr != env_max && *end_ptr == '\0' && errno == 0) {
+      constexpr uint64_t kMaxAllowedEntities = 10000000;  // 10M hard cap
+      if (parsed >= min_entity_id && parsed <= kMaxAllowedEntities) {
+        max_entity_id = static_cast<uint64_t>(parsed);
+      } else if (parsed > kMaxAllowedEntities) {
+        max_entity_id = kMaxAllowedEntities;
+      }
+    }
   }
   
   // Check if graph context provides entity enumeration
@@ -507,6 +518,9 @@ bool Filter::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Filter::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   while (true) {
     auto record = children_[0]->Next();
     if (!record) {
@@ -554,6 +568,9 @@ bool Project::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Project::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   auto record = children_[0]->Next();
   if (!record) {
     return nullptr;
@@ -839,6 +856,9 @@ std::shared_ptr<Record> Sort::Next() {
 }
 
 void Sort::DoSort() {
+  if (children_.empty()) {
+    return;
+  }
   // Drain all records from child
   while (auto record = children_[0]->Next()) {
     buffered_records_.push_back(record);
@@ -894,6 +914,9 @@ bool Limit::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Limit::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   if (count_ >= limit_) {
     return nullptr;
   }
@@ -932,6 +955,9 @@ bool Skip::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Skip::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   if (!initialized_) {
     initialized_ = true;
     for (size_t i = 0; i < skip_; ++i) {
@@ -974,6 +1000,9 @@ bool Distinct::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Distinct::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   ExpressionEvaluator evaluator(context_);
 
   while (auto record = children_[0]->Next()) {
@@ -1019,6 +1048,9 @@ bool Aggregate::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Aggregate::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   if (!aggregated_) {
     DoAggregate();
     aggregated_ = true;
@@ -1031,6 +1063,9 @@ std::shared_ptr<Record> Aggregate::Next() {
 }
 
 void Aggregate::DoAggregate() {
+  if (children_.empty()) {
+    return;
+  }
   ExpressionEvaluator evaluator(context_);
   
   // Group records by group_by_key (if any)

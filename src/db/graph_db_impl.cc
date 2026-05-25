@@ -21,6 +21,35 @@
 #include "cedar/sst/zone_columnar_reader.h"
 #include "cedar/sst/sst_builder_factory.h"
 
+namespace {
+
+// RAII guard that pauses background work on construction and resumes on destruction.
+struct BgWorkPauseGuard {
+  explicit BgWorkPauseGuard(std::atomic<bool>* flag, std::condition_variable* cv)
+      : flag_(flag), cv_(cv), released_(false) {
+    flag_->store(true);
+  }
+  void Release() {
+    if (!released_) {
+      flag_->store(false);
+      if (cv_) cv_->notify_all();
+      released_ = true;
+    }
+  }
+  ~BgWorkPauseGuard() {
+    if (!released_) {
+      flag_->store(false);
+      if (cv_) cv_->notify_all();
+    }
+  }
+ private:
+  std::atomic<bool>* flag_;
+  std::condition_variable* cv_;
+  bool released_;
+};
+
+}  // namespace
+
 namespace cedar {
 
 // ==================== CedarGraphDBImpl 构造函数/析构函数 ====================
@@ -188,9 +217,8 @@ Status CedarGraphDBImpl::Put(const CedarKey& key,
     return Status::InvalidArgument("CedarGraphDB", "not opened");
   }
   
-  // 分配序列号 (用作 txn_version)
-  uint64_t seq = version_set_.GetLastSequence() + 1;
-  version_set_.SetLastSequence(seq);
+  // 分配序列号 (用作 txn_version) — atomic RMW to avoid duplicate seqs
+  uint64_t seq = version_set_.FetchAddSequence(1) + 1;
   
   // 写入 WAL
   if (options_.enable_wal) {
@@ -424,13 +452,12 @@ uint64_t CedarGraphDBImpl::GetLatestSequenceNumber() const {
 // ==================== CedarGraphDBImpl 备份 ====================
 
 Status CedarGraphDBImpl::CreateCheckpoint(const std::string& checkpoint_dir) {
-  // 1. 暂停后台操作
-  bg_work_paused_.store(true);
+  // 1. 暂停后台操作 (RAII guard ensures resume on all exit paths)
+  BgWorkPauseGuard pause_guard(&bg_work_paused_, &bg_cv_);
   
   // 2. Flush 所有 MemTable
   Status s = Flush(FlushOptions{});
   if (!s.ok()) {
-    bg_work_paused_.store(false);
     return s;
   }
   
@@ -438,7 +465,6 @@ Status CedarGraphDBImpl::CreateCheckpoint(const std::string& checkpoint_dir) {
   if (wal_writer_) {
     s = wal_writer_->Sync();
     if (!s.ok()) {
-      bg_work_paused_.store(false);
       return s;
     }
   }
@@ -450,7 +476,6 @@ Status CedarGraphDBImpl::CreateCheckpoint(const std::string& checkpoint_dir) {
     }
     std::filesystem::create_directories(checkpoint_dir);
   } catch (const std::exception& e) {
-    bg_work_paused_.store(false);
     return Status::IOError("CreateCheckpoint", e.what());
   }
   
@@ -466,7 +491,6 @@ Status CedarGraphDBImpl::CreateCheckpoint(const std::string& checkpoint_dir) {
           checkpoint_dir + "/MANIFEST",
           std::filesystem::copy_options::overwrite_existing);
     } catch (const std::exception& e) {
-      bg_work_paused_.store(false);
       return Status::IOError("CreateCheckpoint", 
                              std::string("Failed to copy manifest: ") + e.what());
     }
@@ -491,7 +515,6 @@ Status CedarGraphDBImpl::CreateCheckpoint(const std::string& checkpoint_dir) {
           try {
             std::filesystem::copy_file(src, dst);
           } catch (const std::exception& e) {
-            bg_work_paused_.store(false);
             return Status::IOError("CreateCheckpoint",
                                    std::string("Failed to copy SST file: ") + e.what());
           }
@@ -535,8 +558,7 @@ Status CedarGraphDBImpl::CreateCheckpoint(const std::string& checkpoint_dir) {
   }
   
   // 10. 恢复后台操作
-  bg_work_paused_.store(false);
-  bg_cv_.notify_all();
+  pause_guard.Release();
   
   return Status::OK();
 }

@@ -301,6 +301,7 @@ class QueryServiceImpl::Impl {
     }
 
     auto cleanup = [this, query_id]() {
+      ReleaseQuerySlot();
       std::lock_guard<std::mutex> lock(queries_mutex_);
       active_queries_.erase(query_id);
     };

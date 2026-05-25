@@ -20,6 +20,7 @@
 #include <unordered_set>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <string>
 
@@ -330,7 +331,10 @@ class CedarGraph {
   CedarGraphStorage* storage_;
   std::unique_ptr<GraphSemanticLayer> semantic_layer_;
   std::unique_ptr<cypher::CypherEngine> cypher_engine_;
+  std::once_flag cypher_engine_init_flag_;
   cedar::gcn::TMVEngine* tmv_engine_ = nullptr;
+
+  void EnsureCypherEngine();
 };
 
 }  // namespace cedar

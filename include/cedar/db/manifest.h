@@ -252,6 +252,9 @@ class VersionSet {
   uint64_t GetLastSequence() const;
   void SetLastSequence(uint64_t seq);
   
+  // Atomically increment last_sequence_ by delta and return the OLD value.
+  uint64_t FetchAddSequence(uint64_t delta);
+  
   // 获取当前日志号
   uint64_t GetLogNumber() const;
   void SetLogNumber(uint64_t num);

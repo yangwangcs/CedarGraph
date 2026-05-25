@@ -241,7 +241,10 @@ Status LsmEngine::Put(const CedarKey& key, const Descriptor& descriptor, Timesta
       }
     }
     
-    mem_->Put(key, descriptor, txn_version);
+    Status s = mem_->Put(key, descriptor, txn_version);
+    if (!s.ok()) {
+      return s;
+    }
     
     InvalidateQueryCache(key.entity_id());
     
@@ -283,7 +286,10 @@ Status LsmEngine::Delete(const CedarKey& key, Timestamp txn_version) {
       }
     }
     
-    mem_->Put(key, Descriptor(), txn_version);
+    Status s = mem_->Put(key, Descriptor(), txn_version);
+    if (!s.ok()) {
+      return s;
+    }
     
     InvalidateQueryCache(key.entity_id());
     if (!disable_column_tracking_) {
@@ -329,8 +335,15 @@ std::optional<Descriptor> LsmEngine::Get(const CedarKey& key) {
       return desc;
     }
   }
+
+  // 3. Query Accumulated Buffer (for accumulated flush mode)
+  auto accumulated = QueryAccumulatedBuffer(key.entity_id(), key.entity_type(),
+                                            key.column_id(), key.timestamp());
+  if (accumulated.has_value()) {
+    return accumulated.value().second;  // return Descriptor
+  }
   
-  // 3. Query SST files via Size-Tiered Compaction Engine
+  // 4. Query SST files via Size-Tiered Compaction Engine
   if (compaction_engine_) {
     // 获取覆盖该 Entity 的所有文件
     auto files = compaction_engine_->GetFilesForEntity(
@@ -631,31 +644,35 @@ std::optional<std::pair<CedarKey, Descriptor>> LsmEngine::GetRecordAtTime(
     }
   };
 
-  // 1. Query MemTable (hot data)
-  auto mem_results = mem_->GetRange(entity_id, entity_type, column_id, 
-                                     Timestamp(0), timestamp);
-  if (!mem_results.empty()) {
-    const auto& entry = mem_results.front();  // front() = latest version (descending order)
-    return std::make_pair(BuildKey(entry), entry.descriptor);
-  }
-
-  // 2. Query Immutable MemTable
-  if (imm_) {
-    auto imm_results = imm_->GetRange(entity_id, entity_type, column_id,
+  // 1+2. Query MemTable and Immutable MemTable under lock
+  std::optional<std::pair<CedarKey, Descriptor>> mem_imm_result;
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    auto mem_results = mem_->GetRange(entity_id, entity_type, column_id, 
                                        Timestamp(0), timestamp);
-    if (!imm_results.empty()) {
-      const auto& entry = imm_results.front();  // front() = latest version
-      return std::make_pair(BuildKey(entry), entry.descriptor);
+    if (!mem_results.empty()) {
+      const auto& entry = mem_results.front();  // front() = latest version (descending order)
+      mem_imm_result = std::make_pair(BuildKey(entry), entry.descriptor);
+    } else if (imm_) {
+      auto imm_results = imm_->GetRange(entity_id, entity_type, column_id,
+                                         Timestamp(0), timestamp);
+      if (!imm_results.empty()) {
+        const auto& entry = imm_results.front();  // front() = latest version
+        mem_imm_result = std::make_pair(BuildKey(entry), entry.descriptor);
+      }
     }
   }
+  if (mem_imm_result.has_value()) {
+    return mem_imm_result;
+  }
   
-  // 3. Query Accumulated Buffer (for accumulated flush mode)
+  // 3. Query Accumulated Buffer (for accumulated flush mode) - no lock
   auto accumulated = QueryAccumulatedBuffer(entity_id, entity_type, column_id, timestamp);
   if (accumulated.has_value()) {
     return accumulated;
   }
   
-  // 4. Query SST files via Size-Tiered Compaction Engine
+  // 4. Query SST files via Size-Tiered Compaction Engine - no lock
   // SST files store complete CedarKey with all metadata
   if (compaction_engine_) {
     auto files = compaction_engine_->GetFilesForEntity(
@@ -721,17 +738,19 @@ std::vector<MemTableEntry> LsmEngine::GetRange(uint64_t entity_id,
     return results;
   }
 
-  // 1. Query MemTable (hot data)
-  auto mem_results = mem_->GetRange(entity_id, entity_type, column_id, start, end);
-  results.insert(results.end(), mem_results.begin(), mem_results.end());
+  // 1+2. Query MemTable and Immutable MemTable under lock
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    auto mem_results = mem_->GetRange(entity_id, entity_type, column_id, start, end);
+    results.insert(results.end(), mem_results.begin(), mem_results.end());
 
-  // 2. Query Immutable MemTable
-  if (imm_) {
-    auto imm_results = imm_->GetRange(entity_id, entity_type, column_id, start, end);
-    results.insert(results.end(), imm_results.begin(), imm_results.end());
+    if (imm_) {
+      auto imm_results = imm_->GetRange(entity_id, entity_type, column_id, start, end);
+      results.insert(results.end(), imm_results.begin(), imm_results.end());
+    }
   }
   
-  // 3. Query SST files via Size-Tiered Compaction Engine
+  // 3. Query SST files via Size-Tiered Compaction Engine - no lock
   if (compaction_engine_) {
     auto files = compaction_engine_->GetFilesForEntity(
         entity_id, column_id, static_cast<uint8_t>(entity_type));
@@ -1346,6 +1365,10 @@ void LsmEngine::MaybeScheduleFlush() {
   VSLMemTable* imm = imm_.get();
 
   if (shutdown_.load() || !opened_) {
+    // Rollback: imm_ was set but flush will not run.
+    // Move imm_ back to mem_ so data is not lost and ForceFlush
+    // does not see imm_ != nullptr with active_flush_count_ == 0.
+    mem_ = std::move(imm_);
     return;
   }
 
@@ -1383,7 +1406,8 @@ void LsmEngine::MaybeScheduleFlush() {
   } catch (const std::exception& e) {
     std::cerr << "[MaybeScheduleFlush] std::async failed: " << e.what()
               << " — falling back to sync flush" << std::endl;
-    active_flush_count_.fetch_sub(1);  // sync path will re-increment if needed
+    // Do NOT decrement active_flush_count_ here.
+    // flush_task() always decrements it at the end (line 1375).
     flush_task();
   }
 }
@@ -1772,9 +1796,15 @@ Status LsmEngine::ReplayWAL(uint64_t start_sequence) {
       if (status.ok()) {
         for (const auto& op : batch.ops()) {
           if (op.type == WalRecordType::kPut) {
-            mem_->Put(op.key, op.descriptor, op.txn_version);
+            Status s = mem_->Put(op.key, op.descriptor, op.txn_version);
+            if (!s.ok()) {
+              return s;
+            }
           } else if (op.type == WalRecordType::kDelete) {
-            mem_->Put(op.key, Descriptor(), op.txn_version);
+            Status s = mem_->Put(op.key, Descriptor(), op.txn_version);
+            if (!s.ok()) {
+              return s;
+            }
           }
         }
       } else if (status.IsCorruption()) {
@@ -1842,7 +1872,7 @@ LsmEngine::ScanEdges(uint64_t vertex_id,
   if (!opened_) {
     return results;
   }
-  
+
   // Ensure direction is either EdgeOut or EdgeIn
   if (edge_direction != EntityType::EdgeOut && edge_direction != EntityType::EdgeIn) {
     return results;
@@ -1921,7 +1951,7 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
   if (!opened_) {
     return results;
   }
-  
+
   // Ensure direction is either EdgeOut or EdgeIn
   if (edge_direction != EntityType::EdgeOut && edge_direction != EntityType::EdgeIn) {
     return results;
@@ -1957,6 +1987,7 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
   }
   
   // Get all column IDs (edge types) for this entity
+  // GetEntityColumnIds uses its own column_map_mutex_, no need for mutex_.
   std::vector<uint16_t> column_ids;
   if (edge_type == 0xFFFF) {  // kAllLabels
     column_ids = GetEntityColumnIds(vertex_id, edge_direction);
@@ -1975,50 +2006,56 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
   std::vector<TempEntry> all_entries;
   all_entries.reserve(column_ids.size() * 8);  // heuristic pre-allocation
   
-  // Query each edge type
-  for (uint16_t col_id : column_ids) {
-    // Query MemTable
-    auto mem_entries = mem_->GetRange(vertex_id, edge_direction, col_id, 
-                                       Timestamp(0), snapshot_ts);
-    for (const auto& entry : mem_entries) {
-      if (!entry.dst_id.has_value()) continue;
-      
-      // Build CedarKey from MemTable entry
-      CedarKey key;
-      if (edge_direction == EntityType::EdgeOut) {
-        key = CedarKey::EdgeOut(vertex_id, entry.dst_id.value(), 
-                                EdgeTypeId(col_id), entry.timestamp, 0, 0, 0);
-      } else {
-        key = CedarKey::EdgeIn(vertex_id, entry.dst_id.value(),
-                               EdgeTypeId(col_id), entry.timestamp, 0, 0, 0);
-      }
-      
-      all_entries.push_back({entry.dst_id.value(), entry.timestamp, 
-                            entry.descriptor, col_id, key});
-    }
-    
-    // Query Immutable MemTable
-    if (imm_) {
-      auto imm_entries = imm_->GetRange(vertex_id, edge_direction, col_id,
+  // 1. Query MemTable and Immutable MemTable under lock
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    for (uint16_t col_id : column_ids) {
+      // Query MemTable
+      auto mem_entries = mem_->GetRange(vertex_id, edge_direction, col_id, 
                                          Timestamp(0), snapshot_ts);
-      for (const auto& entry : imm_entries) {
+      for (const auto& entry : mem_entries) {
         if (!entry.dst_id.has_value()) continue;
         
+        // Build CedarKey from MemTable entry
         CedarKey key;
         if (edge_direction == EntityType::EdgeOut) {
-          key = CedarKey::EdgeOut(vertex_id, entry.dst_id.value(),
+          key = CedarKey::EdgeOut(vertex_id, entry.dst_id.value(), 
                                   EdgeTypeId(col_id), entry.timestamp, 0, 0, 0);
         } else {
           key = CedarKey::EdgeIn(vertex_id, entry.dst_id.value(),
                                  EdgeTypeId(col_id), entry.timestamp, 0, 0, 0);
         }
         
-        all_entries.push_back({entry.dst_id.value(), entry.timestamp,
+        all_entries.push_back({entry.dst_id.value(), entry.timestamp, 
                               entry.descriptor, col_id, key});
       }
+      
+      // Query Immutable MemTable
+      if (imm_) {
+        auto imm_entries = imm_->GetRange(vertex_id, edge_direction, col_id,
+                                           Timestamp(0), snapshot_ts);
+        for (const auto& entry : imm_entries) {
+          if (!entry.dst_id.has_value()) continue;
+          
+          CedarKey key;
+          if (edge_direction == EntityType::EdgeOut) {
+            key = CedarKey::EdgeOut(vertex_id, entry.dst_id.value(),
+                                    EdgeTypeId(col_id), entry.timestamp, 0, 0, 0);
+          } else {
+            key = CedarKey::EdgeIn(vertex_id, entry.dst_id.value(),
+                                   EdgeTypeId(col_id), entry.timestamp, 0, 0, 0);
+          }
+          
+          all_entries.push_back({entry.dst_id.value(), entry.timestamp,
+                                entry.descriptor, col_id, key});
+        }
+      }
     }
-    
-    // Query Accumulated Buffer (for accumulated flush mode)
+  }
+  
+  // 2. Query Accumulated Buffer (for accumulated flush mode) and SST files - no lock
+  for (uint16_t col_id : column_ids) {
+    // Query Accumulated Buffer
     if (!accumulated_entries_.empty()) {
       std::lock_guard<std::mutex> lock(accumulated_mutex_);
       for (const auto& [key, descriptor] : accumulated_entries_) {

@@ -23,8 +23,13 @@ uint16_t CedarMemTable::NextSequence() {
   return sequence_counter_.fetch_add(1, std::memory_order_seq_cst) % 65536;
 }
 
-void CedarMemTable::Put(CedarKey key, const Descriptor& descriptor, Timestamp txn_version) {
+Status CedarMemTable::Put(CedarKey key, const Descriptor& descriptor, Timestamp txn_version) {
   std::unique_lock<std::shared_mutex> lock(mutex_);
+
+  // Early rejection if node_pool is already at cap
+  if (node_pool_.size() >= kMaxNodePoolSize) {
+    return Status::MemoryLimitExceeded("CedarMemTable", "node_pool size limit reached");
+  }
 
   // 分配序列号
   key.SetSequence(NextSequence());
@@ -59,18 +64,26 @@ void CedarMemTable::Put(CedarKey key, const Descriptor& descriptor, Timestamp tx
   approximate_size_.fetch_add(size_increment, std::memory_order_relaxed);
   
   // 更新 MVCC 版本链
-  UpdateVersionChain(internal_key, key.timestamp(), descriptor, txn_version);
+  if (!UpdateVersionChain(internal_key, key.timestamp(), descriptor, txn_version)) {
+    // Rollback approximate_size_ increment (best effort)
+    approximate_size_.fetch_sub(size_increment, std::memory_order_relaxed);
+    return Status::MemoryLimitExceeded("CedarMemTable", "node_pool size limit reached");
+  }
+
+  return Status::OK();
 }
 
-void CedarMemTable::UpdateVersionChain(const InternalKey& internal_key, 
+bool CedarMemTable::UpdateVersionChain(const InternalKey& internal_key, 
                                        Timestamp timestamp, 
                                        const Descriptor& descriptor,
                                        Timestamp txn_version) {
   // 创建新节点，传入 txn_version 用于 MVCC
   auto new_node = std::make_unique<TemporalVersionNode>(timestamp, descriptor, txn_version);
   TemporalVersionNode* node_ptr = new_node.get();
-  if (node_pool_.size() >= 10000000) {
-    std::cerr << "[CedarMemTable] WARNING: node_pool exceeded 10M nodes, potential unbounded growth" << std::endl;
+  if (node_pool_.size() >= kMaxNodePoolSize) {
+    std::cerr << "[CedarMemTable] ERROR: node_pool reached " << kMaxNodePoolSize
+              << " nodes, rejecting new version to prevent OOM" << std::endl;
+    return false;
   }
   node_pool_.push_back(std::move(new_node));
   
@@ -105,6 +118,7 @@ void CedarMemTable::UpdateVersionChain(const InternalKey& internal_key,
       current->older = node_ptr;
     }
   }
+  return true;
 }
 
 std::vector<MemTableEntry> CedarMemTable::GetAll(uint64_t entity_id,
@@ -288,7 +302,7 @@ size_t CedarMemTable::GetVersionChainLength(
   return count;
 }
 
-CedarMemTable::VersionChainIterator* CedarMemTable::NewVersionChainIterator(
+std::unique_ptr<CedarMemTable::VersionChainIterator> CedarMemTable::NewVersionChainIterator(
     uint64_t entity_id,
     EntityType entity_type,
     uint16_t column_id) const {
@@ -297,9 +311,9 @@ CedarMemTable::VersionChainIterator* CedarMemTable::NewVersionChainIterator(
   InternalKey internal_key(entity_id, entity_type, column_id);
   auto it = version_chains_.find(internal_key);
   if (it != version_chains_.end()) {
-    return new VersionChainIterator(it->second);
+    return std::make_unique<VersionChainIterator>(it->second);
   }
-  return new VersionChainIterator(nullptr);  // 空迭代器
+  return std::make_unique<VersionChainIterator>(nullptr);  // 空迭代器
 }
 
 // ========== 多列支持实现 ==========

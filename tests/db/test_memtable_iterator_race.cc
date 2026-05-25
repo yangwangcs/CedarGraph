@@ -35,7 +35,8 @@ TEST(MemTableIteratorRaceTest, ConcurrentWritersAndReaders) {
     while (!stop.load()) {
       CedarKey key(id, EntityType::Vertex, 0, Timestamp(id * 1000), 0, 0, 0, 0);
       Descriptor desc = Descriptor::InlineInt(0, static_cast<int64_t>(id));
-      memtable.Put(key, desc, Timestamp(id * 1000));
+      Status s = memtable.Put(key, desc, Timestamp(id * 1000));
+      (void)s;  // Ignore status in this stress test
       ++write_count;
       id = (id % 100) + 1;  // cycle through 1..100
     }

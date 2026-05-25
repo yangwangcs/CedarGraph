@@ -338,10 +338,16 @@ void CedarGraph::ClearCache() {
 
 // ========== Cypher Query Interface ==========
 
+void CedarGraph::EnsureCypherEngine() {
+  std::call_once(cypher_engine_init_flag_, [this]() {
+    if (!cypher_engine_ && storage_) {
+      cypher_engine_ = std::make_unique<cypher::CypherEngine>(storage_);
+    }
+  });
+}
+
 cypher::ResultSet CedarGraph::ExecuteCypher(const std::string& query) {
-  if (!cypher_engine_ && storage_) {
-    cypher_engine_ = std::make_unique<cypher::CypherEngine>(storage_);
-  }
+  EnsureCypherEngine();
   if (!cypher_engine_) {
     return cypher::ResultSet();
   }
@@ -349,9 +355,7 @@ cypher::ResultSet CedarGraph::ExecuteCypher(const std::string& query) {
 }
 
 std::string CedarGraph::ExplainCypher(const std::string& query) {
-  if (!cypher_engine_ && storage_) {
-    cypher_engine_ = std::make_unique<cypher::CypherEngine>(storage_);
-  }
+  EnsureCypherEngine();
   if (!cypher_engine_) {
     return "CedarGraph Cypher not yet implemented";
   }
@@ -359,9 +363,7 @@ std::string CedarGraph::ExplainCypher(const std::string& query) {
 }
 
 bool CedarGraph::IsValidCypher(const std::string& query) {
-  if (!cypher_engine_ && storage_) {
-    cypher_engine_ = std::make_unique<cypher::CypherEngine>(storage_);
-  }
+  EnsureCypherEngine();
   if (!cypher_engine_) {
     return false;
   }
