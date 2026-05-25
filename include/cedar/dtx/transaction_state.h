@@ -117,6 +117,7 @@ class TransactionStateManager {
   std::unique_ptr<TransactionWAL> wal_;
   
   Status PersistState(const TransactionRecord& record);
+  Status PersistStateUnlocked(const TransactionRecord& record);
 };
 
 }  // namespace cedar

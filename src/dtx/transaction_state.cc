@@ -279,7 +279,7 @@ Status TransactionStateManager::CreateTransaction(
   }
   
   // Persist to WAL
-  Status s = PersistState(record);
+  Status s = PersistStateUnlocked(record);
   if (!s.ok()) {
     return s;
   }
@@ -299,7 +299,7 @@ Status TransactionStateManager::UpdateState(TxnID txn_id, TxnState new_state) {
   it->second.state = new_state;
   it->second.updated_at = std::chrono::steady_clock::now();
   
-  return PersistState(it->second);
+  return PersistStateUnlocked(it->second);
 }
 
 Status TransactionStateManager::UpdateParticipantState(
@@ -326,7 +326,7 @@ Status TransactionStateManager::UpdateParticipantState(
   }
   
   it->second.updated_at = std::chrono::steady_clock::now();
-  return PersistState(it->second);
+  return PersistStateUnlocked(it->second);
 }
 
 std::optional<TransactionRecord> TransactionStateManager::GetTransaction(
@@ -408,8 +408,7 @@ Status TransactionStateManager::RecoverFromWAL(const std::string& wal_dir) {
   });
 }
 
-Status TransactionStateManager::PersistState(const TransactionRecord& record) {
-  std::lock_guard<std::mutex> lock(mutex_);
+Status TransactionStateManager::PersistStateUnlocked(const TransactionRecord& record) {
   if (shutdown_.load() || !wal_) {
     return Status::IOError("TransactionStateManager", "shutting down");
   }
@@ -420,6 +419,11 @@ Status TransactionStateManager::PersistState(const TransactionRecord& record) {
     return s;
   }
   return wal_->Sync();
+}
+
+Status TransactionStateManager::PersistState(const TransactionRecord& record) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return PersistStateUnlocked(record);
 }
 
 }  // namespace cedar

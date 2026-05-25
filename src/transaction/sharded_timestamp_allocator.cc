@@ -40,27 +40,31 @@ ShardedTimestampAllocator::ShardedTimestampAllocator(const Options& options)
 Timestamp ShardedTimestampAllocator::Allocate() {
   size_t idx = GetShardIndex();
   Shard& shard = *shards_[idx];
-  
-  // 尝试从本地分配
+
   uint64_t local = shard.local_next.load(std::memory_order_relaxed);
-  uint64_t end = shard.local_end.load(std::memory_order_relaxed);
-  
-  if (local < end) {
-    // 本地分配成功
-    shard.local_next.store(local + 1, std::memory_order_relaxed);
-    shard.allocated_count.fetch_add(1, std::memory_order_relaxed);
-    return Timestamp(local);
-  }
-  
-  // 本地耗尽，需要重新填充
+  do {
+    uint64_t end = shard.local_end.load(std::memory_order_relaxed);
+    if (local >= end) break;
+    if (shard.local_next.compare_exchange_weak(local, local + 1, std::memory_order_relaxed)) {
+      shard.allocated_count.fetch_add(1, std::memory_order_relaxed);
+      return Timestamp(local);
+    }
+  } while (true);
+
+  // Local exhausted — refill
   if (RefillShard(shard)) {
     local = shard.local_next.load(std::memory_order_relaxed);
-    shard.local_next.store(local + 1, std::memory_order_relaxed);
-    shard.allocated_count.fetch_add(1, std::memory_order_relaxed);
-    return Timestamp(local);
+    do {
+      uint64_t end = shard.local_end.load(std::memory_order_relaxed);
+      if (local >= end) break;  // should not happen after successful refill
+      if (shard.local_next.compare_exchange_weak(local, local + 1, std::memory_order_relaxed)) {
+        shard.allocated_count.fetch_add(1, std::memory_order_relaxed);
+        return Timestamp(local);
+      }
+    } while (true);
   }
-  
-  // 回退：直接分配（不应该发生）
+
+  // Fallback: global allocation
   return Timestamp(global_next_.fetch_add(1, std::memory_order_acq_rel));
 }
 
@@ -143,21 +147,29 @@ ShardedTxnIdAllocator::ShardedTxnIdAllocator(const Options& options)
 uint64_t ShardedTxnIdAllocator::Allocate() {
   size_t idx = GetShardIndex();
   Shard& shard = *shards_[idx];
-  
+
   uint64_t local = shard.local_next.load(std::memory_order_relaxed);
-  uint64_t end = shard.local_end.load(std::memory_order_relaxed);
-  
-  if (local < end) {
-    shard.local_next.store(local + 1, std::memory_order_relaxed);
-    return local;
-  }
-  
+  do {
+    uint64_t end = shard.local_end.load(std::memory_order_relaxed);
+    if (local >= end) break;
+    if (shard.local_next.compare_exchange_weak(local, local + 1, std::memory_order_relaxed)) {
+      return local;
+    }
+  } while (true);
+
+  // Local exhausted — refill
   if (RefillShard(shard)) {
     local = shard.local_next.load(std::memory_order_relaxed);
-    shard.local_next.store(local + 1, std::memory_order_relaxed);
-    return local;
+    do {
+      uint64_t end = shard.local_end.load(std::memory_order_relaxed);
+      if (local >= end) break;  // should not happen after successful refill
+      if (shard.local_next.compare_exchange_weak(local, local + 1, std::memory_order_relaxed)) {
+        return local;
+      }
+    } while (true);
   }
-  
+
+  // Fallback: global allocation
   return global_next_.fetch_add(1, std::memory_order_acq_rel);
 }
 

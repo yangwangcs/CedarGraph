@@ -129,7 +129,7 @@ Status WalBatchWriter::DoFlush(std::vector<WalBatchEntry>& entries) {
     Status s;
     switch (entry.type) {
       case WalBatchEntry::PUT:
-        s = wal_writer_->WritePut(entry.key, entry.descriptor, Timestamp(entry.txn_id));
+        s = wal_writer_->WritePut(entry.key, entry.descriptor, entry.timestamp);
         break;
       case WalBatchEntry::COMMIT:
         s = wal_writer_->WriteCommit(entry.txn_id, entry.timestamp);
@@ -173,7 +173,12 @@ void WalBatchWriter::BackgroundFlushLoop() {
       buffer_.clear();
       lock.unlock();
       
-      DoFlush(to_flush);
+      Status s = DoFlush(to_flush);
+      if (!s.ok()) {
+        // Re-insert failed entries at front of buffer for retry
+        std::lock_guard<std::mutex> relock(buffer_mutex_);
+        buffer_.insert(buffer_.begin(), to_flush.begin(), to_flush.end());
+      }
     }
   }
 }

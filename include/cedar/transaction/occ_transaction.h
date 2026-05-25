@@ -29,10 +29,11 @@
 #include "cedar/core/status.h"
 #include "cedar/transaction/wal.h"
 #include "cedar/transaction/sharded_timestamp_allocator.h"
+#include "cedar/storage/vsl_memtable.h"
+#include <thread>
 
 namespace cedar {
 
-class VSLMemTable;
 class LsmEngine;
 
 // 事务状态
@@ -367,11 +368,38 @@ class TransactionRetryWrapper {
   // 执行事务函数，自动处理重试
   // txn_func 接收一个 OCCTransaction* 参数
   template<typename Func>
-  Status Execute(Func&& txn_func);
+  Status Execute(Func&& txn_func) {
+    Status last_status = Status::OK();
+    for (uint32_t attempt = 0; attempt <= options_.max_retries; ++attempt) {
+      OCCTransaction txn(txn_manager_.get(), memtable_.get(),
+                         lsm_engine_, nullptr, options_);
+      Status s = txn.Begin();
+      if (!s.ok()) return s;
+      
+      s = txn_func(&txn);
+      if (!s.ok()) {
+        last_status = s;
+        txn.Abort();
+        continue;
+      }
+      
+      s = txn.Commit();
+      if (s.ok()) return Status::OK();
+      
+      last_status = s;
+      if (attempt < options_.max_retries) {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(10 * (1 << attempt)));
+      }
+    }
+    return last_status;
+  }
   
  private:
   LsmEngine* lsm_engine_;
   TransactionOptions options_;
+  std::unique_ptr<TransactionManager> txn_manager_;
+  std::unique_ptr<VSLMemTable> memtable_;
 };
 
 }  // namespace cedar

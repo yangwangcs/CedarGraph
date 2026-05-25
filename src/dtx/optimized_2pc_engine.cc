@@ -108,6 +108,14 @@ Status Optimized2PCEngine::Initialize(
     });
   }
   
+  // Start batch thread if using batched strategy
+  if (config_.strategy == TwoPCConfig::Strategy::kBatched ||
+      config_.strategy == TwoPCConfig::Strategy::kHybrid) {
+    batch_thread_ = std::thread([this]() {
+      BatchWorkerLoop();
+    });
+  }
+  
   // Start adaptive tuning thread
   if (atomic_enable_adaptive_tuning_.load()) {
     tuning_thread_ = std::thread([this]() {
@@ -131,18 +139,12 @@ void Optimized2PCEngine::Shutdown() noexcept {
   
   shutdown_.store(true);
   
-  // Shutdown thread pool first (waits for all queued tasks to finish)
-  if (thread_pool_) {
-    thread_pool_->WaitForAll();
-    thread_pool_.reset();
-  }
-  
-  // Wake up all waiting threads
+  // Wake up all waiting threads FIRST
   pipeline_cv_.notify_all();
   batch_cv_.notify_all();
   task_cv_.notify_all();
   
-  // Join worker threads
+  // Join worker threads BEFORE destroying thread pool
   for (auto& t : worker_threads_) {
     if (t.joinable()) {
       try { t.join(); } catch (...) { std::cerr << "[2PC] Worker thread join exception" << std::endl; }
@@ -156,10 +158,22 @@ void Optimized2PCEngine::Shutdown() noexcept {
   } catch (...) { std::cerr << "[2PC] Pipeline thread join exception" << std::endl; }
   
   try {
+    if (batch_thread_.joinable()) {
+      batch_thread_.join();
+    }
+  } catch (...) { std::cerr << "[2PC] Batch thread join exception" << std::endl; }
+  
+  try {
     if (tuning_thread_.joinable()) {
       tuning_thread_.join();
     }
   } catch (...) { std::cerr << "[2PC] Tuning thread join exception" << std::endl; }
+  
+  // NOW safe to destroy thread pool
+  if (thread_pool_) {
+    thread_pool_->WaitForAll();
+    thread_pool_.reset();
+  }
   
   // Shutdown timeout and recovery managers
   try {
@@ -1345,6 +1359,36 @@ bool Optimized2PCEngine::WaitForCommitQuorum(
   }
   
   return true;
+}
+
+// =============================================================================
+// Batch Worker
+// =============================================================================
+
+void Optimized2PCEngine::BatchWorkerLoop() {
+  while (!shutdown_.load()) {
+    std::unique_lock<std::mutex> lock(batch_mutex_);
+    batch_cv_.wait_for(lock, std::chrono::milliseconds(100),
+                       [this]() { return !batch_buffer_.empty() || shutdown_.load(); });
+    if (shutdown_.load()) break;
+    if (batch_buffer_.empty()) continue;
+    
+    std::vector<std::shared_ptr<TransactionContext>> batch = std::move(batch_buffer_);
+    batch_buffer_.clear();
+    lock.unlock();
+    
+    for (auto& ctx : batch) {
+      auto status = ExecuteParallel2PC(ctx);
+      if (!status.ok()) {
+        ctx->state.store(TransactionContext::State::kAborted);
+      } else {
+        ctx->state.store(TransactionContext::State::kCommitted);
+      }
+      if (ctx->done_promise) {
+        ctx->done_promise->set_value();
+      }
+    }
+  }
 }
 
 }  // namespace dtx

@@ -513,8 +513,7 @@ Status OCCTransaction::Validate() {
       // 获取最新版本
       const auto& latest = chain_opt.front();
       
-      // 如果最新版本在当前事务开始之后，说明有冲突
-      // 修复: 使用 txn_version 而非业务时间戳进行版本比较
+      // 1. 已提交事务在当前事务开始后修改
       if (latest.txn_version > read_timestamp_) {
         ConflictInfo conflict;
         conflict.type = ConflictType::kWriteWrite;
@@ -523,6 +522,24 @@ Status OCCTransaction::Validate() {
         conflict.column_id = write_entry.column_id;
         conflict.conflicting_txn_id = 0;
         conflicts_.push_back(conflict);
+        continue;
+      }
+      
+      // 2. 未提交事务（活跃事务）也修改了相同键
+      for (const auto& [active_txn_id, active_ts] : active_txns) {
+        if (active_txn_id == txn_id_) continue;  // 跳过自己
+        for (const auto& version : chain_opt) {
+          if (version.txn_version == active_ts) {
+            ConflictInfo conflict;
+            conflict.type = ConflictType::kWriteWrite;
+            conflict.entity_id = write_entry.entity_id;
+            conflict.entity_type = write_entry.entity_type;
+            conflict.column_id = write_entry.column_id;
+            conflict.conflicting_txn_id = active_txn_id;
+            conflicts_.push_back(conflict);
+            break;
+          }
+        }
       }
     }
   }
@@ -673,6 +690,9 @@ CedarKey OCCTransaction::MakeKey(uint64_t entity_id, EntityType type,
 
 TransactionRetryWrapper::TransactionRetryWrapper(LsmEngine* lsm_engine,
                                                   const TransactionOptions& options)
-    : lsm_engine_(lsm_engine), options_(options) {}
+    : lsm_engine_(lsm_engine),
+      options_(options),
+      txn_manager_(std::make_unique<TransactionManager>()),
+      memtable_(std::make_unique<VSLMemTable>()) {}
 
 }  // namespace cedar

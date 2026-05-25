@@ -230,6 +230,9 @@ class Optimized2PCEngine {
   // Pipeline worker
   void PipelineWorkerLoop();
   
+  // Batch worker
+  void BatchWorkerLoop();
+  
   // Adaptive tuning worker
   void AdaptiveTuningLoop();
   void TuneConfiguration();
@@ -274,6 +277,7 @@ class Optimized2PCEngine {
   // Worker threads
   std::vector<std::thread> worker_threads_;
   std::thread pipeline_thread_;
+  std::thread batch_thread_;
   std::thread tuning_thread_;
   
   // Task queue for async execution

@@ -61,6 +61,7 @@ class PooledChannel {
   // 获取使用次数
   uint64_t GetUseCount() const { return use_count_.load(); }
   void IncrementUseCount() { use_count_++; }
+  void DecrementUseCount() { use_count_--; }
   
  private:
   std::string address_;

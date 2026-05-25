@@ -15,6 +15,7 @@
 #include "cedar/dtx/version_chain.h"
 
 #include <algorithm>
+#include <thread>
 
 namespace cedar {
 namespace dtx {
@@ -24,6 +25,12 @@ namespace dtx {
 // =============================================================================
 
 VersionChainHead::~VersionChainHead() {
+  // Wait for active readers to finish before destroying the chain.
+  // Readers call EnterRead()/ExitRead() around chain traversal.
+  while (reader_count.load(std::memory_order_acquire) > 0) {
+    std::this_thread::yield();
+  }
+
   std::unique_lock<std::shared_mutex> lock(chain_mutex_);
   VersionChainNode* node = latest.load(std::memory_order_relaxed);
   while (node) {
