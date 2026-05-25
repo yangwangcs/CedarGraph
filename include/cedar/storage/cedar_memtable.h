@@ -204,9 +204,9 @@ class CedarMemTable {
 
   // 版本链迭代器 - 专门用于遍历单个实体的所有版本
   class VersionChainIterator;
-  VersionChainIterator* NewVersionChainIterator(uint64_t entity_id,
-                                                 EntityType entity_type,
-                                                 uint16_t column_id) const;
+  std::unique_ptr<VersionChainIterator> NewVersionChainIterator(uint64_t entity_id,
+                                                                 EntityType entity_type,
+                                                                 uint16_t column_id) const;
 
  private:
   // 获取下一个序列号

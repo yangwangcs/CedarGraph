@@ -297,7 +297,7 @@ size_t CedarMemTable::GetVersionChainLength(
   return count;
 }
 
-CedarMemTable::VersionChainIterator* CedarMemTable::NewVersionChainIterator(
+std::unique_ptr<CedarMemTable::VersionChainIterator> CedarMemTable::NewVersionChainIterator(
     uint64_t entity_id,
     EntityType entity_type,
     uint16_t column_id) const {
@@ -306,9 +306,9 @@ CedarMemTable::VersionChainIterator* CedarMemTable::NewVersionChainIterator(
   InternalKey internal_key(entity_id, entity_type, column_id);
   auto it = version_chains_.find(internal_key);
   if (it != version_chains_.end()) {
-    return new VersionChainIterator(it->second);
+    return std::make_unique<VersionChainIterator>(it->second);
   }
-  return new VersionChainIterator(nullptr);  // 空迭代器
+  return std::make_unique<VersionChainIterator>(nullptr);  // 空迭代器
 }
 
 // ========== 多列支持实现 ==========
