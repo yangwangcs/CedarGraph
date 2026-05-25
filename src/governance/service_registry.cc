@@ -62,6 +62,12 @@ static inline int64_t CurrentTimeMillis() {
       .count();
 }
 
+// Get steady timestamp in milliseconds (monotonic, unaffected by NTP)
+static int64_t SteadyTimeMillis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 // =============================================================================
 // ServiceRegistryImpl - Private Implementation
 // =============================================================================
@@ -194,8 +200,8 @@ class ServiceRegistryImpl {
         return Status::NotFound("Service not found: " + service_id);
       }
 
-      it->second.last_heartbeat_ms = CurrentTimeMillis();
-      
+      it->second.last_heartbeat_ms = SteadyTimeMillis();
+
       // Auto-transition from Starting to Healthy on first heartbeat
       if (it->second.status == ServiceStatus::kStarting) {
         it->second.status = ServiceStatus::kHealthy;
@@ -430,7 +436,7 @@ class ServiceRegistryImpl {
     {
       std::lock_guard<std::mutex> lock(mutex_);
 
-      int64_t now = CurrentTimeMillis();
+      int64_t now = SteadyTimeMillis();
 
       for (auto& pair : services_) {
         ServiceInfo& info = pair.second;
