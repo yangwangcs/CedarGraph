@@ -418,6 +418,21 @@ public:
         return status;
     }
     
+    class PeerChangeClosure : public braft::Closure {
+     public:
+      explicit PeerChangeClosure(std::shared_ptr<std::promise<::cedar::Status>> promise)
+          : promise_(promise) {}
+
+      void Run() override {
+        promise_->set_value(
+            status().ok() ? ::cedar::Status::OK() : ::cedar::Status::IOError(status().error_str()));
+        delete this;
+      }
+
+     private:
+      std::shared_ptr<std::promise<::cedar::Status>> promise_;
+    };
+
     ::cedar::Status AddPeer(const std::string& peer_address) {
         std::lock_guard<std::mutex> lock(node_mutex_);
         if (!node_ || !node_->is_leader()) {
@@ -425,8 +440,14 @@ public:
         }
         
         braft::PeerId new_peer(peer_address);
-        node_->add_peer(new_peer, nullptr);
-        return ::cedar::Status::OK();
+        auto promise = std::make_shared<std::promise<::cedar::Status>>();
+        node_->add_peer(new_peer, new PeerChangeClosure(promise));
+        
+        auto future = promise->get_future();
+        if (future.wait_for(std::chrono::milliseconds(FLAGS_raft_propose_timeout_ms)) == std::future_status::timeout) {
+          return ::cedar::Status::IOError("BRaftNode", "add_peer timeout");
+        }
+        return future.get();
     }
     
     ::cedar::Status RemovePeer(const std::string& peer_address) {
@@ -436,8 +457,14 @@ public:
         }
         
         braft::PeerId old_peer(peer_address);
-        node_->remove_peer(old_peer, nullptr);
-        return ::cedar::Status::OK();
+        auto promise = std::make_shared<std::promise<::cedar::Status>>();
+        node_->remove_peer(old_peer, new PeerChangeClosure(promise));
+        
+        auto future = promise->get_future();
+        if (future.wait_for(std::chrono::milliseconds(FLAGS_raft_propose_timeout_ms)) == std::future_status::timeout) {
+          return ::cedar::Status::IOError("BRaftNode", "remove_peer timeout");
+        }
+        return future.get();
     }
     
     BRaftNode::NodeStatus GetStatus() const {

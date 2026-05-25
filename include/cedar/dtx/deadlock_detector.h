@@ -224,6 +224,10 @@ class DistributedDeadlockDetector {
   std::thread detection_thread_;
   std::thread cleanup_thread_;
   
+  // 用于精确睡眠和快速关闭的条件变量
+  std::mutex cv_mutex_;
+  std::condition_variable cv_;
+  
   // 统计
   mutable std::mutex stats_mutex_;
   Stats stats_;

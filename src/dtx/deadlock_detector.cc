@@ -351,8 +351,12 @@ Status DistributedDeadlockDetector::Initialize(const Config& config) {
   } catch (...) {
     std::cerr << "[DeadlockDetector] Initialization exception" << std::endl;
     running_ = false;
+    cv_.notify_all();
     if (detection_thread_.joinable()) {
       detection_thread_.join();
+    }
+    if (cleanup_thread_.joinable()) {
+      cleanup_thread_.join();
     }
     throw;
   }
@@ -363,6 +367,11 @@ Status DistributedDeadlockDetector::Initialize(const Config& config) {
 void DistributedDeadlockDetector::Shutdown() noexcept {
   if (!running_.exchange(false)) {
     return;
+  }
+  
+  {
+    std::lock_guard<std::mutex> lock(cv_mutex_);
+    cv_.notify_all();
   }
   
   try {
@@ -465,12 +474,15 @@ void DistributedDeadlockDetector::SetVictimHandler(VictimHandler handler) {
 
 void DistributedDeadlockDetector::DetectionLoop() {
   while (running_) {
-    // 等待检测间隔
-    for (uint64_t i = 0; i < config_.detection_interval_ms && running_; ++i) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    // 使用条件变量精确等待检测间隔，支持快速唤醒关闭
+    {
+      std::unique_lock<std::mutex> lock(cv_mutex_);
+      cv_.wait_for(lock, std::chrono::milliseconds(config_.detection_interval_ms),
+                   [this]() { return !running_; });
     }
     
     if (!running_) break;
+    if (!graph_) continue;
     
     // 执行死锁检测
     auto result = graph_->DetectDeadlock(config_.max_cycle_size);
@@ -491,12 +503,15 @@ void DistributedDeadlockDetector::DetectionLoop() {
 
 void DistributedDeadlockDetector::CleanupLoop() {
   while (running_) {
-    // 等待清理间隔
-    for (uint64_t i = 0; i < config_.cleanup_interval_ms && running_; ++i) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    // 使用条件变量精确等待清理间隔，支持快速唤醒关闭
+    {
+      std::unique_lock<std::mutex> lock(cv_mutex_);
+      cv_.wait_for(lock, std::chrono::milliseconds(config_.cleanup_interval_ms),
+                   [this]() { return !running_; });
     }
     
     if (!running_) break;
+    if (!graph_) continue;
     
     // 清理过期边
     auto removed = graph_->CleanupExpiredEdges(config_.edge_timeout_ms);

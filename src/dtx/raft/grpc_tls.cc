@@ -69,11 +69,13 @@ std::shared_ptr<ServerCredentials> TlsCredentialFactory::CreateServerCredentials
   if (config.mtls_enabled && !config.ca_cert_file.empty()) {
     // mTLS: verify client certificates
     std::string ca_cert = LoadFile(config.ca_cert_file);
-    if (!ca_cert.empty()) {
-      ssl_opts.pem_root_certs = ca_cert;
-      ssl_opts.client_certificate_request = 
-          GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY;
+    if (ca_cert.empty()) {
+      std::cerr << "Failed to load CA certificate for mTLS: " << config.ca_cert_file << std::endl;
+      return nullptr;
     }
+    ssl_opts.pem_root_certs = ca_cert;
+    ssl_opts.client_certificate_request = 
+        GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY;
   }
 
   return SslServerCredentials(ssl_opts);
@@ -103,8 +105,12 @@ std::shared_ptr<ChannelCredentials> TlsCredentialFactory::CreateClientCredential
     ssl_opts.pem_root_certs = ca_cert;
   } else {
     // TLS only: just need CA cert to verify server
-    std::string ca_cert = LoadFile(config.ca_cert_file);
-    if (!ca_cert.empty()) {
+    if (!config.ca_cert_file.empty()) {
+      std::string ca_cert = LoadFile(config.ca_cert_file);
+      if (ca_cert.empty()) {
+        std::cerr << "Failed to load CA certificate for TLS: " << config.ca_cert_file << std::endl;
+        return nullptr;
+      }
       ssl_opts.pem_root_certs = ca_cert;
     }
   }
