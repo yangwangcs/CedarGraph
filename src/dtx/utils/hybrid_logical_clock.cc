@@ -15,6 +15,7 @@
 #include "cedar/dtx/hybrid_logical_clock.h"
 
 #include <cstring>
+#include <iostream>
 #include <thread>
 
 namespace cedar {
@@ -35,6 +36,14 @@ HlcTimestamp HybridLogicalClock::Now() {
   std::lock_guard<std::mutex> lock(mutex_);
   
   uint64_t physical = GetPhysicalTimeMicros();
+  
+  // Check for significant clock drift BEFORE updating last_physical_
+  if (last_physical_ > 0) {  // skip on first call
+    uint64_t drift = (physical > last_physical_) ? (physical - last_physical_) : 0;
+    if (drift > kMaxClockDriftMicros) {
+      std::cerr << "[HLC] Significant clock drift detected: " << drift << "us" << std::endl;
+    }
+  }
   
   if (physical > last_physical_) {
     // Physical clock has advanced, reset logical counter
@@ -80,13 +89,6 @@ HlcTimestamp HybridLogicalClock::Now() {
     } else {
       last_logical_++;
     }
-  }
-  
-  // Check for significant clock drift (for monitoring/debugging)
-  if (physical > last_physical_ && 
-      physical - last_physical_ > kMaxClockDriftMicros) {
-    // Log warning: significant clock jump detected
-    // In production, this should be logged to monitoring system
   }
   
   return HlcTimestamp(last_physical_, last_logical_);

@@ -211,6 +211,7 @@ void GrpcConnectionPool::Release(std::shared_ptr<PooledChannel> channel) {
   
   std::lock_guard<std::mutex> lock(mutex_);
   
+  channel->DecrementUseCount();
   available_connections_.push(channel);
   in_use_count_--;
   total_releases_++;

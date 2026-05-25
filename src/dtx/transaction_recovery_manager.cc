@@ -287,7 +287,18 @@ void TransactionRecoveryManager::RecoveryLoop() {
       // Perform recovery
       auto result = StartRecovery(txn_id);
       if (result.recommended_action != RecoveryAction::kNone) {
-        ApplyRecoveryAction(txn_id, result.recommended_action);
+        Status s = ApplyRecoveryAction(txn_id, result.recommended_action);
+        if (!s.ok()) {
+          std::cerr << "[RecoveryManager] Recovery failed for txn=" << txn_id
+                    << ", action=" << static_cast<int>(result.recommended_action)
+                    << ", error=" << s.ToString()
+                    << ", will retry" << std::endl;
+          {
+            std::lock_guard<std::mutex> relock(mutex_);
+            recovery_queue_.push(txn_id);
+          }
+          cv_.notify_one();
+        }
       }
     } catch (...) {
       std::cerr << "[RecoveryManager] Recovery loop exception" << std::endl;
