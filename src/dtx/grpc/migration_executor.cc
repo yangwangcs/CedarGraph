@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 
 #include "cedar/governance/service_registry.h"
 #include "cedar/dtx/raft/grpc_tls.h"
@@ -448,41 +450,57 @@ Status MigrationTask::Phase_Prepare() {
   return Status::OK();
 }
 
+static std::string GetSnapshotDir(PartitionID partition_id) {
+  return "/tmp/cedar_storage/snapshots/partition_" + std::to_string(partition_id);
+}
+
 Status MigrationTask::Phase_SnapshotSync() {
-  // Transfer initial data from source to target in batches
-  uint64_t batch_size = config_.batch_size;
+  // Transfer actual SST snapshot files from source to target
+  std::string snapshot_dir = GetSnapshotDir(partition_id_);
+  if (!std::filesystem::exists(snapshot_dir)) {
+    return Status::IOError("Snapshot directory does not exist: " + snapshot_dir);
+  }
+
   uint64_t transferred = 0;
-  
-  // Stream data to target using dedicated migration RPC
-  uint64_t batch_keys = std::min(batch_size, progress_.total_keys);
-  for (uint64_t i = 0; i < progress_.total_keys; i += batch_keys) {
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(snapshot_dir)) {
     if (cancelled_.load()) {
       return Status::IOError("Migration cancelled");
     }
-    
+    if (!entry.is_regular_file()) continue;
+
+    std::string relative_path = std::filesystem::relative(entry.path(), snapshot_dir).string();
+    std::string file_data;
+    {
+      std::ifstream ifs(entry.path(), std::ios::binary);
+      if (!ifs) {
+        return Status::IOError("Cannot open snapshot file: " + entry.path().string());
+      }
+      file_data = std::string(
+          std::istreambuf_iterator<char>(ifs),
+          std::istreambuf_iterator<char>());
+    }
+
+    Status s = rpc_client_->TransferData(
+        target_node_, external_migration_id_, partition_id_, file_data);
+    if (!s.ok()) return s;
+
+    transferred += file_data.size();
+    {
+      std::lock_guard<std::mutex> lock(progress_mutex_);
+      progress_.transferred_bytes = transferred;
+    }
+
     if (ShouldThrottle()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    
-    // Send a batch of data to the target node
-    std::string dummy_data(batch_keys * 1024, 'x');
-    Status s = rpc_client_->TransferData(
-        target_node_, external_migration_id_, partition_id_, dummy_data);
-    if (!s.ok()) return s;
-    
-    transferred += batch_keys;
-    {
-      std::lock_guard<std::mutex> lock(progress_mutex_);
-      progress_.transferred_keys = std::min(transferred, progress_.total_keys);
-    }
   }
-  
+
   {
     std::lock_guard<std::mutex> lock(progress_mutex_);
-    progress_.transferred_keys = progress_.total_keys;
-    progress_.transferred_bytes = progress_.total_bytes;
+    progress_.transferred_keys = progress_.total_keys;  // Approximate
+    progress_.transferred_bytes = transferred;
   }
-  
+
   return Status::OK();
 }
 
