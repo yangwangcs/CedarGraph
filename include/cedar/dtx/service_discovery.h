@@ -140,6 +140,8 @@ class ServiceDiscovery {
   ServiceDiscoveryConfig config_;
   std::atomic<bool> running_{false};
   std::atomic<bool> initialized_{false};
+  mutable std::mutex cv_mutex_;
+  std::condition_variable cv_;
   
   // 节点列表
   std::vector<StorageNodeInfo> discovered_nodes_;

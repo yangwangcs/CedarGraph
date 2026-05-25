@@ -109,6 +109,11 @@ Status GraphServiceRouter::Stop() {
     return Status::OK();
   }
 
+  {
+    std::lock_guard<std::mutex> lock(cv_mutex_);
+    cv_.notify_all();
+  }
+
   if (refresh_thread_.joinable()) {
     refresh_thread_.join();
   }
@@ -1526,8 +1531,10 @@ Status GraphServiceRouter::RefreshPartitionMap() {
 void GraphServiceRouter::PartitionMapRefreshLoop() {
   std::chrono::seconds backoff(1);
   while (running_) {
-    for (int i = 0; i < partition_refresh_interval_.count() && running_; ++i) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+    {
+      std::unique_lock<std::mutex> lock(cv_mutex_);
+      cv_.wait_for(lock, partition_refresh_interval_,
+                   [this]() { return !running_.load(); });
     }
     if (!running_) break;
 

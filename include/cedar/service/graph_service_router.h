@@ -268,6 +268,8 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   uint64_t GetQPS() const;
   
   std::atomic<bool> running_{false};
+  mutable std::mutex cv_mutex_;
+  std::condition_variable cv_;
   std::thread refresh_thread_;
   
   // 配置

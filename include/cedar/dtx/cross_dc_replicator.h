@@ -150,6 +150,7 @@ class CrossDCReplicator {
   std::atomic<uint64_t> sequence_counter_{0};
   
   mutable std::mutex queue_mutex_;
+  std::condition_variable queue_cv_;
   std::queue<ReplicationLog> replication_queue_;
   
   mutable std::mutex status_mutex_;

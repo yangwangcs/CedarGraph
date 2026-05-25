@@ -124,6 +124,11 @@ void PartitionFailoverController::Shutdown() noexcept {
     return;
   }
   
+  {
+    std::lock_guard<std::mutex> lock(cv_mutex_);
+    cv_.notify_all();
+  }
+  
   try {
     if (lease_thread_.joinable()) {
       lease_thread_.join();
@@ -493,7 +498,11 @@ Status PartitionFailoverController::UpdatePartitionRoute(PartitionID pid,
 
 void PartitionFailoverController::LeaseRenewalLoop() {
   while (running_.load()) {
-    std::this_thread::sleep_for(config_.leader_lease_duration / 2);
+    {
+      std::unique_lock<std::mutex> lock(cv_mutex_);
+      cv_.wait_for(lock, config_.leader_lease_duration / 2,
+                   [this]() { return !running_.load(); });
+    }
     
     if (!running_.load()) break;
     
@@ -513,7 +522,11 @@ void PartitionFailoverController::LeaseRenewalLoop() {
 
 void PartitionFailoverController::HealthCheckLoop() {
   while (running_.load()) {
-    std::this_thread::sleep_for(config_.check_interval);
+    {
+      std::unique_lock<std::mutex> lock(cv_mutex_);
+      cv_.wait_for(lock, config_.check_interval,
+                   [this]() { return !running_.load(); });
+    }
 
     if (!running_.load()) break;
 
@@ -857,6 +870,11 @@ void ClusterFailoverManager::Shutdown() noexcept {
     return;
   }
   
+  {
+    std::lock_guard<std::mutex> lock(cv_mutex_);
+    cv_.notify_all();
+  }
+  
   try {
     if (detection_thread_.joinable()) {
       detection_thread_.join();
@@ -994,7 +1012,11 @@ bool ClusterFailoverManager::IsInMaintenanceMode(NodeID node_id) const {
 
 void ClusterFailoverManager::DetectionLoop() {
   while (running_.load()) {
-    std::this_thread::sleep_for(config_.detection_config.check_interval);
+    {
+      std::unique_lock<std::mutex> lock(cv_mutex_);
+      cv_.wait_for(lock, config_.detection_config.check_interval,
+                   [this]() { return !running_.load(); });
+    }
     
     if (!running_.load()) break;
     
@@ -1020,7 +1042,11 @@ void ClusterFailoverManager::DetectionLoop() {
 
 void ClusterFailoverManager::RecoveryLoop() {
   while (running_.load()) {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    {
+      std::unique_lock<std::mutex> lock(cv_mutex_);
+      cv_.wait_for(lock, std::chrono::seconds(1),
+                   [this]() { return !running_.load(); });
+    }
     
     if (!running_.load()) break;
     

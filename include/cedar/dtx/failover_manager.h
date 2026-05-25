@@ -263,6 +263,8 @@ class PartitionFailoverController {
   
   Config config_;
   std::atomic<bool> running_{false};
+  mutable std::mutex cv_mutex_;
+  std::condition_variable cv_;
   
   mutable std::mutex partitions_mutex_;
   std::unordered_map<PartitionID, PartitionState> partitions_;
@@ -414,6 +416,8 @@ class ClusterFailoverManager {
   
   Config config_;
   std::atomic<bool> running_{false};
+  mutable std::mutex cv_mutex_;
+  std::condition_variable cv_;
   std::atomic<uint64_t> next_event_id_{1};
   
   // 故障检测器

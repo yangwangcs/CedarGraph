@@ -165,8 +165,11 @@ Status CrossDCReplicator::Replicate(const ::cedar::CedarKey& key,
     return Status::OK();
   }
 
-  std::lock_guard<std::mutex> lock(queue_mutex_);
-  replication_queue_.push(log);
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    replication_queue_.push(log);
+  }
+  queue_cv_.notify_one();
 
   return Status::OK();
 }
@@ -287,7 +290,12 @@ void CrossDCReplicator::ReplicationLoop() {
     } catch (...) {
       std::cerr << "[CrossDCReplicator] Replication loop exception" << std::endl;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Wait for new data or timeout; avoids busy-waiting when queue is empty.
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex_);
+      queue_cv_.wait_for(lock, std::chrono::milliseconds(10),
+                         [this]() { return !replication_queue_.empty() || !running_; });
+    }
   }
 }
 

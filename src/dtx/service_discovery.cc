@@ -86,6 +86,11 @@ void ServiceDiscovery::Stop() {
   
   std::cerr << "[ServiceDiscovery] Stopping discovery service..." << std::endl;
   
+  {
+    std::lock_guard<std::mutex> lock(cv_mutex_);
+    cv_.notify_all();
+  }
+  
   std::lock_guard<std::mutex> lock(thread_mutex_);
   if (discovery_thread_.joinable()) {
     discovery_thread_.join();
@@ -355,9 +360,10 @@ std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaConsul() {
 
 void ServiceDiscovery::DiscoveryLoop() {
   while (running_.load()) {
-    // 每 60 秒执行一次发现
-    for (int i = 0; i < 60 && running_.load(); ++i) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+    {
+      std::unique_lock<std::mutex> lock(cv_mutex_);
+      cv_.wait_for(lock, std::chrono::seconds(60),
+                   [this]() { return !running_.load(); });
     }
     
     if (!running_.load()) break;
@@ -369,9 +375,10 @@ void ServiceDiscovery::DiscoveryLoop() {
 
 void ServiceDiscovery::HealthCheckLoop() {
   while (running_.load()) {
-    // 每 30 秒执行一次健康检查
-    for (int i = 0; i < config_.health_check_interval_seconds && running_.load(); ++i) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+    {
+      std::unique_lock<std::mutex> lock(cv_mutex_);
+      cv_.wait_for(lock, std::chrono::seconds(config_.health_check_interval_seconds),
+                   [this]() { return !running_.load(); });
     }
     
     if (!running_.load()) break;
