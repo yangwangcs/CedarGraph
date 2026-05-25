@@ -355,26 +355,19 @@ public:
     
     class ProposeClosure : public braft::Closure {
      public:
-      explicit ProposeClosure(std::shared_ptr<std::promise<::cedar::Status>> promise)
-          : promise_(std::move(promise)) {}
-      
+      ProposeClosure(std::shared_ptr<std::promise<::cedar::Status>> promise,
+                     std::shared_ptr<butil::IOBuf> data_holder)
+          : promise_(promise), data_holder_(data_holder) {}
+
       void Run() override {
-        bool expected = false;
-        if (!done_.compare_exchange_strong(expected, true)) {
-          delete this;
-          return;
-        }
-        if (this->status().ok()) {
-          promise_->set_value(::cedar::Status::OK());
-        } else {
-          promise_->set_value(::cedar::Status::IOError("BRaftNode", this->status().error_cstr()));
-        }
+        promise_->set_value(
+            status().ok() ? ::cedar::Status::OK() : ::cedar::Status::IOError(status().error_str()));
         delete this;
       }
-      
+
      private:
       std::shared_ptr<std::promise<::cedar::Status>> promise_;
-      std::atomic<bool> done_{false};
+      std::shared_ptr<butil::IOBuf> data_holder_;  // Keeps IOBuf alive until async done
     };
     
     ::cedar::Status Propose(const RaftCommand& command) {
@@ -389,19 +382,19 @@ public:
             }
         }
         
-        butil::IOBuf data;
+        auto data = std::make_shared<butil::IOBuf>();
         uint8_t type = static_cast<uint8_t>(command.type);
-        data.append(&type, sizeof(type));
+        data->append(&type, sizeof(type));
         uint32_t len = static_cast<uint32_t>(command.payload.size());
-        data.append(&len, sizeof(len));
-        data.append(command.payload);
-        
+        data->append(&len, sizeof(len));
+        data->append(command.payload);
+
         braft::Task task;
-        task.data = &data;
-        
+        task.data = data.get();
+
         auto promise = std::make_shared<std::promise<::cedar::Status>>();
-        task.done = new ProposeClosure(promise);
-        
+        task.done = new ProposeClosure(promise, data);  // Closure holds shared_ptr
+
         {
             std::lock_guard<std::mutex> lock(node_mutex_);
             if (!node_) {
