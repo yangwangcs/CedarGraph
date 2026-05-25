@@ -171,8 +171,12 @@ bool WaitForGraph::FindCycle(TxnID start,
                               std::vector<TxnID>& cycle,
                               size_t depth,
                               size_t max_depth) {
-  if (max_depth > 0 && depth >= max_depth) {
-    return false;  // 超过最大环深度限制，防止栈溢出
+  const size_t kDefaultMaxDepth = 256;  // Prevent stack overflow
+  if (max_depth == 0) {
+    max_depth = kDefaultMaxDepth;
+  }
+  if (depth >= max_depth) {
+    return false;  // Exceeded max depth, treat as no cycle found at this path
   }
   
   visited.insert(start);
