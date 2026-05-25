@@ -12,9 +12,9 @@ LOG_FILE="/var/log/cedar/health_monitor.log"
 ALERT_WEBHOOK="${ALERT_WEBHOOK:-}"  # Optional: Slack/Discord webhook
 NODE_ID=$(hostname)
 
-# Thresholds
-DISK_WARNING_THRESHOLD=20    # %
-DISK_CRITICAL_THRESHOLD=10   # %
+# Thresholds (percentages of FREE space)
+DISK_WARNING_THRESHOLD=20    # Warn when <=20% free
+DISK_CRITICAL_THRESHOLD=10   # Critical when <=10% free
 MEMORY_WARNING_THRESHOLD=80  # %
 MEMORY_CRITICAL_THRESHOLD=95 # %
 CPU_WARNING_THRESHOLD=80     # %
@@ -58,16 +58,17 @@ alert() {
 check_disk_space() {
     local data_dir=$(grep "^data_dir=" "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2 || echo "/tmp/cedar/storage")
     local usage=$(df -h "$data_dir" | awk 'NR==2 {print $5}' | sed 's/%//')
-    
-    if [ "$usage" -ge "$DISK_CRITICAL_THRESHOLD" ]; then
-        alert "CRITICAL" "Disk usage critical: ${usage}% on $data_dir"
+    local free=$((100 - usage))
+
+    if [ "$free" -le "$DISK_CRITICAL_THRESHOLD" ]; then
+        alert "CRITICAL" "Disk free space critical: ${free}% on $data_dir"
         return 1
-    elif [ "$usage" -ge "$DISK_WARNING_THRESHOLD" ]; then
-        alert "WARNING" "Disk usage high: ${usage}% on $data_dir"
+    elif [ "$free" -le "$DISK_WARNING_THRESHOLD" ]; then
+        alert "WARNING" "Disk free space low: ${free}% on $data_dir"
         return 0
     fi
-    
-    log "INFO" "Disk usage OK: ${usage}%"
+
+    log "INFO" "Disk free space OK: ${free}%"
     return 0
 }
 
