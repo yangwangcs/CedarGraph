@@ -1350,6 +1350,10 @@ void LsmEngine::MaybeScheduleFlush() {
   VSLMemTable* imm = imm_.get();
 
   if (shutdown_.load() || !opened_) {
+    // Rollback: imm_ was set but flush will not run.
+    // Move imm_ back to mem_ so data is not lost and ForceFlush
+    // does not see imm_ != nullptr with active_flush_count_ == 0.
+    mem_ = std::move(imm_);
     return;
   }
 
