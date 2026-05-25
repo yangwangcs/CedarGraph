@@ -518,6 +518,9 @@ bool Filter::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Filter::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   while (true) {
     auto record = children_[0]->Next();
     if (!record) {
@@ -565,6 +568,9 @@ bool Project::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Project::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   auto record = children_[0]->Next();
   if (!record) {
     return nullptr;
@@ -850,6 +856,9 @@ std::shared_ptr<Record> Sort::Next() {
 }
 
 void Sort::DoSort() {
+  if (children_.empty()) {
+    return;
+  }
   // Drain all records from child
   while (auto record = children_[0]->Next()) {
     buffered_records_.push_back(record);
@@ -905,6 +914,9 @@ bool Limit::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Limit::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   if (count_ >= limit_) {
     return nullptr;
   }
@@ -943,6 +955,9 @@ bool Skip::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Skip::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   if (!initialized_) {
     initialized_ = true;
     for (size_t i = 0; i < skip_; ++i) {
@@ -985,6 +1000,9 @@ bool Distinct::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Distinct::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   ExpressionEvaluator evaluator(context_);
 
   while (auto record = children_[0]->Next()) {
@@ -1030,6 +1048,9 @@ bool Aggregate::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> Aggregate::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
   if (!aggregated_) {
     DoAggregate();
     aggregated_ = true;
@@ -1042,6 +1063,9 @@ std::shared_ptr<Record> Aggregate::Next() {
 }
 
 void Aggregate::DoAggregate() {
+  if (children_.empty()) {
+    return;
+  }
   ExpressionEvaluator evaluator(context_);
   
   // Group records by group_by_key (if any)
