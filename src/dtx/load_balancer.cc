@@ -23,20 +23,18 @@ bool LeaderBalanceStrategy::NeedsRebalance(const ClusterLoadReport& report) {
 BalancePlan LeaderBalanceStrategy::GeneratePlan(const ClusterLoadReport& report) {
     BalancePlan plan;
     plan.space_name = report.space_name;
-    
+
     if (report.node_loads.size() < 2) return plan;
-    
-    // 计算平均 Leader 数
+
     size_t total_leaders = 0;
     for (const auto& node : report.node_loads) {
         total_leaders += node.leader_count;
     }
     size_t avg_leaders = total_leaders / report.node_loads.size();
-    
-    // 找到 Leader 过多和过少的节点
+
     std::vector<NodeID> overloaded_nodes;
     std::vector<NodeID> underloaded_nodes;
-    
+
     for (const auto& node : report.node_loads) {
         if (node.leader_count > avg_leaders + 1) {
             overloaded_nodes.push_back(node.node_id);
@@ -44,11 +42,17 @@ BalancePlan LeaderBalanceStrategy::GeneratePlan(const ClusterLoadReport& report)
             underloaded_nodes.push_back(node.node_id);
         }
     }
-    
-    // 生成转移任务
-    // 注意：这里简化处理，实际应该从 overloaded 节点选择具体的 partition
-    // 并转移到 underloaded 节点
-    
+
+    // Generate actual leader transfer tasks
+    for (size_t i = 0; i < overloaded_nodes.size() && i < underloaded_nodes.size(); ++i) {
+        BalanceTask task;
+        task.type = BalanceTaskType::kTransferLeader;
+        task.source_node = overloaded_nodes[i];
+        task.target_node = underloaded_nodes[i];
+        task.partition_id = kInvalidPartitionID;  // Will be resolved at execution
+        plan.tasks.push_back(task);
+    }
+
     return plan;
 }
 
