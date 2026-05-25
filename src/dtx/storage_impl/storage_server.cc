@@ -72,7 +72,21 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
   
   // Create the gRPC service implementation (with raft manager for replication)
   service_impl_ = std::make_unique<StorageServiceImpl>(&partition_manager_, raft_manager_.get());
-  
+
+  // Wire PartitionFailoverController to the Raft layer so that failovers
+  // can trigger actual leadership transfers via braft.
+  auto* pf_controller = GetGlobalPartitionFailoverController();
+  if (pf_controller) {
+    pf_controller->SetConsensusTransferCallback(
+        [this](PartitionID pid, NodeID new_leader) -> Status {
+          auto* raft_group = raft_manager_->GetRaftGroup(pid);
+          if (!raft_group) {
+            return Status::NotFound("Raft group not found for partition", std::to_string(pid));
+          }
+          return raft_group->TransferLeadershipTo(new_leader);
+        });
+  }
+
   // Initialize MetaD client
   MetaServiceNodeClient::ClientConfig meta_config;
   meta_config.SetMetaAddress(config.metad_address);
