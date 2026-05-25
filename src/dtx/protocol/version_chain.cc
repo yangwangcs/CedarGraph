@@ -15,7 +15,11 @@
 #include "cedar/dtx/version_chain.h"
 
 #include <algorithm>
+#include <atomic>
+#include <future>
 #include <thread>
+
+#include "cedar/dtx/txn_context.h"
 
 namespace cedar {
 namespace dtx {
@@ -451,17 +455,84 @@ void CrossShardVersionView::Clear() {
 DistributedValidationCoordinator::DistributedValidationCoordinator(DTxRpcClient* rpc_client)
     : rpc_client_(rpc_client) {}
 
+void DistributedValidationCoordinator::RegisterPartitionIndex(
+    PartitionID pid, VersionChainIndex* index) {
+  partition_indices_[pid] = index;
+}
+
+ValidationResult DistributedValidationCoordinator::ValidatePartition(
+    const DistributedTxnContext& ctx, PartitionID partition_id) {
+  // 1. Check if partition leader is known
+  NodeID leader = ctx.GetPartitionLeader(partition_id);
+  if (leader == kInvalidNodeID) {
+    return ValidationResult::kTimeout;  // Leader unknown, retry later
+  }
+
+  // 2. Temporal sanity check: no read should have happened after commit timestamp
+  uint64_t commit_ts = ctx.GetCommitTimestamp();
+  for (const auto& item : ctx.GetReadSet()) {
+    if (item.key.part_id() == partition_id && item.read_timestamp > Timestamp(commit_ts)) {
+      return ValidationResult::kInvalid;  // Read-after-commit conflict
+    }
+  }
+
+  // 3. Check if we have a local index for this partition
+  auto it = partition_indices_.find(partition_id);
+  if (it != partition_indices_.end() && it->second != nullptr) {
+    // Build partition-local read set
+    std::vector<std::pair<CedarKey, uint64_t>> partition_read_set;
+    for (const auto& item : ctx.GetReadSet()) {
+      if (item.key.part_id() == partition_id) {
+        partition_read_set.emplace_back(item.key, item.read_version);
+      }
+    }
+    return HandleValidationRequest(it->second, partition_read_set,
+                                   Timestamp(commit_ts));
+  }
+
+  // 4. Remote partition: check if RPC client is available
+  if (rpc_client_ == nullptr) {
+    return ValidationResult::kTimeout;  // Network unavailable
+  }
+
+  // TODO: Implement remote validation via RPC when DTxRpcClient::Validate
+  // is available. For now, assume valid for reachable partitions.
+  return ValidationResult::kValid;
+}
+
 ValidationResult DistributedValidationCoordinator::CoordinateValidation(
     const DistributedTxnContext& ctx) {
-  
-  // Cross-shard validation requires:
-  // 1. Collect all participating partitions from ctx.GetParticipants()
-  // 2. Map PartitionIDs to NodeIDs via PartitionManager
-  // 3. Send validation requests to each node via DTxRpcClient
-  // 4. Aggregate results (all must agree for kValid)
-  //
-  // For now, assume valid until full coordination is wired.
-  (void)ctx;
+  const auto& participants = ctx.GetParticipants();
+  if (participants.empty()) {
+    return ValidationResult::kValid;  // No cross-partition operations
+  }
+
+  std::atomic<bool> has_conflict{false};
+  std::atomic<bool> has_retry{false};
+  std::vector<std::future<void>> futures;
+  futures.reserve(participants.size());
+
+  for (const auto& partition_id : participants) {
+    futures.push_back(std::async(std::launch::async, [&, partition_id]() {
+      auto result = ValidatePartition(ctx, partition_id);
+      if (result == ValidationResult::kInvalid) {
+        has_conflict.store(true);
+      } else if (result == ValidationResult::kTimeout) {
+        has_retry.store(true);
+      }
+    }));
+  }
+
+  for (auto& f : futures) {
+    f.wait();
+  }
+
+  if (has_conflict.load()) {
+    return ValidationResult::kInvalid;
+  }
+  if (has_retry.load()) {
+    return ValidationResult::kTimeout;
+  }
   return ValidationResult::kValid;
 }
 

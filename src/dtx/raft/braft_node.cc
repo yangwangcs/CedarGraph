@@ -102,6 +102,7 @@ void MetaRaftStateMachine::on_apply(braft::Iterator& iter) {
         cmd.index = iter.index();
         
         if (meta_service_) {
+            std::lock_guard<std::mutex> lock(sm_mutex_);
             if (!meta_service_->ApplyRaftCommand(cmd)) {
                 LOG(ERROR) << "ApplyRaftCommand failed at index=" << iter.index()
                            << " — stepping down";
@@ -110,7 +111,7 @@ void MetaRaftStateMachine::on_apply(braft::Iterator& iter) {
             }
         }
         
-        last_term_ = iter.term();
+        last_term_.store(iter.term(), std::memory_order_release);
     }
 }
 
@@ -379,13 +380,7 @@ public:
             return ::cedar::Status::IOError("BRaftNode", "circuit breaker open");
         }
 
-        {
-            std::lock_guard<std::mutex> lock(node_mutex_);
-            if (!node_ || !node_->is_leader()) {
-                return ::cedar::Status::InvalidArgument("Not a leader");
-            }
-        }
-        
+        // Build the task outside the lock (no side effects)
         auto data = std::make_shared<butil::IOBuf>();
         uint8_t type = static_cast<uint8_t>(command.type);
         data->append(&type, sizeof(type));
@@ -399,10 +394,11 @@ public:
         auto promise = std::make_shared<std::promise<::cedar::Status>>();
         task.done = new ProposeClosure(promise, data);  // Closure holds shared_ptr
 
+        // Acquire lock, verify leadership AND node_ validity, then apply atomically
         {
             std::lock_guard<std::mutex> lock(node_mutex_);
-            if (!node_) {
-                return ::cedar::Status::IOError("Node shut down");
+            if (!node_ || !node_->is_leader()) {
+                return ::cedar::Status::InvalidArgument("Not a leader");
             }
             node_->apply(task);
         }

@@ -30,10 +30,12 @@
 #ifndef CEDAR_DTX_RAFT_BRAFT_NODE_H_
 #define CEDAR_DTX_RAFT_BRAFT_NODE_H_
 
+#include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "cedar/core/status.h"
 #include "cedar/dtx/types.h"
@@ -100,6 +102,7 @@ class MetaRaftStateMachine : public braft::StateMachine {
  private:
   MetadataService* meta_service_;
   std::atomic<int64_t> last_term_{0};
+  mutable std::mutex sm_mutex_;
 };
 
 // =============================================================================

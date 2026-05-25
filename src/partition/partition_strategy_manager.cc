@@ -149,16 +149,19 @@ void PartitionStrategyManager::UpdateQueryStats(bool is_temporal_query, bool has
   }
 
   if (auto_mode_) {
-    MaybeAutoSwitchStrategy();
+    MaybeAutoSwitchStrategyUnlocked();
   }
 }
 
 void PartitionStrategyManager::MaybeAutoSwitchStrategy() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MaybeAutoSwitchStrategyUnlocked();
+}
+
+void PartitionStrategyManager::MaybeAutoSwitchStrategyUnlocked() {
   if (!config_.enable_auto_selection) {
     return;
   }
-  
-  std::lock_guard<std::mutex> lock(mutex_);
   
   if (stats_.total_queries < config_.temporal_query_threshold) {
     return;

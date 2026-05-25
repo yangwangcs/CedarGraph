@@ -17,7 +17,9 @@
 #include "cedar/dtx/monitoring.h"
 #include "cedar/storage/lsm_engine.h"
 
+#include <algorithm>
 #include <cstring>
+#include <glog/logging.h>
 #include <iostream>
 
 namespace cedar {
@@ -614,12 +616,53 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
   Timestamp txn_version(request->txn_version().value());
   TxnID txn_id = request->txn_id();
   
+  // Copy items to a vector for sorting and deduplication.
+  // Use pointers to avoid copying protobuf messages.
+  std::vector<const cedar::storage::BatchPutRequest_Item*> items;
+  items.reserve(request->items_size());
+  for (const auto& item : request->items()) {
+    items.push_back(&item);
+  }
+  
+  // Sort by key (entity_id, entity_type, column_id) for deterministic ordering
+  std::sort(items.begin(), items.end(), [](const auto* a, const auto* b) {
+    if (a->key().entity_id() != b->key().entity_id()) {
+      return a->key().entity_id() < b->key().entity_id();
+    }
+    if (a->key().entity_type() != b->key().entity_type()) {
+      return a->key().entity_type() < b->key().entity_type();
+    }
+    return a->key().column_id() < b->key().column_id();
+  });
+  
+  // Deduplicate: keep the LAST write to each key.
+  // Since items are sorted, duplicates are adjacent. Iterate in reverse
+  // so the first occurrence we see for each key is the last in the batch.
+  std::vector<const cedar::storage::BatchPutRequest_Item*> deduped;
+  deduped.reserve(items.size());
+  size_t deduped_count = 0;
+  for (auto it = items.rbegin(); it != items.rend(); ++it) {
+    if (!deduped.empty() &&
+        (*it)->key().entity_id() == deduped.back()->key().entity_id() &&
+        (*it)->key().entity_type() == deduped.back()->key().entity_type() &&
+        (*it)->key().column_id() == deduped.back()->key().column_id()) {
+      ++deduped_count;
+      continue;
+    }
+    deduped.push_back(*it);
+  }
+  if (deduped_count > 0) {
+    LOG(WARNING) << "BatchPut deduplicated " << deduped_count << " duplicate keys";
+  }
+  // Reverse back to sorted order
+  std::reverse(deduped.begin(), deduped.end());
+  
   bool all_success = true;
 
   // If braft replication is enabled, propose through Raft
   if (raft_manager_) {
-    for (const auto& item : request->items()) {
-      PartitionID pid = static_cast<PartitionID>(item.key().partition_id());
+    for (const auto* item : deduped) {
+      PartitionID pid = static_cast<PartitionID>(item->key().partition_id());
       auto* raft_group = raft_manager_->GetRaftGroup(pid);
       if (!raft_group) {
         response->add_item_success(false);
@@ -644,8 +687,8 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
         }
         continue;
       }
-      CedarKey key = ProtoToCedarKey(item.key());
-      Descriptor desc = ProtoToDescriptor(item.descriptor_(), key.column_id());
+      CedarKey key = ProtoToCedarKey(item->key());
+      Descriptor desc = ProtoToDescriptor(item->descriptor_(), key.column_id());
       StorageLogEntry entry;
       entry.type = StorageLogEntry::Type::kPut;
       entry.key = key;
@@ -665,8 +708,8 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
   }
 
   // Direct write path (no replication or single-node mode)
-  for (const auto& item : request->items()) {
-    PartitionID pid = static_cast<PartitionID>(item.key().partition_id());
+  for (const auto* item : deduped) {
+    PartitionID pid = static_cast<PartitionID>(item->key().partition_id());
     auto* partition = partition_manager_->GetPartition(pid);
     
     if (!partition) {
@@ -675,8 +718,8 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
       continue;
     }
     
-    CedarKey key = ProtoToCedarKey(item.key());
-    Descriptor desc = ProtoToDescriptor(item.descriptor_(), key.column_id());
+    CedarKey key = ProtoToCedarKey(item->key());
+    Descriptor desc = ProtoToDescriptor(item->descriptor_(), key.column_id());
     
     auto status = partition->Put(key, desc, txn_version, txn_id);
     response->add_item_success(status.ok());
@@ -975,9 +1018,17 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
     }
     
     if (!all_committed) {
-      // VIOLATION: Do NOT abort already-committed partitions.
-      // Once any partition commits, the transaction is durable.
-      // The remaining partitions must be driven to commit via recovery.
+      // Rollback already-committed partitions to maintain atomicity
+      for (auto* partition : committed_so_far) {
+        auto abort_status = partition->Abort(txn_id);
+        if (!abort_status.ok()) {
+          std::cerr << "[StorageServiceImpl::Commit] Rollback failed for txn=" << txn_id
+                    << " partition=" << partition->GetPartitionId()
+                    << " error=" << abort_status.ToString() << std::endl;
+          // Continue trying to rollback other partitions
+        }
+      }
+      
       std::string error_msg = "Commit failed on one or more partitions after partial commit: ";
       for (const auto& e : errors) {
         error_msg += e + "; ";

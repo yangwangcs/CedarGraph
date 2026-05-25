@@ -63,6 +63,7 @@ class PartitionStrategyManager {
   // 自动选择策略
   void UpdateQueryStats(bool is_temporal_query, bool has_locality);
   void MaybeAutoSwitchStrategy();
+  void MaybeAutoSwitchStrategyUnlocked();
   
   // 获取所有策略的统计信息
   std::string GetAllStats() const;

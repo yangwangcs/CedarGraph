@@ -189,6 +189,7 @@ class PartitionFailoverController {
     NodeID local_node_id{0};                                  // 本地节点ID
     std::chrono::milliseconds check_interval{1000};          // 健康检查间隔
     FailureDetectionConfig detection_config;                 // 故障检测配置
+    uint32_t max_failover_threads{16};                       // 故障转移工作线程池上限
   };
   
   PartitionFailoverController();
@@ -247,13 +248,17 @@ class PartitionFailoverController {
   // Register an external metrics collector (e.g., Raft lag, disk I/O)
   void RegisterHealthMetricsCollector(HealthMetricsCollector collector);
 
+  // Register a deep health probe callback (e.g., gRPC Health::Check, Raft status)
+  using HealthProbeCallback = std::function<bool(NodeID, const std::string& address)>;
+  void RegisterHealthProbeCallback(HealthProbeCallback callback);
+
   // Get the latest computed health score for a node (for external consumers)
   std::optional<HealthScore> GetHealthScore(NodeID node_id) const;
 
  private:
   // 故障转移流程
   void ExecuteFailover(PartitionID pid);
-  Status SelectNewLeader(PartitionID pid, NodeID* new_leader);
+  std::vector<NodeID> GetLeaderCandidates(PartitionID pid);
   Status PerformLeaderSwitch(PartitionID pid, NodeID new_leader);
   Status UpdatePartitionRoute(PartitionID pid, NodeID new_leader);
   
@@ -317,6 +322,10 @@ class PartitionFailoverController {
   // External metrics collectors
   std::vector<HealthMetricsCollector> metrics_collectors_;
   mutable std::mutex collectors_mutex_;
+
+  // Deep health probe callback (extends TCP probe with app-level checks)
+  HealthProbeCallback health_probe_callback_;
+  mutable std::mutex health_probe_callback_mutex_;
 
   // Node address registry (populated by RegisterPartition or external caller)
   std::unordered_map<NodeID, std::string> node_addresses_;

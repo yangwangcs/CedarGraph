@@ -27,6 +27,7 @@
 #define CEDAR_DTX_PHI_ACCRUAL_H_
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -43,13 +44,24 @@ class PhiAccrualDetector {
   // Record a heartbeat interval (time since last heartbeat, in milliseconds).
   void RecordInterval(double interval_ms);
 
+  // Record a heartbeat arrival. Automatically computes the interval since the
+  // previous heartbeat and updates the distribution window.
+  void RecordHeartbeat();
+
   // Compute the phi value for a given silence duration (ms).
   // phi = -log10(1 - CDF(t)) where CDF is derived from historical intervals.
   double Phi(double silence_ms) const;
 
+  // Compute phi using the elapsed time since the last RecordHeartbeat().
+  // If no heartbeat has been recorded, returns 0.0 (not suspected).
+  double Phi() const;
+
   // Convenience: check if the node is suspected failed.
   bool IsSuspected(double silence_ms, double threshold = 8.0) const {
     return Phi(silence_ms) >= threshold;
+  }
+  bool IsSuspected(double threshold = 8.0) const {
+    return Phi() >= threshold;
   }
 
   // Number of samples collected so far.
@@ -62,6 +74,8 @@ class PhiAccrualDetector {
   mutable std::mutex mutex_;
   std::deque<double> intervals_;
   size_t window_size_;
+  bool has_heartbeat_{false};
+  std::chrono::steady_clock::time_point last_heartbeat_time_;
 
   // Compute mean and variance of the current window.
   struct Distribution {
@@ -70,6 +84,9 @@ class PhiAccrualDetector {
     bool valid{false};
   };
   Distribution ComputeDistribution() const;
+
+  // Core phi computation (caller must hold mutex_).
+  double PhiUnlocked(double silence_ms) const;
 
   // CDF of normal distribution.
   static double NormalCDF(double x, double mean, double stddev);

@@ -14,6 +14,7 @@
 
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/dtx/monitoring.h"
+#include "cedar/storage/lsm_engine.h"
 
 #include <chrono>
 #include <fcntl.h>
@@ -140,6 +141,33 @@ Status PartitionStorage::Prepare(TxnID txn_id, const std::vector<CedarKey>& read
         if (write_key.entity_id() == existing_write.entity_id() &&
             write_key.column_id() == existing_write.column_id()) {
           return Status::Busy("Write-write conflict with txn " + std::to_string(existing_txn_id));
+        }
+      }
+    }
+  }
+  
+  // Validate read-set: check that no key in reads has been modified
+  // after the commit_ts (i.e., by a later committed transaction).
+  // We check the LSM memtables where txn_version is preserved.
+  // SST files currently do not store txn_version in a retrievable way,
+  // so this is a best-effort check that catches recent conflicts.
+  if (shared_storage_) {
+    auto* lsm_engine = shared_storage_->GetLsmEngine();
+    if (lsm_engine) {
+      for (const auto& read_key : reads) {
+        if (ExtractPartitionId(read_key) != partition_id_) {
+          continue;
+        }
+        auto versions = lsm_engine->GetAll(
+            read_key.entity_id(), read_key.entity_type(), read_key.column_id());
+        for (const auto& entry : versions) {
+          // SST entries have txn_version == 0 (not preserved during flush)
+          if (entry.txn_version == Timestamp(0)) {
+            continue;
+          }
+          if (entry.txn_version > commit_ts) {
+            return Status::Busy("Read-write conflict: key modified after read timestamp");
+          }
         }
       }
     }

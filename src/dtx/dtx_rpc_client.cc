@@ -39,7 +39,8 @@ std::shared_ptr<grpc::ChannelCredentials> CreateClientCredentialsFromEnv() {
 
 DTXRpcClient::DTXRpcClient(const DTXRpcConfig& config)
     : config_(config),
-      thread_pool_(std::make_unique<cedar::ThreadPool>(config.max_rpc_threads)) {
+      thread_pool_(std::make_unique<cedar::ThreadPool>(
+          config.max_rpc_threads > 0 ? config.max_rpc_threads : 64)) {
   LOG(WARNING) << "DTXRpcClient initialized but DTXService has no server "
                << "implementation in the current codebase. RPCs will fail "
                << "with UNIMPLEMENTED unless a custom server is provided.";

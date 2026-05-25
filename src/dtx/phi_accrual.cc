@@ -32,10 +32,73 @@ void PhiAccrualDetector::RecordInterval(double interval_ms) {
   }
 }
 
+void PhiAccrualDetector::RecordHeartbeat() {
+  auto now = std::chrono::steady_clock::now();
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (has_heartbeat_) {
+    double interval_ms = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_heartbeat_time_).count());
+    if (interval_ms <= 0.0) interval_ms = 0.1;
+    intervals_.push_back(interval_ms);
+    while (intervals_.size() > window_size_) {
+      intervals_.pop_front();
+    }
+  }
+  last_heartbeat_time_ = now;
+  has_heartbeat_ = true;
+}
+
 double PhiAccrualDetector::Phi(double silence_ms) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return PhiUnlocked(silence_ms);
+}
+
+double PhiAccrualDetector::Phi() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!has_heartbeat_) {
+    return 0.0;
+  }
+  auto now = std::chrono::steady_clock::now();
+  double silence_ms = static_cast<double>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - last_heartbeat_time_).count());
+  return PhiUnlocked(silence_ms);
+}
+
+size_t PhiAccrualDetector::SampleCount() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return intervals_.size();
+}
+
+void PhiAccrualDetector::Reset() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  intervals_.clear();
+  has_heartbeat_ = false;
+}
+
+PhiAccrualDetector::Distribution PhiAccrualDetector::ComputeDistribution() const {
+  Distribution dist;
+  if (intervals_.size() < 2) return dist;
+
+  double sum = 0.0;
+  for (double v : intervals_) sum += v;
+  dist.mean = sum / static_cast<double>(intervals_.size());
+
+  double sq_sum = 0.0;
+  for (double v : intervals_) {
+    double d = v - dist.mean;
+    sq_sum += d * d;
+  }
+  // Sample variance (Bessel-corrected) for better small-sample accuracy.
+  dist.variance = sq_sum / static_cast<double>(intervals_.size() - 1);
+  dist.valid = true;
+  return dist;
+}
+
+double PhiAccrualDetector::PhiUnlocked(double silence_ms) const {
   if (silence_ms <= 0.0) return 0.0;
 
-  std::lock_guard<std::mutex> lock(mutex_);
   if (intervals_.size() < 2) {
     // Not enough samples: fallback to a conservative fixed timeout equivalent.
     // phi grows linearly with silence, reaching 8.0 at 5000ms.
@@ -60,35 +123,6 @@ double PhiAccrualDetector::Phi(double silence_ms) const {
   if (cdf <= 0.0) cdf = 1e-15;
   double phi = -std::log10(1.0 - cdf);
   return phi;
-}
-
-size_t PhiAccrualDetector::SampleCount() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return intervals_.size();
-}
-
-void PhiAccrualDetector::Reset() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  intervals_.clear();
-}
-
-PhiAccrualDetector::Distribution PhiAccrualDetector::ComputeDistribution() const {
-  Distribution dist;
-  if (intervals_.size() < 2) return dist;
-
-  double sum = 0.0;
-  for (double v : intervals_) sum += v;
-  dist.mean = sum / static_cast<double>(intervals_.size());
-
-  double sq_sum = 0.0;
-  for (double v : intervals_) {
-    double d = v - dist.mean;
-    sq_sum += d * d;
-  }
-  // Sample variance (Bessel-corrected) for better small-sample accuracy.
-  dist.variance = sq_sum / static_cast<double>(intervals_.size() - 1);
-  dist.valid = true;
-  return dist;
 }
 
 double PhiAccrualDetector::NormalCDF(double x, double mean, double stddev) {

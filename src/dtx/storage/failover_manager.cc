@@ -110,7 +110,8 @@ PartitionFailoverController::~PartitionFailoverController() {
 
 Status PartitionFailoverController::Initialize(const Config& config) {
   config_ = config;
-  failover_worker_pool_ = std::make_unique<cedar::ThreadPool>(16);
+  failover_worker_pool_ = std::make_unique<cedar::ThreadPool>(
+      config_.max_failover_threads > 0 ? config_.max_failover_threads : 16);
   running_.store(true);
   
   lease_thread_ = std::thread(&PartitionFailoverController::LeaseRenewalLoop, this);
@@ -260,11 +261,9 @@ void PartitionFailoverController::RegisterFailoverCallback(FailoverCallback call
 
 void PartitionFailoverController::ExecuteFailover(PartitionID pid) {
   NodeID old_leader;
-  NodeID new_leader;
   
-  // 选择新的 Leader
-  auto status = SelectNewLeader(pid, &new_leader);
-  if (!status.ok()) {
+  auto candidates = GetLeaderCandidates(pid);
+  if (candidates.empty()) {
     std::lock_guard<std::mutex> lock(partitions_mutex_);
     auto it = partitions_.find(pid);
     if (it != partitions_.end()) {
@@ -278,12 +277,23 @@ void PartitionFailoverController::ExecuteFailover(PartitionID pid) {
     auto it = partitions_.find(pid);
     if (it != partitions_.end()) {
       old_leader = it->second.current_leader;
-      it->second.failover_target = new_leader;
+      it->second.failover_target = candidates[0];
     }
   }
   
-  // 执行 Leader 切换
-  status = PerformLeaderSwitch(pid, new_leader);
+  // 执行 Leader 切换，按优先级逐个尝试候选节点
+  Status status;
+  NodeID successful_leader = 0;
+  for (NodeID candidate : candidates) {
+    status = PerformLeaderSwitch(pid, candidate);
+    if (status.ok()) {
+      successful_leader = candidate;
+      break;
+    }
+    std::cerr << "[FailoverManager] Candidate " << candidate
+              << " failed for partition=" << pid
+              << ", trying next candidate..." << std::endl;
+  }
   
   {
     std::lock_guard<std::mutex> lock(partitions_mutex_);
@@ -291,10 +301,7 @@ void PartitionFailoverController::ExecuteFailover(PartitionID pid) {
     if (it != partitions_.end()) {
       it->second.is_failover_in_progress = false;
       it->second.last_failover = std::chrono::steady_clock::now();
-      
-      if (status.ok()) {
-        it->second.current_leader = new_leader;
-      }
+      // PerformLeaderSwitch already updates current_leader on success
     }
   }
   
@@ -307,7 +314,7 @@ void PartitionFailoverController::ExecuteFailover(PartitionID pid) {
     }
     for (auto& callback : callbacks_copy) {
       try {
-        callback(pid, old_leader, new_leader);
+        callback(pid, old_leader, successful_leader);
       } catch (...) {
         std::cerr << "[FailoverManager] Failover callback exception" << std::endl;
       }
@@ -315,24 +322,63 @@ void PartitionFailoverController::ExecuteFailover(PartitionID pid) {
   }
 }
 
-Status PartitionFailoverController::SelectNewLeader(PartitionID pid, 
-                                                     NodeID* new_leader) {
-  std::lock_guard<std::mutex> lock(partitions_mutex_);
+std::vector<NodeID> PartitionFailoverController::GetLeaderCandidates(PartitionID pid) {
+  NodeID current_leader = 0;
+  NodeID failover_target = 0;
+  std::chrono::steady_clock::time_point last_failover;
+  std::vector<NodeID> replicas;
   
-  auto it = partitions_.find(pid);
-  if (it == partitions_.end()) {
-    return Status::NotFound("Partition not found");
-  }
-  
-  // 从副本中选择新的 Leader（选择 ID 最小的健康副本）
-  for (NodeID replica : it->second.replicas) {
-    if (replica != it->second.current_leader && CheckReplicaHealth(replica)) {
-      *new_leader = replica;
-      return Status::OK();
+  {
+    std::lock_guard<std::mutex> lock(partitions_mutex_);
+    auto it = partitions_.find(pid);
+    if (it == partitions_.end()) {
+      return {};
     }
+    current_leader = it->second.current_leader;
+    failover_target = it->second.failover_target;
+    last_failover = it->second.last_failover;
+    replicas = it->second.replicas;
   }
   
-  return Status::IOError("No healthy replica available");
+  std::vector<std::pair<NodeID, double>> scored_candidates;
+  
+  for (NodeID replica : replicas) {
+    if (replica == current_leader) continue;
+    if (!CheckReplicaHealth(replica)) continue;
+    
+    double score = 0.0;
+    // Prefer nodes with higher health scores
+    {
+      std::lock_guard<std::mutex> health_lock(health_scores_mutex_);
+      auto score_it = health_scores_.find(replica);
+      if (score_it != health_scores_.end()) {
+        score += score_it->second.overall;
+      }
+    }
+    // Penalize recently failed-over targets to avoid flapping
+    if (replica == failover_target) {
+      auto now = std::chrono::steady_clock::now();
+      if (last_failover != std::chrono::steady_clock::time_point() &&
+          now - last_failover < std::chrono::seconds(30)) {
+        score -= 50.0;
+      }
+    }
+    scored_candidates.emplace_back(replica, score);
+  }
+  
+  // Sort by score descending, then by NodeID ascending as tiebreaker
+  std::sort(scored_candidates.begin(), scored_candidates.end(),
+            [](const auto& a, const auto& b) {
+              if (a.second != b.second) return a.second > b.second;
+              return a.first < b.first;
+            });
+  
+  std::vector<NodeID> result;
+  result.reserve(scored_candidates.size());
+  for (const auto& [node_id, s] : scored_candidates) {
+    result.push_back(node_id);
+  }
+  return result;
 }
 
 bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
@@ -394,6 +440,14 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
             }
         }
         close(sock);
+    }
+
+    // Deep health probe: if a callback is registered, perform app-level checks
+    if (healthy) {
+        std::lock_guard<std::mutex> probe_lock(health_probe_callback_mutex_);
+        if (health_probe_callback_) {
+            healthy = health_probe_callback_(node_id, address);
+        }
     }
 
     {
@@ -591,19 +645,15 @@ void PartitionFailoverController::HealthCheckLoop() {
             it = phi_detectors_.emplace(node_id,
                 std::make_unique<PhiAccrualDetector>(500)).first;
           }
-          // Record the actual loop interval as the heartbeat interval,
-          // not the TCP latency. This reflects "how often do we hear from this node".
-          double interval_ms = static_cast<double>(config_.check_interval.count());
-          if (!tcp_ok) {
-            // If TCP failed, record a large interval to signal missed heartbeat.
-            interval_ms = static_cast<double>(config_.detection_config.timeout.count());
+          // Record heartbeat only on successful TCP probe so the detector's
+          // distribution models healthy intervals. On failure, silence grows
+          // automatically because no heartbeat is recorded.
+          if (tcp_ok) {
+            it->second->RecordHeartbeat();
           }
-          it->second->RecordInterval(interval_ms);
 
-          // Silence = check_interval (time since last scheduled heartbeat).
-          double silence_ms = static_cast<double>(config_.check_interval.count());
           if (it->second->SampleCount() >= 5) {
-            double phi = it->second->Phi(silence_ms);
+            double phi = it->second->Phi();
             if (phi >= config_.detection_config.phi_threshold) {
               score.is_unhealthy = true;
               std::cerr << "[Failover] Phi Accrual suspects node " << node_id
@@ -641,7 +691,7 @@ void PartitionFailoverController::HealthCheckLoop() {
                         << " unhealthy, triggering failover for partition " << pid << std::endl;
               // Launch failover asynchronously on the bounded worker pool
               failover_worker_pool_->Schedule([this, pid]() { ReportLeaderFailure(pid); });
-              break;  // One failover at a time per node
+              // Removed break: trigger failover for ALL partitions where this node is leader
             }
           }
         }
@@ -834,6 +884,12 @@ void PartitionFailoverController::RegisterHealthMetricsCollector(
     HealthMetricsCollector collector) {
   std::lock_guard<std::mutex> lock(collectors_mutex_);
   metrics_collectors_.push_back(std::move(collector));
+}
+
+void PartitionFailoverController::RegisterHealthProbeCallback(
+    HealthProbeCallback callback) {
+  std::lock_guard<std::mutex> lock(health_probe_callback_mutex_);
+  health_probe_callback_ = std::move(callback);
 }
 
 std::optional<HealthScore> PartitionFailoverController::GetHealthScore(NodeID node_id) const {

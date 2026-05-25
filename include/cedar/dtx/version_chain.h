@@ -279,8 +279,22 @@ class DistributedValidationCoordinator {
       const std::vector<std::pair<CedarKey, uint64_t>>& read_set,
       Timestamp commit_ts);
   
+  /**
+   * @brief 注册本地分片的版本链索引
+   */
+  void RegisterPartitionIndex(PartitionID pid, VersionChainIndex* index);
+  
  private:
+  /**
+   * @brief 验证单个分片
+   */
+  ValidationResult ValidatePartition(const DistributedTxnContext& ctx,
+                                      PartitionID partition_id);
+  
   DTxRpcClient* rpc_client_{nullptr};
+  
+  // 本地分片索引映射
+  std::unordered_map<PartitionID, VersionChainIndex*> partition_indices_;
   
   // 超时配置
   std::chrono::milliseconds validation_timeout_{100};
