@@ -613,6 +613,8 @@ std::optional<std::pair<CedarKey, Descriptor>> LsmEngine::GetRecordAtTime(
     return std::nullopt;
   }
 
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+
   // Helper lambda to build CedarKey based on entity type
   // 使用 MemTableEntry 中存储的完整 metadata
   auto BuildKey = [entity_id, entity_type, column_id](const MemTableEntry& entry) -> CedarKey {
@@ -720,6 +722,8 @@ std::vector<MemTableEntry> LsmEngine::GetRange(uint64_t entity_id,
   if (!opened_) {
     return results;
   }
+
+  std::shared_lock<std::shared_mutex> lock(mutex_);
 
   // 1. Query MemTable (hot data)
   auto mem_results = mem_->GetRange(entity_id, entity_type, column_id, start, end);
@@ -1842,7 +1846,7 @@ LsmEngine::ScanEdges(uint64_t vertex_id,
   if (!opened_) {
     return results;
   }
-  
+
   // Ensure direction is either EdgeOut or EdgeIn
   if (edge_direction != EntityType::EdgeOut && edge_direction != EntityType::EdgeIn) {
     return results;
@@ -1921,6 +1925,8 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
   if (!opened_) {
     return results;
   }
+
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   
   // Ensure direction is either EdgeOut or EdgeIn
   if (edge_direction != EntityType::EdgeOut && edge_direction != EntityType::EdgeIn) {
