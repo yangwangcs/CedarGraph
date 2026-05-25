@@ -99,6 +99,7 @@ struct MigrationConfig {
   std::chrono::milliseconds catchup_interval{1000};  // 1 second
   uint32_t max_catchup_iterations = 10;
   std::chrono::milliseconds verify_timeout{300000};  // 5 minutes
+  uint32_t rpc_timeout_ms = 5000;                    // 5 seconds
   
   // Safety settings
   bool verify_checksum = true;

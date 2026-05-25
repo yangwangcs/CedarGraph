@@ -505,6 +505,15 @@ Status PartitionMigrator::SwitchTraffic(MigrationTask& task) {
     return Status::IOError("MetaD assignment update failed: " + s.ToString());
   }
 
+  // Wait for in-flight requests on the source to drain.
+  // Use 2x the configured RPC timeout as a reasonable upper bound.
+  const int drain_wait_ms = config_.rpc_timeout_ms * 2;
+  if (drain_wait_ms > 0) {
+    LOG(INFO) << "[Migration] Draining in-flight requests for partition "
+              << task.partition_id << " (max " << drain_wait_ms << "ms)";
+    std::this_thread::sleep_for(std::chrono::milliseconds(drain_wait_ms));
+  }
+
   return Status::OK();
 }
 
