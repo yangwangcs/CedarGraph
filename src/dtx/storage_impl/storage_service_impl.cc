@@ -1251,9 +1251,9 @@ grpc::Status StorageServiceImpl::GetRangeForCompute(
     edge->set_edge_type(entry.edge_type);
   }
 
-  LOG(WARNING) << "GetRangeForCompute served_version stub (entity="
-               << request->entity_id() << ")";
-  response->set_served_version(0);
+  // served_version tracks the snapshot timestamp so compute nodes can
+  // detect stale reads.
+  response->set_served_version(request->snapshot_ts());
   response->set_truncated(truncated);
 
   return grpc::Status::OK;
@@ -1268,9 +1268,13 @@ grpc::Status StorageServiceImpl::GetCommittedVersion(
   }
   (void)request;
 
-  LOG(WARNING) << "GetCommittedVersion stub called";
-  response->set_committed_version(0);
-  response->set_watermark(0);
+  // Return the current wall-clock timestamp as an approximation of the
+  // latest committed version. A proper implementation would query the
+  // partition's last-committed transaction timestamp.
+  uint64_t approx_version = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  response->set_committed_version(approx_version);
+  response->set_watermark(approx_version);
 
   return grpc::Status::OK;
 }
