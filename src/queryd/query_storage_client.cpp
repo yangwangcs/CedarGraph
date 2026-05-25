@@ -101,9 +101,13 @@ Status QueryStorageClient::Put(const CedarKey& key, const Descriptor& descriptor
 }
 
 Status QueryStorageClient::Delete(const CedarKey& key) {
-  (void)key;
-  // StorageClient currently has no Delete API.
-  return Status::NotSupported("Delete not supported in query mode");
+  if (use_base_client_ && base_client_) {
+    uint64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    return base_client_->Delete(key, Timestamp(now_us), 0);
+  }
+
+  return Status::NotSupported("Independent mode not implemented");
 }
 
 Status QueryStorageClient::BatchGet(const std::vector<CedarKey>& keys,

@@ -214,6 +214,44 @@ StatusOr<Descriptor> StorageClient::Get(const CedarKey& key, Timestamp read_time
   });
 }
 
+Status StorageClient::Delete(const CedarKey& key, Timestamp txn_version, TxnID txn_id) {
+  if (!connected_.load()) {
+    return Status::IOError("Client not connected");
+  }
+
+  return RetryWithBackoff([&]() {
+    cedar::storage::DeleteRequest request;
+    cedar::storage::DeleteResponse response;
+    grpc::ClientContext context;
+
+    context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
+
+    auto* pb_key = request.mutable_key();
+    pb_key->set_entity_id(key.entity_id());
+    pb_key->set_timestamp(key.timestamp().value());
+    pb_key->set_target_id(key.target_id());
+    pb_key->set_column_id(key.column_id());
+    pb_key->set_sequence(key.sequence());
+    pb_key->set_type_flags(key.flags());
+    pb_key->set_partition_id(key.part_id());
+
+    request.mutable_txn_version()->set_value(static_cast<uint64_t>(txn_version));
+    request.set_txn_id(txn_id);
+
+    grpc::Status status = stub_->Delete(&context, request, &response);
+
+    if (!status.ok()) {
+      return Status::IOError("gRPC Delete failed: " + status.error_message());
+    }
+
+    if (!response.success()) {
+      return Status::IOError("Storage error: " + response.error_msg());
+    }
+
+    return Status::OK();
+  }, false);
+}
+
 Status StorageClient::BatchPut(
     const std::vector<std::pair<CedarKey, Descriptor>>& items,
     Timestamp txn_version) {

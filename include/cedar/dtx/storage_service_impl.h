@@ -389,6 +389,7 @@ class StorageClient {
   Status Put(const CedarKey& key, const Descriptor& descriptor,
              Timestamp txn_version, TxnID txn_id);
   StatusOr<Descriptor> Get(const CedarKey& key, Timestamp read_time);
+  Status Delete(const CedarKey& key, Timestamp txn_version, TxnID txn_id);
 
   // Batch write method
   Status BatchPut(const std::vector<std::pair<CedarKey, Descriptor>>& items,
