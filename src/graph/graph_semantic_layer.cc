@@ -289,18 +289,18 @@ std::vector<Neighbor> GraphSemanticLayer::GetOutNeighborsWithPushdown(
     }
   }
   
-  // Query storage directly
-  auto versions = storage_->ScanLimit(vertex_id, 
-                                      predicate.time_start.value_or(Timestamp(0)),
-                                      predicate.time_end.value_or(Timestamp::Max()),
-                                      predicate.limit.value_or(1000));
-  
-  for (const auto& [ts, desc] : versions) {
-    if (auto int_val = desc.AsInlineInt()) {
-      results.emplace_back(vertex_id, edge_type, ts, *int_val);
-      if (predicate.CheckLimit(results.size())) {
-        break;
-      }
+  // Query edge storage directly instead of vertex property history
+  auto edges = storage_->ScanEdgesWithFolding(
+      vertex_id, EntityType::EdgeOut, edge_type,
+      predicate.time_end.value_or(Timestamp::Max()));
+
+  for (const auto& edge : edges) {
+    if (edge.timestamp < predicate.time_start.value_or(Timestamp(0))) {
+      continue;
+    }
+    results.emplace_back(edge.target_id, edge.edge_type, edge.timestamp, std::nullopt);
+    if (predicate.CheckLimit(results.size())) {
+      break;
     }
   }
   
