@@ -71,6 +71,9 @@ class Status {
   static Status Cancelled(const Slice& msg, const Slice& msg2 = Slice()) {
     return Status(kCancelled, msg, msg2);
   }
+  static Status MemoryLimitExceeded(const Slice& msg, const Slice& msg2 = Slice()) {
+    return Status(kMemoryLimitExceeded, msg, msg2);
+  }
 
   // Returns true iff the status indicates success.
   bool ok() const { return (state_ == nullptr); }
@@ -108,6 +111,9 @@ class Status {
   // Returns true iff the status indicates a Cancelled error.
   bool IsCancelled() const { return code() == kCancelled; }
 
+  // Returns true iff the status indicates a MemoryLimitExceeded error.
+  bool IsMemoryLimitExceeded() const { return code() == kMemoryLimitExceeded; }
+
   // Return a string representation of this status suitable for printing.
   // Returns the string "OK" for success.
   std::string ToString() const;
@@ -128,7 +134,8 @@ class Status {
     kBusy = 8,      // Resource busy
     kResourceExhausted = 9,  // Resource exhausted
     kUnavailable = 10,       // Service unavailable
-    kCancelled = 11          // Operation cancelled
+    kCancelled = 11,         // Operation cancelled
+    kMemoryLimitExceeded = 12  // Memory limit exceeded
   };
 
   Code code() const {

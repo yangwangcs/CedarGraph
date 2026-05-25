@@ -26,6 +26,7 @@
 
 #include "cedar/types/descriptor.h"
 #include "cedar/types/cedar_key.h"
+#include "cedar/core/status.h"
 
 namespace cedar {
 
@@ -92,9 +93,11 @@ class CedarMemTable {
   CedarMemTable(const CedarMemTable&) = delete;
   CedarMemTable& operator=(const CedarMemTable&) = delete;
 
+  static constexpr size_t kMaxNodePoolSize = 10000000;  // 10M nodes max
+
   // 插入数据 (保留所有历史版本)
   // 会自动分配序列号用于同时间戳去重
-  void Put(CedarKey key, const Descriptor& descriptor, Timestamp txn_version);
+  Status Put(CedarKey key, const Descriptor& descriptor, Timestamp txn_version);
 
   // 查询所有版本 (按 timestamp 降序返回)
   std::vector<MemTableEntry> GetAll(uint64_t entity_id,
@@ -210,7 +213,7 @@ class CedarMemTable {
   uint16_t NextSequence();
   
   // 维护版本链: 在 Put 时更新
-  void UpdateVersionChain(const InternalKey& internal_key, 
+  bool UpdateVersionChain(const InternalKey& internal_key, 
                           Timestamp timestamp, 
                           const Descriptor& descriptor,
                           Timestamp txn_version);

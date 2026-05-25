@@ -241,7 +241,10 @@ Status LsmEngine::Put(const CedarKey& key, const Descriptor& descriptor, Timesta
       }
     }
     
-    mem_->Put(key, descriptor, txn_version);
+    Status s = mem_->Put(key, descriptor, txn_version);
+    if (!s.ok()) {
+      return s;
+    }
     
     InvalidateQueryCache(key.entity_id());
     
@@ -283,7 +286,10 @@ Status LsmEngine::Delete(const CedarKey& key, Timestamp txn_version) {
       }
     }
     
-    mem_->Put(key, Descriptor(), txn_version);
+    Status s = mem_->Put(key, Descriptor(), txn_version);
+    if (!s.ok()) {
+      return s;
+    }
     
     InvalidateQueryCache(key.entity_id());
     if (!disable_column_tracking_) {
@@ -1781,9 +1787,15 @@ Status LsmEngine::ReplayWAL(uint64_t start_sequence) {
       if (status.ok()) {
         for (const auto& op : batch.ops()) {
           if (op.type == WalRecordType::kPut) {
-            mem_->Put(op.key, op.descriptor, op.txn_version);
+            Status s = mem_->Put(op.key, op.descriptor, op.txn_version);
+            if (!s.ok()) {
+              return s;
+            }
           } else if (op.type == WalRecordType::kDelete) {
-            mem_->Put(op.key, Descriptor(), op.txn_version);
+            Status s = mem_->Put(op.key, Descriptor(), op.txn_version);
+            if (!s.ok()) {
+              return s;
+            }
           }
         }
       } else if (status.IsCorruption()) {
