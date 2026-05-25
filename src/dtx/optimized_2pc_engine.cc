@@ -464,10 +464,20 @@ Status Optimized2PCEngine::LoadCommitDecision(TxnID txn_id, CommitDecision* out)
   ifs.read(reinterpret_cast<char*>(&out->commit_ts), sizeof(out->commit_ts));
   uint32_t num_parts = 0;
   ifs.read(reinterpret_cast<char*>(&num_parts), sizeof(num_parts));
+  if (!ifs) {
+    return Status::IOError("Decision log truncated: cannot read num_parts", path);
+  }
+  const uint32_t kMaxParticipants = 10000;  // Sanity limit
+  if (num_parts > kMaxParticipants) {
+    return Status::IOError("Decision log corrupt: num_parts too large", path);
+  }
   out->participants.resize(num_parts);
   for (uint32_t i = 0; i < num_parts; ++i) {
     PartitionID pid;
     ifs.read(reinterpret_cast<char*>(&pid), sizeof(pid));
+    if (!ifs) {
+      return Status::IOError("Decision log truncated: cannot read participant", path);
+    }
     out->participants[i] = pid;
   }
   out->decision_made = true;
