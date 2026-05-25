@@ -186,16 +186,22 @@ bool ServiceDiscovery::CheckNodeHealth(const StorageNodeInfo& node) {
   if (inet_pton(AF_INET, node.host.c_str(), &addr.sin_addr) == 1) {
     // Valid IPv4 literal — proceed directly to connect.
   } else {
-    // DNS resolution with timeout using a detached thread + future.
-    struct addrinfo* res = nullptr;
+    // DNS resolution with timeout using a detached thread + heap data.
+    // All data shared with the detached thread lives on the heap to avoid
+    // use-after-free when this function returns before the thread finishes.
+    struct DnsResult {
+      struct addrinfo* res = nullptr;
+      bool success = false;
+    };
+    auto dns_result = std::make_shared<DnsResult>();
     std::atomic<bool> resolved{false};
-    std::thread dns_thread([&]() {
+    std::thread dns_thread([dns_result, &node, &resolved]() {
       struct addrinfo hints = {};
       hints.ai_family = AF_INET;
       hints.ai_socktype = SOCK_STREAM;
-      if (getaddrinfo(node.host.c_str(), nullptr, &hints, &res) == 0 && res != nullptr) {
-        struct sockaddr_in* sin = reinterpret_cast<struct sockaddr_in*>(res->ai_addr);
-        memcpy(&addr.sin_addr, &sin->sin_addr, sizeof(addr.sin_addr));
+      if (getaddrinfo(node.host.c_str(), nullptr, &hints, &dns_result->res) == 0 
+          && dns_result->res != nullptr) {
+        dns_result->success = true;
       }
       resolved.store(true, std::memory_order_release);
     });
@@ -208,7 +214,7 @@ bool ServiceDiscovery::CheckNodeHealth(const StorageNodeInfo& node) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    // If DNS is still in-flight, detach the thread (it will clean up locally).
+    // If DNS is still in-flight, detach the thread (it only touches heap data).
     if (!resolved.load(std::memory_order_acquire)) {
       dns_thread.detach();
       close(sock);
@@ -216,11 +222,14 @@ bool ServiceDiscovery::CheckNodeHealth(const StorageNodeInfo& node) {
     }
     dns_thread.join();
     
-    if (res == nullptr) {
+    if (!dns_result->success) {
       close(sock);
       return false;
     }
-    freeaddrinfo(res);
+    struct sockaddr_in* sin = reinterpret_cast<struct sockaddr_in*>(
+        dns_result->res->ai_addr);
+    memcpy(&addr.sin_addr, &sin->sin_addr, sizeof(addr.sin_addr));
+    freeaddrinfo(dns_result->res);
   }
   
   int result = connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
