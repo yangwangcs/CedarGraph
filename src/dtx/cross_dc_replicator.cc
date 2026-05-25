@@ -143,14 +143,24 @@ Status CrossDCReplicator::Replicate(const ::cedar::CedarKey& key,
   log.created_at = std::chrono::system_clock::now();
 
   if (config_.mode == ReplicationMode::kSync) {
+    std::vector<std::string> succeeded_dcs;
     for (const auto& dc : peer_dcs_) {
       Status s = ReplicateToDC(log, dc);
       if (replication_callback_) {
         replication_callback_(log, s);
       }
       if (!s.ok()) {
+        // Best-effort cleanup: try to delete the key from succeeded DCs.
+        for (const auto& succ_dc : succeeded_dcs) {
+          Status del_status = DeleteFromDC(log.key, succ_dc);
+          if (!del_status.ok()) {
+            std::cerr << "[CrossDCReplicator] Cross-DC replication cleanup failed for " << succ_dc
+                      << ": " << del_status.ToString() << std::endl;
+          }
+        }
         return s;
       }
+      succeeded_dcs.push_back(dc);
     }
     return Status::OK();
   }
@@ -417,6 +427,19 @@ Status CrossDCReplicator::ReplicateToDC(const ReplicationLog& log,
   }
   
   return s;
+}
+
+Status CrossDCReplicator::DeleteFromDC(const ::cedar::CedarKey& key,
+                                        const std::string& dc_id) {
+  ReplicationLog tombstone_log;
+  tombstone_log.sequence_num = ++sequence_counter_;
+  tombstone_log.key = key;
+  tombstone_log.value = Descriptor::Tombstone();
+  tombstone_log.timestamp = Timestamp::Now();
+  tombstone_log.source_dc = local_dc_id_;
+  tombstone_log.target_dcs = {dc_id};
+  tombstone_log.created_at = std::chrono::system_clock::now();
+  return ReplicateToDC(tombstone_log, dc_id);
 }
 
 Status CrossDCReplicator::SendToRemoteDC(const ReplicationLog& log,
