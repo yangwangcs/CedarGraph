@@ -40,6 +40,7 @@ uint32_t PartitionRouter::GetPartitionId(uint64_t entity_id) {
     return strategy_manager_->RouteVertex(entity_id).partition_id;
   }
   // Fallback: simple hash-based routing
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   if (partition_count_ == 0) {
     return 0;
   }

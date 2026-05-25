@@ -286,6 +286,7 @@ class MigrationExecutor {
   std::vector<std::thread> worker_threads_;
   std::condition_variable worker_cv_;
   
+  mutable std::mutex callback_mutex_;
   ProgressCallback progress_callback_;
   CompletionCallback completion_callback_;
   

@@ -154,10 +154,12 @@ std::vector<StorageNodeInfo> ServiceDiscovery::GetHealthyNodes() {
 }
 
 void ServiceDiscovery::SetNodeDiscoveredCallback(NodeDiscoveredCallback callback) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   discovered_callback_ = callback;
 }
 
 void ServiceDiscovery::SetNodeHealthChangedCallback(NodeHealthChangedCallback callback) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   health_changed_callback_ = callback;
 }
 

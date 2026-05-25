@@ -759,10 +759,12 @@ Status MigrationExecutor::ResumeMigration(uint64_t migration_id) {
 }
 
 void MigrationExecutor::SetProgressCallback(ProgressCallback callback) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   progress_callback_ = callback;
 }
 
 void MigrationExecutor::SetCompletionCallback(CompletionCallback callback) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   completion_callback_ = callback;
 }
 
@@ -825,12 +827,14 @@ void MigrationExecutor::ExecuteMigration(std::shared_ptr<MigrationTask> task) {
 }
 
 void MigrationExecutor::NotifyProgress(const MigrationProgress& progress) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   if (progress_callback_) {
     progress_callback_(progress);
   }
 }
 
 void MigrationExecutor::NotifyCompletion(uint64_t id, bool success) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   if (completion_callback_) {
     completion_callback_(id, success);
   }

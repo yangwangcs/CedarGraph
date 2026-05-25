@@ -271,6 +271,7 @@ class LongTermStabilityTest {
   
   Config config_;
   AtomicTestStats stats_;
+  mutable std::mutex stats_mutex_;
   
   std::vector<std::shared_ptr<StorageClient>> clients_;
   mutable std::mutex clients_mutex_;

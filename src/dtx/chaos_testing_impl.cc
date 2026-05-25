@@ -170,7 +170,10 @@ void FaultInjector::ClearAllFaults() {
 
 LongTermStabilityTest::LongTermStabilityTest(const Config& config)
     : config_(config), rng_(std::random_device{}()) {
-  stats_.start_time = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    stats_.start_time = std::chrono::steady_clock::now();
+  }
 }
 
 LongTermStabilityTest::~LongTermStabilityTest() {
@@ -264,7 +267,10 @@ Status LongTermStabilityTest::Run() {
   
   // Cleanup
   running_ = false;
-  stats_.end_time = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    stats_.end_time = std::chrono::steady_clock::now();
+  }
   
   for (auto& t : workload_threads_) {
     if (t.joinable()) t.join();
@@ -357,11 +363,19 @@ void LongTermStabilityTest::MetricsReporterLoop() {
     std::this_thread::sleep_for(config_.metrics_interval);
     
     auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - stats_.start_time).count();
+    int64_t elapsed;
+    {
+      std::lock_guard<std::mutex> lock(stats_mutex_);
+      elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - stats_.start_time).count();
+    }
     
     double throughput = stats_.total_operations.load() / std::max(1.0, (double)elapsed);
     
-    auto snapshot = stats_.GetSnapshot();
+    TestStats snapshot;
+    {
+      std::lock_guard<std::mutex> lock(stats_mutex_);
+      snapshot = stats_.GetSnapshot();
+    }
     double success_rate = snapshot.GetSuccessRate() * 100;
     double avg_latency = snapshot.GetAverageLatency();
     

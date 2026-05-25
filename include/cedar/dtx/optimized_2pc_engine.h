@@ -249,6 +249,11 @@ class Optimized2PCEngine {
   TwoPCConfig config_;
   mutable std::mutex config_mutex_;
   
+  // Atomic copies of frequently-read config fields to avoid lock contention
+  // in hot paths (PipelineWorkerLoop, ExecuteBatched2PC, etc.).
+  std::atomic<int> atomic_batch_size_{8};
+  std::atomic<bool> atomic_enable_adaptive_tuning_{true};
+  
   // Storage clients (one per partition/node)
   std::vector<std::shared_ptr<StorageClient>> clients_;
   mutable std::mutex clients_mutex_;

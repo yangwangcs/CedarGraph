@@ -37,7 +37,9 @@ namespace dtx {
 
 Optimized2PCEngine::Optimized2PCEngine(const TwoPCConfig& config)
     : config_(config),
-      thread_pool_(std::make_unique<ThreadPool>(config.parallel_threads)) {
+      thread_pool_(std::make_unique<ThreadPool>(config.parallel_threads)),
+      atomic_batch_size_(config.batch_size),
+      atomic_enable_adaptive_tuning_(config.enable_adaptive_tuning) {
 }
 
 Optimized2PCEngine::~Optimized2PCEngine() {
@@ -107,7 +109,7 @@ Status Optimized2PCEngine::Initialize(
   }
   
   // Start adaptive tuning thread
-  if (config_.enable_adaptive_tuning) {
+  if (atomic_enable_adaptive_tuning_.load()) {
     tuning_thread_ = std::thread([this]() {
       AdaptiveTuningLoop();
     });
@@ -797,7 +799,7 @@ Status Optimized2PCEngine::ExecuteBatched2PC(
     batch_buffer_.push_back(ctx);
 
     // If batch is full or timeout, process it
-    if (batch_buffer_.size() >= static_cast<size_t>(config_.batch_size)) {
+    if (batch_buffer_.size() >= static_cast<size_t>(atomic_batch_size_.load())) {
       batch_cv_.notify_one();
     }
   }
@@ -846,7 +848,7 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
     
     // Collect batch of transactions
     std::vector<std::shared_ptr<TransactionContext>> batch;
-    int max_batch = config_.batch_size > 0 ? config_.batch_size : 4;
+    int max_batch = atomic_batch_size_.load() > 0 ? atomic_batch_size_.load() : 4;
     
     while (!pipeline_queue_.empty() && batch.size() < static_cast<size_t>(max_batch)) {
       batch.push_back(pipeline_queue_.front());
@@ -1079,6 +1081,7 @@ void Optimized2PCEngine::TuneConfiguration() {
     {
       std::lock_guard<std::mutex> config_lock(config_mutex_);
       config_.batch_size = tuning_state_.current_batch_size;
+      atomic_batch_size_.store(tuning_state_.current_batch_size);
     }
   }
   
@@ -1090,12 +1093,16 @@ void Optimized2PCEngine::TuneConfiguration() {
 }
 
 void Optimized2PCEngine::EnableAdaptiveTuning(bool enable) {
+  std::lock_guard<std::mutex> lock(config_mutex_);
   config_.enable_adaptive_tuning = enable;
+  atomic_enable_adaptive_tuning_.store(enable);
 }
 
 void Optimized2PCEngine::UpdateConfiguration(const TwoPCConfig& config) {
   std::lock_guard<std::mutex> lock(config_mutex_);
   config_ = config;
+  atomic_batch_size_.store(config.batch_size);
+  atomic_enable_adaptive_tuning_.store(config.enable_adaptive_tuning);
 }
 
 TwoPCConfig Optimized2PCEngine::GetCurrentConfig() const {
