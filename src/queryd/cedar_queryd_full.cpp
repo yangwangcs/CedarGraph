@@ -219,19 +219,24 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
       return s.ok() ? grpc::Status::OK : grpc::Status(grpc::StatusCode::INTERNAL, s.ToString());
     }
 
-    // 检测写操作，使用 2PC 引擎
+    // 检测写操作
     if (IsWriteQuery(request->query()) && two_pc_engine_) {
+      // FIXME: Write set is currently a single placeholder key derived from
+      // query_id. Real read/write set extraction from the execution plan
+      // is required for correct distributed transaction isolation.
+      LOG(WARNING) << "Write query uses placeholder write_set; "
+                   << "2PC isolation is NOT effective. query_id=" << query_id;
+
       std::vector<::cedar::CedarKey> read_set;
       std::vector<::cedar::CedarKey> write_set;
       auto now_ts = std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
-      // 简化：将查询文本作为 write_set 的标识
       write_set.emplace_back(static_cast<uint64_t>(query_id), ::cedar::EntityType::Vertex, 0,
                              ::cedar::Timestamp(now_ts), 0, 0, 0, 0);
-      
-      // 检查是否在显式事务中
+
       std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
       if (!txn_id_str.empty()) {
+        // Explicit transaction mode
         std::lock_guard<std::mutex> lock(active_txns_mutex_);
         auto it = active_transactions_.find(txn_id_str);
         if (it == active_transactions_.end()) {
@@ -254,21 +259,11 @@ class QueryServiceImpl final : public cedar::query::QueryService::Service {
         active_queries_--;
         return grpc::Status::OK;
       }
-      
-      // 自动事务模式（autocommit）
-      auto txn_id = static_cast<uint64_t>(query_id);
-      auto s = two_pc_engine_->Execute2PC(txn_id, read_set, write_set,
-                                           ::cedar::Timestamp(now_ts));
-      response->set_success(s.ok());
-      response->set_query_id(ctx.query_id);
-      auto* stats = response->mutable_stats();
-      stats->set_execution_time_us(0);
-      stats->set_rows_scanned(0);
-      stats->set_rows_returned(0);
-      stats->set_storage_nodes_accessed(0);
-      stats->set_network_roundtrips(0);
-      active_queries_--;
-      return s.ok() ? grpc::Status::OK : grpc::Status(grpc::StatusCode::INTERNAL, s.ToString());
+
+      // Autocommit mode: DISABLE 2PC until real write-set extraction exists.
+      LOG(WARNING) << "Autocommit write query bypassing 2PC: "
+                   << "placeholder write_set provides no isolation. query_id=" << query_id;
+      // Fall through to normal query execution below.
     }
 
     cedar::cypher::ResultSet result;
