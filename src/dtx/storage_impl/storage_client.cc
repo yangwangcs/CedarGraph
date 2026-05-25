@@ -670,9 +670,9 @@ void StorageClientPool::Shutdown() {
 
 std::shared_ptr<StorageClient> StorageClientPool::GetClient(const std::string& address) {
   std::unique_lock<std::shared_mutex> lock(clients_mutex_);
-  
+
   auto& pool = pools_[address];
-  
+
   // Try to find an existing healthy client
   for (auto& client : pool) {
     if (client->IsConnected()) {
@@ -680,12 +680,12 @@ std::shared_ptr<StorageClient> StorageClientPool::GetClient(const std::string& a
       return client;
     }
   }
-  
+
   // Create new client if under limit
   if (pool.size() < config_.max_connections) {
     StorageClient::ClientConfig client_config;
     client_config.server_address = address;
-    
+
     auto client = std::shared_ptr<StorageClient>(new StorageClient());
     Status s = client->Initialize(client_config);
     if (s.ok()) {
@@ -693,9 +693,13 @@ std::shared_ptr<StorageClient> StorageClientPool::GetClient(const std::string& a
       last_used_[address] = std::chrono::steady_clock::now();
       return client;
     }
+    std::cerr << "[StorageClientPool] Failed to initialize client for " << address
+              << ": " << s.ToString() << std::endl;
+  } else {
+    std::cerr << "[StorageClientPool] Connection limit reached for " << address
+              << " (max=" << config_.max_connections << ")" << std::endl;
   }
-  
-  // Return nullptr if can't create client
+
   return nullptr;
 }
 
