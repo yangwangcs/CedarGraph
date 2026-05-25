@@ -72,7 +72,8 @@ class PartitionStrategyManager {
   StrategySelectionConfig config_;
   std::unordered_map<std::string, std::unique_ptr<IPartitionStrategy>> strategies_;
   IPartitionStrategy* active_strategy_ = nullptr;
-  
+  bool auto_mode_ = false;
+
   // 自动选择统计
   struct QueryStats {
     uint64_t total_queries = 0;

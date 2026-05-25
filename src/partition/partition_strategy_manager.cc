@@ -54,9 +54,11 @@ Status PartitionStrategyManager::SetActiveStrategy(StrategyType type) {
       target_name = "MTHStream";
       break;
     case StrategyType::AUTO:
-      // TODO(#partition-001): Implement AUTO strategy that picks the best
-      // partitioning approach based on workload characteristics.
-      return Status::NotSupported("AUTO strategy not yet implemented");
+      auto_mode_ = true;
+      // Start with the default strategy (STATIC_HASH) and let
+      // MaybeAutoSwitchStrategy evolve based on workload.
+      target_name = "StaticHash";
+      break;
     default:
       return Status::InvalidArgument("Unknown strategy type");
   }
@@ -137,13 +139,17 @@ Status PartitionStrategyManager::ProcessEventStream(const std::vector<GraphEvent
 
 void PartitionStrategyManager::UpdateQueryStats(bool is_temporal_query, bool has_locality) {
   std::lock_guard<std::mutex> lock(mutex_);
-  
+
   stats_.total_queries++;
   if (is_temporal_query) {
     stats_.temporal_queries++;
   }
   if (has_locality) {
     stats_.locality_queries++;
+  }
+
+  if (auto_mode_) {
+    MaybeAutoSwitchStrategy();
   }
 }
 
