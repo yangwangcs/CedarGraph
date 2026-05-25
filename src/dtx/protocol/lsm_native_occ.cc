@@ -165,11 +165,21 @@ LndOccCommitResult LocalTransactionCoordinator::Commit(DistributedTxnContext* ct
   
   // 步骤3: 写入 WAL（如果配置了）
   if (wal_writer_) {
-    // Serialize transaction context for WAL
-    std::string wal_entry = ctx->Serialize();
-    // Note: WalWriter interface varies by implementation
-    // For now, we assume WAL is optional for local transactions
-    (void)wal_entry;
+    WalBatch batch;
+    for (const auto& item : ctx->GetWriteSet()) {
+      Descriptor desc;
+      batch.Put(item.key, desc, Timestamp(commit_ts));
+    }
+    Status wal_status = wal_writer_->WriteBatch(batch);
+    if (!wal_status.ok()) {
+      Abort(ctx, "WAL write failed: " + wal_status.ToString());
+      return LndOccCommitResult::Error(wal_status);
+    }
+    wal_status = wal_writer_->Sync();
+    if (!wal_status.ok()) {
+      Abort(ctx, "WAL sync failed: " + wal_status.ToString());
+      return LndOccCommitResult::Error(wal_status);
+    }
   }
   
   // 步骤4: 写入 MemTable（利用不可变性）
