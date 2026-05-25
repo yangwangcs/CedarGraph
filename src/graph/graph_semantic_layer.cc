@@ -224,23 +224,28 @@ std::vector<BatchNeighborResult> GraphSemanticLayer::BatchGetNeighbors(
   
   if (num_threads > 1 && vertex_ids.size() >= num_threads * 2) {
     size_t vertices_per_thread = vertex_ids.size() / num_threads;
-    std::atomic<size_t> completed{0};
+    std::vector<std::promise<void>> promises(num_threads);
+    std::vector<std::future<void>> futures;
+    futures.reserve(num_threads);
+    for (auto& p : promises) {
+      futures.push_back(p.get_future());
+    }
     
     for (size_t t = 0; t < num_threads; ++t) {
       size_t start = t * vertices_per_thread;
       size_t end = (t == num_threads - 1) ? vertex_ids.size() : (t + 1) * vertices_per_thread;
       
-      thread_pool_->Schedule([this, &results, &vertex_ids, edge_type, &predicate, &shared_io, &completed, start, end]() {
+      thread_pool_->Schedule([this, &results, &vertex_ids, edge_type, &predicate, &shared_io, &promises, start, end, t]() {
         for (size_t i = start; i < end; ++i) {
           results[i].neighbors = GetOutNeighborsWithPushdown(
               vertex_ids[i], edge_type, predicate, &shared_io);
         }
-        completed.fetch_add(1, std::memory_order_release);
+        promises[t].set_value();
       });
     }
     
-    while (completed.load(std::memory_order_acquire) < num_threads) {
-      std::this_thread::yield();
+    for (auto& f : futures) {
+      f.wait();
     }
   } else {
     for (size_t i = 0; i < vertex_ids.size(); ++i) {
