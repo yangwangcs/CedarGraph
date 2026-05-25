@@ -1387,7 +1387,8 @@ void LsmEngine::MaybeScheduleFlush() {
   } catch (const std::exception& e) {
     std::cerr << "[MaybeScheduleFlush] std::async failed: " << e.what()
               << " — falling back to sync flush" << std::endl;
-    active_flush_count_.fetch_sub(1);  // sync path will re-increment if needed
+    // Do NOT decrement active_flush_count_ here.
+    // flush_task() always decrements it at the end (line 1375).
     flush_task();
   }
 }
