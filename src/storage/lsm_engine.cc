@@ -2628,6 +2628,10 @@ std::vector<SSTFileMeta> LsmEngine::GetSSTFiles(int level) const {
 // ============================================================================
 
 void LsmEngine::BuildColumnFileIndex() {
+  // Hold shared lock on mutex_ while reading levels_ to prevent
+  // concurrent compaction from reallocating the vector.
+  std::shared_lock<std::shared_mutex> mutex_lock(mutex_);
+  
   std::unique_lock<std::shared_mutex> lock(column_index_mutex_);
   column_file_index_.clear();
   
