@@ -301,7 +301,10 @@ void GrpcConnectionPool::Shutdown() noexcept {
 
 void GrpcConnectionPool::HealthCheckLoop() {
   while (!shutdown_) {
-    std::this_thread::sleep_for(config_.health_check_interval);
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      cv_.wait_for(lock, config_.health_check_interval, [this]() { return shutdown_.load(); });
+    }
     
     if (shutdown_) break;
     
@@ -330,7 +333,10 @@ void GrpcConnectionPool::HealthCheckLoop() {
 
 void GrpcConnectionPool::IdleCleanupLoop() {
   while (!shutdown_) {
-    std::this_thread::sleep_for(std::chrono::seconds(60));
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      cv_.wait_for(lock, std::chrono::seconds(60), [this]() { return shutdown_.load(); });
+    }
     
     if (shutdown_) break;
     
