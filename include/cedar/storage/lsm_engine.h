@@ -709,7 +709,6 @@ class LsmEngine {
   std::atomic<int> active_flush_count_{0};
   std::mutex flush_completion_mutex_;
   std::condition_variable flush_completion_cv_;
-  std::future<void> flush_future_;
   
   // 迁移现有的 SST 文件到新的 Compaction 引擎
   void MigrateExistingSstFiles();

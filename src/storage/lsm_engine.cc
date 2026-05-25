@@ -72,9 +72,10 @@ LsmEngine::~LsmEngine() {
   } catch (...) {
     std::cerr << "[LsmEngine] Exception during Close() in destructor — swallowed" << std::endl;
   }
-  // Wait for any pending async flush to prevent UAF
-  if (flush_future_.valid()) {
-    flush_future_.wait();
+  // Wait for any pending async flushes to prevent UAF
+  if (active_flush_count_.load() > 0) {
+    std::unique_lock<std::mutex> lock(flush_completion_mutex_);
+    flush_completion_cv_.wait(lock, [this] { return active_flush_count_.load() == 0; });
   }
 }
 
@@ -1376,10 +1377,13 @@ void LsmEngine::MaybeScheduleFlush() {
   };
 
   try {
-    flush_future_ = std::async(std::launch::async, flush_task);
+    // Do NOT store in a single flush_future_ — it would overwrite an active task.
+    // active_flush_count_ already tracks concurrency. Just launch and forget.
+    std::async(std::launch::async, flush_task);
   } catch (const std::exception& e) {
     std::cerr << "[MaybeScheduleFlush] std::async failed: " << e.what()
               << " — falling back to sync flush" << std::endl;
+    active_flush_count_.fetch_sub(1);  // sync path will re-increment if needed
     flush_task();
   }
 }
