@@ -503,7 +503,7 @@ int StoragePartitionStateMachine::on_snapshot_load(
     braft::SnapshotReader* reader) {
   if (!storage_) {
     LOG(WARNING) << "Storage not available for snapshot load";
-    return 0;
+    return -1;  // Return error so braft retries or falls back to log replay
   }
   
   std::string snapshot_path = reader->get_path();
