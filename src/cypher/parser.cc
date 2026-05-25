@@ -74,7 +74,8 @@ std::shared_ptr<QueryStatement> CypherParser::ParseStatement() {
         stmt->clauses.push_back(del);
       }
     } else {
-      // Unknown clause, skip
+      // Unknown clause — report error instead of silent truncation
+      error_ = "Unexpected token at position " + std::to_string(pos_);
       break;
     }
     
