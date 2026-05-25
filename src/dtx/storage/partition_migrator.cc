@@ -434,23 +434,40 @@ Status PartitionMigrator::ReplayWalToTarget(
 
   size_t pos = 0;
   uint64_t ops_replayed = 0;
+  const uint32_t kWalMagic = 0x57414C01;  // "WAL\x01"
 
-  while (pos + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint32_t) <=
-         static_cast<size_t>(st.st_size)) {
+  while (pos + sizeof(uint32_t) <= static_cast<size_t>(st.st_size)) {
+    uint32_t magic;
+    std::memcpy(&magic, &wal_data[pos], sizeof(magic));
+    pos += sizeof(magic);
+    if (magic != kWalMagic) {
+      return Status::Corruption("Migration WAL", "magic mismatch");
+    }
+
+    if (pos + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint32_t) + sizeof(uint32_t) >
+        static_cast<size_t>(st.st_size)) {
+      return Status::Corruption("Migration WAL", "truncated header");
+    }
+
     uint64_t ts, txn_id;
-    uint32_t op_len;
+    uint32_t op_len, crc;
+    std::memcpy(&ts, &wal_data[pos], sizeof(ts)); pos += sizeof(ts);
+    std::memcpy(&txn_id, &wal_data[pos], sizeof(txn_id)); pos += sizeof(txn_id);
+    std::memcpy(&op_len, &wal_data[pos], sizeof(op_len)); pos += sizeof(op_len);
+    std::memcpy(&crc, &wal_data[pos], sizeof(crc)); pos += sizeof(crc);
 
-    std::memcpy(&ts, &wal_data[pos], sizeof(ts));
-    pos += sizeof(ts);
-    std::memcpy(&txn_id, &wal_data[pos], sizeof(txn_id));
-    pos += sizeof(txn_id);
-    std::memcpy(&op_len, &wal_data[pos], sizeof(op_len));
-    pos += sizeof(op_len);
-
-    if (pos + op_len > static_cast<size_t>(st.st_size)) break;
+    if (pos + op_len > static_cast<size_t>(st.st_size)) {
+      return Status::Corruption("Migration WAL", "truncated op data");
+    }
 
     std::string op = wal_data.substr(pos, op_len);
     pos += op_len;
+
+    // Verify CRC32
+    uint32_t computed_crc = cedar::crc32c::Value(op.data(), op.size());
+    if (computed_crc != crc) {
+      return Status::Corruption("Migration WAL", "CRC mismatch");
+    }
 
     // Stream WAL entry to target node for replay
     if (migration_stub_) {
