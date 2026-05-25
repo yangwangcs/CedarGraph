@@ -18,6 +18,7 @@
 #include <random>
 #include <shared_mutex>
 
+#include "cedar/common/logging.h"
 #include "cedar/dtx/twcd_engine.h"
 #include "cedar/dtx/partition.h"
 #include "cedar/dtx/transaction_state.h"
@@ -311,24 +312,64 @@ LndOccCommitResult LndOccEngine::SinglePartitionCommit(DistributedTxnContext* ct
 LndOccCommitResult LndOccEngine::SameTemporalRangeCommit(
     const std::vector<PartitionID>& participants,
     DistributedTxnContext* ctx) {
-  
-  // Light-weight coordination: commit on all participants sequentially.
-  // In production this should use parallel RPC to all nodes.
+
+  // Use lightweight coordination but still ensure atomicity via 2PC Prepare+Commit.
   ++same_range_commits_;
-  
-  LndOccCommitResult overall = LndOccCommitResult::Ok(ctx ? ctx->GetCommitTimestamp() : 0);
+
+  if (!ctx) {
+    return LndOccCommitResult::Error(
+        Status::InvalidArgument("SameTemporalRangeCommit", "Null context"));
+  }
+  if (participants.empty()) {
+    return LndOccCommitResult::Error(
+        Status::InvalidArgument("SameTemporalRangeCommit", "No participants"));
+  }
+
+  // Phase 1: Validate (Prepare) all participants
+  std::vector<std::pair<PartitionID, Status>> prepare_results;
+  bool all_prepared = true;
   for (PartitionID pid : participants) {
     auto* coordinator = GetCoordinator(pid);
     if (!coordinator) {
-      return LndOccCommitResult::Error(
-          Status::NotFound("Coordinator not found for partition " + std::to_string(pid)));
+      all_prepared = false;
+      break;
     }
+    auto status = coordinator->Validate(ctx);
+    if (!status.ok()) {
+      all_prepared = false;
+      prepare_results.emplace_back(pid, status);
+      break;
+    }
+    prepare_results.emplace_back(pid, status);
+  }
+
+  if (!all_prepared) {
+    // Abort all prepared participants
+    for (const auto& [pid, status] : prepare_results) {
+      if (status.ok()) {
+        auto* coordinator = GetCoordinator(pid);
+        if (coordinator) {
+          coordinator->Abort(ctx, "Prepare phase failed");
+        }
+      }
+    }
+    return LndOccCommitResult::Error(
+        Status::IOError("SameTemporalRangeCommit", "Prepare phase failed"));
+  }
+
+  // Phase 2: Commit all participants
+  LndOccCommitResult overall = LndOccCommitResult::Ok(ctx->GetCommitTimestamp());
+  for (PartitionID pid : participants) {
+    auto* coordinator = GetCoordinator(pid);
+    if (!coordinator) continue;  // Should not happen after prepare
     auto result = coordinator->Commit(ctx);
     if (!result.success) {
       overall = result;
+      LOG(ERROR) << "SameTemporalRangeCommit: commit failed after prepare success"
+                 << " partition=" << pid;
     }
   }
-  
+
   return overall;
 }
 
