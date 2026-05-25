@@ -251,7 +251,7 @@ class StreamingCompactionMerger {
   }
 
   bool IsTombstone(const CedarKey& key) const {
-    return (key.flags() & 0x08) != 0;
+    return (key.flags() & key_flags::kOpDelete) != 0;
   }
 
   size_t EstimateSize(const CedarKey& key, const Descriptor& value) const {
