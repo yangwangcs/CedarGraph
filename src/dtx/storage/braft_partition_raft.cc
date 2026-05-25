@@ -312,14 +312,20 @@ StatusOr<StorageLogEntry> StorageLogEntry::Deserialize(
       if (!k_opt.has_value()) return Status::InvalidArgument("Invalid CedarKey in batch");
       pos += k_len;
 
-      if (pos + sizeof(uint64_t) > data.size()) {
-        return Status::InvalidArgument("Corrupt log entry: batch desc raw");
+      if (pos + sizeof(uint32_t) > data.size()) {
+        return Status::InvalidArgument("Corrupt log entry: batch desc length");
       }
-      uint64_t desc_raw;
-      std::memcpy(&desc_raw, &data[pos], sizeof(desc_raw));
-      pos += sizeof(desc_raw);
+      uint32_t d_len;
+      std::memcpy(&d_len, &data[pos], sizeof(d_len));
+      pos += sizeof(d_len);
+      if (pos + d_len > data.size()) {
+        return Status::InvalidArgument("Corrupt log entry: batch desc data");
+      }
+      auto d_opt = Descriptor::Decode(Slice(data.data() + pos, d_len));
+      if (!d_opt.has_value()) return Status::InvalidArgument("Invalid Descriptor in batch");
+      pos += d_len;
 
-      entry.batch_data.emplace_back(k_opt.value(), Descriptor(desc_raw));
+      entry.batch_data.emplace_back(k_opt.value(), d_opt.value());
     }
   }
 
