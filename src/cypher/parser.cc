@@ -213,8 +213,10 @@ std::string CypherParser::ParseStringLiteral() {
   
   if (!IsAtEnd() && Peek() == quote) {
     Advance();  // Consume closing quote
+  } else {
+    error_ = "Unclosed string literal";
   }
-  
+
   return value;
 }
 
