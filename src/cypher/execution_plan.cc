@@ -8,6 +8,7 @@
 #include "cedar/core/logging.h"
 #include "cedar/core/status.h"
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <sstream>
 
@@ -242,7 +243,17 @@ bool NodeScan::Init(ExecutionContext* ctx) {
   uint64_t max_entity_id = kDefaultMaxEntityId;
   const char* env_max = std::getenv("CEDAR_SCAN_MAX_ENTITIES");
   if (env_max) {
-    max_entity_id = std::max(min_entity_id, static_cast<uint64_t>(std::strtoull(env_max, nullptr, 10)));
+    char* end_ptr = nullptr;
+    errno = 0;
+    unsigned long long parsed = std::strtoull(env_max, &end_ptr, 10);
+    if (end_ptr != env_max && *end_ptr == '\0' && errno == 0) {
+      constexpr uint64_t kMaxAllowedEntities = 10000000;  // 10M hard cap
+      if (parsed >= min_entity_id && parsed <= kMaxAllowedEntities) {
+        max_entity_id = static_cast<uint64_t>(parsed);
+      } else if (parsed > kMaxAllowedEntities) {
+        max_entity_id = kMaxAllowedEntities;
+      }
+    }
   }
   
   // Check if graph context provides entity enumeration
