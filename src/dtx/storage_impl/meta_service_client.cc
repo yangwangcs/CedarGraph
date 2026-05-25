@@ -264,13 +264,12 @@ Status MetaServiceNodeClient::UpdatePartitionAssignment(
   }
 
   // TODO(#dtx-001): Implement gRPC call to MetaD for UpdatePartitionAssignment.
-  // For now, log the intended update and return OK to allow the migration
-  // state machine to proceed. The actual RPC will be added in a follow-up.
+  // Returning NotSupported so callers do not assume the update succeeded.
   std::cerr << "[MetaServiceNodeClient] UpdatePartitionAssignment stub: "
             << "partition=" << assignment.partition_id()
             << " leader_node=" << assignment.leader_node()
             << " space_name=" << assignment.space_name() << std::endl;
-  return Status::OK();
+  return Status::NotSupported("UpdatePartitionAssignment RPC not yet implemented");
 }
 
 StatusOr<cedar::meta::SpacePartitionMap> MetaServiceNodeClient::GetSpacePartitionMap(

@@ -286,11 +286,92 @@ class QueryServiceImpl::Impl {
   Status StreamQuery(ServerContext* context,
                      const cedar::query::StreamQueryRequest* request,
                      grpc::ServerWriter<cedar::query::StreamQueryResponse>* writer) {
-    (void)context;
-    (void)request;
-    (void)writer;
-    // TODO(#queryd-001): Implement streaming query execution
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "StreamQuery not yet implemented");
+    if (context->IsCancelled()) {
+      return grpc::Status::CANCELLED;
+    }
+
+    std::string query_id = request->query_id().empty() ? GenerateQueryId() : request->query_id();
+
+    if (!AcquireQuerySlot()) {
+      cedar::query::StreamQueryResponse response;
+      response.set_success(false);
+      response.set_error_msg("Too many concurrent queries");
+      writer->Write(response);
+      return grpc::Status::OK;
+    }
+
+    auto cleanup = [this, query_id]() {
+      std::lock_guard<std::mutex> lock(queries_mutex_);
+      active_queries_.erase(query_id);
+    };
+
+    DistributedExecutionContext ctx;
+    ctx.query_id = query_id;
+    ctx.timeout_ms = request->batch_size() > 0 ? options_.max_query_timeout_ms : 30000;
+    ctx.is_cancelled = [context]() { return context->IsCancelled(); };
+
+    auto parameters = ConvertParameters(request->parameters());
+
+    cedar::query::ResultSet proto_batch;
+    uint32_t batch_size = request->batch_size() > 0 ? request->batch_size() : 100;
+    uint32_t batch_count = 0;
+
+    cedar::Status s = executor_->ExecuteStreaming(
+        request->query(), parameters, &ctx,
+        [this, writer, &proto_batch, &batch_size, &batch_count, query_id](
+            const cypher::Record& record) -> bool {
+          if (proto_batch.columns().empty() && !record.values.empty()) {
+            for (const auto& col : record.column_order) {
+              proto_batch.add_columns(col);
+            }
+          }
+          auto* row = proto_batch.add_rows();
+          for (const auto& col : proto_batch.columns()) {
+            auto it = record.values.find(col);
+            if (it != record.values.end()) {
+              *row->add_values() = ConvertToProtoValue(it->second);
+            } else {
+              row->add_values()->mutable_null_val();
+            }
+          }
+          ++batch_count;
+
+          if (batch_count >= batch_size) {
+            cedar::query::StreamQueryResponse response;
+            response.set_success(true);
+            response.set_query_id(query_id);
+            response.set_has_more(true);
+            response.mutable_batch()->Swap(&proto_batch);
+            if (!writer->Write(response)) {
+              return false;  // Client closed stream
+            }
+            proto_batch.Clear();
+            batch_count = 0;
+          }
+          return true;
+        });
+
+    cleanup();
+
+    if (!s.ok()) {
+      cedar::query::StreamQueryResponse response;
+      response.set_success(false);
+      response.set_error_msg(s.ToString());
+      writer->Write(response);
+      return grpc::Status(grpc::StatusCode::INTERNAL, s.ToString());
+    }
+
+    // Flush remaining rows
+    if (proto_batch.rows_size() > 0 || proto_batch.columns_size() > 0) {
+      cedar::query::StreamQueryResponse response;
+      response.set_success(true);
+      response.set_query_id(query_id);
+      response.set_has_more(false);
+      response.mutable_batch()->Swap(&proto_batch);
+      writer->Write(response);
+    }
+
+    return grpc::Status::OK;
   }
 
   Status TemporalQuery(ServerContext* context,
