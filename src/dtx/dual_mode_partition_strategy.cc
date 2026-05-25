@@ -191,6 +191,20 @@ void DualModePartitionStrategy::UpdateQueryStats(bool is_temporal_query,
   stats_.total++;
   if (is_temporal_query) stats_.temporal++;
   if (has_locality) stats_.locality++;
+  
+  // In AUTO mode, dynamically switch between STATIC_HASH and MTH_STREAM
+  // based on accumulated query statistics.
+  if (config_.mode == Mode::AUTO) {
+    if (stats_.total.load() <= config_.temporal_query_threshold) {
+      // Not enough samples yet; default to STATIC_HASH.
+      mode_.store(Mode::STATIC_HASH);
+    } else {
+      double temporal_ratio = static_cast<double>(stats_.temporal.load()) 
+                              / stats_.total.load();
+      mode_.store(temporal_ratio > config_.locality_ratio_threshold 
+                  ? Mode::MTH_STREAM : Mode::STATIC_HASH);
+    }
+  }
 }
 
 std::string DualModePartitionStrategy::GetStats() const {
