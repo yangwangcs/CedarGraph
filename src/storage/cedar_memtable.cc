@@ -26,6 +26,11 @@ uint16_t CedarMemTable::NextSequence() {
 Status CedarMemTable::Put(CedarKey key, const Descriptor& descriptor, Timestamp txn_version) {
   std::unique_lock<std::shared_mutex> lock(mutex_);
 
+  // Early rejection if node_pool is already at cap
+  if (node_pool_.size() >= kMaxNodePoolSize) {
+    return Status::MemoryLimitExceeded("CedarMemTable", "node_pool size limit reached");
+  }
+
   // 分配序列号
   key.SetSequence(NextSequence());
 
