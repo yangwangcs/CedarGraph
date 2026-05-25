@@ -737,6 +737,10 @@ void VersionSet::SetLastSequence(uint64_t seq) {
   last_sequence_.store(seq, std::memory_order_relaxed);
 }
 
+uint64_t VersionSet::FetchAddSequence(uint64_t delta) {
+  return last_sequence_.fetch_add(delta, std::memory_order_relaxed);
+}
+
 uint64_t VersionSet::GetLogNumber() const {
   return log_number_.load(std::memory_order_relaxed);
 }

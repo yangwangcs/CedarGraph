@@ -188,9 +188,8 @@ Status CedarGraphDBImpl::Put(const CedarKey& key,
     return Status::InvalidArgument("CedarGraphDB", "not opened");
   }
   
-  // 分配序列号 (用作 txn_version)
-  uint64_t seq = version_set_.GetLastSequence() + 1;
-  version_set_.SetLastSequence(seq);
+  // 分配序列号 (用作 txn_version) — atomic RMW to avoid duplicate seqs
+  uint64_t seq = version_set_.FetchAddSequence(1) + 1;
   
   // 写入 WAL
   if (options_.enable_wal) {
