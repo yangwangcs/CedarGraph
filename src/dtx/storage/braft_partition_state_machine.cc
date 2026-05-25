@@ -135,8 +135,9 @@ static std::vector<std::string> CopyDirectoryContents(
                                    std::filesystem::copy_options::overwrite_existing);
         copied_files.push_back(relative_path);
       } catch (const std::filesystem::filesystem_error& e) {
-        LOG(WARNING) << "Failed to copy file " << entry.path().string()
-                     << " to " << dst_path << ": " << e.what();
+        LOG(ERROR) << "Failed to copy file " << entry.path().string()
+                   << " to " << dst_path << ": " << e.what();
+        throw;  // Propagate to on_snapshot_save so it can mark snapshot as failed
       }
     }
   }
