@@ -101,7 +101,12 @@ class TransactionStateManager::TransactionWAL {
     while (true) {
       uint32_t len;
       ssize_t n = ::read(replay_fd, &len, sizeof(len));
-      if (n <= 0) break;  // EOF or error
+      if (n == 0) break;  // Clean EOF
+      if (n < 0) {
+        int err = errno;
+        ::close(replay_fd);
+        return Status::IOError("TransactionWAL::Replay read error", strerror(err));
+      }
       if (n != sizeof(len)) {
         ::close(replay_fd);
         return Status::Corruption("TransactionWAL", "Incomplete length record");
@@ -109,13 +114,19 @@ class TransactionStateManager::TransactionWAL {
 
       std::string data(len, '\0');
       n = ::read(replay_fd, &data[0], len);
-      if (n < 0 || static_cast<size_t>(n) != len) {
+      if (n < 0) {
+        int err = errno;
+        ::close(replay_fd);
+        return Status::IOError("TransactionWAL::Replay read error", strerror(err));
+      }
+      if (static_cast<size_t>(n) != len) {
         ::close(replay_fd);
         return Status::Corruption("TransactionWAL", "Incomplete record");
       }
 
       if (!callback(data)) {
-        break;
+        ::close(replay_fd);
+        return Status::Corruption("TransactionWAL", "Record deserialization failed");
       }
     }
     ::close(replay_fd);
