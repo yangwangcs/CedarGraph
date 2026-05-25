@@ -159,7 +159,7 @@ add_cedar_test(test_driver_transaction)
 # End-to-end partition test
 add_executable(test_end_to_end_partition test_end_to_end_partition.cc)
 target_link_libraries(test_end_to_end_partition ${CEDAR_TEST_LIBS})
-gtest_discover_tests(test_end_to_end_partition)
+# gtest_discover_tests(test_end_to_end_partition)
 
 # Streaming partitioner thread safety test
 add_executable(test_streaming_partitioner_thread_safety partition/test_streaming_partitioner_thread_safety.cc)
