@@ -55,11 +55,15 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   gcn_router_ = std::make_shared<cedar::gcn::ScatterGatherRouter>();
   if (!gcn_server_addr.empty()) {
     auto gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls_config_);
-    if (!gcn_creds) gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
-    auto gcn_channel = grpc::CreateChannel(gcn_server_addr, gcn_creds);
-    gcn_router_->RegisterPeer(gcn_server_addr, gcn_channel);
-    gcn_peer_addresses_.push_back(gcn_server_addr);
-    std::cerr << "[GraphD] Registered GCN " << gcn_server_addr << " in router" << std::endl;
+    if (!gcn_creds.ok()) gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+    if (!gcn_creds.ok()) {
+      std::cerr << "[GraphD] GCN TLS error: " << gcn_creds.status().ToString() << std::endl;
+    } else {
+      auto gcn_channel = grpc::CreateChannel(gcn_server_addr, gcn_creds.ValueOrDie());
+      gcn_router_->RegisterPeer(gcn_server_addr, gcn_channel);
+      gcn_peer_addresses_.push_back(gcn_server_addr);
+      std::cerr << "[GraphD] Registered GCN " << gcn_server_addr << " in router" << std::endl;
+    }
   }
   
   // 初始加载分区映射
@@ -1156,8 +1160,12 @@ GraphServiceRouter::GetStorageStub(const std::string& node_addr) {
 
   // Slow path: create connection without holding the lock
   auto storage_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls_config_);
-  if (!storage_creds) storage_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
-  auto channel = grpc::CreateChannel(node_addr, storage_creds);
+  if (!storage_creds.ok()) storage_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!storage_creds.ok()) {
+    std::cerr << "[GraphD] Storage TLS error: " << storage_creds.status().ToString() << std::endl;
+    return nullptr;
+  }
+  auto channel = grpc::CreateChannel(node_addr, storage_creds.ValueOrDie());
   std::shared_ptr<cedar::storage::StorageService::Stub> stub(
       cedar::storage::StorageService::NewStub(channel).release());
 

@@ -25,6 +25,8 @@
 #include <memory>
 #include <string>
 
+#include "cedar/core/status.h"
+
 namespace cedar {
 namespace dtx {
 namespace raft {
@@ -35,7 +37,7 @@ namespace raft {
 
 struct TlsConfig {
   // Enable TLS
-  bool enabled = false;
+  bool enabled = true;
   
   // Certificate files
   std::string server_cert_file;   // Server certificate
@@ -60,11 +62,11 @@ struct TlsConfig {
 class TlsCredentialFactory {
  public:
   // Create server credentials with TLS/mTLS
-  static std::shared_ptr<grpc::ServerCredentials> CreateServerCredentials(
+  static StatusOr<std::shared_ptr<grpc::ServerCredentials>> CreateServerCredentials(
       const TlsConfig& config);
   
   // Create client credentials with TLS/mTLS
-  static std::shared_ptr<grpc::ChannelCredentials> CreateClientCredentials(
+  static StatusOr<std::shared_ptr<grpc::ChannelCredentials>> CreateClientCredentials(
       const TlsConfig& config);
   
   // Load file contents
@@ -76,8 +78,8 @@ class TlsCredentialFactory {
   // Create credentials from environment variables
   // Reads CEDAR_GRPC_TLS_ENABLED, CEDAR_GRPC_CA_CERT, CEDAR_GRPC_SERVER_CERT,
   // CEDAR_GRPC_SERVER_KEY, CEDAR_GRPC_CLIENT_CERT, CEDAR_GRPC_CLIENT_KEY
-  static std::shared_ptr<grpc::ServerCredentials> CreateServerCredentialsFromEnv();
-  static std::shared_ptr<grpc::ChannelCredentials> CreateClientCredentialsFromEnv();
+  static StatusOr<std::shared_ptr<grpc::ServerCredentials>> CreateServerCredentialsFromEnv();
+  static StatusOr<std::shared_ptr<grpc::ChannelCredentials>> CreateClientCredentialsFromEnv();
 };
 
 }  // namespace raft

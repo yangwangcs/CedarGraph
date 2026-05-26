@@ -49,8 +49,11 @@ Status StorageClient::Initialize(const ClientConfig& config) {
   
   // Initialize gRPC channel and stub
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
-  if (!creds) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
-  channel_ = grpc::CreateChannel(config_.server_address, creds);
+  if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok()) {
+    return Status::IOError("Failed to create client TLS credentials: " + creds.status().ToString());
+  }
+  channel_ = grpc::CreateChannel(config_.server_address, creds.ValueOrDie());
   stub_ = cedar::storage::StorageService::NewStub(channel_);
   
   // Wait for channel to be ready

@@ -34,6 +34,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/src)
 include_directories(${CMAKE_SOURCE_DIR})
 include_directories(/opt/homebrew/include)  # gRPC headers on macOS
+include_directories(/opt/homebrew/opt/nlohmann-json/include)  # nlohmann/json
 
 # Proto output directory (must be defined early)
 set(PROTO_OUT_DIR ${CMAKE_BINARY_DIR}/generated_proto)
@@ -111,6 +112,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LZ4 REQUIRED liblz4)
 find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(yaml-cpp REQUIRED)
 find_package(gRPC CONFIG QUIET)
 if(NOT gRPC_FOUND)
     find_package(PkgConfig REQUIRED)
@@ -251,6 +253,7 @@ set(CEDAR_DTX_SOURCES
     src/dtx/storage/metrics_storage_impl.cc
     src/dtx/storage/partition_migrator.cc
     src/dtx/storage/braft_partition_raft.cc
+    src/dtx/storage/storaged_raft_state_machine.cc
     src/dtx/storage/partition_raft_manager.cc
     src/dtx/chaos/chaos_testing.cc
     src/dtx/storage_impl/partition_storage.cc
@@ -361,7 +364,7 @@ add_library(cedar STATIC
     ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc
 )
 
-target_link_libraries(cedar ${LZ4_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf gRPC::grpc++)
+target_link_libraries(cedar ${LZ4_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf gRPC::grpc++ yaml-cpp::yaml-cpp)
 target_include_directories(cedar PUBLIC ${LZ4_INCLUDE_DIRS})
 target_link_directories(cedar PUBLIC ${LZ4_LIBRARY_DIRS})
 target_compile_definitions(cedar PRIVATE CEDAR_NO_GLOG)

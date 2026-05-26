@@ -29,7 +29,7 @@
 namespace cedar {
 namespace dtx {
 
-std::shared_ptr<grpc::ChannelCredentials> CreateClientCredentialsFromEnv() {
+StatusOr<std::shared_ptr<grpc::ChannelCredentials>> CreateClientCredentialsFromEnv() {
   return cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
 }
 
@@ -45,10 +45,22 @@ DTXRpcClient::DTXRpcClient(const DTXRpcConfig& config)
                << "implementation in the current codebase. RPCs will fail "
                << "with UNIMPLEMENTED unless a custom server is provided.";
   if (config.tls_config.enabled) {
-    credentials_ = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(
+    auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(
         config.tls_config);
+    if (!creds.ok()) {
+      std::cerr << "DTXRpcClient TLS error: " << creds.status().ToString() << std::endl;
+      credentials_ = grpc::InsecureChannelCredentials();
+    } else {
+      credentials_ = creds.ValueOrDie();
+    }
   } else {
-    credentials_ = cedar::dtx::CreateClientCredentialsFromEnv();
+    auto creds = cedar::dtx::CreateClientCredentialsFromEnv();
+    if (!creds.ok()) {
+      std::cerr << "DTXRpcClient TLS error: " << creds.status().ToString() << std::endl;
+      credentials_ = grpc::InsecureChannelCredentials();
+    } else {
+      credentials_ = creds.ValueOrDie();
+    }
   }
 }
 

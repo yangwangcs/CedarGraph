@@ -24,6 +24,7 @@
 #include "cedar/dtx/storage/metrics_collector.h"
 #include "cedar/dtx/monitoring.h"
 #include "cedar/dtx/raft/grpc_tls.h"
+#include "cedar/dtx/storage/storaged_raft_state_machine.h"
 #include "cedar/common/json_logger.h"
 #include "cedar/common/grpc_request_id.h"
 #include "meta_service.grpc.pb.h"
@@ -78,6 +79,10 @@ struct Config {
   std::string meta_server = "127.0.0.1:9559";
   int heartbeat_interval_sec = 10;
   cedar::dtx::raft::TlsConfig tls;
+
+  Config() {
+    tls.enabled = true;  // DEFAULT: TLS enabled for production
+  }
 };
 
 static void LoadConfigFromFile(Config* config, const std::string& path) {
@@ -284,13 +289,14 @@ class MetaClient {
              const std::string& data_dir,
              const cedar::dtx::raft::TlsConfig& tls)
       : node_id_(node_id), port_(port), data_dir_(data_dir) {
-    auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls);
-    if (!client_creds) {
+    auto client_creds_result = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls);
+    if (!client_creds_result.ok()) {
       throw std::runtime_error(
-          "[StorageD] FATAL: Failed to create client TLS credentials for MetaD connection. "
-          "Set tls.enabled=false explicitly for dev/test only.");
+          "[StorageD] FATAL: TLS credentials required. Provide valid certs or "
+          "explicitly set tls.enabled=false for development only. Error: " +
+          client_creds_result.status().ToString());
     }
-    auto channel = grpc::CreateChannel(meta_addr, client_creds);
+    auto channel = grpc::CreateChannel(meta_addr, client_creds_result.ValueOrDie());
     stub_ = cedar::meta::MetaService::NewStub(channel);
   }
 
@@ -396,35 +402,13 @@ int main(int argc, char* argv[]) {
   }
   std::cout << "[StorageD] Storage engine opened" << std::endl;
 
-  // DESIGN NOTE: StorageD Raft replication with braft
-  //
-  // Each partition should have its own braft::Node group for strong consistency.
-  // The integration path is:
-  //
-  // 1. Create a StorageRaftStateMachine : public braft::StateMachine that
-  //    applies committed log entries to PartitionStorage::Put/Delete.
-  //
-  // 2. For each partition managed by this node, create a braft::Node with:
-  //    - group = "partition_" + partition_id
-  //    - peers = replica nodes for this partition (from MetaD assignment)
-  //    - log_uri = "local://" + data_dir + "/raft/partition_" + pid + "/log"
-  //    - snapshot_uri = "local://" + data_dir + "/raft/partition_" + pid + "/snapshot"
-  //
-  // 3. Wire StorageServiceImpl::Put/Delete/BatchPut to propose through the
-  //    partition's braft::Node::apply() instead of direct local writes.
-  //    Only the leader can accept writes; non-leaders redirect to leader.
-  //
-  // 4. On on_apply(), deserialize the StorageLogEntry and call:
-  //    partition_storage->Put(key, descriptor, txn_version)
-  //
-  // 5. For linearizable reads, use braft::Node::read_index() before serving
-  //    Get/Scan requests on followers.
-  //
-  // 6. The existing custom raft (src/dtx/storage/raft_replication.cc) should
-  //    be removed once braft integration is complete.
-  //
-  // TODO: Implement braft-based partition replication. Until then, this
-  // StorageD operates as a single-node storage engine.
+  // Initialize Raft state machine for partition replication
+  // TODO: Create actual braft::Node groups per partition once partition
+  // management is fully wired. For now, instantiate the state machine
+  // so the replication layer is not completely absent.
+  auto raft_sm = std::make_unique<cedar::dtx::storage::StorageRaftStateMachine>(storage);
+  LOG(INFO) << "[StorageD] Raft state machine initialized (stub mode)";
+  (void)raft_sm;  // keep alive for process lifetime
 
   // 3. 注册到 MetaD
   MetaClient meta_client(config.meta_server, config.node_id, config.port, config.data_dir, config.tls);
@@ -442,14 +426,13 @@ int main(int argc, char* argv[]) {
   // 6. 启动 gRPC 服务器
   std::string server_address = config.bind_address + ":" + std::to_string(config.port);
   grpc::ServerBuilder builder;
-  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(config.tls);
-  if (!creds) {
-    std::cerr << "[StorageD] FATAL: Failed to create server credentials. "
-              << "TLS is mandatory in production mode. "
-              << "Set tls.enabled=false explicitly for dev/test only." << std::endl;
+  auto creds_result = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(config.tls);
+  if (!creds_result.ok()) {
+    std::cerr << "[StorageD] FATAL: Failed to create server credentials: "
+              << creds_result.status().ToString() << std::endl;
     return 1;
   }
-  builder.AddListeningPort(server_address, creds);
+  builder.AddListeningPort(server_address, creds_result.ValueOrDie());
   builder.RegisterService(&service_impl);
   
   g_grpc_server = builder.BuildAndStart();

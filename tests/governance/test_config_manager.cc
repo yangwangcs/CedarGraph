@@ -643,6 +643,43 @@ TEST(ParseKeyTest, DeeplyNestedKey) {
 // Main
 // =============================================================================
 
+
+// =============================================================================
+// yaml-cpp Parser Tests
+// =============================================================================
+
+TEST(ConfigManager, ParsesNestedYaml) {
+  std::string yaml = R"(
+storaged:
+  node_id: 1
+  port: 9779
+  tls:
+    enabled: true
+    server_cert: /etc/certs/server.crt
+)";
+  std::ofstream f("/tmp/test_config.yaml");
+  f << yaml;
+  f.close();
+
+  cedar::governance::ConfigManager cm;
+  ASSERT_TRUE(cm.LoadFromFile("/tmp/test_config.yaml").ok());
+  EXPECT_EQ(cm.GetInt("storaged.node_id", 0), 1);
+  EXPECT_EQ(cm.GetInt("storaged.port", 0), 9779);
+  EXPECT_EQ(cm.GetBool("storaged.tls.enabled", false), true);
+  EXPECT_EQ(cm.GetString("storaged.tls.server_cert", ""), "/etc/certs/server.crt");
+}
+
+TEST(ConfigManager, ParsesQuotedStrings) {
+  std::string yaml = "value: \"hello world\"\n";
+  std::ofstream f("/tmp/test_config2.yaml");
+  f << yaml;
+  f.close();
+
+  cedar::governance::ConfigManager cm;
+  ASSERT_TRUE(cm.LoadFromFile("/tmp/test_config2.yaml").ok());
+  EXPECT_EQ(cm.GetString("value", ""), "hello world");
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

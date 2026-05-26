@@ -980,7 +980,11 @@ int main(int argc, char* argv[]) {
   
   grpc::ServerBuilder builder;
   auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv();
-  builder.AddListeningPort(config.bind_address, server_creds);
+  if (!server_creds.ok()) {
+    std::cerr << "Failed to create server TLS credentials: " << server_creds.status().ToString() << std::endl;
+    return 1;
+  }
+  builder.AddListeningPort(config.bind_address, server_creds.ValueOrDie());
   builder.RegisterService(&grpc_service);
   
   // Set thread pool size

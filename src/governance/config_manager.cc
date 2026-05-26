@@ -21,6 +21,7 @@
 #include <sstream>
 #include <sys/stat.h>
 #include <thread>
+#include <yaml-cpp/yaml.h>
 
 // For environment variable access
 #ifdef __APPLE__
@@ -34,215 +35,124 @@ namespace cedar {
 namespace governance {
 
 // =============================================================================
-// Simple YAML-like Parser (Minimal Implementation)
-// Supports basic key-value pairs and nested structures
+// Simple Config Tree Node
 // =============================================================================
 
-class SimpleYamlParser {
- public:
-  struct Node {
-    std::string value;
-    std::map<std::string, std::shared_ptr<Node>> children;
-    bool is_scalar = true;
+struct ConfigNode {
+  std::string value;
+  std::map<std::string, std::shared_ptr<ConfigNode>> children;
+  bool is_scalar = true;
 
-    bool HasChild(const std::string& key) const {
-      return children.find(key) != children.end();
-    }
-
-    std::shared_ptr<Node> GetOrCreateChild(const std::string& key) {
-      if (!HasChild(key)) {
-        children[key] = std::make_shared<Node>();
-      }
-      return children[key];
-    }
-  };
-
-  static Status Parse(const std::string& content, std::shared_ptr<Node> root) {
-    std::istringstream stream(content);
-    std::string line;
-    std::vector<std::shared_ptr<Node>> stack;
-    std::vector<int> indent_stack;
-    stack.push_back(root);
-    indent_stack.push_back(-1);
-
-    int line_num = 0;
-    while (std::getline(stream, line)) {
-      line_num++;
-
-      // Remove comments
-      size_t comment_pos = line.find('#');
-      if (comment_pos != std::string::npos) {
-        line = line.substr(0, comment_pos);
-      }
-
-      // Skip empty lines
-      if (std::all_of(line.begin(), line.end(), ::isspace)) {
-        continue;
-      }
-
-      // Calculate indent
-      int indent = 0;
-      while (indent < static_cast<int>(line.size()) && line[indent] == ' ') {
-        indent++;
-      }
-
-      // Parse key-value or key
-      std::string trimmed = line.substr(indent);
-      size_t colon_pos = trimmed.find(':');
-
-      if (colon_pos == std::string::npos) {
-        // Could be a list item (starts with -)
-        if (!trimmed.empty() && trimmed[0] == '-') {
-          // Handle list items - treat as indexed values under current key
-          std::string value = trimmed.substr(1);
-          // Trim leading space from value
-          size_t val_start = value.find_first_not_of(' ');
-          if (val_start != std::string::npos) {
-            value = value.substr(val_start);
-          }
-          // Remove quotes if present
-          if (value.size() >= 2 &&
-              ((value.front() == '"' && value.back() == '"') ||
-               (value.front() == '\'' && value.back() == '\''))) {
-            value = value.substr(1, value.size() - 2);
-          }
-          // Add to current node as indexed child
-          int index = static_cast<int>(stack.back()->children.size());
-          auto child = std::make_shared<Node>();
-          child->value = value;
-          child->is_scalar = true;
-          stack.back()->children[std::to_string(index)] = child;
-          continue;
-        }
-        return Status::InvalidArgument(
-            "Invalid YAML line " + std::to_string(line_num) + ": " + trimmed);
-      }
-
-      std::string key = trimmed.substr(0, colon_pos);
-      std::string value;
-      if (colon_pos + 1 < trimmed.size()) {
-        value = trimmed.substr(colon_pos + 1);
-        // Trim leading space from value
-        size_t val_start = value.find_first_not_of(' ');
-        if (val_start != std::string::npos) {
-          value = value.substr(val_start);
-        }
-      }
-
-      // Remove quotes if present
-      if (value.size() >= 2 &&
-          ((value.front() == '"' && value.back() == '"') ||
-           (value.front() == '\'' && value.back() == '\''))) {
-        value = value.substr(1, value.size() - 2);
-      }
-
-      // Pop stack to appropriate level
-      while (!stack.empty() && indent <= indent_stack.back()) {
-        stack.pop_back();
-        indent_stack.pop_back();
-      }
-
-      if (stack.empty()) {
-        return Status::InvalidArgument(
-            "Indentation error at line " + std::to_string(line_num));
-      }
-
-      // Add node
-      auto child = std::make_shared<Node>();
-      child->value = value;
-      child->is_scalar = !value.empty();
-      stack.back()->children[key] = child;
-
-      // If value is empty, this is a parent node - push to stack
-      if (value.empty()) {
-        stack.push_back(child);
-        indent_stack.push_back(indent);
-      }
-    }
-
-    return Status::OK();
+  bool HasChild(const std::string& key) const {
+    return children.find(key) != children.end();
   }
 
-  static void DumpNode(const std::shared_ptr<Node>& node, std::ostream& out,
-                       int indent = 0) {
-    std::string prefix(indent, ' ');
-    for (const auto& [key, child] : node->children) {
-      if (child->is_scalar && child->children.empty()) {
-        // Check if value looks like a number
-        bool is_number = !child->value.empty() &&
-                         std::all_of(child->value.begin(), child->value.end(),
-                                     [](char c) {
-                                       return std::isdigit(static_cast<unsigned char>(c)) ||
-                                              c == '.' || c == '-';
-                                     });
-        if (is_number || child->value == "true" || child->value == "false") {
-          out << prefix << key << ": " << child->value << "\n";
-        } else {
-          out << prefix << key << ": \"" << child->value << "\"\n";
-        }
-      } else {
-        out << prefix << key << ":\n";
-        DumpNode(child, out, indent + 2);
-      }
+  std::shared_ptr<ConfigNode> GetOrCreateChild(const std::string& key) {
+    if (!HasChild(key)) {
+      children[key] = std::make_shared<ConfigNode>();
     }
-  }
-
-  static void FlattenNode(const std::shared_ptr<Node>& node,
-                          const std::string& prefix,
-                          std::map<std::string, std::string>& result) {
-    for (const auto& [key, child] : node->children) {
-      std::string full_key = prefix.empty() ? key : prefix + "." + key;
-      if (child->is_scalar && !child->value.empty()) {
-        result[full_key] = child->value;
-      }
-      // Always recurse to get nested values
-      FlattenNode(child, full_key, result);
-    }
-  }
-
-  static std::shared_ptr<Node> FindNode(const std::shared_ptr<Node>& root,
-                                        const std::string& key) {
-    auto parts = ParseKey(key);
-    auto current = root;
-    for (const auto& part : parts) {
-      if (!current->HasChild(part)) {
-        return nullptr;
-      }
-      current = current->children[part];
-    }
-    return current;
-  }
-
-  static void SetNodeValue(const std::shared_ptr<Node>& root,
-                           const std::string& key, const std::string& value) {
-    auto parts = ParseKey(key);
-    auto current = root;
-    for (size_t i = 0; i < parts.size(); ++i) {
-      if (i == parts.size() - 1) {
-        // Leaf node
-        auto child = current->GetOrCreateChild(parts[i]);
-        child->value = value;
-        child->is_scalar = true;
-      } else {
-        // Intermediate node
-        current = current->GetOrCreateChild(parts[i]);
-        current->is_scalar = false;
-      }
-    }
-  }
-
-  static std::vector<std::string> ParseKey(const std::string& key) {
-    std::vector<std::string> parts;
-    std::istringstream stream(key);
-    std::string part;
-    while (std::getline(stream, part, '.')) {
-      if (!part.empty()) {
-        parts.push_back(part);
-      }
-    }
-    return parts;
+    return children[key];
   }
 };
+
+static void DumpNode(const std::shared_ptr<ConfigNode>& node, std::ostream& out,
+                     int indent = 0) {
+  std::string prefix(indent, ' ');
+  for (const auto& [key, child] : node->children) {
+    if (child->is_scalar && child->children.empty()) {
+      bool is_number = !child->value.empty() &&
+                       std::all_of(child->value.begin(), child->value.end(),
+                                   [](char c) {
+                                     return std::isdigit(static_cast<unsigned char>(c)) ||
+                                            c == '.' || c == '-';
+                                   });
+      if (is_number || child->value == "true" || child->value == "false") {
+        out << prefix << key << ": " << child->value << "\n";
+      } else {
+        out << prefix << key << ": \"" << child->value << "\"\n";
+      }
+    } else {
+      out << prefix << key << ":\n";
+      DumpNode(child, out, indent + 2);
+    }
+  }
+}
+
+static void FlattenNode(const std::shared_ptr<ConfigNode>& node,
+                        const std::string& prefix,
+                        std::map<std::string, std::string>& result) {
+  for (const auto& [key, child] : node->children) {
+    std::string full_key = prefix.empty() ? key : prefix + "." + key;
+    if (child->is_scalar && !child->value.empty()) {
+      result[full_key] = child->value;
+    }
+    FlattenNode(child, full_key, result);
+  }
+}
+
+static std::vector<std::string> ParseKeyInternal(const std::string& key) {
+  std::vector<std::string> parts;
+  std::istringstream stream(key);
+  std::string part;
+  while (std::getline(stream, part, '.')) {
+    if (!part.empty()) {
+      parts.push_back(part);
+    }
+  }
+  return parts;
+}
+
+static std::shared_ptr<ConfigNode> FindNode(const std::shared_ptr<ConfigNode>& root,
+                                            const std::string& key) {
+  auto parts = ParseKeyInternal(key);
+  auto current = root;
+  for (const auto& part : parts) {
+    if (!current->HasChild(part)) {
+      return nullptr;
+    }
+    current = current->children[part];
+  }
+  return current;
+}
+
+static void SetNodeValue(const std::shared_ptr<ConfigNode>& root,
+                         const std::string& key, const std::string& value) {
+  auto parts = ParseKeyInternal(key);
+  auto current = root;
+  for (size_t i = 0; i < parts.size(); ++i) {
+    if (i == parts.size() - 1) {
+      auto child = current->GetOrCreateChild(parts[i]);
+      child->value = value;
+      child->is_scalar = true;
+    } else {
+      current = current->GetOrCreateChild(parts[i]);
+      current->is_scalar = false;
+    }
+  }
+}
+
+static void BuildConfigNode(const YAML::Node& yaml_node,
+                            std::shared_ptr<ConfigNode> tree_node) {
+  if (yaml_node.IsMap()) {
+    tree_node->is_scalar = false;
+    for (const auto& kv : yaml_node) {
+      std::string key = kv.first.as<std::string>();
+      auto child = std::make_shared<ConfigNode>();
+      BuildConfigNode(kv.second, child);
+      tree_node->children[key] = child;
+    }
+  } else if (yaml_node.IsScalar()) {
+    tree_node->value = yaml_node.as<std::string>();
+    tree_node->is_scalar = true;
+  } else if (yaml_node.IsSequence()) {
+    tree_node->is_scalar = false;
+    for (size_t i = 0; i < yaml_node.size(); ++i) {
+      auto child = std::make_shared<ConfigNode>();
+      BuildConfigNode(yaml_node[i], child);
+      tree_node->children[std::to_string(i)] = child;
+    }
+  }
+}
 
 // =============================================================================
 // ConfigManager Implementation
@@ -250,10 +160,10 @@ class SimpleYamlParser {
 
 class ConfigManagerImpl {
  public:
-  ConfigManagerImpl() : root_(std::make_shared<SimpleYamlParser::Node>()) {}
+  ConfigManagerImpl() : root_(std::make_shared<ConfigNode>()) {}
 
   mutable std::mutex mutex_;
-  std::shared_ptr<SimpleYamlParser::Node> root_;
+  std::shared_ptr<ConfigNode> root_;
   std::string source_file_;
   int64_t last_modified_time_ = 0;
 
@@ -273,7 +183,7 @@ class ConfigManagerImpl {
 
   void UpdateFlattened() {
     flattened_.clear();
-    SimpleYamlParser::FlattenNode(root_, "", flattened_);
+    FlattenNode(root_, "", flattened_);
   }
 
   void NotifyWatchers(const std::string& key, const std::string& old_value,
@@ -362,7 +272,7 @@ std::string ConfigKeyToEnvVar(const std::string& key) {
 }
 
 std::vector<std::string> ParseKey(const std::string& key) {
-  return SimpleYamlParser::ParseKey(key);
+  return ParseKeyInternal(key);
 }
 
 // =============================================================================
@@ -387,25 +297,21 @@ Status ConfigManager::LoadFromFile(const std::string& filepath) {
     return Status::IOError("Cannot open config file: " + filepath);
   }
 
-  std::stringstream buffer;
-  buffer << file.rdbuf();
-  file.close();
-
-  // Parse YAML content
-  auto new_root = std::make_shared<SimpleYamlParser::Node>();
-  Status s = SimpleYamlParser::Parse(buffer.str(), new_root);
-  if (!s.ok()) {
-    return s;
+  try {
+    YAML::Node yaml_root = YAML::LoadFile(filepath);
+    auto new_root = std::make_shared<ConfigNode>();
+    BuildConfigNode(yaml_root, new_root);
+    impl_->root_ = new_root;
+    impl_->source_file_ = filepath;
+    impl_->last_modified_time_ =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    impl_->flattened_.clear();
+    LoadYamlNode("", yaml_root);
+  } catch (const YAML::Exception& e) {
+    return Status::InvalidArgument(std::string("YAML parse error: ") + e.what());
   }
-
-  impl_->root_ = new_root;
-  impl_->source_file_ = filepath;
-  impl_->last_modified_time_ =
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count();
-
-  impl_->UpdateFlattened();
 
   // Apply environment overrides
   lock.unlock();
@@ -415,18 +321,37 @@ Status ConfigManager::LoadFromFile(const std::string& filepath) {
 Status ConfigManager::LoadFromString(const std::string& content) {
   std::unique_lock<std::mutex> lock(impl_->mutex_);
 
-  auto new_root = std::make_shared<SimpleYamlParser::Node>();
-  Status s = SimpleYamlParser::Parse(content, new_root);
-  if (!s.ok()) {
-    return s;
+  try {
+    YAML::Node yaml_root = YAML::Load(content);
+    auto new_root = std::make_shared<ConfigNode>();
+    BuildConfigNode(yaml_root, new_root);
+    impl_->root_ = new_root;
+    impl_->flattened_.clear();
+    LoadYamlNode("", yaml_root);
+  } catch (const YAML::Exception& e) {
+    return Status::InvalidArgument(std::string("YAML parse error: ") + e.what());
   }
-
-  impl_->root_ = new_root;
-  impl_->UpdateFlattened();
 
   // Apply environment overrides
   lock.unlock();
   return ApplyEnvironmentOverrides();
+}
+
+void ConfigManager::LoadYamlNode(const std::string& prefix,
+                                 const YAML::Node& node) {
+  if (node.IsMap()) {
+    for (const auto& kv : node) {
+      std::string key = kv.first.as<std::string>();
+      std::string full_key = prefix.empty() ? key : prefix + "." + key;
+      LoadYamlNode(full_key, kv.second);
+    }
+  } else if (node.IsScalar()) {
+    impl_->flattened_[prefix] = node.as<std::string>();
+  } else if (node.IsSequence()) {
+    for (size_t i = 0; i < node.size(); ++i) {
+      LoadYamlNode(prefix + "[" + std::to_string(i) + "]", node[i]);
+    }
+  }
 }
 
 Status ConfigManager::ApplyEnvironmentOverrides() {
@@ -451,11 +376,11 @@ Status ConfigManager::ApplyEnvironmentOverrides() {
       if (!key.empty()) {
         // Get old value before updating
         std::string old_value;
-        auto node = SimpleYamlParser::FindNode(impl_->root_, key);
+        auto node = FindNode(impl_->root_, key);
         if (node && node->is_scalar) {
           old_value = node->value;
         }
-        SimpleYamlParser::SetNodeValue(impl_->root_, key, var_value);
+        SetNodeValue(impl_->root_, key, var_value);
         impl_->UpdateFlattened();
         notifications.emplace_back(key, old_value, var_value);
       }
@@ -479,7 +404,7 @@ std::string ConfigManager::GetString(const std::string& key,
     return it->second;
   }
 
-  auto node = SimpleYamlParser::FindNode(impl_->root_, key);
+  auto node = FindNode(impl_->root_, key);
   if (node && node->is_scalar) {
     return node->value;
   }
@@ -566,7 +491,7 @@ std::vector<std::string> ConfigManager::GetStringArray(
     const std::vector<std::string>& default_val) const {
   std::lock_guard<std::mutex> lock(impl_->mutex_);
 
-  auto node = SimpleYamlParser::FindNode(impl_->root_, key);
+  auto node = FindNode(impl_->root_, key);
   if (!node) {
     return default_val;
   }
@@ -588,7 +513,7 @@ bool ConfigManager::HasKey(const std::string& key) const {
     return true;
   }
 
-  auto node = SimpleYamlParser::FindNode(impl_->root_, key);
+  auto node = FindNode(impl_->root_, key);
   return node != nullptr;
 }
 
@@ -599,12 +524,12 @@ void ConfigManager::SetString(const std::string& key,
   {
     std::lock_guard<std::mutex> lock(impl_->mutex_);
 
-    auto node = SimpleYamlParser::FindNode(impl_->root_, key);
+    auto node = FindNode(impl_->root_, key);
     if (node && node->is_scalar) {
       old_value = node->value;
     }
 
-    SimpleYamlParser::SetNodeValue(impl_->root_, key, value);
+    SetNodeValue(impl_->root_, key, value);
     impl_->UpdateFlattened();
 
     change_type = old_value.empty()
@@ -635,7 +560,7 @@ void ConfigManager::SetStringArray(const std::string& key,
   // Clear existing
   {
     std::lock_guard<std::mutex> lock(impl_->mutex_);
-    auto node = SimpleYamlParser::FindNode(impl_->root_, key);
+    auto node = FindNode(impl_->root_, key);
     if (node) {
       node->children.clear();
     }
@@ -661,7 +586,7 @@ bool ConfigManager::RemoveKey(const std::string& key) {
       old_value = it->second;
       impl_->flattened_.erase(it);
 
-      auto node = SimpleYamlParser::FindNode(impl_->root_, key);
+      auto node = FindNode(impl_->root_, key);
       if (node) {
         node->is_scalar = false;
         node->value.clear();
@@ -712,7 +637,7 @@ Status ConfigManager::Merge(const ConfigManager& other) {
         old_value = it->second;
       }
 
-      SimpleYamlParser::SetNodeValue(impl_->root_, key, value);
+      SetNodeValue(impl_->root_, key, value);
       notifications.emplace_back(key, old_value, value);
     }
 
@@ -743,7 +668,7 @@ Status ConfigManager::MergeWithPrefix(const ConfigManager& other,
         old_value = it->second;
       }
 
-      SimpleYamlParser::SetNodeValue(impl_->root_, prefixed_key, value);
+      SetNodeValue(impl_->root_, prefixed_key, value);
       notifications.emplace_back(prefixed_key, old_value, value);
     }
 
@@ -763,7 +688,7 @@ std::string ConfigManager::Dump() const {
   std::lock_guard<std::mutex> lock(impl_->mutex_);
 
   std::ostringstream out;
-  SimpleYamlParser::DumpNode(impl_->root_, out, 0);
+  DumpNode(impl_->root_, out, 0);
   return out.str();
 }
 
@@ -779,14 +704,14 @@ std::string ConfigManager::DumpWithComments() const {
 std::string ConfigManager::DumpSection(const std::string& section_key) const {
   std::lock_guard<std::mutex> lock(impl_->mutex_);
 
-  auto node = SimpleYamlParser::FindNode(impl_->root_, section_key);
+  auto node = FindNode(impl_->root_, section_key);
   if (!node) {
     return "";
   }
 
   std::ostringstream out;
   out << section_key << ":\n";
-  SimpleYamlParser::DumpNode(node, out, 2);
+  DumpNode(node, out, 2);
   return out.str();
 }
 
@@ -909,7 +834,7 @@ std::vector<std::string> ConfigManager::GetKeysWithPrefix(
 void ConfigManager::Clear() {
   std::lock_guard<std::mutex> lock(impl_->mutex_);
 
-  impl_->root_ = std::make_shared<SimpleYamlParser::Node>();
+  impl_->root_ = std::make_shared<ConfigNode>();
   impl_->flattened_.clear();
 }
 

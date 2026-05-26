@@ -14,6 +14,8 @@
 
 #include "cedar/dtx/security.h"
 
+#include <nlohmann/json.hpp>
+
 #include <iostream>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -569,125 +571,22 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
     return Status::InvalidArgument("Invalid JWT payload");
   }
 
-  // Helper: extract a JSON string field value robustly
-  auto extract_string_field = [](const std::string& json,
-                                  const std::string& field_name) -> std::string {
-    std::string key = "\"" + field_name + "\"";
-    size_t pos = json.find(key);
-    if (pos == std::string::npos) return "";
-    pos += key.size();
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
-                                  json[pos] == '\n' || json[pos] == '\r')) {
-      pos++;
+  try {
+    nlohmann::json j = nlohmann::json::parse(payload);
+    AuthToken token;
+    token.token_id = j.value("jti", "");
+    token.user_id = j.value("sub", "");
+    if (token.user_id.empty()) {
+      token.user_id = j.value("user_id", "");
     }
-    if (pos >= json.size() || json[pos] != ':') return "";
-    pos++;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
-                                  json[pos] == '\n' || json[pos] == '\r')) {
-      pos++;
+    token.user_name = j.value("name", "");
+    if (j.contains("exp") && j["exp"].is_number_integer()) {
+      token.expires_at = std::chrono::system_clock::from_time_t(j["exp"].get<time_t>());
     }
-    if (pos >= json.size() || json[pos] != '"') return "";
-    pos++;
-    std::string value;
-    while (pos < json.size()) {
-      char c = json[pos];
-      if (c == '"') {
-        break;
-      }
-      if (c == '\\' && pos + 1 < json.size()) {
-        char next = json[pos + 1];
-        switch (next) {
-          case '"': value += '"'; break;
-          case '\\': value += '\\'; break;
-          case '/': value += '/'; break;
-          case 'b': value += '\b'; break;
-          case 'f': value += '\f'; break;
-          case 'n': value += '\n'; break;
-          case 'r': value += '\r'; break;
-          case 't': value += '\t'; break;
-          case 'u':
-            if (pos + 5 < json.size()) {
-              std::string hex = json.substr(pos + 2, 4);
-              try {
-                int codepoint = std::stoi(hex, nullptr, 16);
-                if (codepoint < 0x80) {
-                  value += static_cast<char>(codepoint);
-                } else {
-                  value += '?';
-                }
-              } catch (...) {
-                value += '?';
-              }
-              pos += 4;
-            }
-            break;
-          default: value += next; break;
-        }
-        pos += 2;
-      } else {
-        value += c;
-        pos++;
-      }
-    }
-    return value;
-  };
-
-  // Helper: extract a JSON numeric field value robustly
-  auto extract_number_field = [](const std::string& json,
-                                  const std::string& field_name) -> std::optional<int64_t> {
-    std::string key = "\"" + field_name + "\"";
-    size_t pos = json.find(key);
-    if (pos == std::string::npos) return std::nullopt;
-    pos += key.size();
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
-                                  json[pos] == '\n' || json[pos] == '\r')) {
-      pos++;
-    }
-    if (pos >= json.size() || json[pos] != ':') return std::nullopt;
-    pos++;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
-                                  json[pos] == '\n' || json[pos] == '\r')) {
-      pos++;
-    }
-    size_t start = pos;
-    if (start < json.size() && json[start] == '-') pos++;
-    while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') {
-      pos++;
-    }
-    if (start == pos) return std::nullopt;
-    // Strict digit validation: manual parse to avoid std::stoll edge cases
-    int64_t result = 0;
-    bool negative = (json[start] == '-');
-    size_t digit_start = negative ? start + 1 : start;
-    for (size_t i = digit_start; i < pos; ++i) {
-      int digit = json[i] - '0';
-      if (negative) {
-        if (result < (std::numeric_limits<int64_t>::min() + digit) / 10) {
-          return std::nullopt;
-        }
-        result = result * 10 - digit;
-      } else {
-        if (result > (std::numeric_limits<int64_t>::max() - digit) / 10) {
-          return std::nullopt;
-        }
-        result = result * 10 + digit;
-      }
-    }
-    return result;
-  };
-
-  AuthToken token;
-  token.token_id = extract_string_field(payload, "jti");
-  token.user_id = extract_string_field(payload, "sub");
-  token.user_name = extract_string_field(payload, "name");
-
-  auto exp_opt = extract_number_field(payload, "exp");
-  if (exp_opt.has_value()) {
-    token.expires_at = std::chrono::system_clock::from_time_t(
-        static_cast<time_t>(exp_opt.value()));
+    return token;
+  } catch (const nlohmann::json::exception& e) {
+    return Status::InvalidArgument(std::string("JWT payload JSON parse error: ") + e.what());
   }
-
-  return token;
 }
 
 // =============================================================================
@@ -936,12 +835,33 @@ std::vector<AuditEntry> AuditLogger::Query(const std::string& user_id,
   return result;
 }
 
+static bool IsPathSafe(const std::string& path) {
+  if (path.find("..") != std::string::npos) return false;
+  if (path.find("//") != std::string::npos) return false;
+  if (path.empty() || path[0] == '/') return false;  // no absolute paths
+  return true;
+}
+
 Status AuditLogger::ExportToFile(const std::string& filename,
                                   std::chrono::system_clock::time_point from,
                                   std::chrono::system_clock::time_point to) {
-  std::ofstream file(filename);
+  if (!IsPathSafe(filename)) {
+    return Status::InvalidArgument("Export filename contains unsafe path components: " + filename);
+  }
+  std::string export_dir;
+  if (!config_.log_file.empty()) {
+    size_t last_slash = config_.log_file.find_last_of('/');
+    if (last_slash != std::string::npos) {
+      export_dir = config_.log_file.substr(0, last_slash);
+    }
+  }
+  if (export_dir.empty()) {
+    export_dir = ".";
+  }
+  std::string full_path = export_dir + "/" + filename;
+  std::ofstream file(full_path);
   if (!file.is_open()) {
-    return Status::IOError("Failed to create export file");
+    return Status::IOError("Failed to create export file: " + full_path);
   }
   
   auto entries = Query("", static_cast<AuditAction>(255), from, to, 

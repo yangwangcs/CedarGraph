@@ -706,10 +706,13 @@ int main(int argc, char* argv[]) {
   QueryServiceImpl service(executor.get(), plan_cache.get(), two_pc_engine.get());
   
   grpc::ServerBuilder builder;
-  auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(tls_config);
-  if (!server_creds) {
-    LOG(WARNING) << "Failed to create server credentials, using insecure";
+  auto server_creds_result = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(tls_config);
+  std::shared_ptr<grpc::ServerCredentials> server_creds;
+  if (!server_creds_result.ok()) {
+    LOG(WARNING) << "Failed to create server credentials, using insecure: " << server_creds_result.status().ToString();
     server_creds = grpc::InsecureServerCredentials();
+  } else {
+    server_creds = server_creds_result.ValueOrDie();
   }
   builder.AddListeningPort(FLAGS_listen, server_creds);
   builder.RegisterService(&service);

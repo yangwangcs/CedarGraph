@@ -26,6 +26,8 @@
 namespace cedar {
 namespace metrics {
 
+using LabelSet = std::map<std::string, std::string>;
+
 /// Simple atomic counter (Prometheus-style, monotonically increasing).
 class Counter {
  public:
@@ -71,6 +73,14 @@ class MetricsRegistry {
                                   const std::string& help,
                                   std::vector<double> buckets);
 
+  // NEW: with labels
+  Counter* GetOrCreateCounter(const std::string& name, const std::string& help,
+                              const LabelSet& labels);
+  Histogram* GetOrCreateHistogram(const std::string& name,
+                                  const std::string& help,
+                                  std::vector<double> buckets,
+                                  const LabelSet& labels);
+
   // Serialize all metrics in Prometheus text exposition format
   std::string SerializeMetrics() const;
 
@@ -80,11 +90,20 @@ class MetricsRegistry {
  private:
   MetricsRegistry() = default;
 
+  struct MetricKey {
+    std::string name;
+    LabelSet labels;
+    bool operator<(const MetricKey& o) const {
+      if (name != o.name) return name < o.name;
+      return labels < o.labels;
+    }
+  };
+
   mutable std::mutex mutex_;
-  std::map<std::string, std::unique_ptr<Counter>> counters_;
-  std::map<std::string, std::unique_ptr<Histogram>> histograms_;
-  std::map<std::string, std::string> counter_help_;
-  std::map<std::string, std::string> histogram_help_;
+  std::map<MetricKey, std::unique_ptr<Counter>> counters_;
+  std::map<MetricKey, std::unique_ptr<Histogram>> histograms_;
+  std::map<MetricKey, std::string> counter_help_;
+  std::map<MetricKey, std::string> histogram_help_;
 };
 
 }  // namespace metrics

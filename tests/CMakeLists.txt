@@ -122,6 +122,11 @@ add_executable(jwt_parser_test dtx/security/jwt_parser_test.cc)
 target_link_libraries(jwt_parser_test ${CEDAR_TEST_LIBS})
 gtest_discover_tests(jwt_parser_test)
 
+# JWT JSON parser tests (nlohmann/json)
+add_executable(test_jwt_json_parser dtx/test_jwt_json_parser.cc)
+target_link_libraries(test_jwt_json_parser ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_jwt_json_parser)
+
 # RBAC glob/exact matching tests
 add_executable(rbac_test dtx/security/rbac_test.cc)
 target_link_libraries(rbac_test ${CEDAR_TEST_LIBS})
@@ -297,6 +302,10 @@ target_link_libraries(tls_config_test ${CEDAR_TEST_LIBS})
 gtest_discover_tests(tls_config_test)
 
 # Integration tests
+add_executable(test_storaged_tls_enforced integration/test_storaged_tls_enforced.cc)
+target_link_libraries(test_storaged_tls_enforced ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storaged_tls_enforced)
+
 add_executable(test_event_bus integration/test_event_bus.cc)
 target_link_libraries(test_event_bus ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_event_bus)
@@ -411,6 +420,14 @@ add_executable(test_dtx_raft_critical dtx/test_dtx_raft_critical.cc)
 target_link_libraries(test_dtx_raft_critical ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_dtx_raft_critical)
 
+add_executable(test_tls_fail_secure dtx/test_tls_fail_secure.cc)
+target_link_libraries(test_tls_fail_secure ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_tls_fail_secure)
+
+add_executable(test_storaged_raft_stub dtx/test_storaged_raft_stub.cc)
+target_link_libraries(test_storaged_raft_stub ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storaged_raft_stub)
+
 add_executable(test_hybrid_logical_clock dtx/test_hybrid_logical_clock.cc)
 target_link_libraries(test_hybrid_logical_clock ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_hybrid_logical_clock)
@@ -418,6 +435,10 @@ gtest_discover_tests(test_hybrid_logical_clock)
 add_executable(test_metrics_registry metrics/test_metrics_registry.cc)
 target_link_libraries(test_metrics_registry ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_metrics_registry)
+
+add_executable(test_metrics_labels metrics/test_metrics_labels.cc)
+target_link_libraries(test_metrics_labels ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_metrics_labels)
 
 add_executable(prometheus_escape_test metrics/prometheus_escape_test.cc)
 target_link_libraries(prometheus_escape_test ${CEDAR_TEST_LIBS})

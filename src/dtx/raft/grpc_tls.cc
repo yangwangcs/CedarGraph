@@ -44,7 +44,7 @@ std::string TlsCredentialFactory::LoadFile(const std::string& path) {
   return buffer.str();
 }
 
-std::shared_ptr<ServerCredentials> TlsCredentialFactory::CreateServerCredentials(
+StatusOr<std::shared_ptr<ServerCredentials>> TlsCredentialFactory::CreateServerCredentials(
     const TlsConfig& config) {
   if (!config.enabled) {
     return InsecureServerCredentials();
@@ -53,10 +53,12 @@ std::shared_ptr<ServerCredentials> TlsCredentialFactory::CreateServerCredentials
   // Load certificate and key
   std::string server_cert = LoadFile(config.server_cert_file);
   std::string server_key = LoadFile(config.server_key_file);
-  
-  if (server_cert.empty() || server_key.empty()) {
-    std::cerr << "Failed to load server certificate or key" << std::endl;
-    return nullptr;
+
+  if (server_cert.empty()) {
+    return Status::IOError("Failed to load server certificate: " + config.server_cert_file);
+  }
+  if (server_key.empty()) {
+    return Status::IOError("Failed to load server key: " + config.server_key_file);
   }
 
   SslServerCredentialsOptions::PemKeyCertPair key_cert_pair;
@@ -70,8 +72,7 @@ std::shared_ptr<ServerCredentials> TlsCredentialFactory::CreateServerCredentials
     // mTLS: verify client certificates
     std::string ca_cert = LoadFile(config.ca_cert_file);
     if (ca_cert.empty()) {
-      std::cerr << "Failed to load CA certificate for mTLS: " << config.ca_cert_file << std::endl;
-      return nullptr;
+      return Status::IOError("Failed to load CA certificate for mTLS: " + config.ca_cert_file);
     }
     ssl_opts.pem_root_certs = ca_cert;
     ssl_opts.client_certificate_request = 
@@ -81,7 +82,7 @@ std::shared_ptr<ServerCredentials> TlsCredentialFactory::CreateServerCredentials
   return SslServerCredentials(ssl_opts);
 }
 
-std::shared_ptr<ChannelCredentials> TlsCredentialFactory::CreateClientCredentials(
+StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClientCredentials(
     const TlsConfig& config) {
   if (!config.enabled) {
     return InsecureChannelCredentials();
@@ -95,9 +96,11 @@ std::shared_ptr<ChannelCredentials> TlsCredentialFactory::CreateClientCredential
     std::string client_key = LoadFile(config.client_key_file);
     std::string ca_cert = LoadFile(config.ca_cert_file);
 
-    if (client_cert.empty() || client_key.empty()) {
-      std::cerr << "Failed to load client certificate or key" << std::endl;
-      return nullptr;
+    if (client_cert.empty()) {
+      return Status::IOError("Failed to load client certificate: " + config.client_cert_file);
+    }
+    if (client_key.empty()) {
+      return Status::IOError("Failed to load client key: " + config.client_key_file);
     }
 
     ssl_opts.pem_cert_chain = client_cert;
@@ -108,8 +111,7 @@ std::shared_ptr<ChannelCredentials> TlsCredentialFactory::CreateClientCredential
     if (!config.ca_cert_file.empty()) {
       std::string ca_cert = LoadFile(config.ca_cert_file);
       if (ca_cert.empty()) {
-        std::cerr << "Failed to load CA certificate for TLS: " << config.ca_cert_file << std::endl;
-        return nullptr;
+        return Status::IOError("Failed to load CA certificate for TLS: " + config.ca_cert_file);
       }
       ssl_opts.pem_root_certs = ca_cert;
     }
@@ -143,7 +145,7 @@ bool TlsCredentialFactory::ValidateConfig(const TlsConfig& config,
   return true;
 }
 
-std::shared_ptr<ServerCredentials> TlsCredentialFactory::CreateServerCredentialsFromEnv() {
+StatusOr<std::shared_ptr<ServerCredentials>> TlsCredentialFactory::CreateServerCredentialsFromEnv() {
   TlsConfig config;
   const char* enabled = std::getenv("CEDAR_GRPC_TLS_ENABLED");
   if (enabled && std::string(enabled) == "1") {
@@ -167,7 +169,7 @@ std::shared_ptr<ServerCredentials> TlsCredentialFactory::CreateServerCredentials
   return InsecureServerCredentials();
 }
 
-std::shared_ptr<ChannelCredentials> TlsCredentialFactory::CreateClientCredentialsFromEnv() {
+StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClientCredentialsFromEnv() {
   TlsConfig config;
   const char* enabled = std::getenv("CEDAR_GRPC_TLS_ENABLED");
   if (enabled && std::string(enabled) == "1") {

@@ -465,7 +465,10 @@ Status MetaServiceGrpcServer::Start(const std::string& listen_address, MetadataS
     service_impl_ = std::make_unique<MetaServiceGrpcImpl>(meta_service);
     grpc::ServerBuilder builder;
     auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv();
-    builder.AddListeningPort(listen_address, server_creds);
+    if (!server_creds.ok()) {
+        return Status::IOError("Failed to create server TLS credentials: " + server_creds.status().ToString());
+    }
+    builder.AddListeningPort(listen_address, server_creds.ValueOrDie());
     builder.RegisterService(service_impl_.get());
     server_ = builder.BuildAndStart();
     if (!server_) {
@@ -541,9 +544,13 @@ Status MetaServiceGrpcClient::Connect(const std::vector<std::string>& meta_addre
     // Try each address until one responds to GetAliveNodes
     for (size_t i = 0; i < meta_addresses_.size(); ++i) {
         current_index_ = i;
+        auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+        if (!client_creds.ok()) {
+            return Status::IOError("Failed to create client TLS credentials: " + client_creds.status().ToString());
+        }
         channel_ = grpc::CreateChannel(
             meta_addresses_[i],
-            cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv());
+            client_creds.ValueOrDie());
         stub_ = cedar::meta::MetaService::NewStub(channel_);
 
         cedar::meta::GetAliveNodesRequest req;
@@ -884,7 +891,11 @@ Status MetaServiceGrpcClient::TryReconnect() {
 
     for (size_t i = 0; i < addresses.size(); ++i) {
         size_t idx = (start_index + i + 1) % addresses.size();
-        auto channel = grpc::CreateChannel(addresses[idx], cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv());
+        auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+        if (!client_creds.ok()) {
+            continue;
+        }
+        auto channel = grpc::CreateChannel(addresses[idx], client_creds.ValueOrDie());
         auto stub = cedar::meta::MetaService::NewStub(channel);
         // Quick health check via GetAliveNodes
         cedar::meta::GetAliveNodesRequest req;

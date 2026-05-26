@@ -40,7 +40,7 @@ namespace cedar {
 namespace dtx {
 
 // Helper: create gRPC channel credentials from environment
-std::shared_ptr<grpc::ChannelCredentials> CreateClientCredentialsFromEnv();
+StatusOr<std::shared_ptr<grpc::ChannelCredentials>> CreateClientCredentialsFromEnv();
 
 // =============================================================================
 // DTX RPC Client Configuration

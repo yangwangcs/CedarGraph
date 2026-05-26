@@ -184,9 +184,13 @@ DTxRpcClient::GetMigrationStub(NodeID node_id) const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = nodes_.find(node_id);
   if (it == nodes_.end() || !it->second->available) return nullptr;
+  auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!client_creds.ok()) {
+    return nullptr;
+  }
   auto channel = grpc::CreateChannel(
       it->second->address,
-      cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv());
+      client_creds.ValueOrDie());
   return cedar::migration::PartitionMigrationService::NewStub(channel);
 }
 

@@ -110,15 +110,23 @@ GcnNode::~GcnNode() {
   // Register peers in ScatterGatherRouter for multi-GCN routing
   auto router = std::make_shared<gcn::ScatterGatherRouter>();
   for (const auto& addr : peer_addresses_) {
-    auto channel = grpc::CreateChannel(
-        addr, cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv());
+    auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+    if (!client_creds.ok()) {
+      std::cerr << "GCN TLS error: " << client_creds.status().ToString() << std::endl;
+      continue;
+    }
+    auto channel = grpc::CreateChannel(addr, client_creds.ValueOrDie());
     router->RegisterPeer(addr, channel);
   }
   service_impl_->SetScatterGatherRouter(router);
 
   // Create CoordinatorClient connection to metad
+  auto coordinator_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!coordinator_creds.ok()) {
+    return cedar::Status::IOError("Failed to create coordinator TLS credentials: " + coordinator_creds.status().ToString());
+  }
   auto coordinator_channel = grpc::CreateChannel(
-      FLAGS_gcn_coordinator, cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv());
+      FLAGS_gcn_coordinator, coordinator_creds.ValueOrDie());
   coordinator_client_ =
       std::make_unique<gcn::CoordinatorClient>(coordinator_channel);
   coordinator_client_->SetGcnNodeId(
@@ -130,7 +138,11 @@ GcnNode::~GcnNode() {
   std::string server_address = address.str();
 
   grpc::ServerBuilder builder;
-  builder.AddListeningPort(server_address, cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv());
+  auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv();
+  if (!server_creds.ok()) {
+    return cedar::Status::IOError("Failed to create server TLS credentials: " + server_creds.status().ToString());
+  }
+  builder.AddListeningPort(server_address, server_creds.ValueOrDie());
   builder.RegisterService(service_impl_.get());
 
   grpc_server_ = builder.BuildAndStart();

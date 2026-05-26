@@ -76,6 +76,39 @@ std::string PrometheusEscapeLabel(const std::string& label) {
   }
   return out;
 }
+
+std::string FormatLabels(const LabelSet& labels) {
+  if (labels.empty()) return "";
+  std::string out = "{";
+  bool first = true;
+  for (const auto& [k, v] : labels) {
+    if (!first) out += ",";
+    first = false;
+    out += PrometheusEscapeLabel(k) + "=\"" + PrometheusEscapeLabel(v) + "\"";
+  }
+  out += "}";
+  return out;
+}
+
+std::string FormatBucketLabels(const LabelSet& labels, double le) {
+  std::string out = "{";
+  bool first = true;
+  for (const auto& [k, v] : labels) {
+    if (!first) out += ",";
+    first = false;
+    out += PrometheusEscapeLabel(k) + "=\"" + PrometheusEscapeLabel(v) + "\"";
+  }
+  if (!first) out += ",";
+  if (le == kInfMarker) {
+    out += "le=\"+Inf\"";
+  } else {
+    std::ostringstream le_str;
+    le_str << std::fixed << std::setprecision(6) << le;
+    out += "le=\"" + le_str.str() + "\"";
+  }
+  out += "}";
+  return out;
+}
 }  // namespace
 
 std::map<double, int64_t> Histogram::BucketCounts() const {
@@ -98,31 +131,47 @@ MetricsRegistry& MetricsRegistry::Instance() {
 
 Counter* MetricsRegistry::GetOrCreateCounter(const std::string& name,
                                              const std::string& help) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto it = counters_.find(name);
-  if (it != counters_.end()) {
-    return it->second.get();
-  }
-  auto counter = std::make_unique<Counter>();
-  Counter* ptr = counter.get();
-  counters_[name] = std::move(counter);
-  counter_help_[name] = help;
-  return ptr;
+  return GetOrCreateCounter(name, help, {});
 }
 
 Histogram* MetricsRegistry::GetOrCreateHistogram(
     const std::string& name,
     const std::string& help,
     std::vector<double> buckets) {
+  return GetOrCreateHistogram(name, help, std::move(buckets), {});
+}
+
+Counter* MetricsRegistry::GetOrCreateCounter(const std::string& name,
+                                             const std::string& help,
+                                             const LabelSet& labels) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto it = histograms_.find(name);
+  MetricKey key{name, labels};
+  auto it = counters_.find(key);
+  if (it != counters_.end()) {
+    return it->second.get();
+  }
+  auto counter = std::make_unique<Counter>();
+  Counter* ptr = counter.get();
+  counters_[key] = std::move(counter);
+  counter_help_[key] = help;
+  return ptr;
+}
+
+Histogram* MetricsRegistry::GetOrCreateHistogram(
+    const std::string& name,
+    const std::string& help,
+    std::vector<double> buckets,
+    const LabelSet& labels) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MetricKey key{name, labels};
+  auto it = histograms_.find(key);
   if (it != histograms_.end()) {
     return it->second.get();
   }
   auto hist = std::make_unique<Histogram>(std::move(buckets));
   Histogram* ptr = hist.get();
-  histograms_[name] = std::move(hist);
-  histogram_help_[name] = help;
+  histograms_[key] = std::move(hist);
+  histogram_help_[key] = help;
   return ptr;
 }
 
@@ -131,39 +180,39 @@ std::string MetricsRegistry::SerializeMetrics() const {
   std::ostringstream out;
 
   // Counters
-  for (const auto& [name, counter] : counters_) {
-    auto help_it = counter_help_.find(name);
+  for (const auto& [key, counter] : counters_) {
+    auto help_it = counter_help_.find(key);
     if (help_it != counter_help_.end()) {
-      out << "# HELP " << PrometheusEscapeLabel(name) << " "
+      out << "# HELP " << PrometheusEscapeLabel(key.name) << " "
           << PrometheusEscapeLabel(help_it->second) << "\n";
     }
-    out << "# TYPE " << PrometheusEscapeLabel(name) << " counter\n";
-    out << PrometheusEscapeLabel(name) << " " << counter->Value() << "\n";
+    out << "# TYPE " << PrometheusEscapeLabel(key.name) << " counter\n";
+    out << PrometheusEscapeLabel(key.name) << FormatLabels(key.labels)
+        << " " << counter->Value() << "\n";
   }
 
   // Histograms
-  for (const auto& [name, hist] : histograms_) {
-    auto help_it = histogram_help_.find(name);
+  for (const auto& [key, hist] : histograms_) {
+    auto help_it = histogram_help_.find(key);
     if (help_it != histogram_help_.end()) {
-      out << "# HELP " << name << " " << help_it->second << "\n";
+      out << "# HELP " << PrometheusEscapeLabel(key.name) << " "
+          << PrometheusEscapeLabel(help_it->second) << "\n";
     }
-    out << "# TYPE " << name << " histogram\n";
+    out << "# TYPE " << PrometheusEscapeLabel(key.name) << " histogram\n";
 
     auto bucket_counts = hist->BucketCounts();
     int64_t cumulative = 0;
     for (const auto& [le, count] : bucket_counts) {
       cumulative += count;
-      if (le == kInfMarker) {
-        out << PrometheusEscapeLabel(name) << "_bucket{le=\"+Inf\"} ";
-      } else {
-        out << PrometheusEscapeLabel(name) << "_bucket{le=\"" << std::fixed << std::setprecision(6)
-            << le << "\"} ";
-      }
-      out << cumulative << "\n";
+      out << PrometheusEscapeLabel(key.name) << "_bucket"
+          << FormatBucketLabels(key.labels, le) << " "
+          << cumulative << "\n";
     }
-    out << PrometheusEscapeLabel(name) << "_sum " << std::fixed << std::setprecision(6)
-        << hist->TotalSum() << "\n";
-    out << PrometheusEscapeLabel(name) << "_count " << hist->TotalCount() << "\n";
+    out << PrometheusEscapeLabel(key.name) << "_sum"
+        << FormatLabels(key.labels) << " "
+        << std::fixed << std::setprecision(6) << hist->TotalSum() << "\n";
+    out << PrometheusEscapeLabel(key.name) << "_count"
+        << FormatLabels(key.labels) << " " << hist->TotalCount() << "\n";
   }
 
   return out.str();

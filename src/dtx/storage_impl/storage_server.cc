@@ -180,8 +180,13 @@ void StorageServer::Serve() {
   
   // Build and start gRPC server
   grpc::ServerBuilder builder;
+  auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv();
+  if (!server_creds.ok()) {
+    std::cerr << "Failed to create server TLS credentials: " << server_creds.status().ToString() << std::endl;
+    return;
+  }
   builder.AddListeningPort(config_.listen_address,
-                           cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv());
+                           server_creds.ValueOrDie());
   builder.RegisterService(service_impl_.get());
   
   // Set server options

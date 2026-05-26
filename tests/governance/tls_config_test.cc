@@ -19,12 +19,12 @@
 using cedar::dtx::raft::TlsConfig;
 using cedar::dtx::raft::TlsCredentialFactory;
 
-TEST(TlsConfigTest, EmptyTlsConfigReturnsNullCredentials) {
+TEST(TlsConfigTest, EmptyTlsConfigReturnsError) {
   TlsConfig config;
   config.enabled = true;  // TLS enabled but no certs provided
 
   auto server_creds = TlsCredentialFactory::CreateServerCredentials(config);
-  EXPECT_EQ(server_creds, nullptr);
+  EXPECT_FALSE(server_creds.ok());
 }
 
 TEST(TlsConfigTest, DevModeExplicitlyDisabledTls) {
@@ -32,8 +32,10 @@ TEST(TlsConfigTest, DevModeExplicitlyDisabledTls) {
   config.enabled = false;  // Explicitly disabled for dev/test
 
   auto server_creds = TlsCredentialFactory::CreateServerCredentials(config);
-  EXPECT_NE(server_creds, nullptr);
+  EXPECT_TRUE(server_creds.ok());
+  EXPECT_NE(server_creds.ValueOrDie(), nullptr);
 
   auto client_creds = TlsCredentialFactory::CreateClientCredentials(config);
-  EXPECT_NE(client_creds, nullptr);
+  EXPECT_TRUE(client_creds.ok());
+  EXPECT_NE(client_creds.ValueOrDie(), nullptr);
 }

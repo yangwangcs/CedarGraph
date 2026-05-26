@@ -113,11 +113,14 @@ Status MetaServiceNodeClient::Initialize(const ClientConfig& config) {
   }
 
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
-  if (!creds) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok()) {
+    return Status::IOError("Failed to create client TLS credentials: " + creds.status().ToString());
+  }
 
   // Try each address until one connects
   for (size_t i = 0; i < config_.metad_addresses.size(); ++i) {
-    channel_ = grpc::CreateChannel(config_.metad_addresses[i], creds);
+    channel_ = grpc::CreateChannel(config_.metad_addresses[i], creds.ValueOrDie());
     stub_ = cedar::meta::MetaService::NewStub(channel_);
 
     auto deadline = std::chrono::system_clock::now() + config_.registration_timeout;
@@ -419,12 +422,15 @@ Status MetaServiceNodeClient::TryNextMetaAddress() {
     return Status::IOError("No fallback MetaD addresses available");
   }
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
-  if (!creds) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok()) {
+    return Status::IOError("Failed to create client TLS credentials: " + creds.status().ToString());
+  }
 
   size_t start = (current_metad_index_ + 1) % config_.metad_addresses.size();
   for (size_t i = 0; i < config_.metad_addresses.size(); ++i) {
     size_t idx = (start + i) % config_.metad_addresses.size();
-    auto channel = grpc::CreateChannel(config_.metad_addresses[idx], creds);
+    auto channel = grpc::CreateChannel(config_.metad_addresses[idx], creds.ValueOrDie());
     auto stub = cedar::meta::MetaService::NewStub(channel);
 
     cedar::meta::GetAliveNodesRequest req;

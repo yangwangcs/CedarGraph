@@ -275,6 +275,8 @@ class ConfigManager {
   int64_t GetLastModifiedTime() const;
 
  private:
+  void LoadYamlNode(const std::string& prefix, const YAML::Node& node);
+
   // Pimpl idiom - implementation details are hidden
   std::unique_ptr<ConfigManagerImpl> impl_;
 };

@@ -135,14 +135,13 @@ int main(int argc, char* argv[]) {
   // Build and start gRPC server
   std::string server_address = config.bind_address + ":" + std::to_string(config.port);
   grpc::ServerBuilder builder;
-  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(config.tls);
-  if (!creds) {
-    std::cerr << "[GraphD] FATAL: Failed to create server credentials. "
-              << "TLS is mandatory in production mode. "
-              << "Set tls.enabled=false explicitly for dev/test only." << std::endl;
+  auto creds_result = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(config.tls);
+  if (!creds_result.ok()) {
+    std::cerr << "[GraphD] FATAL: Failed to create server credentials: "
+              << creds_result.status().ToString() << std::endl;
     return 1;
   }
-  builder.AddListeningPort(server_address, creds);
+  builder.AddListeningPort(server_address, creds_result.ValueOrDie());
   builder.RegisterService(static_cast<cedar::query::QueryService::Service*>(router.get()));
   builder.RegisterService(static_cast<cedargrpc::CedarGraphService::Service*>(router.get()));
   
