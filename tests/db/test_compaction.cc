@@ -64,7 +64,8 @@ class CompactionTest : public ::testing::Test {
     auto builder = SstBuilderFactory::Create(file, test_dir_);
     for (uint64_t e = start_entity; e < end_entity; ++e) {
       Descriptor desc = Descriptor::InlineInt(1, static_cast<int64_t>(e));
-      CedarKey key(e, EntityType::Vertex, 1, Timestamp(1000 + e), 0, 0, 0, 0);
+      CedarKey key(e, EntityType::Vertex, 1, Timestamp(1000 + e),
+                   static_cast<uint16_t>(file_number), 0, 0, 0);
       builder->Add(key, desc);
     }
 
