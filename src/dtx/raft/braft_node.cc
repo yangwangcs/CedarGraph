@@ -137,16 +137,24 @@ void MetaRaftStateMachine::on_snapshot_save(
         return;
     }
     
-    ssize_t written = ::write(fd, snapshot_data.data(), snapshot_data.size());
-    if (written < 0 || static_cast<size_t>(written) != snapshot_data.size()) {
-        LOG(ERROR) << "Failed to write snapshot data";
-        ::close(fd);
-        ::unlink(temp_path.c_str());
-        if (done) {
-            done->status().set_error(EIO, "Failed to write snapshot data");
-            done->Run();
+    // Robust write: loop until all data is persisted or an error occurs
+    size_t total_written = 0;
+    const char* data_ptr = snapshot_data.data();
+    const size_t data_size = snapshot_data.size();
+    while (total_written < data_size) {
+        ssize_t written = ::write(fd, data_ptr + total_written, data_size - total_written);
+        if (written < 0) {
+            if (errno == EINTR) continue;
+            LOG(ERROR) << "Failed to write snapshot data";
+            ::close(fd);
+            ::unlink(temp_path.c_str());
+            if (done) {
+                done->status().set_error(EIO, "Failed to write snapshot data");
+                done->Run();
+            }
+            return;
         }
-        return;
+        total_written += static_cast<size_t>(written);
     }
     
     // Ensure data is on physical storage
@@ -213,14 +221,24 @@ int MetaRaftStateMachine::on_snapshot_load(braft::SnapshotReader* reader) {
     }
     
     std::string snapshot_data(st.st_size, '\0');
-    ssize_t n = ::read(fd, &snapshot_data[0], st.st_size);
-    ::close(fd);
-    
-    if (n < 0 || n != st.st_size) {
-        LOG(ERROR) << "Failed to read complete snapshot data (expected "
-                   << st.st_size << ", got " << n << ")";
-        return -1;
+    size_t total_read = 0;
+    while (total_read < static_cast<size_t>(st.st_size)) {
+        ssize_t n = ::read(fd, &snapshot_data[total_read], st.st_size - total_read);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            LOG(ERROR) << "Failed to read snapshot data";
+            ::close(fd);
+            return -1;
+        }
+        if (n == 0) {
+            LOG(ERROR) << "Unexpected EOF reading snapshot data (expected "
+                       << st.st_size << ", got " << total_read << ")";
+            ::close(fd);
+            return -1;
+        }
+        total_read += static_cast<size_t>(n);
     }
+    ::close(fd);
     
     if (meta_service_) {
         if (!meta_service_->DeserializeState(snapshot_data)) {

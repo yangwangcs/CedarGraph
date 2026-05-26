@@ -428,9 +428,21 @@ Status PartitionMigrator::ReplayWalToTarget(
   }
 
   std::string wal_data(st.st_size, '\0');
-  ssize_t n = ::read(fd, &wal_data[0], st.st_size);
+  size_t total_read = 0;
+  while (total_read < static_cast<size_t>(st.st_size)) {
+    ssize_t n = ::read(fd, &wal_data[total_read], st.st_size - total_read);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      ::close(fd);
+      return Status::IOError("Failed to read WAL");
+    }
+    if (n == 0) {
+      ::close(fd);
+      return Status::IOError("Unexpected EOF reading WAL");
+    }
+    total_read += static_cast<size_t>(n);
+  }
   ::close(fd);
-  if (n != st.st_size) return Status::IOError("Failed to read WAL");
 
   size_t pos = 0;
   uint64_t ops_replayed = 0;

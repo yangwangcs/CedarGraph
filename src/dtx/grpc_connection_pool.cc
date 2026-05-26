@@ -124,9 +124,22 @@ std::shared_ptr<PooledChannel> GrpcConnectionPool::Acquire() {
 
   // 检查健康状态
   if (!CheckHealth(channel)) {
+    auto old_address = channel->GetAddress();
+    auto old_channel = channel;
+    
+    // 先从 endpoint_connections_ 中移除旧的不健康连接，避免僵尸连接
+    auto ep_it_rm = endpoint_connections_.find(old_address);
+    if (ep_it_rm != endpoint_connections_.end()) {
+      auto& conns = ep_it_rm->second;
+      conns.erase(std::remove(conns.begin(), conns.end(), old_channel), conns.end());
+      if (conns.empty()) {
+        endpoint_connections_.erase(ep_it_rm);
+      }
+    }
+    
     // 检查该端点连接数是否已达上限
     size_t endpoint_count = 0;
-    auto ep_it = endpoint_connections_.find(channel->GetAddress());
+    auto ep_it = endpoint_connections_.find(old_address);
     if (ep_it != endpoint_connections_.end()) {
       endpoint_count = ep_it->second.size();
     }
@@ -134,9 +147,8 @@ std::shared_ptr<PooledChannel> GrpcConnectionPool::Acquire() {
       in_use_count_--;
       return nullptr;
     }
-    // 连接不健康，创建新连接替换
-    auto old_address = channel->GetAddress();
-    auto old_channel = channel;
+    
+    // 创建新连接替换
     lock.unlock();
     channel = CreateConnection(old_address);
     lock.lock();
@@ -144,15 +156,6 @@ std::shared_ptr<PooledChannel> GrpcConnectionPool::Acquire() {
     if (!channel) {
       in_use_count_--;
       return nullptr;
-    }
-    // 从 endpoint_connections_ 中移除旧的不健康连接
-    auto ep_it2 = endpoint_connections_.find(old_address);
-    if (ep_it2 != endpoint_connections_.end()) {
-      auto& conns = ep_it2->second;
-      conns.erase(std::remove(conns.begin(), conns.end(), old_channel), conns.end());
-      if (conns.empty()) {
-        endpoint_connections_.erase(ep_it2);
-      }
     }
     endpoint_connections_[old_address].push_back(channel);
   }
@@ -173,23 +176,33 @@ std::shared_ptr<PooledChannel> GrpcConnectionPool::AcquireForEndpoint(
   
   std::unique_lock<std::mutex> lock(mutex_);
   
-  // 查找该端点的连接
+  // 从 available_connections_ 中查找匹配端点的健康连接，避免与 Acquire() 的 race condition
+  std::queue<std::shared_ptr<PooledChannel>> temp_queue;
+  std::shared_ptr<PooledChannel> found_conn;
+  
+  while (!available_connections_.empty()) {
+    auto conn = available_connections_.front();
+    available_connections_.pop();
+    if (!found_conn && conn->GetAddress() == endpoint && CheckHealth(conn)) {
+      found_conn = conn;
+    } else {
+      temp_queue.push(conn);
+    }
+  }
+  available_connections_ = std::move(temp_queue);
+  
+  if (found_conn) {
+    in_use_count_++;
+    found_conn->IncrementUseCount();
+    total_acquisitions_++;
+    return found_conn;
+  }
+  
+  // 检查该端点连接数是否已达上限
   auto it = endpoint_connections_.find(endpoint);
-  if (it != endpoint_connections_.end()) {
-    for (auto& conn : it->second) {
-      // 检查是否在可用队列中
-      // 简化实现：直接返回第一个健康连接
-      if (conn->GetUseCount() == 0 && CheckHealth(conn)) {
-        in_use_count_++;
-        conn->IncrementUseCount();
-        total_acquisitions_++;
-        return conn;
-      }
-    }
-    // 已达上限且没有健康连接，拒绝创建
-    if (it->second.size() >= config_.max_connections_per_endpoint) {
-      return nullptr;
-    }
+  if (it != endpoint_connections_.end() && 
+      it->second.size() >= config_.max_connections_per_endpoint) {
+    return nullptr;
   }
 
   lock.unlock();
@@ -322,7 +335,15 @@ void GrpcConnectionPool::HealthCheckLoop() {
       if (CheckHealth(conn)) {
         healthy_queue.push(conn);
       } else {
-        // 不健康的连接会被丢弃，后续会创建新连接
+        // 从 endpoint_connections_ 中同步移除，避免 AcquireForEndpoint 返回已丢弃连接
+        auto ep_it = endpoint_connections_.find(conn->GetAddress());
+        if (ep_it != endpoint_connections_.end()) {
+          auto& conns = ep_it->second;
+          conns.erase(std::remove(conns.begin(), conns.end(), conn), conns.end());
+          if (conns.empty()) {
+            endpoint_connections_.erase(ep_it);
+          }
+        }
         std::cerr << "[ConnectionPool] Removing unhealthy connection to " 
                   << conn->GetAddress() << std::endl;
       }
@@ -362,6 +383,15 @@ void GrpcConnectionPool::IdleCleanupLoop() {
         keep_queue.push(conn);
         kept++;
       } else {
+        // 从 endpoint_connections_ 中同步移除，避免统计漂移
+        auto ep_it = endpoint_connections_.find(conn->GetAddress());
+        if (ep_it != endpoint_connections_.end()) {
+          auto& conns = ep_it->second;
+          conns.erase(std::remove(conns.begin(), conns.end(), conn), conns.end());
+          if (conns.empty()) {
+            endpoint_connections_.erase(ep_it);
+          }
+        }
         removed++;
       }
     }

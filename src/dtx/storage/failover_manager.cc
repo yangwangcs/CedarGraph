@@ -405,7 +405,16 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
     }
 
     std::string host = address.substr(0, colon);
-    int port = std::stoi(address.substr(colon + 1));
+    int port = 0;
+    try {
+      port = std::stoi(address.substr(colon + 1));
+    } catch (const std::exception& e) {
+      std::cerr << "[Failover] Invalid port in address '" << address
+                << "': " << e.what() << std::endl;
+      std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+      replica_health_[node_id] = false;
+      return false;
+    }
 
     // TCP connect probe with 500ms timeout
     bool healthy = false;
@@ -415,11 +424,23 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
         memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
         addr.sin_port = htons(static_cast<uint16_t>(port));
-        inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
+        if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+            std::cerr << "[Failover] Invalid IPv4 address: '" << host << "'" << std::endl;
+            close(sock);
+            std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+            replica_health_[node_id] = false;
+            return false;
+        }
 
         // Set non-blocking for timeout control
         int flags = fcntl(sock, F_GETFL, 0);
-        fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+        if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+            std::cerr << "[Failover] fcntl failed for health probe socket" << std::endl;
+            close(sock);
+            std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+            replica_health_[node_id] = false;
+            return false;
+        }
 
         int rc = connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
         if (rc == 0) {
