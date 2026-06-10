@@ -34,3 +34,10 @@ add_executable(test_plan_cache
 )
 target_link_libraries(test_plan_cache cedar cedar_cypher cedar_queryd gtest gtest_main pthread)
 add_test(NAME test_plan_cache COMMAND test_plan_cache)
+
+# Write Operators Test
+add_executable(test_write_operators
+    test_write_operators.cc
+)
+target_link_libraries(test_write_operators cedar cedar_cypher gtest gtest_main pthread)
+add_test(NAME test_write_operators COMMAND test_write_operators)
