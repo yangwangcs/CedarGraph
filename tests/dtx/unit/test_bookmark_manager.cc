@@ -248,9 +248,15 @@ TEST(BookmarkManagerTest, GetCurrentHLC) {
   auto hlc1 = manager.GetCurrentHLC();
   auto hlc2 = manager.GetCurrentHLC();
   
-  // 逻辑计数应该增加
-  EXPECT_EQ(hlc1.wall_time, hlc2.wall_time);
-  EXPECT_EQ(hlc2.logical, hlc1.logical + 1);
+  // wall_time 在极端并发/调度延迟下可能跨微秒边界，允许非递减
+  EXPECT_LE(hlc1.wall_time, hlc2.wall_time);
+  if (hlc1.wall_time == hlc2.wall_time) {
+    // 同一微秒内，逻辑计数应递增
+    EXPECT_EQ(hlc2.logical, hlc1.logical + 1);
+  } else {
+    // 跨微秒边界，逻辑计数重置为 0
+    EXPECT_EQ(hlc2.logical, 0);
+  }
 }
 
 TEST(BookmarkManagerTest, UpdateHLC) {
