@@ -56,6 +56,7 @@ class StorageRaftSnapshotTest : public ::testing::Test {
 
     cedar::CedarOptions options;
     options.create_if_missing = true;
+    options.enable_accumulated_flush = false;
     auto status = cedar::CedarGraphStorage::Open(options, data_dir_, &storage_);
     ASSERT_TRUE(status.ok()) << status.ToString();
     ASSERT_NE(storage_, nullptr);
@@ -88,13 +89,13 @@ TEST_F(StorageRaftSnapshotTest, SaveAndLoadPreparedTxnsRoundTrip) {
 TEST_F(StorageRaftSnapshotTest, RestoreFromSnapshotReplacesData) {
   // Write data and flush
   cedar::Descriptor desc = cedar::Descriptor::InlineInt(0, 42);
-  auto s = storage_->PutStaticVertex(1001, 1, desc);
+  auto s = storage_->PutStaticVertex(1001, 0, desc);
   EXPECT_TRUE(s.ok()) << s.ToString();
   s = storage_->ForceFlush();
   EXPECT_TRUE(s.ok()) << s.ToString();
 
   // Verify data exists
-  auto result = storage_->GetStaticVertex(1001, 1);
+  auto result = storage_->GetStaticVertex(1001, 0);
   EXPECT_TRUE(result.has_value());
 
   // Simulate snapshot: copy data_dir_ to snapshot_dir_
@@ -119,7 +120,7 @@ TEST_F(StorageRaftSnapshotTest, RestoreFromSnapshotReplacesData) {
   EXPECT_TRUE(s.ok()) << s.ToString();
 
   // Data should be back
-  result = storage_->GetStaticVertex(1001, 1);
+  result = storage_->GetStaticVertex(1001, 0);
   EXPECT_TRUE(result.has_value());
   EXPECT_EQ(result->AsRaw(), desc.AsRaw());
 }

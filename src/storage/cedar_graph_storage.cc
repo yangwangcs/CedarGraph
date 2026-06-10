@@ -869,6 +869,60 @@ Status CedarGraphStorage::LoadPreparedTxns(const std::string& path) {
   return Status::OK();
 }
 
+Status CedarGraphStorage::RestoreFromSnapshot(const std::string& snapshot_data_dir) {
+  std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
+  if (!rep_->engine) {
+    return Status::InvalidArgument("RestoreFromSnapshot", "No engine");
+  }
+
+  // Step 1: Destroy engine (destructor calls Close() which flushes WAL & memtables)
+  rep_->engine.reset();
+
+  // Step 2: Clear data directory
+  try {
+    for (const auto& entry : std::filesystem::directory_iterator(rep_->db_path)) {
+      std::filesystem::remove_all(entry.path());
+    }
+  } catch (const std::exception& e) {
+    return Status::IOError("RestoreFromSnapshot",
+                           std::string("Failed to clear data dir: ") + e.what());
+  }
+
+  // Step 3: Copy snapshot files into data directory
+  try {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(snapshot_data_dir)) {
+      if (entry.is_regular_file()) {
+        std::string relative = std::filesystem::relative(entry.path(), snapshot_data_dir).string();
+        std::string dst = rep_->db_path + "/" + relative;
+        std::filesystem::create_directories(std::filesystem::path(dst).parent_path());
+        std::filesystem::copy_file(entry.path(), dst,
+                                   std::filesystem::copy_options::overwrite_existing);
+      }
+    }
+  } catch (const std::exception& e) {
+    return Status::IOError("RestoreFromSnapshot",
+                           std::string("Failed to copy snapshot: ") + e.what());
+  }
+
+  // Step 4: Create new engine
+  rep_->engine = std::make_unique<LsmEngine>(rep_->db_path, rep_->options, rep_->env);
+  Status s = rep_->engine->Open();
+  if (!s.ok()) {
+    return Status::IOError("RestoreFromSnapshot",
+                           std::string("Failed to reopen engine: ") + s.ToString());
+  }
+
+  // Step 5: Reconnect blob managers
+  if (rep_->blob_manager) {
+    rep_->engine->SetBlobFileManager(rep_->blob_manager.get());
+  }
+  if (rep_->auto_blob) {
+    rep_->engine->SetAutoBlobStorage(rep_->auto_blob.get());
+  }
+
+  return Status::OK();
+}
+
 // ========== 自动 Blob 存储 API 实现 ==========
 
 Status CedarGraphStorage::PutString(uint64_t entity_id, uint16_t col_id, 

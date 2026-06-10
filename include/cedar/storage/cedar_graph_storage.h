@@ -438,6 +438,9 @@ class CedarGraphStorage {
   /// Load prepared transaction state from snapshot
   Status LoadPreparedTxns(const std::string& path);
   
+  /// Restore data directory from snapshot (closes engine, replaces files, reopens)
+  Status RestoreFromSnapshot(const std::string& snapshot_data_dir);
+  
   // ========== Distributed Mode API (NEW) ==========
   
   /// Check if running in distributed mode
