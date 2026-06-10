@@ -53,8 +53,10 @@ TEST(QueryPlanner, PlanMatchWhereReturn) {
   std::string explain = plan->Explain();
   EXPECT_FALSE(explain.empty());
   
-  // Should contain Filter (from WHERE) and Project (from RETURN fields)
-  EXPECT_NE(explain.find("Filter"), std::string::npos);
+  // After pushdown, Filter may be eliminated for simple literal comparisons
+  // and replaced with IndexScan
+  EXPECT_TRUE(explain.find("Filter") != std::string::npos ||
+              explain.find("IndexScan") != std::string::npos);
   EXPECT_NE(explain.find("Project"), std::string::npos);
 }
 
