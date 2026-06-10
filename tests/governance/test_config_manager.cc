@@ -15,8 +15,10 @@
 #include "cedar/governance/config_manager.h"
 
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <thread>
+#include <unistd.h>
 
 #include "gtest/gtest.h"
 
@@ -77,7 +79,7 @@ cluster:
   node_id: 42
 )";
 
-  std::string temp_file = "/tmp/test_cedar_config.yaml";
+  std::string temp_file = std::filesystem::temp_directory_path().string() + "/test_cedar_config_" + std::to_string(getpid()) + ".yaml";
   std::ofstream ofs(temp_file);
   ofs << yaml_content;
   ofs.close();
@@ -553,7 +555,7 @@ TEST_F(ConfigManagerTest, GetSourceFile) {
 
   // Create and load from file
   const char* yaml = "key: value";
-  std::string temp_file = "/tmp/test_source_file.yaml";
+  std::string temp_file = std::filesystem::temp_directory_path().string() + "/test_source_file_" + std::to_string(getpid()) + ".yaml";
   std::ofstream ofs(temp_file);
   ofs << yaml;
   ofs.close();
@@ -657,12 +659,13 @@ storaged:
     enabled: true
     server_cert: /etc/certs/server.crt
 )";
-  std::ofstream f("/tmp/test_config.yaml");
+  std::string temp_config = std::filesystem::temp_directory_path().string() + "/test_config_" + std::to_string(getpid()) + ".yaml";
+  std::ofstream f(temp_config);
   f << yaml;
   f.close();
 
   cedar::governance::ConfigManager cm;
-  ASSERT_TRUE(cm.LoadFromFile("/tmp/test_config.yaml").ok());
+  ASSERT_TRUE(cm.LoadFromFile(temp_config).ok());
   EXPECT_EQ(cm.GetInt("storaged.node_id", 0), 1);
   EXPECT_EQ(cm.GetInt("storaged.port", 0), 9779);
   EXPECT_EQ(cm.GetBool("storaged.tls.enabled", false), true);
@@ -671,12 +674,13 @@ storaged:
 
 TEST(ConfigManager, ParsesQuotedStrings) {
   std::string yaml = "value: \"hello world\"\n";
-  std::ofstream f("/tmp/test_config2.yaml");
+  std::string temp_config2 = std::filesystem::temp_directory_path().string() + "/test_config2_" + std::to_string(getpid()) + ".yaml";
+  std::ofstream f(temp_config2);
   f << yaml;
   f.close();
 
   cedar::governance::ConfigManager cm;
-  ASSERT_TRUE(cm.LoadFromFile("/tmp/test_config2.yaml").ok());
+  ASSERT_TRUE(cm.LoadFromFile(temp_config2).ok());
   EXPECT_EQ(cm.GetString("value", ""), "hello world");
 }
 

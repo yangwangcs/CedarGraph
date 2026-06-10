@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 #include <filesystem>
+#include <unistd.h>
 #include "cedar/dtx/partition_index.h"
 #include "cedar/storage/cedar_graph_storage.h"
 
@@ -21,7 +22,7 @@ using namespace cedar;
 using namespace cedar::dtx;
 
 TEST(PartitionIndexBuild, BuildIndexOnEmptyStorage) {
-  std::string data_dir = "/tmp/test_index_empty";
+  std::string data_dir = "/tmp/test_index_empty_" + std::to_string(getpid());
   std::filesystem::remove_all(data_dir);
 
   CedarOptions options;
@@ -44,7 +45,7 @@ TEST(PartitionIndexBuild, BuildIndexOnEmptyStorage) {
 }
 
 TEST(PartitionIndexBuild, BuildIndexAfterFlush) {
-  std::string data_dir = "/tmp/test_index_flush";
+  std::string data_dir = "/tmp/test_index_flush_" + std::to_string(getpid());
   std::filesystem::remove_all(data_dir);
 
   CedarOptions options;

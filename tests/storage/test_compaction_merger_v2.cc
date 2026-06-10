@@ -16,6 +16,7 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include <unistd.h>
 
 #include "cedar/sst/sst_builder_factory.h"
 #include "cedar/sst/zone_columnar_reader.h"
@@ -28,7 +29,7 @@ namespace cedar {
 class CompactionMergerV2Test : public ::testing::Test {
  protected:
   void SetUp() override {
-    test_dir_ = "/tmp/compaction_merger_v2_test";
+    test_dir_ = "/tmp/compaction_merger_v2_test_" + std::to_string(getpid());
     Env::Default()->CreateDir(test_dir_);
   }
 

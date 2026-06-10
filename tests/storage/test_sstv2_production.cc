@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <random>
+#include <unistd.h>
 #include "cedar/sst/zone_columnar_format_v2.h"
 #include "../src/sst/zone_columnar_builder_v2.cc"  // 直接包含实现
 
@@ -26,9 +27,10 @@ using namespace cedar;
 
 class SSTV2ProductionTest : public ::testing::Test {
  protected:
-  std::string test_dir_ = "/tmp/cedar_sstv2_test";
+  std::string test_dir_;
   
   void SetUp() override {
+    test_dir_ = "/tmp/cedar_sstv2_test_" + std::to_string(getpid());
     std::system(("rm -rf " + test_dir_).c_str());
     std::filesystem::create_directories(test_dir_);
   }
