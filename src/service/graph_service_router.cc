@@ -105,6 +105,31 @@ static cedar::cypher::Value ProtoValueToCypher(const cedar::query::Value& proto)
   }
 }
 
+std::string ComputeCacheKeyFingerprint(
+    const std::string& query,
+    const google::protobuf::Map<std::string, cedar::query::Value>& parameters,
+    uint64_t as_of_timestamp) {
+  std::string base = cedar::cypher::ComputeFingerprint(query);
+  if (!parameters.empty()) {
+    base += "|p=";
+    for (const auto& kv : parameters) {
+      base += kv.first + ":";
+      switch (kv.second.value_type_case()) {
+        case cedar::query::Value::kBoolVal: base += kv.second.bool_val() ? "T" : "F"; break;
+        case cedar::query::Value::kIntVal: base += std::to_string(kv.second.int_val()); break;
+        case cedar::query::Value::kFloatVal: base += std::to_string(kv.second.float_val()); break;
+        case cedar::query::Value::kStringVal: base += kv.second.string_val(); break;
+        default: base += "?"; break;
+      }
+      base += ",";
+    }
+  }
+  if (as_of_timestamp > 0) {
+    base += "|t=" + std::to_string(as_of_timestamp);
+  }
+  return base;
+}
+
 }  // namespace
 
 GraphServiceRouter::GraphServiceRouter() 
@@ -256,22 +281,27 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   // 构建缓存键（在 ParseQueryForRouting 之后，使用 entity_id 区分点查查询）
   if (!request->explain_only()) {
     cedar::query::CacheKey cache_key;
-    cache_key.query_fingerprint = GenerateResultCacheFingerprint(request->query());
-    cache_key.partition_hash = 0;
-    cache_key.as_of_timestamp = 0;
+    cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
+        request->query(), request->parameters().params(), request->as_of_timestamp());
+    cache_key.partition_hash = route_ctx.target_partitions.empty() ? 0 : route_ctx.target_partitions[0];
+    cache_key.as_of_timestamp = request->as_of_timestamp();
 
     // 尝试从缓存获取
     auto cached_result = query_cache_->Get(cache_key);
     if (cached_result.ok()) {
       const auto& rs = cached_result.ValueOrDie();
-      *response->mutable_result_set() = rs;
-      response->set_success(true);
-      
-      auto* stats = response->mutable_stats();
-      stats->set_execution_time_us(0);
-      stats->set_rows_returned(rs.rows_size());
-      
-      return grpc::Status::OK;
+      // Only claim success if the cached result has actual data
+      if (rs.rows_size() > 0 || rs.columns_size() > 0) {
+        *response->mutable_result_set() = rs;
+        response->set_success(true);
+        
+        auto* stats = response->mutable_stats();
+        stats->set_execution_time_us(0);
+        stats->set_rows_returned(rs.rows_size());
+        
+        return grpc::Status::OK;
+      }
+      // Empty cached result — treat as miss and execute normally
     }
   }
   
@@ -326,6 +356,11 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
         response->set_error_msg("Distributed write failed: " + write_status.ToString());
         return grpc::Status::OK;
       }
+      // Invalidate cache after successful write
+      if (query_cache_ != nullptr) {
+        std::string fp_prefix = cedar::cypher::ComputeFingerprint(request->query());
+        query_cache_->InvalidateByPrefix(fp_prefix);
+      }
       result_set.set_total_rows(static_cast<int32_t>(route_ctx.entity_ids.size()));
     }
   } else {
@@ -369,9 +404,10 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
 
       if (!request->explain_only() && query_cache_ != nullptr) {
         cedar::query::CacheKey cache_key;
-        cache_key.query_fingerprint = GenerateResultCacheFingerprint(request->query());
-        cache_key.partition_hash = 0;
-        cache_key.as_of_timestamp = 0;
+        cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
+            request->query(), request->parameters().params(), request->as_of_timestamp());
+        cache_key.partition_hash = route_ctx.target_partitions.empty() ? 0 : route_ctx.target_partitions[0];
+        cache_key.as_of_timestamp = request->as_of_timestamp();
         query_cache_->Put(cache_key, response->result_set());
       }
 
@@ -568,9 +604,10 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   // 将结果放入缓存
   if (!request->explain_only() && query_cache_ != nullptr) {
     cedar::query::CacheKey cache_key;
-    cache_key.query_fingerprint = GenerateResultCacheFingerprint(request->query());
-    cache_key.partition_hash = 0;
-    cache_key.as_of_timestamp = 0;
+    cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
+        request->query(), request->parameters().params(), request->as_of_timestamp());
+    cache_key.partition_hash = route_ctx.target_partitions.empty() ? 0 : route_ctx.target_partitions[0];
+    cache_key.as_of_timestamp = request->as_of_timestamp();
     query_cache_->Put(cache_key, response->result_set());
   }
   

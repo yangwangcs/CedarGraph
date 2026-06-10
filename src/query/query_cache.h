@@ -60,6 +60,9 @@ class QueryCache {
   Status Put(const CacheKey& key, const ResultSet& result);
   Status Invalidate(const CacheKey& key);
   Status InvalidateAll();
+  
+  // Invalidate all entries whose fingerprint contains the given prefix.
+  void InvalidateByPrefix(const std::string& fingerprint_prefix);
 
   struct Stats {
     uint64_t hits = 0;

@@ -121,6 +121,19 @@ Status QueryCache::InvalidateAll() {
   return Status::OK();
 }
 
+void QueryCache::InvalidateByPrefix(const std::string& fingerprint_prefix) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto it = cache_map_.begin(); it != cache_map_.end(); ) {
+    if (it->first.query_fingerprint.find(fingerprint_prefix) == 0) {
+      current_memory_ -= it->second->second.memory_size;
+      lru_list_.erase(it->second);
+      it = cache_map_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 QueryCache::Stats QueryCache::GetStats() const {
   std::lock_guard<std::mutex> lock(mutex_);
   
