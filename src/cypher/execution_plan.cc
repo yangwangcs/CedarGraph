@@ -656,6 +656,9 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
   std::shared_ptr<OrderByClause> order_by_clause;
   std::shared_ptr<LimitClause> limit_clause;
   std::shared_ptr<SkipClause> skip_clause;
+  std::shared_ptr<CreateClause> create_clause;
+  std::shared_ptr<SetClause> set_clause;
+  std::shared_ptr<DeleteClause> delete_clause;
   
   for (const auto& clause : stmt->clauses) {
     switch (clause->clause_type) {
@@ -677,6 +680,15 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
       case ClauseType::SKIP:
         skip_clause = std::static_pointer_cast<SkipClause>(clause);
         break;
+      case ClauseType::CREATE:
+        create_clause = std::static_pointer_cast<CreateClause>(clause);
+        break;
+      case ClauseType::SET:
+        set_clause = std::static_pointer_cast<SetClause>(clause);
+        break;
+      case ClauseType::DELETE:
+        delete_clause = std::static_pointer_cast<DeleteClause>(clause);
+        break;
       default:
         break;
     }
@@ -688,6 +700,39 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
   // 1. MATCH → Scan/Expand
   if (match_clause) {
     root = BuildMatchPlan(match_clause, temporal_clause);
+  }
+  
+  // 1b. CREATE → CreateOperator
+  if (create_clause) {
+    auto create_op = BuildCreatePlan(create_clause);
+    if (create_op) {
+      if (root) {
+        create_op->AddChild(root);
+      }
+      root = create_op;
+    }
+  }
+  
+  // 1c. SET → SetOperator (must follow MATCH or CREATE)
+  if (set_clause) {
+    auto set_op = BuildSetPlan(set_clause);
+    if (set_op) {
+      if (root) {
+        set_op->AddChild(root);
+      }
+      root = set_op;
+    }
+  }
+  
+  // 1d. DELETE → DeleteOperator (must follow MATCH)
+  if (delete_clause) {
+    auto delete_op = BuildDeletePlan(delete_clause);
+    if (delete_op) {
+      if (root) {
+        delete_op->AddChild(root);
+      }
+      root = delete_op;
+    }
   }
   
   // 2. WHERE → Filter
@@ -786,6 +831,30 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildMatchPlan(
   
   // For now, just build scan for first pattern
   return BuildScanForPattern(match->patterns[0], temporal_clause);
+}
+
+std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildCreatePlan(
+    std::shared_ptr<CreateClause> create) {
+  if (!create || create->patterns.empty()) {
+    return nullptr;
+  }
+  return std::make_shared<CreateOperator>(create);
+}
+
+std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildSetPlan(
+    std::shared_ptr<SetClause> set) {
+  if (!set || set->items.empty()) {
+    return nullptr;
+  }
+  return std::make_shared<SetOperator>(set);
+}
+
+std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildDeletePlan(
+    std::shared_ptr<DeleteClause> del) {
+  if (!del || del->expressions.empty()) {
+    return nullptr;
+  }
+  return std::make_shared<DeleteOperator>(del);
 }
 
 std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildScanForPattern(
