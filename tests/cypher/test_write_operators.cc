@@ -20,6 +20,10 @@ static std::string GetTempDbPath() {
   return tmp.string();
 }
 
+static uint16_t PropertyNameToColumnId(const std::string& name) {
+  return static_cast<uint16_t>(std::hash<std::string>{}(name) & 0x0FFF);
+}
+
 class CreateOperatorTest : public ::testing::Test {
  protected:
   CedarGraphStorage* storage_ = nullptr;
@@ -92,6 +96,127 @@ TEST_F(CreateOperatorTest, CreateNodeWithoutProperties) {
   auto record = op.Next();
   ASSERT_NE(record, nullptr);
   EXPECT_TRUE(record->Get("n")->IsNode());
+}
+
+// ============================================================================
+// SetOperator Tests
+// ============================================================================
+
+class SetOperatorTest : public ::testing::Test {
+ protected:
+  CedarGraphStorage* storage_ = nullptr;
+  std::string db_path_;
+  
+  void SetUp() override {
+    db_path_ = GetTempDbPath();
+    CedarOptions options;
+    options.create_if_missing = true;
+    auto s = CedarGraphStorage::Open(options, db_path_, &storage_);
+    ASSERT_TRUE(s.ok()) << s.ToString();
+  }
+  
+  void TearDown() override {
+    delete storage_;
+    std::filesystem::remove_all(db_path_);
+  }
+};
+
+TEST_F(SetOperatorTest, SetNodeProperty) {
+  // Pre-create a node in storage
+  uint64_t node_id = 1001;
+  Descriptor name_desc = Descriptor::InlineShortStr(
+      PropertyNameToColumnId("name"), Slice("Bob")).value_or(
+          Descriptor::InlineInt(0, 0));
+  auto s = storage_->PutStaticVertex(node_id, PropertyNameToColumnId("name"), name_desc);
+  ASSERT_TRUE(s.ok());
+  
+  // Build a mock child that returns the node
+  class MockChild : public PhysicalOperator {
+   public:
+    std::shared_ptr<Record> rec;
+    bool Init(ExecutionContext*) override { return true; }
+    std::shared_ptr<Record> Next() override {
+      if (!rec) return nullptr;
+      auto tmp = rec;
+      rec.reset();
+      return tmp;
+    }
+    std::string GetName() const override { return "MockChild"; }
+    std::unique_ptr<PhysicalOperator> Clone() const override {
+      return std::make_unique<MockChild>();
+    }
+  };
+  
+  auto mock = std::make_shared<MockChild>();
+  Node node;
+  node.id = node_id;
+  node.labels = {"Person"};
+  node.properties["name"] = Value("Bob");
+  mock->rec = std::make_shared<Record>();
+  mock->rec->Set("n", Value(node));
+  
+  // Build SET clause: SET n.name = 'Alice'
+  auto set_clause = std::make_shared<SetClause>();
+  SetClause::SetItem item;
+  item.target = std::make_shared<PropertyExpr>("n", "name");
+  item.value = std::make_shared<LiteralExpr>(Value("Alice"));
+  set_clause->items.push_back(std::move(item));
+  
+  SetOperator op(set_clause);
+  op.AddChild(mock);
+  
+  ExecutionContext ctx;
+  ctx.storage = storage_;
+  
+  ASSERT_TRUE(op.Init(&ctx));
+  auto record = op.Next();
+  ASSERT_NE(record, nullptr);
+  
+  auto n_val = record->Get("n");
+  ASSERT_TRUE(n_val.has_value());
+  EXPECT_EQ(n_val->GetNode().properties.at("name").GetString(), "Alice");
+  
+  // Exhausted
+  EXPECT_EQ(op.Next(), nullptr);
+}
+
+TEST_F(SetOperatorTest, SetScalarVariable) {
+  class MockChild : public PhysicalOperator {
+   public:
+    std::shared_ptr<Record> rec;
+    bool Init(ExecutionContext*) override { return true; }
+    std::shared_ptr<Record> Next() override {
+      if (!rec) return nullptr;
+      auto tmp = rec;
+      rec.reset();
+      return tmp;
+    }
+    std::string GetName() const override { return "MockChild"; }
+    std::unique_ptr<PhysicalOperator> Clone() const override {
+      return std::make_unique<MockChild>();
+    }
+  };
+  
+  auto mock = std::make_shared<MockChild>();
+  mock->rec = std::make_shared<Record>();
+  mock->rec->Set("x", Value(10));
+  
+  auto set_clause = std::make_shared<SetClause>();
+  SetClause::SetItem item;
+  item.target = std::make_shared<VariableExpr>("x");
+  item.value = std::make_shared<LiteralExpr>(Value(42));
+  set_clause->items.push_back(std::move(item));
+  
+  SetOperator op(set_clause);
+  op.AddChild(mock);
+  
+  ExecutionContext ctx;
+  ctx.storage = storage_;
+  
+  ASSERT_TRUE(op.Init(&ctx));
+  auto record = op.Next();
+  ASSERT_NE(record, nullptr);
+  EXPECT_EQ(record->Get("x")->GetInt(), 42);
 }
 
 int main(int argc, char** argv) {
