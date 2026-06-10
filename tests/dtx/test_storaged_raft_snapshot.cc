@@ -199,3 +199,69 @@ TEST_F(StorageRaftSnapshotTest, OnSnapshotLoadRestoresDataFiles) {
   EXPECT_TRUE(result.has_value());
   EXPECT_EQ(result->AsRaw(), desc.AsRaw());
 }
+
+TEST_F(StorageRaftSnapshotTest, FullSnapshotRoundTrip) {
+  // Phase 1: Write multiple data points
+  // Note: PutStaticVertex overwrites the descriptor's column_id with property_id,
+  // so we create descriptors with matching column_ids for AsRaw() comparison.
+  cedar::Descriptor d1 = cedar::Descriptor::InlineInt(1, 111);
+  cedar::Descriptor d2 = cedar::Descriptor::InlineInt(1, 222);
+  cedar::Descriptor d3 = cedar::Descriptor::InlineInt(2, 333);
+
+  auto s = storage_->PutStaticVertex(4001, 1, d1);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+  s = storage_->PutStaticVertex(4002, 1, d2);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+  s = storage_->PutStaticVertex(4003, 2, d3);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  s = storage_->ForceFlush();
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  // Verify all present
+  EXPECT_TRUE(storage_->GetStaticVertex(4001, 1).has_value());
+  EXPECT_TRUE(storage_->GetStaticVertex(4002, 1).has_value());
+  EXPECT_TRUE(storage_->GetStaticVertex(4003, 2).has_value());
+
+  // Phase 2: Leader saves snapshot
+  cedar::dtx::storage::StorageRaftStateMachine leader_sm(storage_);
+  {
+    TestSnapshotWriter writer(snapshot_dir_);
+    leader_sm.on_snapshot_save(&writer, nullptr);
+  }
+
+  // Phase 3: Simulate follower with empty storage
+  delete storage_;
+  storage_ = nullptr;
+  std::filesystem::remove_all(data_dir_);
+  std::filesystem::create_directories(data_dir_);
+
+  cedar::CedarOptions options;
+  options.create_if_missing = true;
+  s = cedar::CedarGraphStorage::Open(options, data_dir_, &storage_);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  // Verify empty before load
+  EXPECT_FALSE(storage_->GetStaticVertex(4001, 1).has_value());
+  EXPECT_FALSE(storage_->GetStaticVertex(4002, 1).has_value());
+  EXPECT_FALSE(storage_->GetStaticVertex(4003, 2).has_value());
+
+  // Phase 4: Follower loads snapshot
+  cedar::dtx::storage::StorageRaftStateMachine follower_sm(storage_);
+  TestSnapshotReader reader(snapshot_dir_);
+  int rc = follower_sm.on_snapshot_load(&reader);
+  EXPECT_EQ(rc, 0);
+
+  // Phase 5: Verify all data restored
+  auto r1 = storage_->GetStaticVertex(4001, 1);
+  ASSERT_TRUE(r1.has_value());
+  EXPECT_EQ(r1->AsRaw(), d1.AsRaw());
+
+  auto r2 = storage_->GetStaticVertex(4002, 1);
+  ASSERT_TRUE(r2.has_value());
+  EXPECT_EQ(r2->AsRaw(), d2.AsRaw());
+
+  auto r3 = storage_->GetStaticVertex(4003, 2);
+  ASSERT_TRUE(r3.has_value());
+  EXPECT_EQ(r3->AsRaw(), d3.AsRaw());
+}
