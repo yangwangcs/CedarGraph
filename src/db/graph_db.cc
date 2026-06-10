@@ -110,13 +110,176 @@ Status CedarGraphDB::DestroyDB(const std::string& db_path,
 }
 
 Status CedarGraphDB::RepairDB(const std::string& db_path,
-                             const CedarGraphOptions& options) {
-  // Basic repair: verify directory exists and is accessible.
-  // Full repair requires manifest rebuild, SST validation, and WAL replay.
-  (void)options;
+                              const CedarGraphOptions& options) {
   if (!std::filesystem::exists(db_path)) {
     return Status::IOError("RepairDB: path does not exist: " + db_path);
   }
+
+  Env* env = options.env ? options.env : Env::Default();
+
+  // Phase 1: Scan for SST files and validate them
+  std::vector<FileMetaData> valid_files;
+  std::vector<std::string> sst_paths;
+
+  // Scan root db_path and all subdirectories for .sst files
+  try {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(db_path)) {
+      if (entry.is_regular_file()) {
+        std::string ext = entry.path().extension().string();
+        if (ext == ".sst") {
+          sst_paths.push_back(entry.path().string());
+        }
+      }
+    }
+  } catch (const std::exception& e) {
+    return Status::IOError("RepairDB", std::string("Scan failed: ") + e.what());
+  }
+
+  for (const auto& path : sst_paths) {
+    // Validate by opening the SST file
+    ZoneColumnarSstReader reader(path);
+    Status s = reader.Open();
+    if (!s.ok()) {
+      std::cerr << "[RepairDB] Skipping corrupt SST: " << path
+                << " (" << s.ToString() << ")" << std::endl;
+      continue;
+    }
+
+    // Extract metadata from the file
+    FileMetaData meta;
+    std::string filename = std::filesystem::path(path).filename().string();
+    // File number from name: "{number}.sst"
+    size_t dot_pos = filename.rfind('.');
+    if (dot_pos != std::string::npos) {
+      try {
+        meta.file_number = std::stoull(filename.substr(0, dot_pos));
+      } catch (...) {
+        meta.file_number = 0;
+      }
+    }
+
+    meta.level = 0;  // Safe default: place all recovered files at L0
+    uint64_t fsize = 0;
+    env->GetFileSize(path, &fsize);
+    meta.file_size = fsize;
+    meta.num_entries = reader.NumEntries();
+
+    // Try to extract key range from the reader
+    auto* iter = reader.NewIterator();
+    iter->SeekToFirst();
+    if (iter->Valid()) {
+      meta.smallest_entity_id = iter->Key().entity_id();
+      meta.smallest_timestamp = iter->Key().timestamp().value();
+    }
+    // Advance to the last entry
+    while (iter->Valid()) {
+      meta.largest_entity_id = iter->Key().entity_id();
+      meta.largest_timestamp = iter->Key().timestamp().value();
+      iter->Next();
+    }
+    delete iter;
+
+    // If we couldn't determine range, use safe defaults
+    if (meta.smallest_entity_id == 0 && meta.largest_entity_id == 0) {
+      meta.smallest_entity_id = 0;
+      meta.largest_entity_id = UINT64_MAX;
+      meta.smallest_timestamp = 0;
+      meta.largest_timestamp = UINT64_MAX;
+    }
+
+    valid_files.push_back(meta);
+  }
+
+  std::cout << "[RepairDB] Scanned " << sst_paths.size()
+            << " SST files, " << valid_files.size() << " valid." << std::endl;
+
+  // Phase 2: Backup old manifest / CURRENT
+  std::string current_path = db_path + "/CURRENT";
+  if (std::filesystem::exists(current_path)) {
+    try {
+      std::filesystem::rename(current_path, db_path + "/CURRENT.bak");
+    } catch (const std::exception& e) {
+      return Status::IOError("RepairDB",
+                             std::string("Failed to backup CURRENT: ") + e.what());
+    }
+  }
+
+  // Backup any existing MANIFEST files
+  try {
+    for (const auto& entry : std::filesystem::directory_iterator(db_path)) {
+      if (entry.is_regular_file()) {
+        std::string name = entry.path().filename().string();
+        if (name.find("MANIFEST-") == 0) {
+          std::string bak = entry.path().string() + ".bak";
+          std::filesystem::rename(entry.path().string(), bak);
+        }
+      }
+    }
+  } catch (const std::exception& e) {
+    // Non-fatal: continue even if backup of old manifests fails
+    (void)e;
+  }
+
+  // Phase 3: Create fresh manifest with valid files
+  ManifestManager manifest(db_path, env);
+  Status s = manifest.Initialize(true);  // create new manifest
+  if (!s.ok()) {
+    return Status::IOError("RepairDB",
+                           std::string("Failed to create new manifest: ") + s.ToString());
+  }
+
+  for (const auto& meta : valid_files) {
+    ManifestEdit edit = ManifestEdit::AddFile(0, meta);
+    s = manifest.LogEdit(edit);
+    if (!s.ok()) {
+      manifest.Close();
+      return Status::IOError("RepairDB",
+                             std::string("Failed to log edit: ") + s.ToString());
+    }
+  }
+
+  s = manifest.Sync();
+  if (!s.ok()) {
+    manifest.Close();
+    return s;
+  }
+  manifest.Close();
+
+  std::cout << "[RepairDB] Rebuilt manifest with " << valid_files.size()
+            << " files." << std::endl;
+
+  // Phase 4: Replay WALs by opening a transient LsmEngine
+  std::string wal_dir = db_path + "/wal";
+  if (std::filesystem::exists(wal_dir)) {
+    CedarOptions legacy_options;
+    legacy_options.create_if_missing = false;
+    legacy_options.enable_wal = true;
+
+    // We open each column family directory that contains SSTs
+    // For simplicity, always repair the default column family
+    std::string default_cf_path = db_path + "/default";
+    if (!std::filesystem::exists(default_cf_path)) {
+      default_cf_path = db_path;
+    }
+
+    LsmEngine engine(default_cf_path, legacy_options, env);
+    s = engine.Open();
+    if (!s.ok()) {
+      std::cerr << "[RepairDB] Warning: LsmEngine open for WAL replay failed: "
+                << s.ToString() << std::endl;
+      // Continue: manifest is already repaired; WAL replay is best-effort
+    } else {
+      // Force flush any WAL-recovered data to SST
+      s = engine.ForceFlush();
+      if (!s.ok()) {
+        std::cerr << "[RepairDB] Warning: ForceFlush after WAL replay failed: "
+                  << s.ToString() << std::endl;
+      }
+      engine.Close();
+      std::cout << "[RepairDB] WAL replay and flush completed." << std::endl;
+    }
+  }
+
   return Status::OK();
 }
 

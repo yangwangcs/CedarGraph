@@ -73,9 +73,7 @@ TEST(VersionChainHeadTest, InsertAndGetLatest) {
   // 最新可见版本应该是 node2
   EXPECT_EQ(head.GetLatestVisible(), node2);
   
-  // 清理
-  delete node1;
-  delete node2;
+  // VersionChainHead owns the nodes; do not manually delete
 }
 
 TEST(VersionChainHeadTest, GetSpecificVersion) {
@@ -94,9 +92,7 @@ TEST(VersionChainHeadTest, GetSpecificVersion) {
   EXPECT_EQ(head.GetVersion(2), node2);
   EXPECT_EQ(head.GetVersion(3), nullptr);  // 不存在
   
-  // 清理
-  delete node1;
-  delete node2;
+  // VersionChainHead owns the nodes; do not manually delete
 }
 
 TEST(VersionChainHeadTest, ReaderCount) {
@@ -112,6 +108,9 @@ TEST(VersionChainHeadTest, ReaderCount) {
   
   head.ExitRead();
   EXPECT_EQ(head.reader_count.load(), 1);
+  
+  head.ExitRead();
+  EXPECT_EQ(head.reader_count.load(), 0);
 }
 
 // =============================================================================
@@ -317,7 +316,4 @@ TEST(CrossShardVersionViewTest, GlobalValidate) {
   EXPECT_TRUE(valid);
 }
 
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+

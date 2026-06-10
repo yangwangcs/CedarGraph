@@ -407,7 +407,4 @@ TEST(BbccAdvantageTest, HLCOrdering) {
   EXPECT_FALSE(bm2.HappensBefore(bm1));
 }
 
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+

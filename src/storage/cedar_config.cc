@@ -14,9 +14,12 @@
 
 #include "cedar/storage/cedar_config.h"
 
+#include <fcntl.h>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <thread>
+#include <unistd.h>
 
 namespace cedar {
 
@@ -477,10 +480,228 @@ Status CedarConfig::LoadFromFile(const std::string& path) {
   return Status::OK();
 }
 
+namespace {
+
+// Simple JSON value escaper for strings
+std::string JsonEscape(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\b': out += "\\b"; break;
+      case '\f': out += "\\f"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default: out += c; break;
+    }
+  }
+  return out;
+}
+
+// Append a JSON key-value pair to a string buffer
+void JsonKV(std::string* out, const std::string& key, const std::string& value,
+            bool is_string, bool last) {
+  *out += "    \"" + JsonEscape(key) + "\": ";
+  if (is_string) {
+    *out += "\"" + JsonEscape(value) + "\"";
+  } else {
+    *out += value;
+  }
+  if (!last) *out += ",";
+  *out += "\n";
+}
+
+template <typename T>
+std::string ToStr(T v) {
+  return std::to_string(v);
+}
+
+std::string BoolStr(bool b) {
+  return b ? "true" : "false";
+}
+
+}  // namespace
+
 Status CedarConfig::SaveToFile(const std::string& path) const {
-  // TODO(#config-002): Implement JSON/YAML configuration file saving.
-  (void)path;
-  return Status::NotSupported("Configuration file saving not yet implemented");
+  std::string json;
+  json += "{\n";
+  json += "  \"version\": " + std::to_string(kVersion) + ",\n";
+
+  // db section
+  json += "  \"db\": {\n";
+  JsonKV(&json, "create_if_missing", BoolStr(db.create_if_missing), false, false);
+  JsonKV(&json, "error_if_exists", BoolStr(db.error_if_exists), false, false);
+  JsonKV(&json, "paranoid_checks", BoolStr(db.paranoid_checks), false, false);
+  JsonKV(&json, "memtable_threshold", ToStr(db.memtable_threshold), false, false);
+  JsonKV(&json, "write_buffer_size", ToStr(db.write_buffer_size), false, false);
+  JsonKV(&json, "column_id", ToStr(db.column_id), false, false);
+  JsonKV(&json, "enable_bloom_filter", BoolStr(db.enable_bloom_filter), false, false);
+  JsonKV(&json, "bloom_bits_per_key", ToStr(db.bloom_bits_per_key), false, false);
+  JsonKV(&json, "verify_checksums", BoolStr(db.verify_checksums), false, true);
+  json += "  },\n";
+
+  // lsm section
+  json += "  \"lsm\": {\n";
+  JsonKV(&json, "min_files_for_compaction", ToStr(lsm.min_files_for_compaction), false, false);
+  JsonKV(&json, "min_size_for_compaction", ToStr(lsm.min_size_for_compaction), false, false);
+  JsonKV(&json, "target_file_size", ToStr(lsm.target_file_size), false, false);
+  JsonKV(&json, "max_levels", ToStr(lsm.max_levels), false, false);
+  JsonKV(&json, "level_size_multiplier", ToStr(lsm.level_size_multiplier), false, false);
+  JsonKV(&json, "level0_file_num_compaction_trigger", ToStr(lsm.level0_file_num_compaction_trigger), false, false);
+  JsonKV(&json, "level0_slowdown_writes_trigger", ToStr(lsm.level0_slowdown_writes_trigger), false, false);
+  JsonKV(&json, "level0_stop_writes_trigger", ToStr(lsm.level0_stop_writes_trigger), false, true);
+  json += "  },\n";
+
+  // wal section
+  json += "  \"wal\": {\n";
+  JsonKV(&json, "max_file_size", ToStr(wal.max_file_size), false, false);
+  JsonKV(&json, "group_commit_timeout_us", ToStr(wal.group_commit_timeout_us), false, false);
+  JsonKV(&json, "group_commit_max_batch", ToStr(wal.group_commit_max_batch), false, false);
+  JsonKV(&json, "use_fsync", BoolStr(wal.use_fsync), false, false);
+  JsonKV(&json, "preallocate_size", ToStr(wal.preallocate_size), false, false);
+  JsonKV(&json, "enable_sharded_wal", BoolStr(wal.enable_sharded_wal), false, false);
+  JsonKV(&json, "num_shards", ToStr(wal.num_shards), false, false);
+  JsonKV(&json, "bind_by_thread_id", BoolStr(wal.bind_by_thread_id), false, false);
+  JsonKV(&json, "max_file_size_per_shard", ToStr(wal.max_file_size_per_shard), false, false);
+  JsonKV(&json, "batch_timeout_us", ToStr(wal.batch_timeout_us), false, false);
+  JsonKV(&json, "batch_max_size", ToStr(wal.batch_max_size), false, false);
+  JsonKV(&json, "enable_background_merger", BoolStr(wal.enable_background_merger), false, false);
+  JsonKV(&json, "merge_interval_ms", ToStr(wal.merge_interval_ms), false, true);
+  json += "  },\n";
+
+  // memtable section
+  json += "  \"memtable\": {\n";
+  JsonKV(&json, "type", ToStr(static_cast<int>(memtable.type)), false, false);
+  JsonKV(&json, "enable_lockfree_memtable", BoolStr(memtable.enable_lockfree_memtable), false, false);
+  JsonKV(&json, "initial_capacity", ToStr(memtable.initial_capacity), false, false);
+  JsonKV(&json, "rehash_threshold", ToStr(memtable.rehash_threshold), false, false);
+  JsonKV(&json, "enable_preallocation", BoolStr(memtable.enable_preallocation), false, false);
+  JsonKV(&json, "preallocation_pool_size", ToStr(memtable.preallocation_pool_size), false, false);
+  JsonKV(&json, "gc_interval_ms", ToStr(memtable.gc_interval_ms), false, false);
+  JsonKV(&json, "gc_batch_size", ToStr(memtable.gc_batch_size), false, true);
+  json += "  },\n";
+
+  // mvcc section
+  json += "  \"mvcc\": {\n";
+  JsonKV(&json, "enable_sharded_timestamp_allocator", BoolStr(mvcc.enable_sharded_timestamp_allocator), false, false);
+  JsonKV(&json, "timestamp_shard_count", ToStr(mvcc.timestamp_shard_count), false, false);
+  JsonKV(&json, "timestamp_batch_size", ToStr(mvcc.timestamp_batch_size), false, false);
+  JsonKV(&json, "enable_version_chain_index", BoolStr(mvcc.enable_version_chain_index), false, false);
+  JsonKV(&json, "version_chain_index_threshold", ToStr(mvcc.version_chain_index_threshold), false, false);
+  JsonKV(&json, "version_chain_max_level", ToStr(mvcc.version_chain_max_level), false, false);
+  JsonKV(&json, "enable_delta_encoding", BoolStr(mvcc.enable_delta_encoding), false, false);
+  JsonKV(&json, "delta_max_per_group", ToStr(mvcc.delta_max_per_group), false, false);
+  JsonKV(&json, "enable_temporal_bloom_filter", BoolStr(mvcc.enable_temporal_bloom_filter), false, false);
+  JsonKV(&json, "temporal_filter_false_positive_rate", ToStr(mvcc.temporal_filter_false_positive_rate), false, false);
+  JsonKV(&json, "temporal_filter_hours_per_bucket", ToStr(mvcc.temporal_filter_hours_per_bucket), false, false);
+  JsonKV(&json, "enable_sharded_wal", BoolStr(mvcc.enable_sharded_wal), false, false);
+  JsonKV(&json, "enable_lockfree_memtable", BoolStr(mvcc.enable_lockfree_memtable), false, false);
+  JsonKV(&json, "enable_async_index_builder", BoolStr(mvcc.enable_async_index_builder), false, false);
+  JsonKV(&json, "index_builder_worker_threads", ToStr(mvcc.index_builder_worker_threads), false, false);
+  JsonKV(&json, "index_builder_max_concurrent", ToStr(mvcc.index_builder_max_concurrent), false, false);
+  JsonKV(&json, "index_builder_batch_size", ToStr(mvcc.index_builder_batch_size), false, false);
+  JsonKV(&json, "index_builder_batch_timeout_ms", ToStr(mvcc.index_builder_batch_timeout_ms), false, false);
+  JsonKV(&json, "enable_build_cache", BoolStr(mvcc.enable_build_cache), false, false);
+  JsonKV(&json, "build_cache_size", ToStr(mvcc.build_cache_size), false, false);
+  JsonKV(&json, "enable_deep_integration", BoolStr(mvcc.enable_deep_integration), false, true);
+  json += "  },\n";
+
+  // transaction section
+  json += "  \"transaction\": {\n";
+  JsonKV(&json, "enable_transaction", BoolStr(transaction.enable_transaction), false, false);
+  JsonKV(&json, "default_isolation_level", ToStr(transaction.default_isolation_level), false, false);
+  JsonKV(&json, "timeout_ms", ToStr(transaction.timeout_ms), false, false);
+  JsonKV(&json, "max_retries", ToStr(transaction.max_retries), false, false);
+  JsonKV(&json, "parallel_validation", BoolStr(transaction.parallel_validation), false, false);
+  JsonKV(&json, "validation_threads", ToStr(transaction.validation_threads), false, false);
+  JsonKV(&json, "enable_occ", BoolStr(transaction.enable_occ), false, false);
+  JsonKV(&json, "max_write_set_size", ToStr(transaction.max_write_set_size), false, false);
+  JsonKV(&json, "max_read_set_size", ToStr(transaction.max_read_set_size), false, true);
+  json += "  },\n";
+
+  // cache section
+  json += "  \"cache\": {\n";
+  JsonKV(&json, "block_cache_size", ToStr(cache.block_cache_size), false, false);
+  JsonKV(&json, "table_cache_size", ToStr(cache.table_cache_size), false, false);
+  JsonKV(&json, "block_restart_interval", ToStr(cache.block_restart_interval), false, false);
+  JsonKV(&json, "block_size", ToStr(cache.block_size), false, false);
+  JsonKV(&json, "version_chain_cache_size", ToStr(cache.version_chain_cache_size), false, false);
+  JsonKV(&json, "enable_version_chain_cache", BoolStr(cache.enable_version_chain_cache), false, true);
+  json += "  },\n";
+
+  // filesystem section
+  json += "  \"filesystem\": {\n";
+  JsonKV(&json, "max_open_files", ToStr(filesystem.max_open_files), false, false);
+  JsonKV(&json, "use_direct_io", BoolStr(filesystem.use_direct_io), false, false);
+  JsonKV(&json, "advise_random_access", BoolStr(filesystem.advise_random_access), false, false);
+  JsonKV(&json, "prefetch_buffer_size", ToStr(filesystem.prefetch_buffer_size), false, true);
+  json += "  },\n";
+
+  // debug section
+  json += "  \"debug\": {\n";
+  JsonKV(&json, "enable_stats", BoolStr(debug.enable_stats), false, false);
+  JsonKV(&json, "stats_dump_interval_sec", ToStr(debug.stats_dump_interval_sec), false, false);
+  JsonKV(&json, "enable_slow_log", BoolStr(debug.enable_slow_log), false, false);
+  JsonKV(&json, "slow_log_threshold_ms", ToStr(debug.slow_log_threshold_ms), false, false);
+  JsonKV(&json, "enable_trace", BoolStr(debug.enable_trace), false, true);
+  json += "  }\n";
+
+  json += "}\n";
+
+  // Atomic write: temp file -> fsync -> rename
+  std::string tmp_path = path + ".tmp";
+  std::ofstream ofs(tmp_path, std::ios::binary);
+  if (!ofs.is_open()) {
+    return Status::IOError("SaveToFile", "Cannot open temp file: " + tmp_path);
+  }
+  ofs.write(json.data(), static_cast<std::streamsize>(json.size()));
+  ofs.flush();
+  ofs.close();
+
+  if (!ofs.good()) {
+    std::filesystem::remove(tmp_path);
+    return Status::IOError("SaveToFile", "Failed to write temp file: " + tmp_path);
+  }
+
+  // fsync the temp file for durability
+  int fd = ::open(tmp_path.c_str(), O_RDONLY);
+  if (fd >= 0) {
+#if defined(__APPLE__)
+    ::fcntl(fd, F_FULLFSYNC);
+#else
+    ::fsync(fd);
+#endif
+    ::close(fd);
+  }
+
+  // fsync the directory to ensure the rename is durable
+  try {
+    std::filesystem::rename(tmp_path, path);
+  } catch (const std::exception& e) {
+    std::filesystem::remove(tmp_path);
+    return Status::IOError("SaveToFile",
+                           std::string("Failed to rename temp file: ") + e.what());
+  }
+
+  std::string dir_path = ".";
+  auto last_slash = path.rfind('/');
+  if (last_slash != std::string::npos) {
+    dir_path = path.substr(0, last_slash);
+  }
+  int dir_fd = ::open(dir_path.c_str(), O_RDONLY);
+  if (dir_fd >= 0) {
+#if defined(__APPLE__)
+    ::fcntl(dir_fd, F_FULLFSYNC);
+#else
+    ::fsync(dir_fd);
+#endif
+    ::close(dir_fd);
+  }
+
+  return Status::OK();
 }
 
 // ============================================================================

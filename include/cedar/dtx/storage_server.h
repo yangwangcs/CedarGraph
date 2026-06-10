@@ -142,6 +142,8 @@ private:
 // StorageD 服务器
 // =============================================================================
 
+class MetaServiceNodeClient;
+
 class StorageServer {
 public:
     StorageServer();

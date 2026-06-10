@@ -348,7 +348,4 @@ TEST(TemporalLockTest, NoConflictDifferentTime) {
   EXPECT_FALSE(lock1.ConflictsWith(lock2));
 }
 
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+

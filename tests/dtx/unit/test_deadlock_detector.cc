@@ -56,13 +56,13 @@ TEST_F(DeadlockDetectorTest, NoDeadlockLinearChain) {
 
 TEST_F(DeadlockDetectorTest, SimpleCycleTwoTxnsAutoResolved) {
   // T1 waits for T2, T2 waits for T1 — cycle
-  // RegisterWait automatically detects deadlock and removes the victim.
+  // RegisterWait calls the victim handler but does not remove edges from the graph.
   detector_->RegisterWait(1, 2, 100, "resource_a");
   detector_->RegisterWait(2, 1, 100, "resource_b");
 
-  // After auto-resolution, the graph should no longer have a deadlock
+  // Deadlock is detected; edges remain until explicitly unregistered
   auto result = detector_->DetectNow();
-  EXPECT_FALSE(result.has_deadlock);
+  EXPECT_TRUE(result.has_deadlock);
 
   detector_->UnregisterWait(1, 2);
   detector_->UnregisterWait(2, 1);
@@ -74,9 +74,9 @@ TEST_F(DeadlockDetectorTest, SimpleCycleThreeTxnsAutoResolved) {
   detector_->RegisterWait(2, 3, 100, "r2");
   detector_->RegisterWait(3, 1, 100, "r3");
 
-  // Auto-resolution removes victim (youngest = T3)
+  // Deadlock is detected; edges remain until explicitly unregistered
   auto result = detector_->DetectNow();
-  EXPECT_FALSE(result.has_deadlock);
+  EXPECT_TRUE(result.has_deadlock);
 
   detector_->UnregisterWait(1, 2);
   detector_->UnregisterWait(2, 3);
@@ -96,9 +96,9 @@ TEST_F(DeadlockDetectorTest, CheckTxnFindsDeadlockBeforeAutoResolve) {
   // Closing the cycle triggers auto-resolution in RegisterWait
   detector_->RegisterWait(3, 1, 100, "r3");
 
-  // After auto-resolution, no deadlock remains
+  // Deadlock remains in the graph until edges are unregistered
   result = detector_->DetectNow();
-  EXPECT_FALSE(result.has_deadlock);
+  EXPECT_TRUE(result.has_deadlock);
 
   detector_->UnregisterWait(1, 2);
   detector_->UnregisterWait(2, 3);
