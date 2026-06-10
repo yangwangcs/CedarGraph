@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_STORAGE_SST_TEMPORAL_FILTER_H_
-#define FERN_STORAGE_SST_TEMPORAL_FILTER_H_
+#ifndef CEDAR_STORAGE_SST_TEMPORAL_FILTER_H_
+#define CEDAR_STORAGE_SST_TEMPORAL_FILTER_H_
 
 #include <atomic>
 #include <cstdint>

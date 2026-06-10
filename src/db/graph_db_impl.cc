@@ -774,6 +774,7 @@ Status CedarGraphDBImpl::DoCompaction(int level) {
   struct HeapEntry {
     CedarKey key;
     Descriptor descriptor;
+    Timestamp txn_version;
     size_t source_idx;
     bool operator>(const HeapEntry& o) const {
       return o.key.LessForSorting(key);
@@ -783,7 +784,7 @@ Status CedarGraphDBImpl::DoCompaction(int level) {
 
   // 初始化堆：每个源的第一个条目
   for (size_t i = 0; i < sources.size(); ++i) {
-    min_heap.push({sources[i].iter->Key(), sources[i].iter->Value(), i});
+    min_heap.push({sources[i].iter->Key(), sources[i].iter->Value(), sources[i].iter->TxnVersion(), i});
   }
 
   // 确定输出层级
@@ -817,14 +818,14 @@ Status CedarGraphDBImpl::DoCompaction(int level) {
       size_t idx = entry.source_idx;
       sources[idx].iter->Next();
       if (sources[idx].iter->Valid()) {
-        min_heap.push({sources[idx].iter->Key(), sources[idx].iter->Value(), idx});
+        min_heap.push({sources[idx].iter->Key(), sources[idx].iter->Value(), sources[idx].iter->TxnVersion(), idx});
       }
       continue;
     }
     last_key = entry.key;
     has_last = true;
 
-    builder->Add(entry.key, entry.descriptor);
+    builder->Add(entry.key, entry.descriptor, entry.txn_version);
     out_min_entity = std::min(out_min_entity, entry.key.entity_id());
     out_max_entity = std::max(out_max_entity, entry.key.entity_id());
     out_min_ts = std::min(out_min_ts, entry.key.timestamp().value());
@@ -833,7 +834,7 @@ Status CedarGraphDBImpl::DoCompaction(int level) {
     size_t idx = entry.source_idx;
     sources[idx].iter->Next();
     if (sources[idx].iter->Valid()) {
-      min_heap.push({sources[idx].iter->Key(), sources[idx].iter->Value(), idx});
+      min_heap.push({sources[idx].iter->Key(), sources[idx].iter->Value(), sources[idx].iter->TxnVersion(), idx});
     }
   }
   

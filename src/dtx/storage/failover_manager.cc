@@ -255,7 +255,7 @@ PartitionFailoverController::GetPartitionState(PartitionID pid) const {
 }
 
 void PartitionFailoverController::RegisterFailoverCallback(FailoverCallback callback) {
-  std::lock_guard<std::mutex> lock(callbacks_mutex_);
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   callbacks_.push_back(std::move(callback));
 }
 
@@ -309,7 +309,7 @@ void PartitionFailoverController::ExecuteFailover(PartitionID pid) {
   if (status.ok()) {
     std::vector<FailoverCallback> callbacks_copy;
     {
-      std::lock_guard<std::mutex> lock(callbacks_mutex_);
+      std::lock_guard<std::mutex> lock(callback_mutex_);
       callbacks_copy = callbacks_;
     }
     for (auto& callback : callbacks_copy) {
@@ -342,28 +342,31 @@ std::vector<NodeID> PartitionFailoverController::GetLeaderCandidates(PartitionID
   
   std::vector<std::pair<NodeID, double>> scored_candidates;
   
-  for (NodeID replica : replicas) {
-    if (replica == current_leader) continue;
-    if (!CheckReplicaHealth(replica)) continue;
-    
-    double score = 0.0;
-    // Prefer nodes with higher health scores
-    {
-      std::lock_guard<std::mutex> health_lock(health_scores_mutex_);
+  // Perform all health checks atomically under health_state_mutex_
+  // to ensure replica health and scores are consistent.
+  {
+    std::lock_guard<std::mutex> health_lock(health_state_mutex_);
+    for (NodeID replica : replicas) {
+      if (replica == current_leader) continue;
+      auto health_it = replica_health_.find(replica);
+      if (health_it == replica_health_.end() || !health_it->second) continue;
+      
+      double score = 0.0;
+      // Prefer nodes with higher health scores
       auto score_it = health_scores_.find(replica);
       if (score_it != health_scores_.end()) {
         score += score_it->second.overall;
       }
-    }
-    // Penalize recently failed-over targets to avoid flapping
-    if (replica == failover_target) {
-      auto now = std::chrono::steady_clock::now();
-      if (last_failover != std::chrono::steady_clock::time_point() &&
-          now - last_failover < std::chrono::seconds(30)) {
-        score -= 50.0;
+      // Penalize recently failed-over targets to avoid flapping
+      if (replica == failover_target) {
+        auto now = std::chrono::steady_clock::now();
+        if (last_failover != std::chrono::steady_clock::time_point() &&
+            now - last_failover < std::chrono::seconds(30)) {
+          score -= 50.0;
+        }
       }
+      scored_candidates.emplace_back(replica, score);
     }
-    scored_candidates.emplace_back(replica, score);
   }
   
   // Sort by score descending, then by NodeID ascending as tiebreaker
@@ -386,20 +389,22 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
     {
         std::lock_guard<std::mutex> lock(node_addresses_mutex_);
         auto it = node_addresses_.find(node_id);
-        if (it == node_addresses_.end()) {
-            // No address known — we cannot probe, so conservatively mark unhealthy
-            // to force the operator to register addresses.
-            std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
-            replica_health_[node_id] = false;
-            return false;
+        if (it != node_addresses_.end()) {
+            address = it->second;
         }
-        address = it->second;
+    }
+    if (address.empty()) {
+        // No address known — we cannot probe, so conservatively mark unhealthy
+        // to force the operator to register addresses.
+        std::lock_guard<std::mutex> health_lock(health_state_mutex_);
+        replica_health_[node_id] = false;
+        return false;
     }
 
     // Parse host:port
     size_t colon = address.rfind(':');
     if (colon == std::string::npos) {
-        std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+        std::lock_guard<std::mutex> health_lock(health_state_mutex_);
         replica_health_[node_id] = false;
         return false;
     }
@@ -411,7 +416,7 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
     } catch (const std::exception& e) {
       std::cerr << "[Failover] Invalid port in address '" << address
                 << "': " << e.what() << std::endl;
-      std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+      std::lock_guard<std::mutex> health_lock(health_state_mutex_);
       replica_health_[node_id] = false;
       return false;
     }
@@ -427,7 +432,7 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
         if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
             std::cerr << "[Failover] Invalid IPv4 address: '" << host << "'" << std::endl;
             close(sock);
-            std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+            std::lock_guard<std::mutex> health_lock(health_state_mutex_);
             replica_health_[node_id] = false;
             return false;
         }
@@ -437,7 +442,7 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
         if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
             std::cerr << "[Failover] fcntl failed for health probe socket" << std::endl;
             close(sock);
-            std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+            std::lock_guard<std::mutex> health_lock(health_state_mutex_);
             replica_health_[node_id] = false;
             return false;
         }
@@ -454,10 +459,13 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
             tv.tv_usec = 500000;  // 500ms
             rc = select(sock + 1, nullptr, &fdset, nullptr, &tv);
             if (rc > 0) {
-                int so_error;
+                int so_error = 0;
                 socklen_t len = sizeof(so_error);
-                getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &len);
-                healthy = (so_error == 0);
+                if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &len) == 0) {
+                  healthy = (so_error == 0);
+                } else {
+                  healthy = false;
+                }
             }
         }
         close(sock);
@@ -465,14 +473,14 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
 
     // Deep health probe: if a callback is registered, perform app-level checks
     if (healthy) {
-        std::lock_guard<std::mutex> probe_lock(health_probe_callback_mutex_);
+        std::lock_guard<std::mutex> probe_lock(callback_mutex_);
         if (health_probe_callback_) {
             healthy = health_probe_callback_(node_id, address);
         }
     }
 
     {
-        std::lock_guard<std::mutex> health_lock(replica_health_mutex_);
+        std::lock_guard<std::mutex> health_lock(health_state_mutex_);
         replica_health_[node_id] = healthy;
     }
 
@@ -485,25 +493,26 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
 }
 
 bool PartitionFailoverController::CheckReplicaHealth(NodeID node_id) {
-    std::unique_lock<std::mutex> lock(replica_health_mutex_);
+    std::lock_guard<std::mutex> lock(health_state_mutex_);
     auto it = replica_health_.find(node_id);
     if (it != replica_health_.end()) {
         return it->second;
     }
-    // No health record — trigger active probe instead of blindly trusting
-    lock.unlock();  // release before calling to avoid deadlock
-    return PerformActiveHealthCheck(node_id);
+    // No health record available yet — conservatively mark unhealthy.
+    // All health checks are performed asynchronously by HealthCheckLoop
+    // to avoid blocking failover worker threads.
+    return false;
 }
 
 void PartitionFailoverController::SetRouteUpdateCallback(
     RouteUpdateCallback callback) {
-  std::lock_guard<std::mutex> lock(route_mutex_);
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   route_update_callback_ = std::move(callback);
 }
 
 void PartitionFailoverController::SetConsensusTransferCallback(
     ConsensusTransferCallback callback) {
-  std::lock_guard<std::mutex> lock(consensus_callback_mutex_);
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   consensus_transfer_callback_ = std::move(callback);
 }
 
@@ -521,7 +530,7 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
 
   ConsensusTransferCallback callback;
   {
-    std::lock_guard<std::mutex> lock(consensus_callback_mutex_);
+    std::lock_guard<std::mutex> lock(callback_mutex_);
     callback = consensus_transfer_callback_;
   }
   if (callback) {
@@ -562,7 +571,7 @@ Status PartitionFailoverController::UpdatePartitionRoute(PartitionID pid,
                                                           NodeID new_leader) {
   RouteUpdateCallback callback;
   {
-    std::lock_guard<std::mutex> lock(route_mutex_);
+    std::lock_guard<std::mutex> lock(callback_mutex_);
     callback = route_update_callback_;
   }
   if (callback) {
@@ -658,9 +667,15 @@ void PartitionFailoverController::HealthCheckLoop() {
         // 2. Compute multi-dimensional score
         HealthScore score = ComputeScore(metrics);
 
+        bool newly_degraded = false;
+        bool was_degraded = false;
+
         // 3. Phi Accrual: update detector and evaluate suspicion
+        // 4. Predictive degradation: trend detection
+        // 5. Store results
+        // All health state updates are done under a single lock.
         {
-          std::lock_guard<std::mutex> lock(phi_detectors_mutex_);
+          std::lock_guard<std::mutex> lock(health_state_mutex_);
           auto it = phi_detectors_.find(node_id);
           if (it == phi_detectors_.end()) {
             it = phi_detectors_.emplace(node_id,
@@ -681,24 +696,36 @@ void PartitionFailoverController::HealthCheckLoop() {
                         << " (phi=" << phi << ")" << std::endl;
             }
           }
-        }
 
-        // 4. Predictive degradation: trend detection
-        if (!score.is_unhealthy && IsTrendDegrading(node_id, score)) {
-          score.is_degraded = true;
-          TriggerGraduatedDegradation(node_id);
-        } else if (score.overall >= 70.0) {
-          CancelGraduatedDegradation(node_id);
-        }
+          // Predictive degradation: trend detection
+          if (!score.is_unhealthy && IsTrendDegradingLocked(node_id, score)) {
+            score.is_degraded = true;
+            newly_degraded = TriggerGraduatedDegradationLocked(node_id);
+          } else if (score.overall >= 70.0) {
+            was_degraded = CancelGraduatedDegradationLocked(node_id);
+          }
 
-        // 5. Store results
-        {
-          std::lock_guard<std::mutex> lock(replica_health_mutex_);
           replica_health_[node_id] = !score.is_unhealthy;
-        }
-        {
-          std::lock_guard<std::mutex> lock(health_scores_mutex_);
           health_scores_[node_id] = score;
+        }
+
+        // Fire routing callbacks outside the health lock to respect lock ordering.
+        if (newly_degraded) {
+          std::cerr << "[Failover] Predictive degradation triggered for node " << node_id
+                    << ". Redirecting new read traffic." << std::endl;
+          RouteUpdateCallback cb;
+          {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            cb = route_update_callback_;
+          }
+          if (cb) {
+            // Use a reserved partition_id 0 to signal node-level degradation
+            cb(0, node_id);
+          }
+        }
+        if (was_degraded) {
+          std::cerr << "[Failover] Predictive degradation cancelled for node " << node_id
+                    << ". Restoring full traffic." << std::endl;
         }
 
         // 6. If hard-unhealthy, report failure for leader roles
@@ -848,7 +875,12 @@ HealthScore PartitionFailoverController::ComputeScore(const HealthMetrics& m) {
 
 bool PartitionFailoverController::IsTrendDegrading(NodeID node_id,
                                                      const HealthScore& current) {
-  std::lock_guard<std::mutex> lock(score_history_mutex_);
+  std::lock_guard<std::mutex> lock(health_state_mutex_);
+  return IsTrendDegradingLocked(node_id, current);
+}
+
+bool PartitionFailoverController::IsTrendDegradingLocked(NodeID node_id,
+                                                     const HealthScore& current) {
   auto& history = score_history_[node_id];
   history.push_back(current.overall);
   if (history.size() > 10) {
@@ -865,21 +897,18 @@ bool PartitionFailoverController::IsTrendDegrading(NodeID node_id,
 }
 
 void PartitionFailoverController::TriggerGraduatedDegradation(NodeID node_id) {
-  bool already_degraded = false;
+  bool newly_degraded = false;
   {
-    std::lock_guard<std::mutex> lock(degraded_nodes_mutex_);
-    already_degraded = degraded_nodes_.find(node_id) != degraded_nodes_.end();
-    if (!already_degraded) {
-      degraded_nodes_.insert(node_id);
-    }
+    std::lock_guard<std::mutex> lock(health_state_mutex_);
+    newly_degraded = TriggerGraduatedDegradationLocked(node_id);
   }
-  if (!already_degraded) {
+  if (newly_degraded) {
     std::cerr << "[Failover] Predictive degradation triggered for node " << node_id
               << ". Redirecting new read traffic." << std::endl;
     // Notify routing layer to deprioritize this node for new requests
     RouteUpdateCallback cb;
     {
-      std::lock_guard<std::mutex> lock(route_mutex_);
+      std::lock_guard<std::mutex> lock(callback_mutex_);
       cb = route_update_callback_;
     }
     if (cb) {
@@ -889,16 +918,28 @@ void PartitionFailoverController::TriggerGraduatedDegradation(NodeID node_id) {
   }
 }
 
+bool PartitionFailoverController::TriggerGraduatedDegradationLocked(NodeID node_id) {
+  bool already_degraded = degraded_nodes_.find(node_id) != degraded_nodes_.end();
+  if (!already_degraded) {
+    degraded_nodes_.insert(node_id);
+  }
+  return !already_degraded;
+}
+
 void PartitionFailoverController::CancelGraduatedDegradation(NodeID node_id) {
   bool was_degraded = false;
   {
-    std::lock_guard<std::mutex> lock(degraded_nodes_mutex_);
-    was_degraded = degraded_nodes_.erase(node_id) > 0;
+    std::lock_guard<std::mutex> lock(health_state_mutex_);
+    was_degraded = CancelGraduatedDegradationLocked(node_id);
   }
   if (was_degraded) {
     std::cerr << "[Failover] Predictive degradation cancelled for node " << node_id
               << ". Restoring full traffic." << std::endl;
   }
+}
+
+bool PartitionFailoverController::CancelGraduatedDegradationLocked(NodeID node_id) {
+  return degraded_nodes_.erase(node_id) > 0;
 }
 
 void PartitionFailoverController::RegisterHealthMetricsCollector(
@@ -909,12 +950,12 @@ void PartitionFailoverController::RegisterHealthMetricsCollector(
 
 void PartitionFailoverController::RegisterHealthProbeCallback(
     HealthProbeCallback callback) {
-  std::lock_guard<std::mutex> lock(health_probe_callback_mutex_);
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   health_probe_callback_ = std::move(callback);
 }
 
 std::optional<HealthScore> PartitionFailoverController::GetHealthScore(NodeID node_id) const {
-  std::lock_guard<std::mutex> lock(health_scores_mutex_);
+  std::lock_guard<std::mutex> lock(health_state_mutex_);
   auto it = health_scores_.find(node_id);
   if (it != health_scores_.end()) {
     return it->second;
@@ -1248,8 +1289,10 @@ Status ClusterFailoverManager::RestartViaSystemd(const FailureEvent& event) {
     // Abstract namespace socket
     addr.sun_path[0] = '\0';
     std::strncpy(addr.sun_path + 1, notify_socket + 1, sizeof(addr.sun_path) - 2);
+    addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
   } else {
     std::strncpy(addr.sun_path, notify_socket, sizeof(addr.sun_path) - 1);
+    addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
   }
   
   if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
@@ -1424,12 +1467,15 @@ RecoveryAction ClusterFailoverManager::DetermineRecoveryAction(
 }
 
 void ClusterFailoverManager::RecordFailure(const FailureEvent& event) {
-  std::lock_guard<std::mutex> lock(failures_mutex_);
-  failures_[event.event_id] = event;
-  
-  std::lock_guard<std::mutex> stats_lock(stats_mutex_);
-  stats_.total_failures++;
-  stats_.failures_by_type[event.type]++;
+  {
+    std::lock_guard<std::mutex> lock(failures_mutex_);
+    failures_[event.event_id] = event;
+  }
+  {
+    std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+    stats_.total_failures++;
+    stats_.failures_by_type[event.type]++;
+  }
 }
 
 void ClusterFailoverManager::MarkRecovered(uint64_t event_id) {

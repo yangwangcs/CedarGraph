@@ -13,6 +13,8 @@
 
 #include "cedar/cypher/parser.h"
 #include "cedar/cypher/fingerprint.h"
+#include "cedar/queryd/distributed_executor.h"
+#include "cedar/queryd/query_storage_client.h"
 
 namespace cedar {
 namespace service {
@@ -20,6 +22,90 @@ namespace service {
 using namespace cedar::query;
 using namespace cedar::meta;
 using namespace cedar::storage;
+
+namespace {
+
+// Helper: convert cypher::Value to proto Value (merged from QueryD)
+static cedar::query::Value ConvertToProtoValue(const cedar::cypher::Value& value) {
+  cedar::query::Value proto;
+  switch (value.Type()) {
+    case cedar::cypher::ValueType::kNull:
+      proto.mutable_null_val();
+      break;
+    case cedar::cypher::ValueType::kBool:
+      proto.set_bool_val(value.GetBool());
+      break;
+    case cedar::cypher::ValueType::kInt:
+      proto.set_int_val(value.GetInt());
+      break;
+    case cedar::cypher::ValueType::kFloat:
+      proto.set_float_val(value.GetFloat());
+      break;
+    case cedar::cypher::ValueType::kString:
+      proto.set_string_val(value.GetString());
+      break;
+    case cedar::cypher::ValueType::kTimestamp:
+      proto.set_string_val(value.ToString());
+      break;
+    case cedar::cypher::ValueType::kList:
+      for (const auto& item : value.GetList()) {
+        *proto.mutable_list_val()->add_items() = ConvertToProtoValue(item);
+      }
+      break;
+    case cedar::cypher::ValueType::kMap:
+      for (const auto& [k, v] : value.GetMap()) {
+        (*proto.mutable_map_val()->mutable_items())[k] = ConvertToProtoValue(v);
+      }
+      break;
+    default:
+      proto.set_string_val(value.ToString());
+      break;
+  }
+  return proto;
+}
+
+// Helper: convert cypher::Record to proto Row (merged from QueryD)
+static void RecordToRow(const cedar::cypher::Record& record, cedar::query::Row* out_row) {
+  for (const auto& [key, value] : record.values) {
+    (void)key;
+    *out_row->add_values() = ConvertToProtoValue(value);
+  }
+}
+
+// Helper: convert proto Value to cypher::Value (merged from QueryD)
+static cedar::cypher::Value ProtoValueToCypher(const cedar::query::Value& proto) {
+  switch (proto.value_type_case()) {
+    case cedar::query::Value::kBoolVal:
+      return cedar::cypher::Value(proto.bool_val());
+    case cedar::query::Value::kIntVal:
+      return cedar::cypher::Value(proto.int_val());
+    case cedar::query::Value::kFloatVal:
+      return cedar::cypher::Value(proto.float_val());
+    case cedar::query::Value::kStringVal:
+      return cedar::cypher::Value(proto.string_val());
+    case cedar::query::Value::kBytesVal:
+      return cedar::cypher::Value(std::string(proto.bytes_val()));
+    case cedar::query::Value::kListVal: {
+      std::vector<cedar::cypher::Value> list;
+      for (const auto& item : proto.list_val().items()) {
+        list.push_back(ProtoValueToCypher(item));
+      }
+      return cedar::cypher::Value(std::move(list));
+    }
+    case cedar::query::Value::kMapVal: {
+      std::map<std::string, cedar::cypher::Value> map;
+      for (const auto& kv : proto.map_val().items()) {
+        map[kv.first] = ProtoValueToCypher(kv.second);
+      }
+      return cedar::cypher::Value(std::move(map));
+    }
+    case cedar::query::Value::kNullVal:
+    default:
+      return cedar::cypher::Value::Null();
+  }
+}
+
+}  // namespace
 
 GraphServiceRouter::GraphServiceRouter() 
     : cypher_engine_(std::make_unique<cypher::CypherEngine>(nullptr)) {}
@@ -151,26 +237,6 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
     ~ActiveQueryGuard() { counter->fetch_sub(1); }
   } active_guard{&stats_.active_queries};
   
-  // 构建缓存键
-  if (!request->explain_only()) {
-    cedar::query::CacheKey cache_key;
-    cache_key.query_fingerprint = GenerateQueryFingerprint(request->query());
-    cache_key.partition_hash = 0;  // 简化处理
-    cache_key.as_of_timestamp = 0;
-    
-    // 尝试从缓存获取
-    auto cached_result = query_cache_->Get(cache_key);
-    if (cached_result.ok()) {
-      *response->mutable_result_set() = cached_result.ValueOrDie();
-      response->set_success(true);
-      
-      auto* stats = response->mutable_stats();
-      stats->set_execution_time_us(0);
-      
-      return grpc::Status::OK;
-    }
-  }
-  
   // 解析查询
   QueryRouteContext route_ctx;
   route_ctx.query = request->query();
@@ -186,6 +252,32 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   // 设置查询 ID
   static std::atomic<uint64_t> query_counter{0};
   response->set_query_id(std::to_string(++query_counter));
+  
+  // 构建缓存键（在 ParseQueryForRouting 之后，使用 entity_id 区分点查查询）
+  if (!request->explain_only()) {
+    cedar::query::CacheKey cache_key;
+    cache_key.query_fingerprint = GenerateQueryFingerprint(request->query());
+    // 对点查查询，将 entity_id 加入指纹以避免缓存污染
+    if (!route_ctx.entity_ids.empty()) {
+      cache_key.query_fingerprint += ":id=" + std::to_string(route_ctx.entity_ids[0]);
+    }
+    cache_key.partition_hash = 0;
+    cache_key.as_of_timestamp = 0;
+    
+    // 尝试从缓存获取
+    auto cached_result = query_cache_->Get(cache_key);
+    if (cached_result.ok()) {
+      const auto& rs = cached_result.ValueOrDie();
+      *response->mutable_result_set() = rs;
+      response->set_success(true);
+      
+      auto* stats = response->mutable_stats();
+      stats->set_execution_time_us(0);
+      stats->set_rows_returned(rs.rows_size());
+      
+      return grpc::Status::OK;
+    }
+  }
   
   ResultSet result_set;
   
@@ -241,7 +333,60 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
       result_set.set_total_rows(static_cast<int32_t>(route_ctx.entity_ids.size()));
     }
   } else {
-    // 执行查询
+    // Merged from QueryD: use DistributedExecutor for parallel execution
+    if (distributed_executor_ && !request->explain_only()) {
+      cedar::queryd::DistributedExecutionContext ctx;
+      ctx.timeout_ms = request->timeout_ms() > 0 ? request->timeout_ms() : 30000;
+
+      cedar::cypher::ResultSet result;
+      std::unordered_map<std::string, cedar::cypher::Value> parameters;
+      for (const auto& p : request->parameters().params()) {
+        parameters[p.first] = ProtoValueToCypher(p.second);
+      }
+
+      auto s = distributed_executor_->Execute(request->query(), parameters, &ctx, &result);
+
+      response->set_success(s.ok());
+      auto* stats = response->mutable_stats();
+      stats->set_execution_time_us(ctx.stats.execution_time_us.load());
+      stats->set_rows_scanned(ctx.stats.rows_scanned.load());
+      stats->set_rows_returned(ctx.stats.rows_returned.load());
+      stats->set_storage_nodes_accessed(ctx.stats.storage_nodes_accessed.load());
+      stats->set_network_roundtrips(ctx.stats.network_roundtrips.load());
+
+      if (s.ok()) {
+        for (const auto& record : result.records) {
+          RecordToRow(record, response->mutable_result_set()->add_rows());
+        }
+        response->mutable_result_set()->set_total_rows(
+            static_cast<int32_t>(result.records.size()));
+        stats->set_rows_returned(static_cast<int32_t>(result.records.size()));
+      } else {
+        response->set_error_msg(s.ToString());
+      }
+
+      auto end_time = std::chrono::steady_clock::now();
+      auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+          end_time - start_time).count();
+      stats_.total_latency_us += latency_us;
+      RecordLatency(static_cast<uint64_t>(latency_us));
+
+      if (!request->explain_only() && query_cache_ != nullptr) {
+        cedar::query::CacheKey cache_key;
+        cache_key.query_fingerprint = GenerateQueryFingerprint(request->query());
+        if (!route_ctx.entity_ids.empty()) {
+          cache_key.query_fingerprint += ":id=" + std::to_string(route_ctx.entity_ids[0]);
+        }
+        cache_key.partition_hash = 0;
+        cache_key.as_of_timestamp = 0;
+        query_cache_->Put(cache_key, response->result_set());
+      }
+
+      return s.ok() ? grpc::Status::OK
+                    : grpc::Status(grpc::StatusCode::INTERNAL, s.ToString());
+    }
+
+    // Fallback: sequential per-partition execution
     if (route_ctx.target_partitions.empty()) {
       // 无特定分区：SCAN / AGGREGATE 需要广播到所有已知分区
       if (route_ctx.query_type == QueryType::SCAN ||
@@ -431,6 +576,9 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   if (!request->explain_only() && query_cache_ != nullptr) {
     cedar::query::CacheKey cache_key;
     cache_key.query_fingerprint = GenerateQueryFingerprint(request->query());
+    if (!route_ctx.entity_ids.empty()) {
+      cache_key.query_fingerprint += ":id=" + std::to_string(route_ctx.entity_ids[0]);
+    }
     cache_key.partition_hash = 0;
     cache_key.as_of_timestamp = 0;
     query_cache_->Put(cache_key, response->result_set());
@@ -710,19 +858,82 @@ grpc::Status GraphServiceRouter::StreamQuery(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
-  
-  // Execute the query and stream results in batches
+
+  // Merged from QueryD: true streaming via DistributedExecutor
+  if (distributed_executor_) {
+    cedar::queryd::DistributedExecutionContext ctx;
+    std::unordered_map<std::string, cedar::cypher::Value> parameters;
+    for (const auto& p : request->parameters().params()) {
+      parameters[p.first] = ProtoValueToCypher(p.second);
+    }
+
+    int32_t batch_index = 0;
+    constexpr size_t kRowsPerBatch = 50;
+    size_t rows_in_current_batch = 0;
+    bool client_disconnected = false;
+    cedar::query::StreamQueryResponse current_batch;
+    current_batch.set_success(true);
+    current_batch.set_query_id(request->query_id());
+    current_batch.set_batch_index(batch_index);
+    current_batch.set_has_more(true);
+
+    auto s = distributed_executor_->ExecuteStreaming(
+        request->query(), parameters, &ctx,
+        [&writer, &current_batch, &batch_index, &rows_in_current_batch,
+         &client_disconnected, request](
+            const cedar::cypher::Record& record) -> bool {
+          auto* row = current_batch.mutable_batch()->add_rows();
+          RecordToRow(record, row);
+          rows_in_current_batch++;
+
+          if (rows_in_current_batch >= kRowsPerBatch) {
+            if (!writer->Write(current_batch)) {
+              client_disconnected = true;
+              return false;  // Client disconnected
+            }
+            batch_index++;
+            current_batch.Clear();
+            current_batch.set_success(true);
+            current_batch.set_query_id(request->query_id());
+            current_batch.set_batch_index(batch_index);
+            current_batch.set_has_more(true);
+            rows_in_current_batch = 0;
+          }
+          return true;
+        });
+
+    if (!client_disconnected && !context->IsCancelled()) {
+      current_batch.set_has_more(false);
+      current_batch.set_progress_percent(100);
+      writer->Write(current_batch);
+    }
+
+    if (!client_disconnected && !context->IsCancelled()) {
+      cedar::query::StreamQueryResponse final_response;
+      final_response.set_success(s.ok());
+      final_response.set_has_more(false);
+      final_response.set_query_id(request->query_id());
+      final_response.set_progress_percent(100);
+      if (!s.ok()) {
+        final_response.set_error_msg(s.ToString());
+      }
+      writer->Write(final_response);
+    }
+    return grpc::Status::OK;
+  }
+
+  // Fallback: pseudo-streaming via ExecuteQuery + batching
   ExecuteQueryRequest exec_request;
   exec_request.set_query(request->query());
   *exec_request.mutable_parameters() = request->parameters();
   exec_request.set_explain_only(false);
-  
+
   ExecuteQueryResponse exec_response;
   auto status = ExecuteQuery(context, &exec_request, &exec_response);
   if (!status.ok()) {
     return status;
   }
-  
+
   if (!exec_response.success()) {
     StreamQueryResponse error_response;
     error_response.set_success(false);
@@ -882,6 +1093,16 @@ Status GraphServiceRouter::ParseQueryForRouting(const std::string& query,
   std::smatch match;
   std::string::const_iterator search_start(query.cbegin());
   while (std::regex_search(search_start, query.cend(), match, id_pattern)) {
+    uint64_t entity_id = std::stoull(match[1].str());
+    route_ctx->entity_ids.push_back(entity_id);
+    route_ctx->target_partitions.push_back(CalculatePartition(entity_id));
+    search_start = match.suffix().first;
+  }
+  
+  // CREATE 查询中的 {id: 123} 提取
+  std::regex create_id_pattern(R"(\{\s*id\s*:\s*(\d+))", std::regex::icase);
+  search_start = query.cbegin();
+  while (std::regex_search(search_start, query.cend(), match, create_id_pattern)) {
     uint64_t entity_id = std::stoull(match[1].str());
     route_ctx->entity_ids.push_back(entity_id);
     route_ctx->target_partitions.push_back(CalculatePartition(entity_id));
@@ -1109,37 +1330,51 @@ StatusOr<PartitionRoute> GraphServiceRouter::GetPartitionRoute(uint32_t partitio
   }
   
   // 缓存未命中，从 MetaD 获取
-  auto assign_result = meta_client_->GetPartitionAssignment("default", partition_id);
-  if (!assign_result.ok()) {
-    return Status::InvalidArgument("MetaD error: " + assign_result.status().ToString());
-  }
-  
-  // 构建路由信息
-  PartitionRoute route;
-  route.partition_id = partition_id;
+  if (meta_client_) {
+    auto assign_result = meta_client_->GetPartitionAssignment("default", partition_id);
+    if (assign_result.ok()) {
+      // 构建路由信息
+      PartitionRoute route;
+      route.partition_id = partition_id;
 
-  const auto& assignment = assign_result.value();
-  auto leader_addr = GetNodeAddress(assignment.leader_node);
-  if (!leader_addr.ok()) {
-    return leader_addr.status();
-  }
-  route.leader_node = leader_addr.value();
+      const auto& assignment = assign_result.value();
+      auto leader_addr = GetNodeAddress(assignment.leader_node);
+      if (!leader_addr.ok()) {
+        return leader_addr.status();
+      }
+      route.leader_node = leader_addr.value();
 
-  for (uint32_t replica : assignment.follower_nodes) {
-    auto replica_addr = GetNodeAddress(replica);
-    if (!replica_addr.ok()) {
-      return replica_addr.status();
+      for (uint32_t replica : assignment.follower_nodes) {
+        auto replica_addr = GetNodeAddress(replica);
+        if (!replica_addr.ok()) {
+          return replica_addr.status();
+        }
+        route.replicas.push_back(replica_addr.value());
+      }
+      
+      // 更新缓存
+      {
+        std::unique_lock<std::shared_mutex> lock(partition_map_mutex_);
+        partition_cache_[partition_id] = route;
+      }
+      
+      return route;
     }
-    route.replicas.push_back(replica_addr.value());
   }
-  
-  // 更新缓存
-  {
-    std::unique_lock<std::shared_mutex> lock(partition_map_mutex_);
-    partition_cache_[partition_id] = route;
+
+  // Fallback for test/local mode: route to local StorageD
+  if (partition_id < kNumPartitions) {
+    PartitionRoute route;
+    route.partition_id = partition_id;
+    route.leader_node = "127.0.0.1:9779";
+    {
+      std::unique_lock<std::shared_mutex> lock(partition_map_mutex_);
+      partition_cache_[partition_id] = route;
+    }
+    return route;
   }
-  
-  return route;
+
+  return Status::InvalidArgument("Partition route not found and no fallback available");
 }
 
 std::shared_ptr<cedar::storage::StorageService::Stub>
@@ -1530,9 +1765,21 @@ Status GraphServiceRouter::RefreshPartitionMap() {
     new_cache[entry.first] = std::move(route);
   }
 
+  // Sync partition routes to QueryStorageClient for independent-mode scanning
+  if (distributed_executor_) {
+    auto* query_storage = distributed_executor_->GetStorageClient();
+    if (query_storage) {
+      query_storage->SetPartitionCount(static_cast<uint32_t>(new_cache.size()));
+      for (const auto& [pid, route] : new_cache) {
+        query_storage->RegisterNode(pid, route.leader_node);
+      }
+    }
+  }
+
   std::unique_lock<std::shared_mutex> lock(partition_map_mutex_);
   partition_cache_.swap(new_cache);
   partition_cache_version_ = partition_map.version;
+  return Status::OK();
 }
 
 void GraphServiceRouter::PartitionMapRefreshLoop() {
@@ -1827,7 +2074,10 @@ bool GraphServiceRouter::IsWriteQuery(const std::string& query) const {
   // 2. 关键词 fallback（覆盖 MERGE/REMOVE 以及 AST 解析失败的场景）
   std::string lower_query = query;
   std::transform(lower_query.begin(), lower_query.end(), lower_query.begin(), ::tolower);
-  return lower_query.find("merge") != std::string::npos ||
+  return lower_query.find("create") != std::string::npos ||
+         lower_query.find("delete") != std::string::npos ||
+         lower_query.find("set") != std::string::npos ||
+         lower_query.find("merge") != std::string::npos ||
          lower_query.find("remove") != std::string::npos;
 }
 

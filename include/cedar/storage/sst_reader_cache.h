@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // SST Reader Cache - LRU cache for opened SST file handles
 
-#ifndef FERN_STORAGE_SST_READER_CACHE_H_
-#define FERN_STORAGE_SST_READER_CACHE_H_
+#ifndef CEDAR_STORAGE_SST_READER_CACHE_H_
+#define CEDAR_STORAGE_SST_READER_CACHE_H_
 
 #include <memory>
 #include <mutex>

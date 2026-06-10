@@ -55,6 +55,9 @@ struct MetadConfig {
   // Heartbeat check
   uint64_t heartbeat_timeout_sec = 10;
   uint64_t heartbeat_check_interval_sec = 5;
+  
+  // Test mode: skip braft initialization
+  bool test_mode = false;
 };
 
 MetadConfig ParseArgs(int argc, char* argv[]) {
@@ -85,6 +88,8 @@ MetadConfig ParseArgs(int argc, char* argv[]) {
       config.election_timeout_ms = std::stoul(argv[++i]);
     } else if (arg == "--heartbeat_interval" && i + 1 < argc) {
       config.heartbeat_interval_ms = std::stoul(argv[++i]);
+    } else if (arg == "--test_mode") {
+      config.test_mode = true;
     } else if (arg == "--help" || arg == "-h") {
       std::cout << "CedarGraph Metadata Server (MetaD)\n"
                 << "Usage: " << argv[0] << " [options]\n"
@@ -117,6 +122,7 @@ int main(int argc, char* argv[]) {
   std::cout << "[MetaD] Listen: " << config.listen_address << std::endl;
   std::cout << "[MetaD] Data dir: " << config.data_dir << std::endl;
   std::cout << "[MetaD] Peers: " << config.peers.size() << std::endl;
+  std::cout << "[MetaD] Test mode: " << (config.test_mode ? "yes" : "no") << std::endl;
   
   // Setup signal handlers
   std::signal(SIGINT, SignalHandler);
@@ -134,6 +140,7 @@ int main(int argc, char* argv[]) {
   meta_config.election_timeout_ms = config.election_timeout_ms;
   meta_config.heartbeat_timeout_sec = config.heartbeat_timeout_sec;
   meta_config.heartbeat_check_interval_sec = config.heartbeat_check_interval_sec;
+  meta_config.test_mode = config.test_mode;
   
   auto init_status = g_meta_service->Initialize(meta_config);
   if (!init_status.ok()) {

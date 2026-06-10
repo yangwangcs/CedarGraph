@@ -396,12 +396,12 @@ std::vector<LockedVSL::VersionInfo> LockedVSL::ScanRange(
 }
 
 void LockedVSL::Traverse(
-    std::function<bool(const CedarKey&, const Descriptor&)> callback) const {
+    std::function<bool(const CedarKey&, const Descriptor&, Timestamp)> callback) const {
   LFNode* node = head_->Next(0);
   
   while (node != tail_) {
     CedarKey key = node->GetKey();  // Use the full key reconstruction
-    if (!callback(key, node->descriptor())) {
+    if (!callback(key, node->descriptor(), Timestamp(node->txn_version()))) {
       break;
     }
     node = node->Next(0);

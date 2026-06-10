@@ -121,9 +121,21 @@ class CrossDCReplicator {
 
   void SetReplicationCallback(ReplicationCallback callback);
 
+  // Reconciliation: asynchronously retry keys that failed cleanup during
+  // synchronous replication, preventing cross-DC inconsistency.
+  struct ReconciliationStatus {
+    size_t pending_count = 0;
+    size_t retried_count = 0;
+    size_t resolved_count = 0;
+    std::chrono::steady_clock::time_point last_run;
+  };
+  ReconciliationStatus GetReconciliationStatus() const;
+
  private:
   void ReplicationLoop();
   void ProcessReplicationQueue();
+  void ReconciliationLoop();
+  void ReconcileKey(const CedarKey& key, const std::string& dc_id);
   Status ReplicateToDC(const ReplicationLog& log, const std::string& dc_id);
   Status DeleteFromDC(const ::cedar::CedarKey& key, const std::string& dc_id);
   Status SendToRemoteDC(const ReplicationLog& log, const std::string& dc_id);
@@ -142,6 +154,19 @@ class CrossDCReplicator {
   };
   std::deque<PendingLog> pending_queue_;
   std::mutex pending_mutex_;
+
+  // Reconciliation queue for synchronous-replication cleanup failures.
+  struct ReconcileEntry {
+    CedarKey key;
+    std::string dc_id;
+    uint32_t attempt_count{0};
+    std::chrono::steady_clock::time_point next_attempt;
+  };
+  std::deque<ReconcileEntry> reconciliation_queue_;
+  mutable std::mutex reconciliation_mutex_;
+  std::thread reconciliation_thread_;
+  std::atomic<size_t> reconciliation_retried_{0};
+  std::atomic<size_t> reconciliation_resolved_{0};
 
   DCReplicationConfig config_;
   std::string local_dc_id_;

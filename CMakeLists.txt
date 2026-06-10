@@ -254,6 +254,7 @@ set(CEDAR_DTX_SOURCES
     src/dtx/storage/partition_migrator.cc
     src/dtx/storage/braft_partition_raft.cc
     src/dtx/storage/storaged_raft_state_machine.cc
+    src/dtx/storage/braft_partition_state_machine.cc
     src/dtx/storage/partition_raft_manager.cc
     src/dtx/chaos/chaos_testing.cc
     src/dtx/storage_impl/partition_storage.cc
@@ -398,13 +399,12 @@ set(CEDAR_GRAPH_SOURCES
     src/graph/pushdown_predicate.cc
 )
 
-# Queryd sources (Distributed Query Layer)
+# Queryd sources (Distributed Query Layer) - merged into GraphD
 set(CEDAR_QUERYD_SOURCES
     src/queryd/distributed_executor.cpp
-    src/queryd/query_storage_client.cpp    # 重命名避免冲突
+    src/queryd/query_storage_client.cpp
     src/queryd/storage_execution_context.cc
     src/queryd/meta_client.cpp
-    src/queryd/query_service_full.cpp      # 完整版，包含 gRPC 服务
 )
 
 add_library(cedar_graph STATIC ${CEDAR_GRAPH_SOURCES})
@@ -451,23 +451,7 @@ target_link_libraries(cedar_queryd
     gflags 
 )
 
-# cedar-queryd 可执行文件
-add_executable(cedar-queryd src/queryd/cedar_queryd_full.cpp)
-target_include_directories(cedar-queryd PRIVATE 
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}
-)
-target_link_directories(cedar-queryd PRIVATE /opt/homebrew/lib)
-target_link_libraries(cedar-queryd 
-    cedar_queryd
-    cedar_cypher
-    gflags
-    ${GRPC_LIBRARIES}
-    pthread
-)
-target_compile_definitions(cedar-queryd PRIVATE CEDAR_NO_GLOG)
-
-# GraphD - Graph Query Router Service (Nebula-style)
+# GraphD - Unified Query Router Service (merged QueryD functionality)
 add_executable(graphd
     tools/graphd.cc
     src/service/graph_service_router.cc
@@ -497,6 +481,8 @@ add_executable(test_graphd_client
     ${PROTO_OUT_DIR}/query_service.grpc.pb.cc
     ${PROTO_OUT_DIR}/meta_service.pb.cc
     ${PROTO_OUT_DIR}/meta_service.grpc.pb.cc
+    ${PROTO_OUT_DIR}/storage_service.pb.cc
+    ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc
 )
 target_link_libraries(test_graphd_client gRPC::grpc++ protobuf::libprotobuf)
 
@@ -510,10 +496,6 @@ target_include_directories(test_performance PRIVATE
     ${CMAKE_SOURCE_DIR}
 )
 target_link_libraries(test_performance gRPC::grpc++ protobuf::libprotobuf pthread)
-
-# 最小化测试可执行文件
-add_executable(cedar-queryd-minimal src/queryd/minimal_queryd.cpp)
-target_link_libraries(cedar-queryd-minimal cedar gRPC::grpc++)
 
 # MetaD - Standalone Metadata Service (braft-based, stub until full implementation)
 add_executable(metad
@@ -543,7 +525,7 @@ add_executable(storaged
     ${PROTO_OUT_DIR}/storage_service.grpc.pb.cc
 )
 set_target_properties(storaged PROPERTIES OUTPUT_NAME "cedar-storaged")
-target_link_libraries(storaged cedar cedar_graph gRPC::grpc++ pthread)
+target_link_libraries(storaged cedar cedar_graph cedar_cypher cedar_queryd gRPC::grpc++ pthread)
 target_compile_definitions(storaged PRIVATE CEDAR_NO_GLOG)
 if(APPLE)
     target_link_directories(storaged PRIVATE /opt/homebrew/lib)
@@ -903,3 +885,9 @@ install(FILES scripts/cedar-cli.sh scripts/cedar_health_monitor.sh scripts/cedar
 
 message(STATUS "=======================================")
 
+
+# Local concurrent memtable benchmark
+add_executable(test_sharded_memtable
+    tests/benchmark/test_sharded_memtable.cc
+)
+target_link_libraries(test_sharded_memtable cedar)

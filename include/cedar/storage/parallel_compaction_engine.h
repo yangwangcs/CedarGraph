@@ -22,8 +22,8 @@
 // 4. 流式处理降低内存
 // =============================================================================
 
-#ifndef FERN_PARALLEL_COMPACTION_ENGINE_H_
-#define FERN_PARALLEL_COMPACTION_ENGINE_H_
+#ifndef CEDAR_PARALLEL_COMPACTION_ENGINE_H_
+#define CEDAR_PARALLEL_COMPACTION_ENGINE_H_
 
 #include <atomic>
 #include <condition_variable>

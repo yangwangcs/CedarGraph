@@ -17,8 +17,8 @@
 // 本文件提供集中式的参数管理，所有 LSM/MVCC/WAL/Compaction 参数都可以在这里配置
 // 支持从配置文件加载，支持配置验证，支持预设配置模板
 
-#ifndef FERN_FERN_CONFIG_H_
-#define FERN_FERN_CONFIG_H_
+#ifndef CEDAR_FERN_CONFIG_H_
+#define CEDAR_FERN_CONFIG_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -323,17 +323,17 @@ class CedarConfigManager {
 // ============================================================================
 
 // 获取配置参数（线程安全）
-#define FERN_CONFIG(param) \
+#define CEDAR_CONFIG(param) \
   (cedar::CedarConfigManager::Instance()->GetConfig().param)
 
 // 快速访问常用参数
-#define FERN_DB(param)      FERN_CONFIG(db.param)
-#define FERN_LSM(param)     FERN_CONFIG(lsm.param)
-#define FERN_WAL(param)     FERN_CONFIG(wal.param)
-#define FERN_MEMTABLE(param) FERN_CONFIG(memtable.param)
-#define FERN_MVCC(param)    FERN_CONFIG(mvcc.param)
-#define FERN_TXN(param)     FERN_CONFIG(transaction.param)
-#define FERN_CACHE(param)   FERN_CONFIG(cache.param)
+#define CEDAR_DB(param)      FERN_CONFIG(db.param)
+#define CEDAR_LSM(param)     FERN_CONFIG(lsm.param)
+#define CEDAR_WAL(param)     FERN_CONFIG(wal.param)
+#define CEDAR_MEMTABLE(param) FERN_CONFIG(memtable.param)
+#define CEDAR_MVCC(param)    FERN_CONFIG(mvcc.param)
+#define CEDAR_TXN(param)     FERN_CONFIG(transaction.param)
+#define CEDAR_CACHE(param)   FERN_CONFIG(cache.param)
 
 }  // namespace cedar
 

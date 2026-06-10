@@ -27,8 +27,13 @@ void PhiAccrualDetector::RecordInterval(double interval_ms) {
   if (interval_ms <= 0.0) interval_ms = 0.1;  // Guard against zero/negative
   std::lock_guard<std::mutex> lock(mutex_);
   intervals_.push_back(interval_ms);
+  running_sum_ += interval_ms;
+  running_sum_sq_ += interval_ms * interval_ms;
   while (intervals_.size() > window_size_) {
+    double removed = intervals_.front();
     intervals_.pop_front();
+    running_sum_ -= removed;
+    running_sum_sq_ -= removed * removed;
   }
 }
 
@@ -41,8 +46,13 @@ void PhiAccrualDetector::RecordHeartbeat() {
             now - last_heartbeat_time_).count());
     if (interval_ms <= 0.0) interval_ms = 0.1;
     intervals_.push_back(interval_ms);
+    running_sum_ += interval_ms;
+    running_sum_sq_ += interval_ms * interval_ms;
     while (intervals_.size() > window_size_) {
+      double removed = intervals_.front();
       intervals_.pop_front();
+      running_sum_ -= removed;
+      running_sum_sq_ -= removed * removed;
     }
   }
   last_heartbeat_time_ = now;
@@ -74,24 +84,25 @@ size_t PhiAccrualDetector::SampleCount() const {
 void PhiAccrualDetector::Reset() {
   std::lock_guard<std::mutex> lock(mutex_);
   intervals_.clear();
+  running_sum_ = 0.0;
+  running_sum_sq_ = 0.0;
   has_heartbeat_ = false;
 }
 
 PhiAccrualDetector::Distribution PhiAccrualDetector::ComputeDistribution() const {
   Distribution dist;
-  if (intervals_.size() < 2) return dist;
+  size_t n = intervals_.size();
+  if (n < 2) return dist;
 
-  double sum = 0.0;
-  for (double v : intervals_) sum += v;
-  dist.mean = sum / static_cast<double>(intervals_.size());
-
-  double sq_sum = 0.0;
-  for (double v : intervals_) {
-    double d = v - dist.mean;
-    sq_sum += d * d;
+  dist.mean = running_sum_ / static_cast<double>(n);
+  double mean_sq = running_sum_ * running_sum_ / static_cast<double>(n);
+  double variance_numerator = running_sum_sq_ - mean_sq;
+  // Guard against tiny negative values due to floating-point error.
+  if (variance_numerator < 0.0 && variance_numerator > -1e-12) {
+    variance_numerator = 0.0;
   }
   // Sample variance (Bessel-corrected) for better small-sample accuracy.
-  dist.variance = sq_sum / static_cast<double>(intervals_.size() - 1);
+  dist.variance = variance_numerator / static_cast<double>(n - 1);
   dist.valid = true;
   return dist;
 }

@@ -28,10 +28,11 @@
 
 namespace cedar {
 namespace dtx {
-namespace storage {
 
 // Forward declaration
 class PartitionStorage;
+
+namespace storage {
 
 // =============================================================================
 // Serialized Raft Command for Storage Layer

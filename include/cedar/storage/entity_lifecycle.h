@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // 实体生命周期追踪（Entity Lifecycle Tracking）
 
-#ifndef FERN_ENTITY_LIFECYCLE_H_
-#define FERN_ENTITY_LIFECYCLE_H_
+#ifndef CEDAR_ENTITY_LIFECYCLE_H_
+#define CEDAR_ENTITY_LIFECYCLE_H_
 
 #include <cstdint>
 #include <vector>

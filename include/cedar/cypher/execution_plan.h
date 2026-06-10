@@ -146,7 +146,9 @@ class PhysicalOperator {
  */
 class NodeScan : public PhysicalOperator {
  public:
-  NodeScan(std::string variable, std::optional<std::string> label = std::nullopt);
+  NodeScan(std::string variable,
+          std::optional<std::string> label = std::nullopt,
+          std::map<std::string, std::shared_ptr<Expression>> properties = {});
   
   bool Init(ExecutionContext* ctx) override;
   std::shared_ptr<Record> Next() override;
@@ -157,6 +159,7 @@ class NodeScan : public PhysicalOperator {
  private:
   std::string variable_;
   std::optional<std::string> label_;
+  std::map<std::string, std::shared_ptr<Expression>> properties_;
   size_t current_index_ = 0;
   std::vector<uint64_t> node_ids_;
 };

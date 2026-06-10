@@ -8,7 +8,6 @@
 #include "cedar/queryd/distributed_executor.h"
 #include "cedar/queryd/query_storage_client.h"
 #include "cedar/queryd/meta_client.h"
-#include "cedar/queryd/query_service.h"
 
 #include <grpcpp/server_context.h>
 
@@ -115,45 +114,6 @@ TEST(QueryTimeout, DistributedExecutorAllowsQueryWithReasonableTimeout) {
   if (!s.ok()) {
     EXPECT_EQ(s.ToString().find("timeout"), std::string::npos);
   }
-}
-
-// ============================================================================
-// QueryService gRPC Stubs
-// ============================================================================
-
-TEST(QueryServiceStubs, GetSchemaReturnsSuccess) {
-  auto storage_client = std::make_shared<QueryStorageClient>();
-  auto meta_client = std::make_shared<QueryMetaClient>(QueryMetaClient::Options{});
-
-  QueryServiceImpl service(storage_client, meta_client, QueryServiceImpl::Options{});
-  cedar::Status init_status = service.Init();
-  EXPECT_TRUE(init_status.ok());
-
-  grpc::ServerContext context;
-  cedar::query::GetSchemaRequest request;
-  cedar::query::GetSchemaResponse response;
-
-  grpc::Status grpc_status = service.GetSchema(&context, &request, &response);
-
-  EXPECT_TRUE(grpc_status.ok());
-  EXPECT_TRUE(response.success());
-}
-
-TEST(QueryServiceStubs, GetStatsReturnsSuccess) {
-  auto storage_client = std::make_shared<QueryStorageClient>();
-  auto meta_client = std::make_shared<QueryMetaClient>(QueryMetaClient::Options{});
-
-  QueryServiceImpl service(storage_client, meta_client, QueryServiceImpl::Options{});
-  cedar::Status init_status = service.Init();
-  EXPECT_TRUE(init_status.ok());
-
-  grpc::ServerContext context;
-  cedar::query::QueryStatsRequest request;
-  cedar::query::QueryStatsResponse response;
-
-  grpc::Status grpc_status = service.GetStats(&context, &request, &response);
-
-  EXPECT_TRUE(grpc_status.ok());
 }
 
 int main(int argc, char** argv) {

@@ -263,6 +263,9 @@ class DistributedExecutor {
       Timestamp timestamp,
       cypher::VersionedEntity* entity);
 
+  // Access the underlying storage client for routing setup
+  QueryStorageClient* GetStorageClient() const { return storage_client_; }
+
  private:
   QueryStorageClient* storage_client_;
   QueryMetaClient* meta_client_;

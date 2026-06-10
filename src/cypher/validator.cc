@@ -182,13 +182,13 @@ bool QueryValidator::ValidateLabel(const std::string& label, bool is_node) {
   if (!schema_) return true;
   if (is_node) {
     if (schema_->GetNodeLabel(label) == nullptr) {
-      last_error_ = "Unknown node label: " + label;
-      return false;
+      // Dynamic schema: allow unknown labels
+      return true;
     }
   } else {
     if (schema_->GetEdgeType(label) == nullptr) {
-      last_error_ = "Unknown edge type: " + label;
-      return false;
+      // Dynamic schema: allow unknown edge types
+      return true;
     }
   }
   return true;

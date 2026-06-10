@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_COMPRESSION_H_
-#define FERN_COMPRESSION_H_
+#ifndef CEDAR_COMPRESSION_H_
+#define CEDAR_COMPRESSION_H_
 
 #include <cstdint>
 #include <string>

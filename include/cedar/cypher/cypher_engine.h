@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // Cypher Query Engine - Main API
 
-#ifndef FERN_CYPHER_ENGINE_H_
-#define FERN_CYPHER_ENGINE_H_
+#ifndef CEDAR_CYPHER_ENGINE_H_
+#define CEDAR_CYPHER_ENGINE_H_
 
 #include <string>
 #include <memory>

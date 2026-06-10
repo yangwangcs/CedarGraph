@@ -23,6 +23,7 @@
 #include "cedar/dtx/raft/grpc_tls.h"
 #include "cedar/gcn/scatter_gather_router.h"
 #include "cedar/core/logging.h"
+#include "cedar/storage/cedar_graph_storage.h"
 
 #include <gflags/gflags.h>
 #include <grpcpp/grpcpp.h>
@@ -201,10 +202,34 @@ GcnNode::~GcnNode() {
 }
 
 void GcnNode::CdcListenerLoop() {
+  uint64_t last_polled_version = 0;
   while (running_.load()) {
-    // TODO(#C-CDC-001): Wire CDC listener to WAL change-stream.
-    // This loop is a placeholder until the CDC infrastructure is connected
-    // to the storage engine (planned in Task 3.3+).
+    // TODO(#C-CDC-001): Full CDC streaming integration.
+    // For now, we poll storage directly if co-located, or rely on
+    // coordinator heartbeats for watermark advancement.
+    if (storage_) {
+      // Simple polling: scan for active entities and apply as CDC events
+      // This is a best-effort fallback for development/demo scenarios.
+      auto entities = storage_->GetActiveEntities(
+          cedar::EntityType::Vertex,
+          cedar::Timestamp(std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::system_clock::now().time_since_epoch()).count()));
+      for (uint64_t entity_id : entities) {
+        gcn::GraphCDCEvent event;
+        event.entity_id = entity_id;
+        event.target_id = entity_id;
+        event.edge_type = 0;
+        event.valid_from = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        event.valid_to = std::numeric_limits<uint32_t>::max();
+        event.op = gcn::CDCEventOp::kCreate;
+        auto s = event_applier_->ApplyUnordered(event);
+        if (!s.ok()) {
+          CEDAR_LOG_WARN() << "CDC apply failed for entity " << entity_id << ": " << s.ToString() << "\n";
+        }
+      }
+    }
     std::this_thread::sleep_for(std::chrono::seconds(5));
   }
 }

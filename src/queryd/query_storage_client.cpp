@@ -138,7 +138,56 @@ Status QueryStorageClient::ScanNode(
   if (use_base_client_ && base_client_) {
     return base_client_->ScanNodeV2(node_id, Timestamp::Min(), as_of_time, versions);
   }
-  return Status::NotSupported("Independent mode not implemented, use SetBaseClient");
+  
+  // Independent mode: route via gRPC to StorageD
+  uint32_t partition_id = 0;
+  if (partition_count_ > 0) {
+    partition_id = static_cast<uint32_t>(node_id % partition_count_);
+  }
+  
+  auto channel = GetOrCreateChannel(partition_id);
+  if (!channel) {
+    // Fallback: try any registered partition
+    std::shared_lock<std::shared_mutex> lock(nodes_mutex_);
+    if (!partition_routing_.empty()) {
+      channel = GetOrCreateChannel(partition_routing_.begin()->first);
+    }
+    if (!channel) {
+      return Status::NotFound("No storage node registered for partition " + std::to_string(partition_id));
+    }
+  }
+  
+  auto stub = cedar::storage::StorageService::NewStub(channel);
+  cedar::storage::ScanNodeRequestV2 req;
+  req.set_node_id(node_id);
+  req.set_start_time(0);
+  req.set_end_time(as_of_time.value());
+  req.set_partition_id(partition_id);
+  
+  cedar::storage::ScanResponse resp;
+  grpc::ClientContext ctx;
+  ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+  auto status = stub->ScanNodeV2(&ctx, req, &resp);
+  
+  if (!status.ok()) {
+    return Status::IOError("ScanNodeV2 RPC failed: " + status.error_message());
+  }
+  if (!resp.success()) {
+    return Status::IOError("ScanNodeV2 failed: " + resp.error_msg());
+  }
+  
+  versions->clear();
+  for (const auto& item : resp.items()) {
+    Descriptor desc;
+    const std::string& data = item.descriptor_().data();
+    if (data.size() >= sizeof(uint64_t)) {
+      uint64_t raw;
+      std::memcpy(&raw, data.data(), sizeof(uint64_t));
+      desc = Descriptor(raw);
+    }
+    versions->emplace_back(Timestamp(item.timestamp()), std::move(desc));
+  }
+  return Status::OK();
 }
 
 Status QueryStorageClient::ScanOutEdges(
@@ -151,7 +200,58 @@ Status QueryStorageClient::ScanOutEdges(
         node_id, edge_type, cedar::storage::Direction::OUTGOING,
         Timestamp::Min(), as_of_time, edges);
   }
-  return Status::NotSupported("Independent mode not implemented, use SetBaseClient");
+  
+  // Independent mode: route via gRPC to StorageD
+  uint32_t partition_id = 0;
+  if (partition_count_ > 0) {
+    partition_id = static_cast<uint32_t>(node_id % partition_count_);
+  }
+  
+  auto channel = GetOrCreateChannel(partition_id);
+  if (!channel) {
+    std::shared_lock<std::shared_mutex> lock(nodes_mutex_);
+    if (!partition_routing_.empty()) {
+      channel = GetOrCreateChannel(partition_routing_.begin()->first);
+    }
+    if (!channel) {
+      return Status::NotFound("No storage node registered for partition " + std::to_string(partition_id));
+    }
+  }
+  
+  auto stub = cedar::storage::StorageService::NewStub(channel);
+  cedar::storage::ScanEdgeRequestV2 req;
+  req.set_node_id(node_id);
+  req.set_edge_type(edge_type);
+  req.set_direction(cedar::storage::Direction::OUTGOING);
+  req.set_start_time(0);
+  req.set_end_time(as_of_time.value());
+  req.set_partition_id(partition_id);
+  
+  cedar::storage::ScanResponse resp;
+  grpc::ClientContext ctx;
+  ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+  auto status = stub->ScanEdgeV2(&ctx, req, &resp);
+  
+  if (!status.ok()) {
+    return Status::IOError("ScanEdgeV2 RPC failed: " + status.error_message());
+  }
+  if (!resp.success()) {
+    return Status::IOError("ScanEdgeV2 failed: " + resp.error_msg());
+  }
+  
+  edges->clear();
+  for (const auto& item : resp.items()) {
+    EdgeScanEntry entry;
+    entry.timestamp = Timestamp(item.timestamp());
+    const std::string& data = item.descriptor_().data();
+    if (data.size() >= sizeof(uint64_t)) {
+      uint64_t raw;
+      std::memcpy(&raw, data.data(), sizeof(uint64_t));
+      entry.descriptor = Descriptor(raw);
+    }
+    edges->push_back(std::move(entry));
+  }
+  return Status::OK();
 }
 
 Status QueryStorageClient::ScanInEdges(
@@ -164,7 +264,58 @@ Status QueryStorageClient::ScanInEdges(
         node_id, edge_type, cedar::storage::Direction::INCOMING,
         Timestamp::Min(), as_of_time, edges);
   }
-  return Status::NotSupported("Independent mode not implemented, use SetBaseClient");
+  
+  // Independent mode: route via gRPC to StorageD
+  uint32_t partition_id = 0;
+  if (partition_count_ > 0) {
+    partition_id = static_cast<uint32_t>(node_id % partition_count_);
+  }
+  
+  auto channel = GetOrCreateChannel(partition_id);
+  if (!channel) {
+    std::shared_lock<std::shared_mutex> lock(nodes_mutex_);
+    if (!partition_routing_.empty()) {
+      channel = GetOrCreateChannel(partition_routing_.begin()->first);
+    }
+    if (!channel) {
+      return Status::NotFound("No storage node registered for partition " + std::to_string(partition_id));
+    }
+  }
+  
+  auto stub = cedar::storage::StorageService::NewStub(channel);
+  cedar::storage::ScanEdgeRequestV2 req;
+  req.set_node_id(node_id);
+  req.set_edge_type(edge_type);
+  req.set_direction(cedar::storage::Direction::INCOMING);
+  req.set_start_time(0);
+  req.set_end_time(as_of_time.value());
+  req.set_partition_id(partition_id);
+  
+  cedar::storage::ScanResponse resp;
+  grpc::ClientContext ctx;
+  ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+  auto status = stub->ScanEdgeV2(&ctx, req, &resp);
+  
+  if (!status.ok()) {
+    return Status::IOError("ScanEdgeV2 RPC failed: " + status.error_message());
+  }
+  if (!resp.success()) {
+    return Status::IOError("ScanEdgeV2 failed: " + resp.error_msg());
+  }
+  
+  edges->clear();
+  for (const auto& item : resp.items()) {
+    EdgeScanEntry entry;
+    entry.timestamp = Timestamp(item.timestamp());
+    const std::string& data = item.descriptor_().data();
+    if (data.size() >= sizeof(uint64_t)) {
+      uint64_t raw;
+      std::memcpy(&raw, data.data(), sizeof(uint64_t));
+      entry.descriptor = Descriptor(raw);
+    }
+    edges->push_back(std::move(entry));
+  }
+  return Status::OK();
 }
 
 Status QueryStorageClient::GetAtTime(uint64_t entity_id,

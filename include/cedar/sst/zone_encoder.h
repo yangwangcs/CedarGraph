@@ -22,8 +22,8 @@
 // - Zone 3: Values (Dictionary Encoding 或 LZ4/Zstd)
 // =============================================================================
 
-#ifndef FERN_ZONE_ENCODER_H_
-#define FERN_ZONE_ENCODER_H_
+#ifndef CEDAR_ZONE_ENCODER_H_
+#define CEDAR_ZONE_ENCODER_H_
 
 #include <cstdint>
 #include <string>

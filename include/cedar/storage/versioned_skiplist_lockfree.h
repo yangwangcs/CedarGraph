@@ -144,7 +144,7 @@ class LockedVSL {
   size_t ApproximateMemoryUsage() const;
   
   // 遍历
-  void Traverse(std::function<bool(const CedarKey&, const Descriptor&)> callback) const;
+  void Traverse(std::function<bool(const CedarKey&, const Descriptor&, Timestamp)> callback) const;
   
  private:
   int RandomHeight();

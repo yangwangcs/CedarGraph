@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // Cypher AST (Abstract Syntax Tree) Definitions
 
-#ifndef FERN_CYPHER_AST_H_
-#define FERN_CYPHER_AST_H_
+#ifndef CEDAR_CYPHER_AST_H_
+#define CEDAR_CYPHER_AST_H_
 
 #include <memory>
 #include <string>

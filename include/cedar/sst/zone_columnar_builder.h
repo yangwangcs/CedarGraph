@@ -112,7 +112,7 @@ class ZoneColumnarSstBuilder {
 
   // 添加一个条目 (Key 必须按全局排序契约有序)
   // 要求: 添加的 Key 必须满足 CompareForSorting 的升序
-  void Add(const CedarKey& key, const Descriptor& descriptor);
+  void Add(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version = Timestamp(0));
   
   // 批量添加 (内部会排序)
   void AddBatch(std::vector<std::pair<CedarKey, Descriptor>>& batch);

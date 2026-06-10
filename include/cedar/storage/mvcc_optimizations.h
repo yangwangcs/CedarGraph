@@ -23,8 +23,8 @@
 // 使用方式:
 //   #include "cedar/storage/mvcc_optimizations.h"
 
-#ifndef FERN_MVCC_OPTIMIZATIONS_H_
-#define FERN_MVCC_OPTIMIZATIONS_H_
+#ifndef CEDAR_MVCC_OPTIMIZATIONS_H_
+#define CEDAR_MVCC_OPTIMIZATIONS_H_
 
 // 方案一：版本链跳表索引
 #include "cedar/storage/version_chain_index.h"

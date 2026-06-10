@@ -66,19 +66,23 @@ void QueryCache::Put(uint64_t entity_id, uint16_t column_id, uint64_t timestamp,
   current_size_bytes_ += entry_size;
 }
 
-void QueryCache::Invalidate(uint64_t entity_id) {
+void QueryCache::Invalidate(uint64_t entity_id, uint16_t column_id) {
   std::lock_guard<std::mutex> lock(mutex_);
   
-  // Find and remove all entries for this entity
+  // Find and remove entries for this entity
   auto it = cache_.begin();
   while (it != cache_.end()) {
     if (it->first.entity_id == entity_id) {
-      current_size_bytes_ -= it->second.second.size_bytes;
-      lru_list_.erase(it->second.first);
-      it = cache_.erase(it);
-    } else {
-      ++it;
+      // If column_id == UINT16_MAX, invalidate all columns.
+      // Otherwise, only invalidate the specified column.
+      if (column_id == UINT16_MAX || it->first.column_id == column_id) {
+        current_size_bytes_ -= it->second.second.size_bytes;
+        lru_list_.erase(it->second.first);
+        it = cache_.erase(it);
+        continue;
+      }
     }
+    ++it;
   }
 }
 

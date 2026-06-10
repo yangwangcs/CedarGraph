@@ -37,8 +37,8 @@
 // └──────────────────────────────────────────────────────────────┘
 // =============================================================================
 
-#ifndef FERN_ZONE_COLUMNAR_FORMAT_H_
-#define FERN_ZONE_COLUMNAR_FORMAT_H_
+#ifndef CEDAR_ZONE_COLUMNAR_FORMAT_H_
+#define CEDAR_ZONE_COLUMNAR_FORMAT_H_
 
 #include <cstdint>
 #include <string>

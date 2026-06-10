@@ -124,18 +124,6 @@ struct ZoneColumnarHeaderV2 {
 };
 
 // =============================================================================
-// Block 物理布局（Zone-Columnar）
-// =============================================================================
-struct BlockHeader {
-  uint32_t row_count;              // 行数
-  uint32_t zone_sizes[5];          // 5 个 Zone 的大小
-  uint64_t min_entity_id;          // 本 Block 最小 Entity
-  uint64_t max_entity_id;          // 本 Block 最大 Entity
-  
-  static constexpr size_t kSize = 4 + 20 + 8 + 8;  // 40 bytes
-};
-
-// =============================================================================
 // SST 统计信息
 // =============================================================================
 struct SSTStats {

@@ -102,6 +102,22 @@ message ReplicateWALEntryResponse {
 }
 
 // ============================================================================
+// Replicate WAL Batch Request/Response
+// ============================================================================
+
+message ReplicateWALBatchRequest {
+  string migration_id = 1;
+  uint32 partition_id = 2;
+  repeated ReplicateWALEntryRequest entries = 3;
+}
+
+message ReplicateWALBatchResponse {
+  bool success = 1;
+  string error_msg = 2;
+  uint64 entries_processed = 3;
+}
+
+// ============================================================================
 // Get Migration Status Request/Response
 // ============================================================================
 
@@ -145,6 +161,9 @@ service PartitionMigrationService {
   
   // Replicate a single WAL entry during catch-up phase
   rpc ReplicateWALEntry(ReplicateWALEntryRequest) returns (ReplicateWALEntryResponse);
+  
+  // Replicate a batch of WAL entries during catch-up phase
+  rpc ReplicateWALBatch(ReplicateWALBatchRequest) returns (ReplicateWALBatchResponse);
   
   // Finalize migration (commit or rollback)
   rpc FinalizeMigration(FinalizeMigrationRequest) returns (FinalizeMigrationResponse);

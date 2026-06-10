@@ -58,7 +58,7 @@ class CompactionMergerV2Test : public ::testing::Test {
     auto builder = SstBuilderFactory::Create(file_ptr.get(), test_dir_, options);
     
     for (const auto& [key, desc] : data) {
-      builder->Add(key, desc);
+      builder->Add(key, desc, Timestamp(0));
     }
     
     if (!builder->Finish().ok()) return "";

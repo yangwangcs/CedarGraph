@@ -147,6 +147,12 @@ class PartitionMigrationServiceImpl final
       const ::cedar::migration::ReplicateWALEntryRequest* request,
       ::cedar::migration::ReplicateWALEntryResponse* response) override;
   
+  // Replicate a batch of WAL entries during catch-up phase
+  ::grpc::Status ReplicateWALBatch(
+      ::grpc::ServerContext* context,
+      const ::cedar::migration::ReplicateWALBatchRequest* request,
+      ::cedar::migration::ReplicateWALBatchResponse* response) override;
+  
   // Finalize migration (commit or rollback)
   ::grpc::Status FinalizeMigration(
       ::grpc::ServerContext* context,

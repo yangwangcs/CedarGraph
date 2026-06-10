@@ -5,9 +5,10 @@
 #include <grpcpp/grpcpp.h>
 #include "storage_service.pb.h"
 #include "storage_service.grpc.pb.h"
+#include "cedar/types/descriptor.h"
 
 int main() {
-  auto channel = grpc::CreateChannel("127.0.0.1:7001", grpc::InsecureChannelCredentials());
+  auto channel = grpc::CreateChannel("127.0.0.1:9779", grpc::InsecureChannelCredentials());
   auto stub = cedar::storage::StorageService::NewStub(channel);
   
   // Test with timestamp = 2000000 (like Test 1)
@@ -19,8 +20,9 @@ int main() {
     req.mutable_key()->set_column_id(1);
     req.mutable_key()->set_type_flags(0 << 16);
     req.mutable_key()->set_partition_id(0);
-    int32_t val = 42;
-    req.mutable_descriptor_()->set_data(reinterpret_cast<const char*>(&val), sizeof(val));
+    cedar::Descriptor desc = cedar::Descriptor::InlineInt(1, 42);
+    auto encoded = desc.Encode();
+    req.mutable_descriptor_()->set_data(encoded.data(), encoded.size());
     req.mutable_txn_version()->set_value(2000000);
     
     cedar::storage::PutResponse resp;
@@ -52,8 +54,9 @@ int main() {
     req.mutable_key()->set_column_id(1);
     req.mutable_key()->set_type_flags(0 << 16);
     req.mutable_key()->set_partition_id(0);
-    int32_t val = 43;
-    req.mutable_descriptor_()->set_data(reinterpret_cast<const char*>(&val), sizeof(val));
+    cedar::Descriptor desc = cedar::Descriptor::InlineInt(1, 43);
+    auto encoded = desc.Encode();
+    req.mutable_descriptor_()->set_data(encoded.data(), encoded.size());
     req.mutable_txn_version()->set_value(5000000);
     
     cedar::storage::PutResponse resp;

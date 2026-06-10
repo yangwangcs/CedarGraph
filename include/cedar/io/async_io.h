@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // Async I/O support for high-performance operations
 
-#ifndef FERN_ASYNC_IO_H_
-#define FERN_ASYNC_IO_H_
+#ifndef CEDAR_ASYNC_IO_H_
+#define CEDAR_ASYNC_IO_H_
 
 #include <cstdint>
 #include <functional>
@@ -14,9 +14,9 @@ namespace cedar {
 
 // Platform detection
 #if defined(__linux__)
-  #define FERN_HAS_IO_URING 1
+  #define CEDAR_HAS_IO_URING 1
 #elif defined(__APPLE__)
-  #define FERN_HAS_KQUEUE 1
+  #define CEDAR_HAS_KQUEUE 1
 #endif
 
 using AsyncIoCallback = std::function<void(bool success, size_t bytes_transferred)>;

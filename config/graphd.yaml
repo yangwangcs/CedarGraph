@@ -1,0 +1,3 @@
+# CedarGraph GraphD Configuration
+tls:
+  enabled: false

@@ -38,7 +38,7 @@ class RowBuffer {
  public:
   void Clear();
   void Reserve(size_t n);
-  void Add(const CedarKey& key, const Descriptor& desc);
+  void Add(const CedarKey& key, const Descriptor& desc, Timestamp txn_version);
   bool Empty() const;
   size_t Size() const;
 
@@ -51,6 +51,7 @@ class RowBuffer {
   std::vector<uint8_t> flags;
   std::vector<uint16_t> part_ids;
   std::vector<Descriptor> values;
+  std::vector<uint64_t> txn_versions;
 };
 
 // =============================================================================
@@ -68,7 +69,7 @@ class ZoneColumnarSstBuilderV2 {
   explicit ZoneColumnarSstBuilderV2(const Options& options, WritableFile* file);
 
   // 添加条目（要求：按 CedarKey 排序）
-  void Add(const CedarKey& key, const Descriptor& desc);
+  void Add(const CedarKey& key, const Descriptor& desc, Timestamp txn_version);
 
   // 完成构建
   Status Finish();
@@ -88,6 +89,7 @@ class ZoneColumnarSstBuilderV2 {
     std::string zone2_data;  // Target IDs
     std::string zone3_data;  // Metadata
     std::string zone4_data;  // Values
+    std::string zone5_data;  // Txn Versions (MVCC)
 
     uint64_t min_entity_id = 0;
     uint64_t max_entity_id = 0;

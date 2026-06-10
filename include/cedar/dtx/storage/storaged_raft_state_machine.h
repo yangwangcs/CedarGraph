@@ -22,6 +22,7 @@ class StorageRaftStateMachine : public braft::StateMachine {
 
  private:
   CedarGraphStorage* storage_;
+  std::atomic<int64_t> last_applied_index_{0};
 };
 
 }  // namespace storage

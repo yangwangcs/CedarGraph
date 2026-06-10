@@ -41,8 +41,8 @@ class SstBuilderWrapper : public SstBuilderInterface {
     builder_ = std::make_unique<ZoneColumnarSstBuilderV2>(v2_options, file);
   }
   
-  void Add(const CedarKey& key, const Descriptor& desc) override {
-    builder_->Add(key, desc);
+  void Add(const CedarKey& key, const Descriptor& desc, Timestamp txn_version) override {
+    builder_->Add(key, desc, txn_version);
   }
   
   Status Finish() override {

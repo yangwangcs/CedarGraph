@@ -19,7 +19,6 @@
 #include "cedar/dtx/storage/partition_migrator.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/core/crc32c.h"
-#include "cedar/sst/zone_columnar_reader.h"
 #include "cedar/storage/lsm_engine.h"
 
 #include <algorithm>
@@ -356,10 +355,10 @@ Status PartitionMigrator::StreamSnapshotToTarget(
 
   request.set_migration_id(std::to_string(task.migration_id));
   request.set_partition_id(task.partition_id);
-  request.set_offset(0);
 
   auto writer = migration_stub_->SyncData(&context, &response);
 
+  uint64_t offset = 0;
   for (const auto& entry : std::filesystem::recursive_directory_iterator(snapshot_path)) {
     if (!entry.is_regular_file()) continue;
 
@@ -372,7 +371,9 @@ Status PartitionMigrator::StreamSnapshotToTarget(
       std::streamsize bytes_read = file.gcount();
       if (bytes_read <= 0) break;
 
+      request.set_offset(offset);
       request.set_data(buffer.data(), static_cast<size_t>(bytes_read));
+      offset += static_cast<uint64_t>(bytes_read);
       if (!writer->Write(request)) {
         return Status::IOError("SyncData stream write failed");
       }
@@ -447,6 +448,38 @@ Status PartitionMigrator::ReplayWalToTarget(
   size_t pos = 0;
   uint64_t ops_replayed = 0;
   const uint32_t kWalMagic = 0x57414C01;  // "WAL\x01"
+  const size_t kWalBatchSize = 100;
+  std::vector<cedar::migration::ReplicateWALEntryRequest> batch;
+
+  auto flush_batch = [&]() -> Status {
+    if (batch.empty()) return Status::OK();
+    if (!migration_stub_) {
+      batch.clear();
+      return Status::OK();
+    }
+    ::grpc::ClientContext context;
+    cedar::migration::ReplicateWALBatchRequest request;
+    cedar::migration::ReplicateWALBatchResponse response;
+
+    request.set_migration_id(std::to_string(task.migration_id));
+    request.set_partition_id(task.partition_id);
+    for (auto& entry : batch) {
+      *request.add_entries() = std::move(entry);
+    }
+
+    ::grpc::Status status = migration_stub_->ReplicateWALBatch(
+        &context, request, &response);
+    if (!status.ok()) {
+      return Status::IOError("WAL batch replication RPC failed: " +
+                             status.error_message());
+    }
+    if (!response.success()) {
+      return Status::IOError("WAL batch replication rejected: " +
+                             response.error_msg());
+    }
+    batch.clear();
+    return Status::OK();
+  };
 
   while (pos + sizeof(uint32_t) <= static_cast<size_t>(st.st_size)) {
     uint32_t magic;
@@ -481,30 +514,27 @@ Status PartitionMigrator::ReplayWalToTarget(
       return Status::Corruption("Migration WAL", "CRC mismatch");
     }
 
-    // Stream WAL entry to target node for replay
+    // Accumulate WAL entry for batch replay
     if (migration_stub_) {
-      ::grpc::ClientContext context;
-      cedar::migration::ReplicateWALEntryRequest request;
-      cedar::migration::ReplicateWALEntryResponse response;
+      cedar::migration::ReplicateWALEntryRequest entry;
+      entry.set_migration_id(std::to_string(task.migration_id));
+      entry.set_partition_id(task.partition_id);
+      entry.set_timestamp(ts);
+      entry.set_txn_id(txn_id);
+      entry.set_op_data(op);
+      batch.push_back(std::move(entry));
 
-      request.set_migration_id(std::to_string(task.migration_id));
-      request.set_partition_id(task.partition_id);
-      request.set_timestamp(ts);
-      request.set_txn_id(txn_id);
-      request.set_op_data(op);
-
-      ::grpc::Status status = migration_stub_->ReplicateWALEntry(
-          &context, request, &response);
-      if (!status.ok()) {
-        return Status::IOError("WAL replication RPC failed: " +
-                               status.error_message());
-      }
-      if (!response.success()) {
-        return Status::IOError("WAL replication rejected: " +
-                               response.error_msg());
+      if (batch.size() >= kWalBatchSize) {
+        auto s = flush_batch();
+        if (!s.ok()) return s;
       }
     }
     ops_replayed++;
+  }
+
+  if (!batch.empty()) {
+    auto s = flush_batch();
+    if (!s.ok()) return s;
   }
 
   LOG(INFO) << "[Migration] Caught up " << ops_replayed
@@ -540,7 +570,35 @@ Status PartitionMigrator::SwitchTraffic(MigrationTask& task) {
   if (drain_wait_ms > 0) {
     LOG(INFO) << "[Migration] Draining in-flight requests for partition "
               << task.partition_id << " (max " << drain_wait_ms << "ms)";
-    std::this_thread::sleep_for(std::chrono::milliseconds(drain_wait_ms));
+
+    auto drain_start = std::chrono::steady_clock::now();
+    bool drained = false;
+    while (true) {
+      auto elapsed = std::chrono::steady_clock::now() - drain_start;
+      if (elapsed >= std::chrono::milliseconds(drain_wait_ms)) break;
+
+      // Active drain: poll for active transaction count on the partition
+      if (partition_manager_) {
+        auto* storage = partition_manager_->GetPartition(task.partition_id);
+        if (storage) {
+          auto stats = storage->GetStats();
+          if (stats.num_active_txns == 0) {
+            drained = true;
+            break;
+          }
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    if (!drained) {
+      LOG(WARNING) << "[Migration] Drain timeout exceeded for partition "
+                   << task.partition_id
+                   << ", some requests may still be in flight";
+    } else {
+      LOG(INFO) << "[Migration] Partition " << task.partition_id
+                << " drained successfully";
+    }
   }
 
   return Status::OK();
@@ -644,33 +702,30 @@ Status PartitionMigrator::CalculateChecksum(PartitionID pid,
   const auto& levels = lsm->GetSstFiles();
   for (const auto& level : levels) {
     for (const auto& meta : level) {
+      // Include SST metadata in checksum for sensitivity to metadata changes
+      char meta_buf[40];
+      size_t meta_off = 0;
+      std::memcpy(meta_buf + meta_off, &meta.file_number, sizeof(meta.file_number));
+      meta_off += sizeof(meta.file_number);
+      std::memcpy(meta_buf + meta_off, &meta.file_size, sizeof(meta.file_size));
+      meta_off += sizeof(meta.file_size);
+      std::memcpy(meta_buf + meta_off, &meta.num_entries, sizeof(meta.num_entries));
+      meta_off += sizeof(meta.num_entries);
+      std::memcpy(meta_buf + meta_off, &meta.level, sizeof(meta.level));
+      meta_off += sizeof(meta.level);
+      crc = cedar::crc32c::Extend(crc, meta_buf, meta_off);
+
+      // Compute checksum from raw file content instead of parsing every entry
       std::string filepath = lsm->GetDbPath() + "/" + std::to_string(meta.file_number) + ".sst";
-      ZoneColumnarSstReader reader(filepath);
-      s = reader.Open();
-      if (!s.ok()) {
-        return Status::IOError("Cannot open SST",
-                               filepath + ": " + s.ToString());
+      std::ifstream file(filepath, std::ios::binary);
+      if (!file) {
+        return Status::IOError("Cannot open SST", filepath);
       }
 
-      auto* iter = reader.NewIterator();
-      iter->SeekToFirst();
-      size_t entry_count = 0;
-      for (; iter->Valid(); iter->Next()) {
-        CedarKey key = iter->Key();
-        Descriptor desc = iter->Value();
-        entry_count++;
-
-        char key_buf[CedarKey::kKeySize];
-        key.EncodeTo(key_buf);
-        crc = cedar::crc32c::Extend(crc, key_buf, CedarKey::kKeySize);
-
-        char desc_buf[8];
-        uint64_t raw = desc.AsRaw();
-        std::memcpy(desc_buf, &raw, 8);
-        crc = cedar::crc32c::Extend(crc, desc_buf, 8);
+      char buf[64 * 1024];
+      while (file.read(buf, sizeof(buf)) || file.gcount() > 0) {
+        crc = cedar::crc32c::Extend(crc, buf, file.gcount());
       }
-      delete iter;
-      reader.Close();
     }
   }
 

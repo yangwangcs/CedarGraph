@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // Query Result Cache - LRU cache for query results
 
-#ifndef FERN_QUERY_CACHE_H_
-#define FERN_QUERY_CACHE_H_
+#ifndef CEDAR_QUERY_CACHE_H_
+#define CEDAR_QUERY_CACHE_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -67,7 +67,8 @@ class QueryCache {
            const std::optional<Descriptor>& result);
   
   // Invalidate cache for an entity (call on write)
-  void Invalidate(uint64_t entity_id);
+  // If column_id == UINT16_MAX, invalidate all columns for this entity.
+  void Invalidate(uint64_t entity_id, uint16_t column_id = UINT16_MAX);
   
   // Invalidate entire cache
   void Clear();

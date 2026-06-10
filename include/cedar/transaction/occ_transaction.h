@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_OCC_TRANSACTION_H_
-#define FERN_OCC_TRANSACTION_H_
+#ifndef CEDAR_OCC_TRANSACTION_H_
+#define CEDAR_OCC_TRANSACTION_H_
 
 #include <atomic>
 #include <cstdint>

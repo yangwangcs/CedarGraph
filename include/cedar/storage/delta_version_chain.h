@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_STORAGE_DELTA_VERSION_CHAIN_H_
-#define FERN_STORAGE_DELTA_VERSION_CHAIN_H_
+#ifndef CEDAR_STORAGE_DELTA_VERSION_CHAIN_H_
+#define CEDAR_STORAGE_DELTA_VERSION_CHAIN_H_
 
 // ============================================================================
 // Delta 版本链 (DeltaVersionChain)

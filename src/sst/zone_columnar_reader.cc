@@ -232,7 +232,8 @@ std::optional<Descriptor> ZoneColumnarSstReader::GetAtTime(
   auto range_results = GetRange(entity_id, entity_type, column_id, 
                                 Timestamp(0), timestamp);
   
-  for (const auto& [key, desc] : range_results) {
+  for (const auto& [key, desc, txn_version] : range_results) {
+    (void)txn_version;
     if (key.timestamp().value() <= timestamp.value()) {
       return desc;  // First match (newest due to descending order)
     }
@@ -241,13 +242,13 @@ std::optional<Descriptor> ZoneColumnarSstReader::GetAtTime(
   return std::nullopt;
 }
 
-std::vector<std::pair<CedarKey, Descriptor>> ZoneColumnarSstReader::GetRange(
+std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> ZoneColumnarSstReader::GetRange(
     uint64_t entity_id,
     EntityType entity_type,
     uint16_t column_id,
     Timestamp start,
     Timestamp end) const {
-  std::vector<std::pair<CedarKey, Descriptor>> results;
+  std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> results;
   
   if (!opened_) return results;
   
@@ -283,14 +284,15 @@ std::vector<std::pair<CedarKey, Descriptor>> ZoneColumnarSstReader::GetRange(
       
       auto desc = GetValueByRow(*block, row);
       if (desc.has_value()) {
-        results.emplace_back(key, desc.value());
+        Timestamp txn_version = GetTxnVersionFromBlock(*block, row);
+        results.emplace_back(key, desc.value(), txn_version);
       }
     }
   }
   
   // Sort by timestamp descending (CedarKey default sort)
   std::sort(results.begin(), results.end(), 
-    [](const auto& a, const auto& b) { return a.first.LessForSorting(b.first); });
+    [](const auto& a, const auto& b) { return std::get<0>(a).LessForSorting(std::get<0>(b)); });
   
   return results;
 }
@@ -335,7 +337,7 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   cache_entry->max_entity_id = entry.max_entity_id;
   cache_entry->data.assign(result.data(), result.size());
   
-  // Parse block header (40 bytes)
+  // Parse block header (44 bytes)
   if (result.size() < BlockHeader::kSize) return nullptr;
   const char* p = result.data();
   uint32_t row_count;
@@ -343,8 +345,8 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   p += 4;
   
   // Zone sizes
-  uint32_t zone_sizes[5];
-  for (int i = 0; i < 5; i++) {
+  uint32_t zone_sizes[6];
+  for (int i = 0; i < 6; i++) {
     std::memcpy(&zone_sizes[i], p, sizeof(zone_sizes[i]));
     p += 4;
   }
@@ -355,13 +357,15 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   uint64_t max_entity;
   std::memcpy(&max_entity, p, sizeof(max_entity));
   
-  (void)row_count;  // Unused for now
+  (void)row_count;
   (void)min_entity;
   (void)max_entity;
   
+
+  
   // Store zone offsets for later parsing
   size_t offset = BlockHeader::kSize;
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 6; i++) {
     cache_entry->zone_offsets[i] = offset;
     cache_entry->zone_sizes[i] = zone_sizes[i];
     offset += zone_sizes[i];
@@ -388,6 +392,7 @@ CedarKey ZoneColumnarSstReader::ReconstructKeyFromBlock(
                 block.data.data() + block.zone_offsets[0] + row_idx * 8,
                 sizeof(entity_id));
   }
+
   
   // Parse timestamp from zone 1 (uint64_t)
   uint64_t timestamp_val = 0;
@@ -439,6 +444,18 @@ CedarKey ZoneColumnarSstReader::ReconstructKeyFromBlock(
                   target_id,
                   flags,
                   part_id);
+}
+
+Timestamp ZoneColumnarSstReader::GetTxnVersionFromBlock(
+    const BlockCacheEntry& block, uint32_t row_idx) const {
+  // Parse txn_version from zone 5 (uint64_t)
+  uint64_t txn_version_val = 0;
+  if (block.zone_sizes[5] >= (row_idx + 1) * 8) {
+    std::memcpy(&txn_version_val,
+                block.data.data() + block.zone_offsets[5] + row_idx * 8,
+                sizeof(txn_version_val));
+  }
+  return Timestamp(txn_version_val);
 }
 
 std::optional<Descriptor> ZoneColumnarSstReader::GetValueByRow(
@@ -554,6 +571,12 @@ Descriptor ZoneColumnarSstReader::Iterator::Value() const {
   return opt.value_or(Descriptor());
 }
 
+Timestamp ZoneColumnarSstReader::Iterator::TxnVersion() const {
+  if (!valid_ || !current_block_) return Timestamp(0);
+  uint32_t local_idx = static_cast<uint32_t>(current_idx_ - current_block_start_row_);
+  return reader_->GetTxnVersionFromBlock(*current_block_, local_idx);
+}
+
 Status ZoneColumnarSstReader::Iterator::EnsureBlockLoaded(uint32_t row_idx) const {
   // Find which block contains this row
   uint32_t block_id = 0;
@@ -639,14 +662,14 @@ void ZoneColumnarSstReader::Scan(
   }
 }
 
-std::unordered_map<uint64_t, std::vector<std::pair<CedarKey, Descriptor>>>
+std::unordered_map<uint64_t, std::vector<std::tuple<CedarKey, Descriptor, Timestamp>>>
 ZoneColumnarSstReader::BatchGetRange(
     const std::vector<uint64_t>& entity_ids,
     EntityType entity_type,
     uint16_t column_id,
     Timestamp start,
     Timestamp end) const {
-  std::unordered_map<uint64_t, std::vector<std::pair<CedarKey, Descriptor>>> results;
+  std::unordered_map<uint64_t, std::vector<std::tuple<CedarKey, Descriptor, Timestamp>>> results;
   
   for (uint64_t entity_id : entity_ids) {
     results[entity_id] = GetRange(entity_id, entity_type, column_id, start, end);

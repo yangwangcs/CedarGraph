@@ -1,8 +1,8 @@
 // Hazard Pointer - 无锁数据结构的内存回收机制
 // 参考: https://www.cs.toronto.edu/~tompa/papers/hazard.pdf
 
-#ifndef FERN_HAZARD_POINTER_H_
-#define FERN_HAZARD_POINTER_H_
+#ifndef CEDAR_HAZARD_POINTER_H_
+#define CEDAR_HAZARD_POINTER_H_
 
 #include <atomic>
 #include <vector>

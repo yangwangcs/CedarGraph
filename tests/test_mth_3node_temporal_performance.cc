@@ -132,7 +132,7 @@ class StorageNode {
     auto* engine = storage_->GetLsmEngine();
     if (!engine) return results;
 
-    auto collect = [&](const CedarKey& key, const Descriptor& desc) {
+    auto collect = [&](const CedarKey& key, const Descriptor& desc, Timestamp /*txn_version*/) {
       if (key.part_id() == target_pid) {
         results.emplace_back(key, desc);
       }

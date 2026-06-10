@@ -19,8 +19,8 @@
 // 所有 Entry 4KB 对齐，支持 O_DIRECT 和预读
 // =============================================================================
 
-#ifndef FERN_BLOB_FILE_H_
-#define FERN_BLOB_FILE_H_
+#ifndef CEDAR_BLOB_FILE_H_
+#define CEDAR_BLOB_FILE_H_
 
 #include <cstdint>
 #include <string>

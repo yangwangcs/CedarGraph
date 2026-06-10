@@ -37,6 +37,7 @@ Status PartitionStrategyManager::RegisterStrategy(
   // 如果这是第一个策略，设为活跃
   if (!active_strategy_) {
     active_strategy_ = strategies_[name].get();
+    active_strategy_atomic_.store(active_strategy_, std::memory_order_release);
   }
   
   return Status::OK();
@@ -69,6 +70,7 @@ Status PartitionStrategyManager::SetActiveStrategy(StrategyType type) {
   }
   
   active_strategy_ = it->second.get();
+  active_strategy_atomic_.store(active_strategy_, std::memory_order_release);
   return Status::OK();
 }
 
@@ -81,40 +83,52 @@ Status PartitionStrategyManager::SetActiveStrategy(const std::string& strategy_n
   }
   
   active_strategy_ = it->second.get();
+  active_strategy_atomic_.store(active_strategy_, std::memory_order_release);
   return Status::OK();
 }
 
 IPartitionStrategy* PartitionStrategyManager::GetActiveStrategy() const {
+  auto* strategy = active_strategy_atomic_.load(std::memory_order_acquire);
+  if (strategy) {
+    return strategy;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   return active_strategy_;
 }
 
 PartitionAssignment PartitionStrategyManager::RouteVertex(uint64_t vertex_id) {
+  auto* strategy = active_strategy_atomic_.load(std::memory_order_acquire);
+  if (strategy) {
+    return strategy->RouteVertex(vertex_id);
+  }
   std::lock_guard<std::mutex> lock(mutex_);
-  
   if (!active_strategy_) {
     // Fallback: use modulo
     return PartitionAssignment(static_cast<uint32_t>(vertex_id % 65536), 1.0, "Fallback");
   }
-  
   return active_strategy_->RouteVertex(vertex_id);
 }
 
 PartitionAssignment PartitionStrategyManager::RouteVertexTemporal(
     uint64_t vertex_id, uint64_t timestamp) {
+  auto* strategy = active_strategy_atomic_.load(std::memory_order_acquire);
+  if (strategy) {
+    return strategy->RouteVertexTemporal(vertex_id, timestamp);
+  }
   std::lock_guard<std::mutex> lock(mutex_);
-  
   if (!active_strategy_) {
     return PartitionAssignment(static_cast<uint32_t>(vertex_id % 65536), 1.0, "Fallback");
   }
-  
   return active_strategy_->RouteVertexTemporal(vertex_id, timestamp);
 }
 
 std::pair<PartitionAssignment, PartitionAssignment> 
 PartitionStrategyManager::RouteEdge(uint64_t src_id, uint64_t dst_id) {
+  auto* strategy = active_strategy_atomic_.load(std::memory_order_acquire);
+  if (strategy) {
+    return strategy->RouteEdge(src_id, dst_id);
+  }
   std::lock_guard<std::mutex> lock(mutex_);
-  
   if (!active_strategy_) {
     auto src_part = static_cast<uint32_t>(src_id % 65536);
     auto dst_part = static_cast<uint32_t>(dst_id % 65536);
@@ -123,17 +137,18 @@ PartitionStrategyManager::RouteEdge(uint64_t src_id, uint64_t dst_id) {
       PartitionAssignment(dst_part, 1.0, "Fallback")
     };
   }
-  
   return active_strategy_->RouteEdge(src_id, dst_id);
 }
 
 Status PartitionStrategyManager::ProcessEventStream(const std::vector<GraphEvent>& events) {
+  auto* strategy = active_strategy_atomic_.load(std::memory_order_acquire);
+  if (strategy) {
+    return strategy->ProcessEventStream(events);
+  }
   std::lock_guard<std::mutex> lock(mutex_);
-  
   if (!active_strategy_) {
     return Status::InvalidArgument("No active strategy");
   }
-  
   return active_strategy_->ProcessEventStream(events);
 }
 
@@ -167,16 +182,40 @@ void PartitionStrategyManager::MaybeAutoSwitchStrategyUnlocked() {
     return;
   }
   
+  auto now = std::chrono::steady_clock::now();
+  if (now - last_strategy_switch_time_ < kAutoSwitchCooldown) {
+    return;
+  }
+  
   double temporal_ratio = static_cast<double>(stats_.temporal_queries) / stats_.total_queries;
   double locality_ratio = static_cast<double>(stats_.locality_queries) / stats_.total_queries;
   
-  // 如果时态查询比例高且局部性好，切换到 MTH
+  std::string target_name;
   if (temporal_ratio > 0.5 && locality_ratio > config_.locality_ratio_threshold) {
-    auto it = strategies_.find("MTHStream");
-    if (it != strategies_.end()) {
-      active_strategy_ = it->second.get();
-    }
+    target_name = "MTHStream";
+  } else {
+    target_name = "StaticHash";
   }
+  
+  auto it = strategies_.find(target_name);
+  if (it == strategies_.end()) {
+    return;
+  }
+  
+  IPartitionStrategy* target_strategy = it->second.get();
+  if (active_strategy_ == target_strategy) {
+    return;
+  }
+  
+  // 避免立即切回上一个策略（额外迟滞）
+  if (target_name == previous_strategy_name_) {
+    return;
+  }
+  
+  previous_strategy_name_ = active_strategy_ ? active_strategy_->Name() : "";
+  active_strategy_ = target_strategy;
+  active_strategy_atomic_.store(target_strategy, std::memory_order_release);
+  last_strategy_switch_time_ = now;
 }
 
 std::string PartitionStrategyManager::GetAllStats() const {

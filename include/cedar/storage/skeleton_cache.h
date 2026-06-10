@@ -2,8 +2,8 @@
 // SkeletonCache - 内存拓扑骨架缓存（Phase 5 极致优化）
 // 12B 极致压缩边 + 分片 LRU + 缓存行对齐
 
-#ifndef FERN_SKELETON_CACHE_H_
-#define FERN_SKELETON_CACHE_H_
+#ifndef CEDAR_SKELETON_CACHE_H_
+#define CEDAR_SKELETON_CACHE_H_
 
 #include <cstdint>
 #include <cstddef>

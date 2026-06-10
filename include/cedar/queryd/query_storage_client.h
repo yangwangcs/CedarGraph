@@ -78,6 +78,9 @@ class QueryStorageClient {
 
   // 注册存储节点
   void RegisterNode(uint32_t partition_id, const std::string& node_address);
+  
+  // Set partition count for hash-based routing in independent mode.
+  void SetPartitionCount(uint32_t count) { partition_count_ = count; }
 
   // Mark a partition as locally hosted (for Adaptive Execution Path).
   void MarkPartitionLocal(uint32_t partition_id);
@@ -205,6 +208,8 @@ class QueryStorageClient {
   // 统计
   mutable std::mutex stats_mutex_;
   Stats stats_;
+  
+  uint32_t partition_count_ = 0;
   
   bool CheckCircuitBreaker(const std::string& node_address);
   void RecordSuccess(const std::string& node_address);

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_WAL_H_
-#define FERN_WAL_H_
+#ifndef CEDAR_WAL_H_
+#define CEDAR_WAL_H_
 
 #include <atomic>
 #include <condition_variable>
@@ -111,6 +111,12 @@ struct WalOptions {
   // 是否启用 fsync (false 使用 fdatasync)
   bool use_fsync = false;
   
+  // 批量 fsync 策略
+  // sync_interval_ms: 距离上次 sync 超过此时间后自动 sync (0 = 禁用)
+  // sync_threshold:   未 sync 的写入次数超过此值后自动 sync (0 = 禁用)
+  uint32_t sync_interval_ms = 100;   // 100ms
+  uint32_t sync_threshold = 1000;    // 每 1000 次写入 sync
+  
   // 预分配文件大小
   size_t preallocate_size = 64 * 1024 * 1024;
 };
@@ -163,6 +169,9 @@ class WalWriter {
   
   // 同步 WAL 到磁盘
   Status Sync();
+  
+  // Flush WAL buffer to OS page cache (faster than Sync, no disk guarantee)
+  Status Flush();
   
   // ========== 单条写入接口 ==========
   
@@ -240,6 +249,11 @@ class WalWriter {
   
   // 保护 current_file_ 的互斥锁
   std::mutex file_mutex_;
+  
+  // 批量 sync 状态
+  std::mutex sync_mutex_;
+  std::chrono::steady_clock::time_point last_sync_time_;
+  std::atomic<uint32_t> unsynced_writes_{0};
 
   // 统计
   mutable WalStats stats_;

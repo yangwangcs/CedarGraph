@@ -77,6 +77,10 @@ class PhiAccrualDetector {
   bool has_heartbeat_{false};
   std::chrono::steady_clock::time_point last_heartbeat_time_;
 
+  // Running statistics for O(1) mean/variance computation.
+  double running_sum_ = 0.0;
+  double running_sum_sq_ = 0.0;
+
   // Compute mean and variance of the current window.
   struct Distribution {
     double mean{0.0};

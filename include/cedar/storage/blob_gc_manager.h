@@ -18,8 +18,8 @@
 // SST 被删除后，延迟删除对应的 Blob 文件（防止正在进行的读取）
 // =============================================================================
 
-#ifndef FERN_BLOB_GC_MANAGER_H_
-#define FERN_BLOB_GC_MANAGER_H_
+#ifndef CEDAR_BLOB_GC_MANAGER_H_
+#define CEDAR_BLOB_GC_MANAGER_H_
 
 #include <cstdint>
 #include <string>

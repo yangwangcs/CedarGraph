@@ -19,6 +19,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstring>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <netinet/in.h>
@@ -95,6 +96,35 @@ static inline int64_t CurrentTimeMillis() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::system_clock::now().time_since_epoch())
       .count();
+}
+
+// Basic HTTP request validation to prevent request smuggling
+static bool IsValidHttpRequest(const std::string& request) {
+  // Must start with a known method
+  if (request.find("GET ") != 0 && request.find("HEAD ") != 0) {
+    return false;
+  }
+  // Must have HTTP version indicator
+  if (request.find("HTTP/") == std::string::npos) {
+    return false;
+  }
+  // Must end with double CRLF (end of headers)
+  if (request.find("\r\n\r\n") == std::string::npos) {
+    return false;
+  }
+  // Reject requests with Transfer-Encoding (potential smuggling)
+  if (request.find("Transfer-Encoding") != std::string::npos) {
+    return false;
+  }
+  // Reject requests with multiple Content-Length headers
+  size_t first_cl = request.find("Content-Length:");
+  if (first_cl != std::string::npos) {
+    size_t second_cl = request.find("Content-Length:", first_cl + 1);
+    if (second_cl != std::string::npos) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // =============================================================================
@@ -697,8 +727,18 @@ class HealthCheckerImpl {
       }
     }
 
+    // Run checks in parallel
+    std::vector<std::future<ComponentHealth>> futures;
+    futures.reserve(checks.size());
     for (const auto& check : checks) {
-      RunCheck(check.first, check.second.first, check.second.second);
+      futures.push_back(std::async(std::launch::async, [this, &check]() {
+        return RunCheck(check.first, check.second.first, check.second.second);
+      }));
+    }
+
+    // Wait for all to complete
+    for (auto& future : futures) {
+      future.wait();
     }
   }
 
@@ -775,58 +815,102 @@ class HealthCheckerImpl {
     }
   }
 
-  // Handle a single HTTP request
+  // Handle HTTP requests on a connection
   void HandleHttpRequest(int client_socket) {
-    char buffer[4096];
-    ssize_t received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-    if (received <= 0) {
-      return;
+    std::string request_buffer;
+    int request_count = 0;
+
+    while (request_count < kMaxRequestsPerConnection) {
+      // Read data into buffer
+      char buffer[4096];
+      ssize_t received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+      if (received <= 0) {
+        break;
+      }
+      buffer[received] = '\0';
+      request_buffer.append(buffer, received);
+
+      // Check max request size
+      if (request_buffer.size() > kMaxHttpRequestSize) {
+        SendHttpResponse(client_socket, 413, "Payload Too Large",
+                         "{\"error\":\"Request too large\"}", "application/json", false);
+        break;
+      }
+
+      // Check if we have complete headers
+      size_t headers_end = request_buffer.find("\r\n\r\n");
+      if (headers_end == std::string::npos) {
+        continue;
+      }
+
+      // Validate the request
+      if (!IsValidHttpRequest(request_buffer)) {
+        SendHttpResponse(client_socket, 400, "Bad Request",
+                         "{\"error\":\"Invalid HTTP request\"}", "application/json", false);
+        break;
+      }
+
+      // Extract request line
+      size_t line_end = request_buffer.find("\r\n");
+      std::string request_line = request_buffer.substr(0, line_end);
+
+      // Check for keep-alive
+      bool client_keep_alive = false;
+      if (request_buffer.find("Connection: keep-alive") != std::string::npos ||
+          request_buffer.find("Connection: Keep-Alive") != std::string::npos) {
+        client_keep_alive = true;
+      }
+
+      // Route and generate response
+      HealthStatus overall = GetOverallHealth();
+      int http_code = HealthStatusToHttpCode(overall);
+      std::string status_text = (http_code == 200) ? "OK" : "Service Unavailable";
+      std::string response_body;
+      std::string content_type = "application/json";
+
+      if (request_line.find("GET /ready") == 0 ||
+          request_line.find("GET /readyz") == 0 ||
+          request_line.find("HEAD /ready") == 0 ||
+          request_line.find("HEAD /readyz") == 0) {
+        bool ready = IsReady();
+        response_body = ready ? "{\"status\":\"ready\"}" : "{\"status\":\"not ready\"}";
+        http_code = ready ? 200 : 503;
+        status_text = ready ? "OK" : "Service Unavailable";
+      } else if (request_line.find("GET /health") == 0 ||
+                 request_line.find("GET /healthz") == 0 ||
+                 request_line.find("HEAD /health") == 0 ||
+                 request_line.find("HEAD /healthz") == 0 ||
+                 request_line.find("GET / ") == 0 ||
+                 request_line.find("HEAD / ") == 0) {
+        response_body = ToJson();
+      } else {
+        http_code = 404;
+        status_text = "Not Found";
+        response_body = "{\"error\":\"Not Found\"}";
+      }
+
+      // For HEAD requests, body is not sent
+      std::string actual_body = response_body;
+      if (request_line.find("HEAD ") == 0) {
+        actual_body.clear();
+      }
+
+      // Determine if we should keep the connection alive
+      bool keep_alive = client_keep_alive &&
+                        (request_count + 1 < kMaxRequestsPerConnection);
+
+      SendHttpResponse(client_socket, http_code, status_text, actual_body,
+                       content_type, keep_alive);
+
+      request_count++;
+
+      if (!keep_alive) {
+        break;
+      }
+
+      // Remove processed request from buffer for potential pipelining
+      request_buffer = request_buffer.substr(headers_end + 4);
     }
-    buffer[received] = '\0';
-
-    // Simple HTTP request parsing - look for GET /health or GET /ready
-    std::string request(buffer);
-    
-    HealthStatus overall = GetOverallHealth();
-    int http_code = HealthStatusToHttpCode(overall);
-    std::string status_text = (http_code == 200) ? "OK" : "Service Unavailable";
-    
-    std::string response_body;
-    std::string content_type;
-
-    if (request.find("GET /ready") != std::string::npos ||
-        request.find("GET /readyz") != std::string::npos) {
-      // Simple ready check - check this before /health since /ready contains "/"
-      bool ready = IsReady();
-      response_body = ready ? "{\"status\":\"ready\"}" : "{\"status\":\"not ready\"}";
-      content_type = "application/json";
-      http_code = ready ? 200 : 503;
-      status_text = ready ? "OK" : "Service Unavailable";
-    } else if (request.find("GET /health") != std::string::npos ||
-               request.find("GET /healthz") != std::string::npos ||
-               request.find("GET / ") != std::string::npos) {
-      // Return JSON health status
-      response_body = ToJson();
-      content_type = "application/json";
-    } else {
-      // Not found
-      http_code = 404;
-      status_text = "Not Found";
-      response_body = "{\"error\":\"Not Found\"}";
-      content_type = "application/json";
-    }
-
-    // Build HTTP response
-    std::ostringstream response;
-    response << "HTTP/1.1 " << http_code << " " << status_text << "\r\n";
-    response << "Content-Type: " << content_type << "\r\n";
-    response << "Content-Length: " << response_body.length() << "\r\n";
-    response << "Connection: close\r\n";
-    response << "\r\n";
-    response << response_body;
-
-    std::string response_str = response.str();
-    send(client_socket, response_str.c_str(), response_str.length(), 0);
   }
 
   // Notify watchers of a health change event
@@ -866,8 +950,11 @@ class HealthCheckerImpl {
           if (c >= 0x20 && c <= 0x7E) {
             oss << c;
           } else {
+            // Save and restore stream flags to prevent hex state pollution
+            auto old_flags = oss.flags();
             oss << "\\u" << std::hex << std::setw(4) << std::setfill('0') 
                 << (static_cast<unsigned int>(c) & 0xFF);
+            oss.flags(old_flags);
           }
       }
     }
@@ -902,6 +989,28 @@ class HealthCheckerImpl {
   std::atomic<int> active_http_connections_{0};
   static constexpr int kMaxHttpConnections = 100;
   static constexpr int kHttpThreadPoolSize = 4;
+  static constexpr size_t kMaxHttpRequestSize = 65536;
+  static constexpr int kMaxRequestsPerConnection = 10;
+
+  // Send an HTTP response
+  void SendHttpResponse(int client_socket, int code, const std::string& status_text,
+                        const std::string& body, const std::string& content_type,
+                        bool keep_alive) {
+    std::ostringstream response;
+    response << "HTTP/1.1 " << code << " " << status_text << "\r\n";
+    response << "Content-Type: " << content_type << "\r\n";
+    response << "Content-Length: " << body.length() << "\r\n";
+    if (keep_alive) {
+      response << "Connection: keep-alive\r\n";
+    } else {
+      response << "Connection: close\r\n";
+    }
+    response << "\r\n";
+    response << body;
+
+    std::string response_str = response.str();
+    send(client_socket, response_str.c_str(), response_str.length(), 0);
+  }
 };
 
 // =============================================================================

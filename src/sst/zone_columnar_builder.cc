@@ -43,7 +43,7 @@ ZoneColumnarSstBuilder::~ZoneColumnarSstBuilder() {
   }
 }
 
-void ZoneColumnarSstBuilder::Add(const CedarKey& key, const Descriptor& descriptor) {
+void ZoneColumnarSstBuilder::Add(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version) {
   if (!status_.ok() || closed_) return;
   
   // 检查排序顺序 (调试模式)

@@ -22,6 +22,7 @@
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
 #include "cedar/storage/cedar_graph_storage.h"
+#include "cedar/core/slice.h"
 
 using namespace std::chrono;
 
@@ -75,7 +76,9 @@ class StorageTestClient {
     key->set_partition_id(0);
     
     auto* desc = request.mutable_descriptor_();
-    desc->set_data(reinterpret_cast<const char*>(&value), sizeof(value));
+    auto descriptor = cedar::Descriptor::InlineInt(col_id, value);
+    auto encoded = descriptor.Encode();
+    desc->set_data(encoded);
     
     request.mutable_txn_version()->set_value(timestamp);
     request.set_txn_id(txn_id);
@@ -102,8 +105,14 @@ class StorageTestClient {
     auto status = stub_->Get(&context, request, &response);
     
     if (status.ok() && response.success() && response.found() && 
-        response.has_descriptor_() && response.descriptor_().data().size() >= sizeof(int32_t)) {
-      return *reinterpret_cast<const int32_t*>(response.descriptor_().data().data());
+        response.has_descriptor_()) {
+      auto decoded = cedar::Descriptor::Decode(cedar::Slice(response.descriptor_().data()));
+      if (decoded.has_value()) {
+        auto val = decoded->AsInlineInt();
+        if (val.has_value()) {
+          return val.value();
+        }
+      }
     }
     return std::nullopt;
   }
@@ -123,7 +132,9 @@ class StorageTestClient {
       key->set_partition_id(0);
       
       auto* desc = item->mutable_descriptor_();
-      desc->set_data(reinterpret_cast<const char*>(&value), sizeof(value));
+      auto descriptor = cedar::Descriptor::InlineInt(col_id, value);
+      auto encoded = descriptor.Encode();
+      desc->set_data(encoded);
     }
     
     request.mutable_txn_version()->set_value(items.empty() ? 0 : std::get<3>(items[0]));
@@ -314,11 +325,12 @@ class PerformanceTestSuite {
   void TestTemporalReadThroughput() {
     std::cout << "[Test 2] Temporal Read Throughput" << std::endl;
     
-    // First write some data
+    // First write some data to all clients so reads always hit data
     std::cout << "  Preparing data..." << std::endl;
-    for (int i = 0; i < 10000; ++i) {
+    for (int i = 0; i < config_.num_vertices; ++i) {
+      size_t client_idx = i % clients_.size();
       uint64_t vid = i % config_.num_vertices;
-      clients_[0].WriteVertex(vid, 1, i * 100, 1000000 + i);
+      clients_[client_idx].WriteVertex(vid, 1, i * 100, 1000000 + i);
     }
     
     const int num_reads = config_.test_iterations;
@@ -331,10 +343,10 @@ class PerformanceTestSuite {
     
     for (int t = 0; t < config_.num_threads; ++t) {
       threads.emplace_back([&, t]() {
-        int client_idx = t % clients_.size();
         for (int i = 0; i < reads_per_thread; ++i) {
-          uint64_t vid = rng_() % 10000;
-          uint64_t ts = 1000000 + (rng_() % 10000);
+          uint64_t vid = rng_() % config_.num_vertices;
+          uint64_t ts = 1000000 + (vid);  // match the write timestamp for this vid
+          size_t client_idx = vid % clients_.size();
           
           auto result = clients_[client_idx].ReadVertex(vid, 1, ts);
           if (result.has_value()) {

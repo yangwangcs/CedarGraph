@@ -70,7 +70,7 @@ class VSLMemTable {
   size_t size() const;
   
   // 遍历 (用于 flush 到 SST)
-  void Traverse(std::function<bool(const CedarKey&, const Descriptor&)> callback) const;
+  void Traverse(std::function<bool(const CedarKey&, const Descriptor&, Timestamp)> callback) const;
   
   // 批量导入优化
   void SetBulkImportMode(bool enabled);

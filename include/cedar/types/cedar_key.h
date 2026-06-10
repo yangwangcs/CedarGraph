@@ -23,8 +23,8 @@
 // - 双向边支持：EdgeOut + EdgeIn 实现 O(log N) 入边查询
 // =============================================================================
 
-#ifndef FERN_FERN_KEY_H_
-#define FERN_FERN_KEY_H_
+#ifndef CEDAR_FERN_KEY_H_
+#define CEDAR_FERN_KEY_H_
 
 #include <cstdint>
 #include <cstring>

@@ -24,8 +24,8 @@
 // - Column 5: Descriptors (固定 8B 或 LZ4)
 // =============================================================================
 
-#ifndef FERN_COLUMN_CODERS_H_
-#define FERN_COLUMN_CODERS_H_
+#ifndef CEDAR_COLUMN_CODERS_H_
+#define CEDAR_COLUMN_CODERS_H_
 
 #include <cstdint>
 #include <cstring>

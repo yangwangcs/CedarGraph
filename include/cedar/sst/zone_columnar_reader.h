@@ -51,14 +51,14 @@
 #include "cedar/sst/zone_columnar_format.h"
 #include "cedar/sst/zone_columnar_format_v2.h"
 
-// V2 Block Header (40 bytes)
+// V2 Block Header (44 bytes)
 struct BlockHeader {
   uint32_t row_count;              // 行数
-  uint32_t zone_sizes[5];          // 5 个 Zone 的大小
+  uint32_t zone_sizes[6];          // 6 个 Zone 的大小
   uint64_t min_entity_id;          // 本 Block 最小 Entity
   uint64_t max_entity_id;          // 本 Block 最大 Entity
   
-  static constexpr size_t kSize = 4 + 20 + 8 + 8;  // 40 bytes
+  static constexpr size_t kSize = 4 + 24 + 8 + 8;  // 44 bytes
 };
 #include "cedar/sst/zone_encoder.h"
 
@@ -100,8 +100,8 @@ struct BlockCacheEntry {
   
   // V2 format: raw block data with zone offsets
   std::string data;
-  size_t zone_offsets[5] = {0, 0, 0, 0, 0};
-  size_t zone_sizes[5] = {0, 0, 0, 0, 0};
+  size_t zone_offsets[6] = {0, 0, 0, 0, 0, 0};
+  size_t zone_sizes[6] = {0, 0, 0, 0, 0, 0};
   
   // 禁用拷贝，支持移动
   BlockCacheEntry() = default;
@@ -204,7 +204,7 @@ class ZoneColumnarSstReader {
   std::optional<Descriptor> Get(const CedarKey& key) const;
   
   // 获取时间范围
-  std::vector<std::pair<CedarKey, Descriptor>> GetRange(
+  std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> GetRange(
       uint64_t entity_id,
       EntityType entity_type,
       uint16_t column_id,
@@ -232,8 +232,12 @@ class ZoneColumnarSstReader {
       uint16_t column_id,
       Timestamp timestamp) const;
   
+  // 从 Block 中重建 TxnVersion
+  Timestamp GetTxnVersionFromBlock(
+      const BlockCacheEntry& block, uint32_t row_idx) const;
+  
   // 批量时间范围查询（针对多个 entity）
-  std::unordered_map<uint64_t, std::vector<std::pair<CedarKey, Descriptor>>>
+  std::unordered_map<uint64_t, std::vector<std::tuple<CedarKey, Descriptor, Timestamp>>>
   BatchGetRange(const std::vector<uint64_t>& entity_ids,
                 EntityType entity_type,
                 uint16_t column_id,
@@ -408,6 +412,9 @@ class ZoneColumnarSstReader::Iterator {
   
   // 获取当前 Value
   Descriptor Value() const;
+  
+  // 获取当前 TxnVersion (MVCC)
+  Timestamp TxnVersion() const;
   
   // 获取当前行号
   size_t RowIndex() const { return current_idx_; }

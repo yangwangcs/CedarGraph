@@ -126,6 +126,10 @@ class PartitionStorage {
              Timestamp txn_version, TxnID txn_id);
   StatusOr<Descriptor> Get(const CedarKey& key, Timestamp read_time);
 
+  // Batch write method
+  Status BatchPut(const std::vector<std::pair<CedarKey, Descriptor>>& items,
+                  Timestamp txn_version);
+
   // 2PC support
   Status Prepare(TxnID txn_id, const std::vector<CedarKey>& reads,
                  const std::vector<CedarKey>& writes,

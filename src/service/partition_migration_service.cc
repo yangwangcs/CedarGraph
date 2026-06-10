@@ -464,6 +464,79 @@ void PartitionMigrationServiceImpl::SetPartitionMigrator(
   return ::grpc::Status::OK;
 }
 
+::grpc::Status PartitionMigrationServiceImpl::ReplicateWALBatch(
+    ::grpc::ServerContext* context,
+    const ::cedar::migration::ReplicateWALBatchRequest* request,
+    ::cedar::migration::ReplicateWALBatchResponse* response) {
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+
+  if (!partition_migrator_) {
+    LOG(WARNING) << "ReplicateWALBatch: no PartitionMigrator injected";
+    response->set_success(false);
+    response->set_error_msg("PartitionMigrator not initialized");
+    response->set_entries_processed(0);
+    return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
+                          "PartitionMigrator not initialized");
+  }
+
+  auto* partition_manager = partition_migrator_->GetStoragePartitionManager();
+  if (!partition_manager) {
+    LOG(WARNING) << "ReplicateWALBatch: no StoragePartitionManager available";
+    response->set_success(false);
+    response->set_error_msg("StoragePartitionManager not initialized");
+    response->set_entries_processed(0);
+    return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION,
+                          "StoragePartitionManager not initialized");
+  }
+
+  auto* storage = partition_manager->GetPartition(request->partition_id());
+  if (!storage) {
+    response->set_success(false);
+    response->set_error_msg("Partition not found: " +
+                            std::to_string(request->partition_id()));
+    response->set_entries_processed(0);
+    return ::grpc::Status(::grpc::StatusCode::NOT_FOUND,
+                          "Partition not found");
+  }
+
+  uint64_t processed = 0;
+  for (const auto& entry : request->entries()) {
+    const std::string& op = entry.op_data();
+    ::cedar::Status s;
+    if (op == "COMMIT") {
+      s = storage->Commit(entry.txn_id(),
+                          ::cedar::Timestamp(entry.timestamp()));
+    } else if (op == "ABORT") {
+      s = storage->Abort(entry.txn_id());
+    } else if (op == "PREPARE") {
+      LOG(INFO) << "ReplicateWALBatch: skipping PREPARE for txn "
+                << entry.txn_id() << " (expected from snapshot)";
+      processed++;
+      continue;
+    } else {
+      response->set_success(false);
+      response->set_error_msg("Unknown WAL operation: " + op);
+      response->set_entries_processed(processed);
+      return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT,
+                            "Unknown WAL operation");
+    }
+
+    if (!s.ok() && !s.IsNotFound()) {
+      response->set_success(false);
+      response->set_error_msg(s.ToString());
+      response->set_entries_processed(processed);
+      return ::grpc::Status(::grpc::StatusCode::INTERNAL, s.ToString());
+    }
+    processed++;
+  }
+
+  response->set_success(true);
+  response->set_entries_processed(processed);
+  return ::grpc::Status::OK;
+}
+
 ::grpc::Status PartitionMigrationServiceImpl::FinalizeMigration(
     ::grpc::ServerContext* context,
     const ::cedar::migration::FinalizeMigrationRequest* request,

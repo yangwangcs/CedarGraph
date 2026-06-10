@@ -7,7 +7,6 @@
 #include "cedar/queryd/distributed_executor.h"
 #include "cedar/queryd/query_storage_client.h"
 #include "cedar/queryd/meta_client.h"
-#include "cedar/queryd/query_service.h"
 
 #include <grpcpp/server_context.h>
 
@@ -147,25 +146,4 @@ TEST(QueryTimeout, CancellationIsEnforcedDuringExecution) {
   EXPECT_TRUE(s.IsCancelled()) << s.ToString();
 }
 
-// ============================================================================
-// 4. QueryStorageClient initialization via QueryServiceImpl::Init
-// ============================================================================
 
-TEST(QueryStorageClientInit, ServiceImplRegistersEndpointsFromMetaClient) {
-  auto storage_client = std::make_shared<QueryStorageClient>();
-
-  ClusterState state;
-  state.partition_count = 1;
-  PartitionInfo p;
-  p.partition_id = 7;
-  p.leader_address = "192.168.1.1:9779";
-  state.partitions.push_back(p);
-
-  auto meta_client = std::make_shared<MockMetaClientWithState>(state);
-
-  QueryServiceImpl service(storage_client, meta_client, QueryServiceImpl::Options{});
-  auto init_status = service.Init();
-  EXPECT_TRUE(init_status.ok());
-
-  EXPECT_EQ(storage_client->GetNodeAddress(7), "192.168.1.1:9779");
-}

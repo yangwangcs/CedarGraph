@@ -32,6 +32,8 @@ class DistributedWriteTest {
             grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials()))),
         rng_(std::random_device{}()),
         dist_(1, 1000000) {}
+  
+  const std::vector<uint64_t>& GetWrittenIds() const { return written_ids_; }
 
   // 执行写入测试
   bool RunWriteTest(int num_writes) {
@@ -49,6 +51,7 @@ class DistributedWriteTest {
       
       if (WriteNode(entity_id, i)) {
         success_count++;
+        written_ids_.push_back(entity_id);
       } else {
         fail_count++;
       }
@@ -103,8 +106,14 @@ class DistributedWriteTest {
     int found_count = 0;
     int not_found_count = 0;
     
+    if (written_ids_.empty()) {
+      std::cout << "没有写入的数据可供读取" << std::endl;
+      return false;
+    }
+    
+    std::uniform_int_distribution<size_t> idx_dist(0, written_ids_.size() - 1);
     for (int i = 0; i < num_reads; i++) {
-      uint64_t entity_id = dist_(rng_);
+      uint64_t entity_id = written_ids_[idx_dist(rng_)];
       
       if (ReadNode(entity_id)) {
         found_count++;
@@ -170,6 +179,7 @@ class DistributedWriteTest {
   std::unique_ptr<QueryService::Stub> stub_;
   std::mt19937 rng_;
   std::uniform_int_distribution<uint64_t> dist_;
+  std::vector<uint64_t> written_ids_;
 };
 
 int main(int argc, char** argv) {

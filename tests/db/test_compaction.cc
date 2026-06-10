@@ -66,7 +66,7 @@ class CompactionTest : public ::testing::Test {
       Descriptor desc = Descriptor::InlineInt(1, static_cast<int64_t>(e));
       CedarKey key(e, EntityType::Vertex, 1, Timestamp(1000 + e),
                    static_cast<uint16_t>(file_number), 0, 0, 0);
-      builder->Add(key, desc);
+      builder->Add(key, desc, Timestamp(0));
     }
 
     s = builder->Finish();

@@ -63,7 +63,7 @@ class CompactionStreamingTest : public ::testing::Test {
 
     auto builder = SstBuilderFactory::Create(file, test_dir_);
     for (const auto& [key, desc] : entries) {
-      builder->Add(key, desc);
+      builder->Add(key, desc, Timestamp(0));
     }
 
     s = builder->Finish();

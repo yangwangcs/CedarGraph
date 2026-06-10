@@ -1,0 +1,11 @@
+# CedarGraph StorageD Node 2 Configuration
+storaged:
+  node_id: 2
+  port: 7003
+  bind_address: "0.0.0.0"
+  data_dir: "/tmp/cedar_cluster/storaged2"
+  meta_server: "127.0.0.1:9559"
+  heartbeat_interval_sec: 10
+
+tls:
+  enabled: false

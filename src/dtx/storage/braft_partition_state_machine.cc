@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 
 #include "cedar/dtx/storage/braft_partition_state_machine.h"
-#include "cedar/dtx/storage_impl/partition_storage.h"
+#include "cedar/dtx/storage_service_impl.h"
 
 #include <butil/logging.h>
 #include <fstream>

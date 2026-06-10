@@ -271,17 +271,20 @@ class PartitionFailoverController {
   mutable std::mutex cv_mutex_;
   std::condition_variable cv_;
   
+  // Lock ordering (must be acquired in this order to prevent deadlocks):
+  // 1. partitions_mutex_
+  // 2. health_state_mutex_
+  // 3. callback_mutex_
+  // 4. collectors_mutex_
+  // 5. node_addresses_mutex_
+  
   mutable std::mutex partitions_mutex_;
   std::unordered_map<PartitionID, PartitionState> partitions_;
   
   std::vector<FailoverCallback> callbacks_;
-  mutable std::mutex callbacks_mutex_;
-  
   RouteUpdateCallback route_update_callback_;
-  mutable std::mutex route_mutex_;
-
   ConsensusTransferCallback consensus_transfer_callback_;
-  mutable std::mutex consensus_callback_mutex_;
+  mutable std::mutex callback_mutex_;  // Combines all callback-related state
   
   std::thread lease_thread_;
   std::thread health_thread_;
@@ -299,25 +302,27 @@ class PartitionFailoverController {
   void TriggerGraduatedDegradation(NodeID node_id);
   void CancelGraduatedDegradation(NodeID node_id);
 
+  // Locked variants (caller must hold health_state_mutex_)
+  bool IsTrendDegradingLocked(NodeID node_id, const HealthScore& current);
+  bool TriggerGraduatedDegradationLocked(NodeID node_id);
+  bool CancelGraduatedDegradationLocked(NodeID node_id);
+
   // Legacy boolean health (kept for backward compat)
   std::unordered_map<NodeID, bool> replica_health_;
-  mutable std::mutex replica_health_mutex_;
 
   // Multi-dimensional health scores
   std::unordered_map<NodeID, HealthScore> health_scores_;
-  mutable std::mutex health_scores_mutex_;
 
   // Score history for trend detection (per node, last N samples)
   std::unordered_map<NodeID, std::deque<double>> score_history_;
-  mutable std::mutex score_history_mutex_;
 
   // Nodes currently in graduated degradation
   std::unordered_set<NodeID> degraded_nodes_;
-  mutable std::mutex degraded_nodes_mutex_;
 
   // Phi Accrual detectors per node
   std::unordered_map<NodeID, std::unique_ptr<PhiAccrualDetector>> phi_detectors_;
-  mutable std::mutex phi_detectors_mutex_;
+
+  mutable std::mutex health_state_mutex_;  // Combines all health-related state
 
   // External metrics collectors
   std::vector<HealthMetricsCollector> metrics_collectors_;
@@ -325,7 +330,6 @@ class PartitionFailoverController {
 
   // Deep health probe callback (extends TCP probe with app-level checks)
   HealthProbeCallback health_probe_callback_;
-  mutable std::mutex health_probe_callback_mutex_;
 
   // Node address registry (populated by RegisterPartition or external caller)
   std::unordered_map<NodeID, std::string> node_addresses_;

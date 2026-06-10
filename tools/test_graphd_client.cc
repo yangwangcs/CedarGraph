@@ -12,6 +12,7 @@
 #include <grpcpp/grpcpp.h>
 #include "query_service.grpc.pb.h"
 #include "meta_service.grpc.pb.h"
+#include "storage_service.grpc.pb.h"
 
 void TestMetaDPartitionAssignment(std::shared_ptr<grpc::Channel> channel) {
   std::cout << "=== Testing MetaD Partition Assignment ===" << std::endl;
@@ -94,6 +95,80 @@ void TestGraphDQuery(std::shared_ptr<grpc::Channel> channel) {
   std::cout << std::endl;
 }
 
+void TestWriteData(const std::string& storage_addr) {
+  std::cout << "=== Writing Test Data to StorageD ===" << std::endl;
+  
+  auto channel = grpc::CreateChannel(storage_addr, grpc::InsecureChannelCredentials());
+  auto stub = cedar::storage::StorageService::NewStub(channel);
+  
+  auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  
+  // Helper: create a simple descriptor (8-byte big-endian uint64)
+  auto MakeDescriptor = [](uint64_t raw_value) -> std::string {
+    std::string buf(8, '\0');
+    uint64_t be = __builtin_bswap64(raw_value);  // big-endian
+    memcpy(&buf[0], &be, 8);
+    return buf;
+  };
+  
+  // Write vertex 12345
+  {
+    cedar::storage::PutRequest req;
+    auto* key = req.mutable_key();
+    key->set_entity_id(12345);
+    key->set_timestamp(now);
+    key->set_target_id(0);
+    key->set_column_id(0);
+    key->set_sequence(0);
+    key->set_type_flags(0);
+    key->set_partition_id(12345 % 32768);
+    key->set_entity_type(0);  // Vertex
+    req.mutable_descriptor_()->set_data(MakeDescriptor(42));
+    req.mutable_txn_version()->set_value(1);
+    req.set_txn_id(1);
+    
+    cedar::storage::PutResponse resp;
+    grpc::ClientContext ctx;
+    auto status = stub->Put(&ctx, req, &resp);
+    if (status.ok() && resp.success()) {
+      std::cout << "✓ Written vertex 12345" << std::endl;
+    } else {
+      std::cout << "✗ Failed to write vertex: " 
+                << (status.ok() ? resp.error_msg() : status.error_message()) << std::endl;
+    }
+  }
+  
+  // Write edge 12345 -> 67890
+  {
+    cedar::storage::PutRequest req;
+    auto* key = req.mutable_key();
+    key->set_entity_id(12345);
+    key->set_timestamp(now + 1);
+    key->set_target_id(67890);
+    key->set_column_id(1);  // edge type
+    key->set_sequence(0);
+    key->set_type_flags(0);
+    key->set_partition_id(12345 % 32768);
+    key->set_entity_type(1);  // EdgeOut
+    req.mutable_descriptor_()->set_data(MakeDescriptor(100));
+    req.mutable_txn_version()->set_value(1);
+    req.set_txn_id(1);
+    
+    cedar::storage::PutResponse resp;
+    grpc::ClientContext ctx;
+    auto status = stub->Put(&ctx, req, &resp);
+    if (status.ok() && resp.success()) {
+      std::cout << "✓ Written edge 12345 -> 67890" << std::endl;
+    } else {
+      std::cout << "✗ Failed to write edge: " 
+                << (status.ok() ? resp.error_msg() : status.error_message()) << std::endl;
+    }
+  }
+  
+  std::cout << std::endl;
+}
+
 void TestGraphDTraverse(std::shared_ptr<grpc::Channel> channel) {
   std::cout << "=== Testing GraphD Traverse ===" << std::endl;
   
@@ -160,6 +235,7 @@ int main(int argc, char* argv[]) {
   TestMetaDPartitionAssignment(metad_channel);
   TestGraphDHealth(graphd_channel);
   TestGraphDQuery(graphd_channel);
+  TestWriteData("127.0.0.1:9779");
   TestGraphDTraverse(graphd_channel);
   
   std::cout << "=== All tests completed ===" << std::endl;

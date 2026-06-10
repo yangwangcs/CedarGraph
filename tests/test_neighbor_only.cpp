@@ -7,6 +7,7 @@
 #include <grpcpp/grpcpp.h>
 #include "storage_service.pb.h"
 #include "storage_service.grpc.pb.h"
+#include "cedar/types/descriptor.h"
 
 class NeighborTestClient {
  public:
@@ -25,7 +26,9 @@ class NeighborTestClient {
     key->set_partition_id(0);
     
     auto* desc = request.mutable_descriptor_();
-    desc->set_data(reinterpret_cast<const char*>(&value), sizeof(value));
+    cedar::Descriptor d = cedar::Descriptor::InlineInt(col_id, value);
+    auto encoded = d.Encode();
+    desc->set_data(encoded.data(), encoded.size());
     request.mutable_txn_version()->set_value(timestamp);
     
     cedar::storage::PutResponse response;
@@ -48,8 +51,12 @@ class NeighborTestClient {
     auto status = stub_->Get(&context, request, &response);
     
     if (status.ok() && response.success() && response.found() && 
-        response.has_descriptor_() && response.descriptor_().data().size() >= sizeof(int32_t)) {
-      return *reinterpret_cast<const int32_t*>(response.descriptor_().data().data());
+        response.has_descriptor_() && response.descriptor_().data().size() >= 8) {
+      auto opt_desc = cedar::Descriptor::Decode(
+          cedar::Slice(response.descriptor_().data().data(), response.descriptor_().data().size()));
+      if (opt_desc.has_value()) {
+        return opt_desc.value().AsInlineInt();
+      }
     }
     return std::nullopt;
   }
@@ -74,13 +81,24 @@ class NeighborTestClient {
     std::vector<std::optional<int32_t>> results;
     if (status.ok() && response.success()) {
       for (int i = 0; i < response.found_size(); ++i) {
-        if (response.found(i) && response.descriptors(i).data().size() >= sizeof(int32_t)) {
-          results.push_back(*reinterpret_cast<const int32_t*>(
-              response.descriptors(i).data().data()));
+        if (response.found(i) && response.descriptors(i).data().size() >= 8) {
+          auto opt_desc = cedar::Descriptor::Decode(
+              cedar::Slice(response.descriptors(i).data().data(), response.descriptors(i).data().size()));
+          if (opt_desc.has_value()) {
+            results.push_back(opt_desc.value().AsInlineInt());
+          } else {
+            results.push_back(std::nullopt);
+          }
         } else {
           results.push_back(std::nullopt);
         }
       }
+      return results;
+    }
+    
+    // Fallback: individual Get calls if BatchGet is not supported
+    for (const auto& [entity_id, col_id, timestamp] : keys) {
+      results.push_back(ReadVertex(entity_id, col_id, timestamp));
     }
     return results;
   }
@@ -95,7 +113,7 @@ int main() {
   std::cout << "║     Standalone Neighbor Query Test                         ║" << std::endl;
   std::cout << "╚════════════════════════════════════════════════════════════╝" << std::endl;
   
-  NeighborTestClient client("127.0.0.1:7001");
+  NeighborTestClient client("127.0.0.1:9779");
   
   const int num_vertices = 100;
   const int edges_per_vertex = 10;

@@ -11,10 +11,13 @@
 #include <sstream>
 #include <algorithm>
 #include <memory>
+#include <future>
 
 #include <grpcpp/grpcpp.h>
 #include "storage_service.pb.h"
 #include "storage_service.grpc.pb.h"
+#include "cedar/types/descriptor.h"
+#include "cedar/core/slice.h"
 
 using namespace std::chrono;
 
@@ -87,7 +90,9 @@ class StorageTestClient {
     key->set_partition_id(key_id % 4);  // Distribute across partitions
     
     auto* desc = request.mutable_descriptor_();
-    desc->set_data(reinterpret_cast<const char*>(&value), sizeof(value));
+    auto descriptor = cedar::Descriptor::InlineInt(1, value);
+    auto encoded = descriptor.Encode();
+    desc->set_data(encoded);
     
     request.mutable_txn_version()->set_value(timestamp);
     request.set_txn_id(0);
@@ -117,8 +122,14 @@ class StorageTestClient {
     auto status = stub_->Get(&context, request, &response);
     
     if (status.ok() && response.success() && response.found() && 
-        response.has_descriptor_() && response.descriptor_().data().size() >= sizeof(int32_t)) {
-      return *reinterpret_cast<const int32_t*>(response.descriptor_().data().data());
+        response.has_descriptor_()) {
+      auto decoded = cedar::Descriptor::Decode(cedar::Slice(response.descriptor_().data()));
+      if (decoded.has_value()) {
+        auto val = decoded->AsInlineInt();
+        if (val.has_value()) {
+          return val.value();
+        }
+      }
     }
     return std::nullopt;
   }
@@ -137,7 +148,9 @@ class StorageTestClient {
       key->set_partition_id(key_id % 4);
       
       auto* desc = item->mutable_descriptor_();
-      desc->set_data(reinterpret_cast<const char*>(&value), sizeof(value));
+      auto descriptor = cedar::Descriptor::InlineInt(1, value);
+      auto encoded = descriptor.Encode();
+      desc->set_data(encoded);
     }
     
     request.mutable_txn_version()->set_value(timestamp);
@@ -239,13 +252,24 @@ class MultiNodeTestSuite {
     rng_.seed(42);
   }
   
-  void RunAllTests() {
+  void RunAllTests(bool only_2pc = false) {
     std::cout << std::endl;
     std::cout << "╔════════════════════════════════════════════════════════════╗" << std::endl;
     std::cout << "║     CedarGraph Multi-Node Performance Test (" 
               << std::setw(2) << node_config_.node_count << " Nodes)         ║" << std::endl;
     std::cout << "╚════════════════════════════════════════════════════════════╝" << std::endl;
     std::cout << std::endl;
+    
+    if (only_2pc) {
+      auto txn_result = Test2PCTransactions();
+      std::cout << std::endl;
+      std::cout << "2PC (txns/sec): " << txn_result.throughput 
+                << "  Avg: " << txn_result.latency << " µs"
+                << "  P50: " << txn_result.p50_latency << " µs"
+                << "  P99: " << txn_result.p99_latency << " µs"
+                << std::endl;
+      return;
+    }
     
     // Warmup
     std::cout << "[Warming up...]" << std::endl;
@@ -314,10 +338,11 @@ class MultiNodeTestSuite {
   TestResult TestReadThroughput() {
     std::cout << "[Test 2] Single Read Throughput" << std::endl;
     
-    // Pre-write data
+    // Pre-write data using key-based client routing so reads hit the same node
     std::cout << "  Preparing data..." << std::endl;
     for (int i = 0; i < 5000; ++i) {
-      clients_[i % clients_.size()]->Write(i, i * 100, 3000000);
+      size_t client_idx = i % clients_.size();
+      clients_[client_idx]->Write(i, i * 100, 3000000);
     }
     
     std::atomic<int> success_count{0};
@@ -333,9 +358,10 @@ class MultiNodeTestSuite {
       threads.emplace_back([&, t]() {
         for (int i = 0; i < ops_per_thread; ++i) {
           uint64_t key = rng_() % 5000;
+          size_t client_idx = key % clients_.size();
           
           auto op_start = high_resolution_clock::now();
-          auto result = clients_[i % clients_.size()]->Read(key, 3000000);
+          auto result = clients_[client_idx]->Read(key, 3000000);
           auto op_end = high_resolution_clock::now();
           
           if (result.has_value()) {
@@ -433,23 +459,33 @@ class MultiNodeTestSuite {
       
       auto op_start = high_resolution_clock::now();
       
-      // Phase 1: Prepare (send to all nodes)
-      int prepare_ok = 0;
+      // Phase 1: Prepare (concurrent to all nodes)
+      std::vector<std::future<bool>> prepare_futures;
       for (auto& client : clients_) {
-        if (client->Prepare(txn_id, write_set, commit_ts)) {
-          prepare_ok++;
-        }
+        prepare_futures.push_back(
+            std::async(std::launch::async, [&client, txn_id, &write_set, commit_ts]() {
+              return client->Prepare(txn_id, write_set, commit_ts);
+            }));
+      }
+      int prepare_ok = 0;
+      for (auto& f : prepare_futures) {
+        if (f.get()) prepare_ok++;
       }
       
       if (prepare_ok == clients_.size()) {
         prepared_count++;
         
-        // Phase 2: Commit (send to all nodes)
-        int commit_ok = 0;
+        // Phase 2: Commit (concurrent to all nodes)
+        std::vector<std::future<bool>> commit_futures;
         for (auto& client : clients_) {
-          if (client->Commit(txn_id, commit_ts)) {
-            commit_ok++;
-          }
+          commit_futures.push_back(
+              std::async(std::launch::async, [&client, txn_id, commit_ts]() {
+                return client->Commit(txn_id, commit_ts);
+              }));
+        }
+        int commit_ok = 0;
+        for (auto& f : commit_futures) {
+          if (f.get()) commit_ok++;
         }
         
         if (commit_ok == clients_.size()) {
@@ -550,6 +586,7 @@ int main(int argc, char* argv[]) {
   
   // Parse arguments
   std::vector<int> node_configs = {3, 5, 7};  // Default: test all
+  bool only_2pc = false;
   
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -560,6 +597,8 @@ int main(int argc, char* argv[]) {
       test_config.num_operations = std::stoi(argv[++i]);
     } else if (arg == "--threads" && i + 1 < argc) {
       test_config.num_threads = std::stoi(argv[++i]);
+    } else if (arg == "--only-2pc") {
+      only_2pc = true;
     } else if (arg == "--help") {
       std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
       std::cout << std::endl;
@@ -567,6 +606,7 @@ int main(int argc, char* argv[]) {
       std::cout << "  --nodes N       Test with N nodes (3/5/7, default: all)" << std::endl;
       std::cout << "  --ops N         Number of operations (default: 5000)" << std::endl;
       std::cout << "  --threads N     Number of threads (default: 4)" << std::endl;
+      std::cout << "  --only-2pc      Only run 2PC transaction test" << std::endl;
       std::cout << std::endl;
       return 0;
     }
@@ -587,7 +627,7 @@ int main(int argc, char* argv[]) {
       
       config.node_count = node_count;
       MultiNodeTestSuite suite(config, test_config);
-      suite.RunAllTests();
+      suite.RunAllTests(only_2pc);
       
       if (node_count != node_configs.back()) {
         std::cout << std::endl << std::string(60, '=') << std::endl << std::endl;

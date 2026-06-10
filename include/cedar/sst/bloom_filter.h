@@ -16,8 +16,8 @@
 // Bloom Filter - 从 sst_format.h 提取
 // =============================================================================
 
-#ifndef FERN_BLOOM_FILTER_H_
-#define FERN_BLOOM_FILTER_H_
+#ifndef CEDAR_BLOOM_FILTER_H_
+#define CEDAR_BLOOM_FILTER_H_
 
 #include <cstdint>
 #include <vector>

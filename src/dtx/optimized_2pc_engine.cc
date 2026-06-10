@@ -444,13 +444,14 @@ Status Optimized2PCEngine::PersistCommitDecision(const CommitDecision& decision)
   }
   // fsync for durability
   int fd = open(path.c_str(), O_RDONLY);
-  if (fd >= 0) {
-    if (fsync(fd) != 0) {
-      close(fd);
-      return Status::IOError("Decision log fsync failed", path);
-    }
-    close(fd);
+  if (fd < 0) {
+    return Status::IOError("Decision log fsync open failed", path);
   }
+  if (fsync(fd) != 0) {
+    close(fd);
+    return Status::IOError("Decision log fsync failed", path);
+  }
+  close(fd);
   return Status::OK();
 }
 
@@ -824,12 +825,19 @@ Status Optimized2PCEngine::ExecuteBatched2PC(
   // Wait for completion with timeout.
   auto timeout_ms = config_.prepare_timeout_ms + config_.commit_timeout_ms;
   if (future.wait_for(std::chrono::milliseconds(timeout_ms)) == std::future_status::timeout) {
-    ctx->state.store(TransactionContext::State::kAborted);
-    if (state_manager_) {
-      state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
+    // Use CAS to abort only if the worker hasn't started yet. If the worker
+    // already began processing, wait for it to finish to avoid reporting a
+    // timeout when the transaction may have already committed.
+    auto expected = TransactionContext::State::kInit;
+    if (ctx->state.compare_exchange_strong(expected, TransactionContext::State::kAborted)) {
+      if (state_manager_) {
+        state_manager_->UpdateState(ctx->txn_id, TxnState::kAborted);
+      }
+      stats_.timeout_transactions++;
+      return Status::IOError("Transaction timeout");
     }
-    stats_.timeout_transactions++;
-    return Status::IOError("Transaction timeout");
+    // Worker already started — wait for completion and return accurate status.
+    future.wait();
   }
 
   return ctx->state.load() == TransactionContext::State::kCommitted
@@ -1378,6 +1386,13 @@ void Optimized2PCEngine::BatchWorkerLoop() {
     lock.unlock();
     
     for (auto& ctx : batch) {
+      // If the client timed out and aborted before we started, skip processing.
+      if (ctx->state.load() == TransactionContext::State::kAborted) {
+        if (ctx->done_promise) {
+          ctx->done_promise->set_value();
+        }
+        continue;
+      }
       auto status = ExecuteParallel2PC(ctx);
       if (!status.ok()) {
         ctx->state.store(TransactionContext::State::kAborted);

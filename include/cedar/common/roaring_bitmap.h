@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // Lightweight Roaring Bitmap implementation for column ID tracking
 
-#ifndef FERN_ROARING_BITMAP_H_
-#define FERN_ROARING_BITMAP_H_
+#ifndef CEDAR_ROARING_BITMAP_H_
+#define CEDAR_ROARING_BITMAP_H_
 
 #include <cstdint>
 #include <vector>

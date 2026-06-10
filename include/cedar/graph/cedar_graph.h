@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_FERN_GRAPH_H_
-#define FERN_FERN_GRAPH_H_
+#ifndef CEDAR_FERN_GRAPH_H_
+#define CEDAR_FERN_GRAPH_H_
 
 #include <cstdint>
 #include <optional>

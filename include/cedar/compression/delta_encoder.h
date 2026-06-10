@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // Delta encoding for time-series data
 
-#ifndef FERN_DELTA_ENCODER_H_
-#define FERN_DELTA_ENCODER_H_
+#ifndef CEDAR_DELTA_ENCODER_H_
+#define CEDAR_DELTA_ENCODER_H_
 
 #include <cstdint>
 #include <vector>

@@ -22,8 +22,8 @@
 // - 与 Zone-Columnar 格式深度集成
 // =============================================================================
 
-#ifndef FERN_SIZE_TIERED_COMPACTION_H_
-#define FERN_SIZE_TIERED_COMPACTION_H_
+#ifndef CEDAR_SIZE_TIERED_COMPACTION_H_
+#define CEDAR_SIZE_TIERED_COMPACTION_H_
 
 #include <atomic>
 #include <cstdint>

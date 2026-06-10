@@ -42,9 +42,14 @@ Status CedarMemTable::Put(CedarKey key, const Descriptor& descriptor, Timestamp 
   // 计算大小增量 (估算)
   size_t size_increment = sizeof(CedarKey) + sizeof(Descriptor) + sizeof(MemTableEntry);
 
+  // Copy-on-write: if someone holds a reference (iterator), clone the map
+  if (map_.use_count() > 1) {
+    map_ = std::make_shared<MapType>(*map_);
+  }
+
   // 查找或插入
-  auto it = map_.find(internal_key);
-  if (it != map_.end()) {
+  auto it = map_->find(internal_key);
+  if (it != map_->end()) {
     // 已存在，插入到合适位置 (保持 timestamp 降序)
     std::vector<MemTableEntry>& entries = it->second;
 
@@ -57,7 +62,7 @@ Status CedarMemTable::Put(CedarKey key, const Descriptor& descriptor, Timestamp 
     entries.insert(insert_pos, entry);
   } else {
     // 新建
-    map_[internal_key] = {entry};
+    (*map_)[internal_key] = {entry};
     size_increment += sizeof(internal_key);  // key 本身的开销
   }
 
@@ -128,8 +133,8 @@ std::vector<MemTableEntry> CedarMemTable::GetAll(uint64_t entity_id,
 
   InternalKey internal_key(entity_id, entity_type, column_id);
 
-  auto it = map_.find(internal_key);
-  if (it != map_.end()) {
+  auto it = map_->find(internal_key);
+  if (it != map_->end()) {
     return it->second;  // 已经是降序排列
   }
 
@@ -140,13 +145,24 @@ std::optional<Descriptor> CedarMemTable::GetAtTime(uint64_t entity_id,
                                                    EntityType entity_type,
                                                    uint16_t column_id,
                                                    Timestamp timestamp) const {
-  auto all = GetAll(entity_id, entity_type, column_id);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
 
-  // 查找 <= timestamp 的最新版本
-  for (const auto& entry : all) {
-    if (entry.timestamp <= timestamp) {
-      return entry.descriptor;
-    }
+  InternalKey internal_key(entity_id, entity_type, column_id);
+  auto it = map_->find(internal_key);
+  if (it == map_->end()) {
+    return std::nullopt;
+  }
+
+  const auto& entries = it->second;  // const ref, no copy
+
+  // Entries are sorted in descending order by timestamp.
+  // Use binary search to find the first entry with timestamp <= target.
+  auto fit = std::lower_bound(entries.begin(), entries.end(), timestamp,
+      [](const MemTableEntry& entry, Timestamp ts) {
+        return entry.timestamp > ts;  // descending order
+      });
+  if (fit != entries.end()) {
+    return fit->descriptor;
   }
 
   return std::nullopt;
@@ -157,10 +173,18 @@ std::vector<MemTableEntry> CedarMemTable::GetRange(uint64_t entity_id,
                                                    uint16_t column_id,
                                                    Timestamp start,
                                                    Timestamp end) const {
-  auto all = GetAll(entity_id, entity_type, column_id);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+
+  InternalKey internal_key(entity_id, entity_type, column_id);
+  auto it = map_->find(internal_key);
+  if (it == map_->end()) {
+    return {};
+  }
+
+  const auto& entries = it->second;  // const ref, no copy of the whole chain
 
   std::vector<MemTableEntry> result;
-  for (const auto& entry : all) {
+  for (const auto& entry : entries) {
     if (entry.timestamp >= start && entry.timestamp <= end) {
       result.push_back(entry);
     }
@@ -172,6 +196,8 @@ std::vector<MemTableEntry> CedarMemTable::GetRange(uint64_t entity_id,
 bool CedarMemTable::Get(uint64_t entity_id, uint64_t timestamp,
                        std::string* value, bool* is_deleted) const {
   auto desc_opt = GetAtTime(entity_id, EntityType::Vertex, 0, Timestamp(timestamp));
+  // Note: This legacy interface hardcodes column_id=0 for backward compatibility.
+  // Use GetAtTime(entity_id, entity_type, column_id, timestamp) for multi-column lookups.
 
   if (!desc_opt.has_value()) {
     return false;
@@ -208,7 +234,7 @@ bool CedarMemTable::Get(uint64_t entity_id, uint64_t timestamp,
 
 size_t CedarMemTable::NumEntries() const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
-  return map_.size();
+  return map_->size();
 }
 
 // ========== MVCC 版本链实现 ==========
@@ -311,7 +337,13 @@ std::unique_ptr<CedarMemTable::VersionChainIterator> CedarMemTable::NewVersionCh
   InternalKey internal_key(entity_id, entity_type, column_id);
   auto it = version_chains_.find(internal_key);
   if (it != version_chains_.end()) {
-    return std::make_unique<VersionChainIterator>(it->second);
+    auto entries = std::make_shared<std::vector<MemTableEntry>>();
+    TemporalVersionNode* node = it->second;
+    while (node != nullptr) {
+      entries->emplace_back(node->timestamp, node->descriptor, node->txn_version);
+      node = node->older;
+    }
+    return std::make_unique<VersionChainIterator>(entries);
   }
   return std::make_unique<VersionChainIterator>(nullptr);  // 空迭代器
 }
@@ -326,7 +358,7 @@ std::vector<uint16_t> CedarMemTable::GetColumnIds(
   std::vector<uint16_t> column_ids;
   
   // 遍历所有 InternalKey，找出匹配的 entity_id 和 entity_type
-  for (const auto& [internal_key, entries] : map_) {
+  for (const auto& [internal_key, entries] : *map_) {
     if (internal_key.entity_id == entity_id && 
         internal_key.entity_type == entity_type) {
       column_ids.push_back(internal_key.column_id);
@@ -350,7 +382,7 @@ std::vector<CedarMemTable::ColumnSnapshot> CedarMemTable::GetLatestSnapshot(
   
   // 直接在锁内查找所有列（避免调用 GetColumnIds 导致死锁）
   std::vector<uint16_t> column_ids;
-  for (const auto& [internal_key, entries] : map_) {
+  for (const auto& [internal_key, entries] : *map_) {
     if (internal_key.entity_id == entity_id && 
         internal_key.entity_type == entity_type) {
       column_ids.push_back(internal_key.column_id);
@@ -390,7 +422,7 @@ std::vector<CedarMemTable::ColumnSnapshot> CedarMemTable::GetSnapshotAtTime(
   
   // 直接在锁内查找所有列
   std::vector<uint16_t> column_ids;
-  for (const auto& [internal_key, entries] : map_) {
+  for (const auto& [internal_key, entries] : *map_) {
     if (internal_key.entity_id == entity_id && 
         internal_key.entity_type == entity_type) {
       column_ids.push_back(internal_key.column_id);
@@ -404,8 +436,8 @@ std::vector<CedarMemTable::ColumnSnapshot> CedarMemTable::GetSnapshotAtTime(
     InternalKey internal_key(entity_id, entity_type, col_id);
     
     // 查找 <= timestamp 的最新版本
-    auto it = map_.find(internal_key);
-    if (it != map_.end()) {
+    auto it = map_->find(internal_key);
+    if (it != map_->end()) {
       const auto& entries = it->second;  // 已按降序排列
       for (const auto& entry : entries) {
         if (entry.timestamp <= timestamp) {
@@ -434,7 +466,7 @@ std::vector<CedarMemTable::MultiColumnVersion> CedarMemTable::GetAllColumnChains
   
   // 直接在锁内查找所有列
   std::vector<uint16_t> column_ids;
-  for (const auto& [internal_key, entries] : map_) {
+  for (const auto& [internal_key, entries] : *map_) {
     if (internal_key.entity_id == entity_id && 
         internal_key.entity_type == entity_type) {
       column_ids.push_back(internal_key.column_id);
@@ -451,8 +483,8 @@ std::vector<CedarMemTable::MultiColumnVersion> CedarMemTable::GetAllColumnChains
     mcv.column_id = col_id;
     
     // 获取该列的版本链
-    auto it = map_.find(internal_key);
-    if (it != map_.end()) {
+    auto it = map_->find(internal_key);
+    if (it != map_->end()) {
       mcv.versions = it->second;  // 复制版本列表
     }
     
@@ -470,7 +502,16 @@ std::vector<CedarMemTable::MultiColumnVersion> CedarMemTable::GetAllColumnChains
 
 bool CedarMemTable::IsEmpty() const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
-  return map_.empty();
+  return map_->empty();
+}
+
+void CedarMemTable::Clear() {
+  std::unique_lock<std::shared_mutex> lock(mutex_);
+  map_ = std::make_shared<MapType>();
+  version_chains_.clear();
+  node_pool_.clear();
+  approximate_size_.store(0, std::memory_order_relaxed);
+  version_chain_count_.store(0, std::memory_order_relaxed);
 }
 
 CedarMemTable::Iterator* CedarMemTable::NewIterator() const {
@@ -482,7 +523,7 @@ std::vector<std::pair<CedarKey, Descriptor>> CedarMemTable::GetSortedEntries() c
 
   std::vector<std::pair<CedarKey, Descriptor>> result;
 
-  for (const auto& [internal_key, entries] : map_) {
+  for (const auto& [internal_key, entries] : *map_) {
     for (const auto& entry : entries) {
       CedarKey key(
           internal_key.entity_id,
@@ -522,22 +563,20 @@ std::vector<std::pair<CedarKey, Descriptor>> CedarMemTable::GetSortedEntries() c
 // Iterator 实现
 
 CedarMemTable::Iterator::Iterator(const CedarMemTable* memtable)
-    : outer_iter_(snapshot_.begin()),
-      inner_idx_(0),
+    : inner_idx_(0),
       valid_(false) {
   std::shared_lock<std::shared_mutex> lock(memtable->mutex_);
   snapshot_ = memtable->map_;
-  lock.unlock();
-  outer_iter_ = snapshot_.begin();
-  if (outer_iter_ != snapshot_.end()) {
+  outer_iter_ = snapshot_->begin();
+  if (outer_iter_ != snapshot_->end()) {
     valid_ = true;
   }
 }
 
 void CedarMemTable::Iterator::SeekToFirst() {
-  outer_iter_ = snapshot_.begin();
+  outer_iter_ = snapshot_->begin();
   inner_idx_ = 0;
-  valid_ = (outer_iter_ != snapshot_.end());
+  valid_ = (outer_iter_ != snapshot_->end());
 }
 
 void CedarMemTable::Iterator::Seek(const CedarKey& key) {
@@ -545,8 +584,8 @@ void CedarMemTable::Iterator::Seek(const CedarKey& key) {
   InternalKey internal_key(key.entity_id(), key.entity_type(),
                            key.column_id(), key.target_id());
 
-  outer_iter_ = snapshot_.find(internal_key);
-  if (outer_iter_ == snapshot_.end()) {
+  outer_iter_ = snapshot_->find(internal_key);
+  if (outer_iter_ == snapshot_->end()) {
     valid_ = false;
     return;
   }
@@ -574,7 +613,7 @@ void CedarMemTable::Iterator::Next() {
     // 移动到下一个 internal_key
     ++outer_iter_;
     inner_idx_ = 0;
-    valid_ = (outer_iter_ != snapshot_.end());
+    valid_ = (outer_iter_ != snapshot_->end());
   }
 }
 
@@ -611,15 +650,9 @@ std::optional<MemTableEntry> CedarMemTable::Iterator::Entry() const {
 
 // ========== VersionChainIterator 实现 ==========
 
-CedarMemTable::VersionChainIterator::VersionChainIterator(TemporalVersionNode* head)
-    : current_idx_(0) {
-  // 构造时拷贝整个版本链，避免原始指针逃出锁保护后 flush 导致 UAF
-  TemporalVersionNode* node = head;
-  while (node != nullptr) {
-    entries_.emplace_back(node->timestamp, node->descriptor, node->txn_version);
-    node = node->older;
-  }
-}
+CedarMemTable::VersionChainIterator::VersionChainIterator(
+    std::shared_ptr<const std::vector<MemTableEntry>> entries)
+    : entries_(std::move(entries)), current_idx_(0) {}
 
 void CedarMemTable::VersionChainIterator::SeekToFirst() {
   // 定位到链头 (最新版本 - index 0)
@@ -628,16 +661,16 @@ void CedarMemTable::VersionChainIterator::SeekToFirst() {
 
 void CedarMemTable::VersionChainIterator::SeekToLast() {
   // 定位到链尾 (最旧版本)
-  if (entries_.empty()) {
+  if (!entries_ || entries_->empty()) {
     current_idx_ = static_cast<size_t>(-1);
     return;
   }
-  current_idx_ = entries_.size() - 1;
+  current_idx_ = entries_->size() - 1;
 }
 
 void CedarMemTable::VersionChainIterator::NextOlder() {
   // 移动到更旧的版本 (index 增加)
-  if (current_idx_ + 1 < entries_.size()) {
+  if (entries_ && current_idx_ + 1 < entries_->size()) {
     ++current_idx_;
   } else {
     current_idx_ = static_cast<size_t>(-1);  // 无效
@@ -654,24 +687,24 @@ void CedarMemTable::VersionChainIterator::NextNewer() {
 }
 
 bool CedarMemTable::VersionChainIterator::Valid() const {
-  return current_idx_ < entries_.size();
+  return entries_ && current_idx_ < entries_->size();
 }
 
 MemTableEntry CedarMemTable::VersionChainIterator::Entry() const {
   if (!Valid()) {
     return MemTableEntry();
   }
-  return entries_[current_idx_];
+  return (*entries_)[current_idx_];
 }
 
 Timestamp CedarMemTable::VersionChainIterator::GetTimestamp() const {
   if (!Valid()) return Timestamp(0);
-  return entries_[current_idx_].timestamp;
+  return (*entries_)[current_idx_].timestamp;
 }
 
 Descriptor CedarMemTable::VersionChainIterator::GetDescriptor() const {
   if (!Valid()) return cedar::Descriptor();
-  return entries_[current_idx_].descriptor;
+  return (*entries_)[current_idx_].descriptor;
 }
 
 }  // namespace cedar

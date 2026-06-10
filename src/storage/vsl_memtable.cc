@@ -101,7 +101,7 @@ size_t VSLMemTable::size() const {
 }
 
 void VSLMemTable::Traverse(
-    std::function<bool(const CedarKey&, const Descriptor&)> callback) const {
+    std::function<bool(const CedarKey&, const Descriptor&, Timestamp)> callback) const {
   skiplist_->Traverse(callback);
 }
 

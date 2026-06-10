@@ -487,6 +487,23 @@ void MetadataService::MetadataStateMachine::ApplyDropSpace(const std::string& sp
 void MetadataService::MetadataStateMachine::ApplyRegisterNode(const NodeInfo& info) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     nodes_[info.node_id] = info;
+
+    // Test-mode fallback: if "default" space exists but has no assignments,
+    // auto-assign all partitions to the first registered node.
+    auto map_it = partition_maps_.find("default");
+    if (map_it != partition_maps_.end() && map_it->second.assignments.empty()) {
+        auto& partition_map = map_it->second;
+        for (PartitionID pid = 0; pid < partition_map.num_partitions; ++pid) {
+            PartitionAssignment assign;
+            assign.partition_id = pid;
+            assign.space_name = partition_map.space_name;
+            assign.leader_node = info.node_id;
+            assign.version = 1;
+            assign.state = PartitionAssignment::State::kNormal;
+            partition_map.assignments[pid] = std::move(assign);
+        }
+        partition_map.version++;
+    }
 }
 
 void MetadataService::MetadataStateMachine::ApplyUpdateNodeStatus(const NodeStatus& status) {
@@ -857,6 +874,17 @@ Status MetadataService::Initialize(const MetaServiceConfig& config) {
 
         auto status = raft_node_->Init(options, this);
         CEDAR_RETURN_IF_ERROR(status);
+    } else {
+        // Test mode: auto-create default space so partition routing works
+        // out of the box for single-node testing.
+        SpaceDef default_space;
+        default_space.name = "default";
+        default_space.partition_num = 32768;
+        default_space.replica_factor = 1;
+        default_space.created_at = std::chrono::system_clock::now();
+        state_machine_.ApplyCreateSpace(default_space);
+        std::cout << "[MetaD] Test mode: created default space with "
+                  << default_space.partition_num << " partitions" << std::endl;
     }
 
     // Start heartbeat check thread

@@ -1,8 +1,8 @@
 // Copyright (c) 2024 Cedar Storage Engine Authors.
 // WriteBatch with Cedar extensions for temporal data.
 
-#ifndef FERN_WRITE_BATCH_H_
-#define FERN_WRITE_BATCH_H_
+#ifndef CEDAR_WRITE_BATCH_H_
+#define CEDAR_WRITE_BATCH_H_
 
 #include <string>
 

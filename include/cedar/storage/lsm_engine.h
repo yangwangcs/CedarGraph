@@ -367,12 +367,12 @@ class LsmEngine {
   Status FlushMemTable(VSLMemTable* mem);
   
   // Flush entries directly to SST file (unified flush, cross Column ID)
-  Status FlushEntriesToSST(std::vector<std::pair<CedarKey, Descriptor>> entries);
+  Status FlushEntriesToSST(std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> entries);
   
   // Flush a group of entries (same entity_type and column_id) to SST file
   // Used by FlushMemTable to support mixed entity types
   Status FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
-                          const std::vector<std::pair<CedarKey, Descriptor>>& entries);
+                          const std::vector<std::tuple<CedarKey, Descriptor, Timestamp>>& entries);
 
   // Do compaction on specified level
   Status DoCompaction(int level, const std::vector<SSTFileMeta>& inputs);
@@ -386,7 +386,7 @@ class LsmEngine {
   
   // Helper: Get entries from SST files for specific entity (replaces GetVersionChain)
   void GetEntriesFromSst(uint64_t entity_id, EntityType entity_type,
-                         uint16_t column_id, std::vector<std::pair<CedarKey, Descriptor>>* results);
+                         uint16_t column_id, std::vector<std::tuple<CedarKey, Descriptor, Timestamp>>* results);
   
   // Check if compaction is needed
   bool NeedsCompaction(int level) const;
@@ -658,7 +658,7 @@ class LsmEngine {
   size_t accumulated_flush_target_size_ = 64 * 1024 * 1024;
   
   // 累积的数据缓冲区
-  std::vector<std::pair<CedarKey, Descriptor>> accumulated_entries_;
+  std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> accumulated_entries_;
   
   // 累积缓冲区互斥锁
   mutable std::mutex accumulated_mutex_;

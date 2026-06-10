@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // Block Cache - Caches decoded zone data to reduce decompression/decoding overhead
 
-#ifndef FERN_STORAGE_BLOCK_CACHE_H_
-#define FERN_STORAGE_BLOCK_CACHE_H_
+#ifndef CEDAR_STORAGE_BLOCK_CACHE_H_
+#define CEDAR_STORAGE_BLOCK_CACHE_H_
 
 #include <memory>
 #include <mutex>

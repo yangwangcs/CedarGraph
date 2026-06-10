@@ -43,7 +43,7 @@ class SstBuilderInterface {
   virtual ~SstBuilderInterface() = default;
   
   // 添加条目（要求：按 CedarKey 排序）
-  virtual void Add(const CedarKey& key, const Descriptor& desc) = 0;
+  virtual void Add(const CedarKey& key, const Descriptor& desc, Timestamp txn_version) = 0;
   
   // 完成构建
   virtual Status Finish() = 0;

@@ -154,6 +154,19 @@ Status OCCTransaction::Commit() {
   // 分配提交时间戳
   commit_timestamp_ = txn_manager_->AllocateTimestamp();
   
+  // 修复: 更新写集中的 txn_version 为 commit_timestamp_
+  for (auto& entry : write_set_) {
+    entry.txn_version = commit_timestamp_;
+  }
+  
+  // 修复: 重建 WAL batch，使用正确的 commit_timestamp_
+  if (wal_writer_) {
+    wal_batch_.Clear();
+    for (const auto& entry : write_set_) {
+      wal_batch_.Put(entry.key, entry.descriptor, entry.txn_version);
+    }
+  }
+  
   // 验证阶段
   Status validation_status = Validate();
   if (!validation_status.ok()) {
@@ -272,21 +285,21 @@ Status OCCTransaction::Get(uint64_t entity_id,
   }
   
   // 4. MemTable 中没有找到，查询 LsmEngine (SST 文件)
-  // SST 文件中的数据已经过 compaction，视为已提交数据，对所有事务可见
+  // SST 文件中的数据已经过 compaction，视为已提交数据。
+  // Zone-5 已添加：SST 中存储了 txn_version，支持 MVCC 快照隔离。
   if (lsm_engine_) {
-    // 修复: 使用 GetAll 获取所有版本，然后找到最新的
-    // 因为 GetAtTime 依赖的 GetVersionChain 在 SST 中未实现
     auto all_versions = lsm_engine_->GetAll(entity_id, entity_type, column_id);
-    if (!all_versions.empty()) {
-      // 返回最新版本（GetAll 返回按时间戳降序排列）
-      *descriptor = all_versions.front().descriptor;
-      *version_ts = all_versions.front().timestamp;
-      
-      // 记录到读集（使用 Max() 标记为 SST 数据，事务版本号也为 Max()）
-      read_set_.push_back({entity_id, entity_type, column_id, 
-                           Timestamp::Max(), Timestamp::Max()});
-      
-      return Status::OK();
+    for (const auto& entry : all_versions) {
+      // 使用 txn_version 进行 MVCC 版本比较
+      if (entry.txn_version <= read_timestamp_) {
+        *descriptor = entry.descriptor;
+        *version_ts = entry.timestamp;
+        
+        read_set_.push_back({entity_id, entity_type, column_id, 
+                             entry.timestamp, entry.txn_version});
+        
+        return Status::OK();
+      }
     }
   }
   
@@ -374,8 +387,9 @@ Status OCCTransaction::Put(uint64_t entity_id,
   // 绝对不使用 read_timestamp_ 或 commit_timestamp_（事务版本号）作为 Key 的时间戳
   Timestamp ts = user_timestamp.value() > 0 ? user_timestamp : Timestamp::Now();
   
-  // 使用事务版本号作为 MVCC 版本控制（后续会在 Commit 时分配 commit_timestamp_）
-  Timestamp txn_version = read_timestamp_;
+  // 事务版本号在 Commit() 验证通过后分配 commit_timestamp_
+  // 这里使用哨兵值 Timestamp(0)，在 Commit() 时会被覆盖
+  Timestamp txn_version = Timestamp(0);
   
   CedarKey temp_key = MakeKey(entity_id, entity_type, column_id, ts, target_id);
   write_set_.push_back({entity_id, entity_type, column_id, descriptor, temp_key, ts, txn_version, target_id});
@@ -461,11 +475,13 @@ Status OCCTransaction::GetVersionHistory(uint64_t entity_id,
   }
   
   // 如果 MemTable 中没有历史，查询 SST 文件
+  // Zone-5 已添加：SST 中存储了 txn_version，支持 MVCC 快照隔离。
   if (history->empty() && lsm_engine_) {
     auto all_versions = lsm_engine_->GetAll(entity_id, entity_type, column_id);
     for (const auto& entry : all_versions) {
-      // SST 文件中的数据视为已提交，全部可见
-      history->emplace_back(entry.timestamp, entry.descriptor);
+      if (entry.txn_version <= read_timestamp_) {
+        history->emplace_back(entry.timestamp, entry.descriptor);
+      }
     }
   }
   

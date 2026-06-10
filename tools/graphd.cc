@@ -21,6 +21,9 @@
 #include "cedar/dtx/monitoring.h"
 #include "cedar/dtx/raft/grpc_tls.h"
 #include "cedar/common/json_logger.h"
+#include "cedar/queryd/distributed_executor.h"
+#include "cedar/queryd/query_storage_client.h"
+#include "cedar/queryd/meta_client.h"
 #include "gcn_service.grpc.pb.h"
 
 std::atomic<bool> g_running{true};
@@ -78,6 +81,11 @@ Config ParseArgs(int argc, char* argv[]) {
       config.gcn_server = argv[++i];
     } else if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
       config_file = argv[++i];
+    } else if (arg == "--tls" && i + 1 < argc) {
+      std::string val = argv[++i];
+      config.tls.enabled = (val == "true" || val == "1" || val == "yes");
+    } else if (arg == "--test_mode") {
+      config.tls.enabled = false;  // Disable TLS in test mode for convenience
     } else if (arg == "--help" || arg == "-h") {
       std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
       std::cout << "Options:" << std::endl;
@@ -86,6 +94,8 @@ Config ParseArgs(int argc, char* argv[]) {
       std::cout << "  -m, --meta <addr>      MetaD server address (default: 127.0.0.1:9559)" << std::endl;
       std::cout << "  -g, --gcn <addr>       GCN server address (default: 127.0.0.1:9780)" << std::endl;
       std::cout << "  -c, --config <path>    Configuration file (YAML)" << std::endl;
+      std::cout << "  --tls <true|false>     Enable/disable TLS (default: true)" << std::endl;
+      std::cout << "  --test_mode            Test mode (disables TLS)" << std::endl;
       std::cout << "  -h, --help             Show this help" << std::endl;
       exit(0);
     }
@@ -112,8 +122,25 @@ int main(int argc, char* argv[]) {
   signal(SIGINT, SignalHandler);
   signal(SIGTERM, SignalHandler);
 
+  // Initialize QueryD components for merged execution
+  cedar::queryd::QueryStorageClient::Options storage_options;
+  auto query_storage_client = std::make_unique<cedar::queryd::QueryStorageClient>(storage_options);
+
+  cedar::queryd::QueryMetaClient::Options meta_options;
+  meta_options.meta_service_address = config.meta_server;
+  auto query_meta_client = std::make_unique<cedar::queryd::QueryMetaClient>(meta_options);
+  auto meta_init_status = query_meta_client->Init();
+  if (!meta_init_status.ok()) {
+    std::cerr << "[GraphD] QueryMetaClient init failed: " << meta_init_status.ToString() << std::endl;
+  }
+
+  auto distributed_executor = std::make_unique<cedar::queryd::DistributedExecutor>(
+      query_storage_client.get(), query_meta_client.get());
+  std::cout << "[GraphD] DistributedExecutor initialized (merged from QueryD)" << std::endl;
+
   // Create router service
   auto router = std::make_unique<cedar::service::GraphServiceRouter>();
+  router->SetDistributedExecutor(distributed_executor.get());
   router->SetTlsConfig(config.tls);
 
   // Initialize router

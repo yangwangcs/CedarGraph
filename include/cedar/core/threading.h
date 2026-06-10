@@ -1,8 +1,8 @@
 // Copyright (c) 2024 Cedar Storage Engine Authors.
 // Threading abstraction layer using C++11 STL threads.
 
-#ifndef FERN_CORE_THREADING_H_
-#define FERN_CORE_THREADING_H_
+#ifndef CEDAR_CORE_THREADING_H_
+#define CEDAR_CORE_THREADING_H_
 
 #include <functional>
 #include <memory>

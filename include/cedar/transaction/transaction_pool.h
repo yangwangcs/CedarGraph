@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_TRANSACTION_POOL_H_
-#define FERN_TRANSACTION_POOL_H_
+#ifndef CEDAR_TRANSACTION_POOL_H_
+#define CEDAR_TRANSACTION_POOL_H_
 
 #include <memory>
 #include <queue>

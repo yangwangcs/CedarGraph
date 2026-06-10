@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_STORAGE_VERSION_CHAIN_INDEX_H_
-#define FERN_STORAGE_VERSION_CHAIN_INDEX_H_
+#ifndef CEDAR_STORAGE_VERSION_CHAIN_INDEX_H_
+#define CEDAR_STORAGE_VERSION_CHAIN_INDEX_H_
 
 // ============================================================================
 // 版本链跳表索引 (VersionChainIndex)

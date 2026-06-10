@@ -21,8 +21,8 @@
 // 3. 支持 Compaction 和查询的独立线程池
 // =============================================================================
 
-#ifndef FERN_ADAPTIVE_THREAD_POOL_H_
-#define FERN_ADAPTIVE_THREAD_POOL_H_
+#ifndef CEDAR_ADAPTIVE_THREAD_POOL_H_
+#define CEDAR_ADAPTIVE_THREAD_POOL_H_
 
 #include <atomic>
 #include <chrono>

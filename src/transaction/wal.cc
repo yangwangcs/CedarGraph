@@ -242,6 +242,9 @@ Status WalWriter::Open() {
   Status st = SwitchWALFile();
   CEDAR_RETURN_IF_ERROR(st);
   
+  // 初始化批量 sync 时间戳
+  last_sync_time_ = std::chrono::steady_clock::now();
+  
   // 启动组提交线程
   if (options_.group_commit_timeout_us > 0) {
     group_commit_thread_.reset(new std::thread(&WalWriter::GroupCommitThread, this));
@@ -293,6 +296,19 @@ Status WalWriter::Sync() {
   return Status::OK();
 }
 
+Status WalWriter::Flush() {
+  std::lock_guard<std::mutex> lock(file_mutex_);
+  if (!current_file_) {
+    return Status::IOError("WalWriter", "not opened");
+  }
+  
+  cedar::Status s = current_file_->Flush();
+  if (!s.ok()) {
+    return Status::IOError("WalWriter", s.ToString());
+  }
+  return Status::OK();
+}
+
 Status WalWriter::WritePut(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version) {
   WalBatch batch;
   batch.Put(key, descriptor, txn_version);
@@ -323,8 +339,38 @@ Status WalWriter::WriteBatch(const WalBatch& batch) {
     return async.future.get();
   }
 
-  std::lock_guard<std::mutex> lock(file_mutex_);
-  return WriteInternal(batch);
+  {
+    std::lock_guard<std::mutex> lock(file_mutex_);
+    Status s = WriteInternal(batch);
+    if (!s.ok()) return s;
+  }
+  
+  // Batch sync policy: fsync periodically to balance durability and throughput
+  if (options_.sync_interval_ms > 0 || options_.sync_threshold > 0) {
+    uint32_t unsynced = unsynced_writes_.fetch_add(1, std::memory_order_relaxed) + 1;
+    
+    bool need_sync = false;
+    {
+      std::lock_guard<std::mutex> lock(sync_mutex_);
+      auto now = std::chrono::steady_clock::now();
+      auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - last_sync_time_).count();
+      
+      if ((options_.sync_threshold > 0 && unsynced >= options_.sync_threshold) ||
+          (options_.sync_interval_ms > 0 && elapsed_ms >= static_cast<int64_t>(options_.sync_interval_ms))) {
+        need_sync = true;
+        last_sync_time_ = now;
+        unsynced_writes_.store(0, std::memory_order_relaxed);
+      }
+    }
+    
+    if (need_sync) {
+      Status sync_status = Sync();
+      if (!sync_status.ok()) return sync_status;
+    }
+  }
+  
+  return Status::OK();
 }
 
 Status WalWriter::WriteBatchAsync(const WalBatch& batch, AsyncResult* out) {
@@ -467,16 +513,68 @@ void WalWriter::ProcessGroupCommit() {
   
   {
     std::lock_guard<std::mutex> lock(file_mutex_);
-    // 合并批次 (简单实现: 逐个写入)
-    // 优化: 可以合并多个小批次为一个大写入
+    // Optimized: coalesce multiple small writes into fewer Append calls
+    std::string coalesced_buffer;
+    coalesced_buffer.reserve(64 * 1024);  // 64KB initial
+    Status write_status = Status::OK();
+    
     for (auto& request : batch) {
-      Status s = WriteInternal(request->batch);
-      request->promise.set_value(s);
+      // Encode batch
+      std::string data;
+      request->batch.EncodeTo(&data);
       
-      if (!s.ok()) {
-        // 记录错误，但继续处理其他请求
-        fprintf(stderr, "WAL write failed: %s\n", s.ToString().c_str());
+      // Build header
+      WalRecordHeader header;
+      header.crc32 = cedar::crc32c::Value(data.data(), data.size());
+      header.type = static_cast<uint16_t>(WalRecordType::kBatch);
+      header.flags = 0;
+      header.data_length = static_cast<uint32_t>(data.size());
+      header.sequence = static_cast<uint32_t>(next_sequence_.fetch_add(1, std::memory_order_acq_rel));
+      
+      std::string header_str;
+      header.EncodeTo(&header_str);
+      
+      size_t record_size = header_str.size() + data.size();
+      
+      // Check if we need to switch WAL file
+      if (current_file_size_ + coalesced_buffer.size() + record_size > options_.max_file_size) {
+        // Flush pending buffer before switching
+        if (!coalesced_buffer.empty() && current_file_) {
+          cedar::Slice buf_slice(coalesced_buffer);
+          cedar::Status flush_status = current_file_->Append(buf_slice);
+          if (!flush_status.ok()) {
+            write_status = Status::IOError("WalWriter", flush_status.ToString());
+            break;
+          }
+          current_file_size_ += coalesced_buffer.size();
+          coalesced_buffer.clear();
+        }
+        Status s = SwitchWALFile();
+        if (!s.ok()) {
+          write_status = s;
+          break;
+        }
       }
+      
+      // Append to coalesced buffer
+      coalesced_buffer.append(header_str);
+      coalesced_buffer.append(data);
+    }
+    
+    // Flush remaining buffer
+    if (write_status.ok() && !coalesced_buffer.empty() && current_file_) {
+      cedar::Slice buf_slice(coalesced_buffer);
+      cedar::Status flush_status = current_file_->Append(buf_slice);
+      if (flush_status.ok()) {
+        current_file_size_ += coalesced_buffer.size();
+      } else {
+        write_status = Status::IOError("WalWriter", flush_status.ToString());
+      }
+    }
+    
+    // Set all promises with the same status
+    for (auto& request : batch) {
+      request->promise.set_value(write_status);
     }
     
     // 批量 fsync

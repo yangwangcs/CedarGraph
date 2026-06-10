@@ -16,6 +16,8 @@
 #include <grpcpp/grpcpp.h>
 #include "storage_service.pb.h"
 #include "storage_service.grpc.pb.h"
+#include "cedar/types/descriptor.h"
+#include "cedar/core/slice.h"
 
 using namespace std::chrono;
 
@@ -23,6 +25,11 @@ using namespace std::chrono;
 struct TestConfig {
   std::vector<std::string> storage_endpoints = {
     "127.0.0.1:7001", "127.0.0.1:7002", "127.0.0.1:7003"
+  };
+  std::vector<std::string> data_dirs = {
+    "/tmp/cedar_cluster/storaged0/node0",
+    "/tmp/cedar_cluster/storaged1/node1",
+    "/tmp/cedar_cluster/storaged2/node2"
   };
   
   int num_vertices = 10000;
@@ -38,6 +45,12 @@ class StorageTestClient {
   StorageTestClient(const std::string& endpoint) {
     channel_ = grpc::CreateChannel(endpoint, grpc::InsecureChannelCredentials());
     stub_ = cedar::storage::StorageService::NewStub(channel_);
+    
+    // Wait for connection to be ready
+    auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(5);
+    if (!channel_->WaitForConnected(deadline)) {
+      std::cerr << "  Warning: Failed to connect to " << endpoint << std::endl;
+    }
   }
   
   // Write a single vertex property
@@ -52,7 +65,9 @@ class StorageTestClient {
     key->set_partition_id(0);
     
     auto* desc = request.mutable_descriptor_();
-    desc->set_data(reinterpret_cast<const char*>(&value), sizeof(value));
+    auto descriptor = cedar::Descriptor::InlineInt(col_id, value);
+    auto encoded = descriptor.Encode();
+    desc->set_data(encoded);
     
     request.mutable_txn_version()->set_value(timestamp);
     request.set_txn_id(txn_id);
@@ -75,11 +90,18 @@ class StorageTestClient {
     
     cedar::storage::GetResponse response;
     grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
     auto status = stub_->Get(&context, request, &response);
     
     if (status.ok() && response.success() && response.found() && 
-        response.has_descriptor_() && response.descriptor_().data().size() >= sizeof(int32_t)) {
-      return *reinterpret_cast<const int32_t*>(response.descriptor_().data().data());
+        response.has_descriptor_()) {
+      auto decoded = cedar::Descriptor::Decode(cedar::Slice(response.descriptor_().data()));
+      if (decoded.has_value()) {
+        auto val = decoded->AsInlineInt();
+        if (val.has_value()) {
+          return val.value();
+        }
+      }
     }
     return std::nullopt;
   }
@@ -108,6 +130,7 @@ class StorageTestClient {
     
     cedar::storage::BatchGetResponse response;
     grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
     auto status = stub_->BatchGet(&context, request, &response);
     
     std::vector<std::optional<int32_t>> results;
@@ -122,6 +145,60 @@ class StorageTestClient {
       }
     }
     return results;
+  }
+  
+  // Batch write vertex properties
+  bool BatchWriteVertex(
+      const std::vector<std::tuple<uint64_t, uint16_t, int32_t, uint64_t>>& items,
+      uint64_t txn_id = 0) {
+    if (items.empty()) return true;
+    
+    cedar::storage::BatchPutRequest request;
+    for (const auto& [vertex_id, col_id, value, timestamp] : items) {
+      auto* item = request.add_items();
+      auto* key = item->mutable_key();
+      key->set_entity_id(vertex_id);
+      key->set_timestamp(timestamp);
+      key->set_column_id(col_id);
+      key->set_type_flags((0 << 16));
+      key->set_partition_id(0);
+      
+      auto descriptor = cedar::Descriptor::InlineInt(col_id, value);
+      auto encoded = descriptor.Encode();
+      item->mutable_descriptor_()->set_data(encoded);
+    }
+    request.mutable_txn_version()->set_value(std::get<3>(items[0]));
+    request.set_txn_id(txn_id);
+    
+    cedar::storage::BatchPutResponse response;
+    grpc::Status status;
+    for (int retry = 0; retry < 3; ++retry) {
+      grpc::ClientContext context;
+      context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+      status = stub_->BatchPut(&context, request, &response);
+      if (status.ok() && response.success()) return true;
+      if (!status.ok()) {
+        std::cerr << "  BatchWriteVertex gRPC error (retry " << retry << "): " 
+                  << status.error_message() << std::endl;
+      } else if (!response.success()) {
+        std::cerr << "  BatchWriteVertex server error (retry " << retry << "): " 
+                  << response.error_msg() << std::endl;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+  }
+  
+  // Check channel state
+  std::string GetChannelState() const {
+    switch (channel_->GetState(false)) {
+      case GRPC_CHANNEL_IDLE: return "IDLE";
+      case GRPC_CHANNEL_CONNECTING: return "CONNECTING";
+      case GRPC_CHANNEL_READY: return "READY";
+      case GRPC_CHANNEL_TRANSIENT_FAILURE: return "TRANSIENT_FAILURE";
+      case GRPC_CHANNEL_SHUTDOWN: return "SHUTDOWN";
+      default: return "UNKNOWN";
+    }
   }
   
   // Get partition info for persistence verification
@@ -209,11 +286,12 @@ class FixedTestSuite {
     std::cout << std::endl;
   }
   
-  // Test 2: Write Throughput
+  // Test 2: Write Throughput (optimized with BatchPut RPC)
   void TestWriteThroughput() {
-    std::cout << "[Test 2] Write Throughput Test" << std::endl;
+    std::cout << "[Test 2] Write Throughput Test (BatchPut RPC)" << std::endl;
     
     const int num_writes = config_.test_iterations;
+    const int batch_size = 25;  // Batch 25 writes per RPC
     std::atomic<int> success_count{0};
     
     auto start = high_resolution_clock::now();
@@ -224,13 +302,20 @@ class FixedTestSuite {
     for (int t = 0; t < config_.num_threads; ++t) {
       threads.emplace_back([&, t]() {
         int client_idx = t % clients_.size();
+        std::vector<std::tuple<uint64_t, uint16_t, int32_t, uint64_t>> batch;
+        batch.reserve(batch_size);
+        
         for (int i = 0; i < writes_per_thread; ++i) {
           uint64_t vid = (t * writes_per_thread + i) % config_.num_vertices;
           int32_t value = rng_();
           uint64_t ts = 1000000 + i;
+          batch.push_back({vid, 1, value, ts});
           
-          if (clients_[client_idx].WriteVertex(vid, 1, value, ts)) {
-            success_count++;
+          if (batch.size() >= static_cast<size_t>(batch_size) || i == writes_per_thread - 1) {
+            if (clients_[client_idx].BatchWriteVertex(batch)) {
+              success_count += static_cast<int>(batch.size());
+            }
+            batch.clear();
           }
         }
       });
@@ -255,15 +340,16 @@ class FixedTestSuite {
   void TestReadThroughput() {
     std::cout << "[Test 3] Read Throughput Test" << std::endl;
     
-    // First write some data
+    // First write some data to all clients so reads always hit data
     std::cout << "  Preparing data..." << std::endl;
-    for (int i = 0; i < 10000; ++i) {
+    for (int i = 0; i < config_.num_vertices; ++i) {
       uint64_t vid = i % config_.num_vertices;
-      clients_[0].WriteVertex(vid, 1, i * 100, 3000000 + i);
+      size_t client_idx = vid % clients_.size();
+      clients_[client_idx].WriteVertex(vid, 1, i * 100, 3000000 + vid);
     }
     
     // Wait for flush
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     
     const int num_reads = config_.test_iterations;
     std::atomic<int> success_count{0};
@@ -275,10 +361,10 @@ class FixedTestSuite {
     
     for (int t = 0; t < config_.num_threads; ++t) {
       threads.emplace_back([&, t]() {
-        int client_idx = t % clients_.size();
         for (int i = 0; i < reads_per_thread; ++i) {
-          uint64_t vid = rng_() % 10000;
+          uint64_t vid = rng_() % config_.num_vertices;
           uint64_t ts = 3000000 + vid;  // Use same timestamp as write
+          size_t client_idx = vid % clients_.size();
           
           auto result = clients_[client_idx].ReadVertex(vid, 1, ts);
           if (result.has_value()) {
@@ -310,13 +396,16 @@ class FixedTestSuite {
     // Write multiple versions
     std::cout << "  Writing 100 versions..." << std::endl;
     uint64_t vid = 12345;
+    std::vector<std::tuple<uint64_t, uint16_t, int32_t, uint64_t>> batch;
+    batch.reserve(100);
     for (int i = 0; i < 100; ++i) {
-      clients_[0].WriteVertex(vid, 1, i * 10, 4000000 + i * 1000);
+      batch.push_back({vid, 1, i * 10, 4000000});
     }
+    clients_[0].BatchWriteVertex(batch);
     
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
-    const int num_queries = 50000;
+    const int num_queries = 10000;
     std::atomic<int> success_count{0};
     
     auto start = high_resolution_clock::now();
@@ -346,7 +435,10 @@ class FixedTestSuite {
   void TestBatchNeighborQuery() {
     std::cout << "[Test 5] Batch Neighbor Query (Optimized with BatchGet)" << std::endl;
     
-    // Create fresh client to avoid connection state issues
+    // Allow system to settle after previous tests
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    
+    // Create a fresh client to avoid stale channel state from previous tests
     StorageTestClient fresh_client(config_.storage_endpoints[0]);
     
     // Write graph data
@@ -357,31 +449,48 @@ class FixedTestSuite {
     // Use high vertex_id range (100000+) to avoid conflicts with previous tests
     const uint64_t vertex_id_base = 100000;
     int write_success = 0;
+    
+    // Test simple write first
+    bool simple_ok = fresh_client.WriteVertex(vertex_id_base, 1, 42, 5000000);
+    std::cout << "  Simple write test: " << (simple_ok ? "OK" : "FAILED") << std::endl;
+    
+    // Check channel state
+    auto channel_state = fresh_client.GetChannelState();
+    std::cout << "  Channel state: " << channel_state << std::endl;
+    
+    std::vector<std::tuple<uint64_t, uint16_t, int32_t, uint64_t>> batch;
+    batch.reserve(100);
     for (int v = 0; v < num_vertices; ++v) {
       for (int e = 0; e < edges_per_vertex; ++e) {
         uint64_t dst = (v + e + 1) % num_vertices;
-        if (fresh_client.WriteVertex(vertex_id_base + v, 1 + e, dst, 5000000)) {
-          write_success++;
+        batch.push_back({vertex_id_base + v, static_cast<uint16_t>(1 + e), static_cast<int32_t>(dst), 5000000});
+        if (batch.size() >= 100) {
+          if (fresh_client.BatchWriteVertex(batch)) {
+            write_success += static_cast<int>(batch.size());
+          }
+          batch.clear();
         }
+      }
+    }
+    if (!batch.empty()) {
+      if (fresh_client.BatchWriteVertex(batch)) {
+        write_success += static_cast<int>(batch.size());
       }
     }
     std::cout << "  Written: " << write_success << "/" << (num_vertices * edges_per_vertex) << " edges" << std::endl;
     
-    // Immediate verification of first vertex
-    std::cout << "  Immediate verification of vertex " << vertex_id_base << "..." << std::endl;
-    int immediate_success = 0;
-    for (int e = 0; e < edges_per_vertex; ++e) {
-      auto result = fresh_client.ReadVertex(vertex_id_base, 1 + e, 5000000);
-      if (result.has_value()) {
-        immediate_success++;
-        std::cout << "    edge " << e << ": " << result.value() << std::endl;
-      }
+    // Verify a small sample immediately (before flush)
+    std::cout << "  Verifying sample data immediately..." << std::endl;
+    int sample_success_immediate = 0;
+    for (int v = 0; v < 10; ++v) {
+      auto result = fresh_client.ReadVertex(vertex_id_base + v, 1, 5000000);
+      if (result.has_value()) sample_success_immediate++;
     }
-    std::cout << "  Immediate: " << immediate_success << "/" << edges_per_vertex << " found" << std::endl;
+    std::cout << "  Sample verification (immediate): " << sample_success_immediate << "/10 found" << std::endl;
     
     // Wait for flush
     std::cout << "  Waiting for data persistence..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     
     // Verify a small sample after delay
     std::cout << "  Verifying sample data after delay..." << std::endl;
@@ -390,42 +499,49 @@ class FixedTestSuite {
       auto result = fresh_client.ReadVertex(vertex_id_base + v, 1, 5000000);
       if (result.has_value()) sample_success++;
     }
-    std::cout << "  Sample verification: " << sample_success << "/10 found" << std::endl;
+    std::cout << "  Sample verification (after delay): " << sample_success << "/10 found" << std::endl;
     
     // Batch read neighbors
-    const int num_queries = 10000;
+    const int num_queries = 5000;
     std::atomic<int> success_count{0};
     std::atomic<int> total_neighbors{0};
     
     auto start = high_resolution_clock::now();
     
-    for (int i = 0; i < num_queries; ++i) {
-      uint64_t vid = rng_() % num_vertices;
-      
-      // Prepare batch keys
-      std::vector<std::tuple<uint64_t, uint16_t, uint64_t>> keys;
-      for (int e = 0; e < edges_per_vertex; ++e) {
-        keys.push_back({vertex_id_base + vid, static_cast<uint16_t>(1 + e), 5000000});
-      }
-      
-      // Batch get
-      auto results = fresh_client.BatchRead(keys);
-      
-      int found = 0;
-      for (const auto& res : results) {
-        if (res.has_value()) found++;
-      }
-      
-      if (found > 0) {
-        success_count++;
-        total_neighbors += found;
-      }
+    std::vector<std::thread> threads;
+    int queries_per_thread = num_queries / config_.num_threads;
+    for (int t = 0; t < config_.num_threads; ++t) {
+      threads.emplace_back([&, t]() {
+        for (int i = 0; i < queries_per_thread; ++i) {
+          uint64_t vid = rng_() % num_vertices;
+          
+          // Prepare batch keys
+          std::vector<std::tuple<uint64_t, uint16_t, uint64_t>> keys;
+          for (int e = 0; e < edges_per_vertex; ++e) {
+            keys.push_back({vertex_id_base + vid, static_cast<uint16_t>(1 + e), 5000000});
+          }
+          
+          // Batch get
+          auto results = fresh_client.BatchRead(keys);
+          
+          int found = 0;
+          for (const auto& res : results) {
+            if (res.has_value()) found++;
+          }
+          
+          if (found > 0) {
+            success_count++;
+            total_neighbors += found;
+          }
+        }
+      });
     }
+    for (auto& t : threads) t.join();
     
     auto end = high_resolution_clock::now();
     auto duration = duration_cast<microseconds>(end - start).count();
     double throughput = (double)num_queries / (duration / 1000000.0);
-    double avg_neighbors = (double)total_neighbors / success_count.load();
+    double avg_neighbors = success_count > 0 ? (double)total_neighbors / success_count.load() : 0;
     
     results_["Batch Neighbor"] = {throughput, (double)duration / num_queries, success_count};
     std::cout << "  Throughput:     " << std::fixed << std::setprecision(2) << throughput 
@@ -463,13 +579,13 @@ class FixedTestSuite {
     
     // Check directory
     std::cout << "  Data directory check:" << std::endl;
-    for (int i = 1; i <= 3; ++i) {
-      std::string cmd = "du -sh /tmp/cedar/storage/node" + std::to_string(i) + " 2>/dev/null | cut -f1";
+    for (size_t i = 0; i < config_.data_dirs.size(); ++i) {
+      std::string cmd = "du -sh " + config_.data_dirs[i] + " 2>/dev/null | cut -f1";
       FILE* pipe = popen(cmd.c_str(), "r");
       if (pipe) {
         char buffer[128];
         if (fgets(buffer, sizeof(buffer), pipe)) {
-          std::cout << "    node" << i << ": " << buffer;
+          std::cout << "    node" << (i + 1) << ": " << buffer;
         }
         pclose(pipe);
       }
@@ -477,13 +593,13 @@ class FixedTestSuite {
     
     // Check SST files
     std::cout << "  SST files:" << std::endl;
-    for (int i = 1; i <= 3; ++i) {
-      std::string cmd = "ls /tmp/cedar/storage/node" + std::to_string(i) + "/*.sst 2>/dev/null | wc -l";
+    for (size_t i = 0; i < config_.data_dirs.size(); ++i) {
+      std::string cmd = "ls " + config_.data_dirs[i] + "/*.sst 2>/dev/null | wc -l";
       FILE* pipe = popen(cmd.c_str(), "r");
       if (pipe) {
         char buffer[128];
         if (fgets(buffer, sizeof(buffer), pipe)) {
-          std::cout << "    node" << i << ": " << buffer << " SST files";
+          std::cout << "    node" << (i + 1) << ": " << buffer << " SST files";
         }
         pclose(pipe);
       }

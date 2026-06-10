@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_SHARDED_TIMESTAMP_ALLOCATOR_H_
-#define FERN_SHARDED_TIMESTAMP_ALLOCATOR_H_
+#ifndef CEDAR_SHARDED_TIMESTAMP_ALLOCATOR_H_
+#define CEDAR_SHARDED_TIMESTAMP_ALLOCATOR_H_
 
 #include <atomic>
 #include <cstdint>

@@ -21,8 +21,8 @@
 // 3. 结果合并，保持时间戳一致性
 // =============================================================================
 
-#ifndef FERN_PARALLEL_QUERY_ENGINE_H_
-#define FERN_PARALLEL_QUERY_ENGINE_H_
+#ifndef CEDAR_PARALLEL_QUERY_ENGINE_H_
+#define CEDAR_PARALLEL_QUERY_ENGINE_H_
 
 #include <cstdint>
 #include <future>

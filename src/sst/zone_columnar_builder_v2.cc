@@ -114,6 +114,7 @@ void RowBuffer::Clear() {
   entity_types.clear();
   flags.clear();
   part_ids.clear();
+  txn_versions.clear();
   values.clear();
 }
 
@@ -123,13 +124,14 @@ void RowBuffer::Reserve(size_t n) {
   target_ids.reserve(n);
   column_ids.reserve(n);
   sequences.reserve(n);
+  txn_versions.reserve(n);
   entity_types.reserve(n);
   flags.reserve(n);
   part_ids.reserve(n);
   values.reserve(n);
 }
 
-void RowBuffer::Add(const CedarKey& key, const Descriptor& desc) {
+void RowBuffer::Add(const CedarKey& key, const Descriptor& desc, Timestamp txn_version) {
   entity_ids.push_back(key.entity_id());
   timestamps.push_back(key.timestamp().value());
   target_ids.push_back(key.target_id());
@@ -138,6 +140,7 @@ void RowBuffer::Add(const CedarKey& key, const Descriptor& desc) {
   entity_types.push_back(static_cast<uint8_t>(key.entity_type()));
   flags.push_back(key.flags());
   part_ids.push_back(key.part_id());
+  txn_versions.push_back(txn_version.value());
   values.push_back(desc);
 }
 
@@ -153,7 +156,8 @@ ZoneColumnarSstBuilderV2::ZoneColumnarSstBuilderV2(const Options& options,
   buffer_.Reserve(options.block_row_limit);
 }
 
-void ZoneColumnarSstBuilderV2::Add(const CedarKey& key, const Descriptor& desc) {
+void ZoneColumnarSstBuilderV2::Add(const CedarKey& key, const Descriptor& desc,
+                                        Timestamp txn_version) {
   if (!status_.ok()) return;
 
   // 更新全局统计
@@ -168,7 +172,7 @@ void ZoneColumnarSstBuilderV2::Add(const CedarKey& key, const Descriptor& desc) 
   }
 
   // 添加到 buffer
-  buffer_.Add(key, desc);
+  buffer_.Add(key, desc, txn_version);
   total_rows_++;
 
   // 收集 key 用于构建 TemporalBloomFilter
@@ -249,7 +253,7 @@ Status ZoneColumnarSstBuilderV2::FlushBlock() {
   block.max_timestamp = *std::max_element(buffer_.timestamps.begin(),
                                           buffer_.timestamps.end());
 
-  // 编码 5 个 Zone - 直接存储原始数据
+  // 编码 6 个 Zone - 直接存储原始数据
   block.zone0_data.resize(buffer_.entity_ids.size() * 8);
   memcpy(&block.zone0_data[0], buffer_.entity_ids.data(),
          block.zone0_data.size());
@@ -282,12 +286,17 @@ Status ZoneColumnarSstBuilderV2::FlushBlock() {
   }
   block.zone4_data = std::move(value_data);
 
+  // Zone 5: Txn Versions (MVCC)
+  block.zone5_data.resize(buffer_.txn_versions.size() * 8);
+  memcpy(&block.zone5_data[0], buffer_.txn_versions.data(),
+         block.zone5_data.size());
+
   // 计算压缩后大小
   block.compressed_size = static_cast<uint32_t>(
-      40 +  // BlockHeader
+      44 +  // BlockHeader (6 zones: 4 + 24 + 8 + 8)
       block.zone0_data.size() + block.zone1_data.size() +
       block.zone2_data.size() + block.zone3_data.size() +
-      block.zone4_data.size());
+      block.zone4_data.size() + block.zone5_data.size());
 
   blocks_.push_back(std::move(block));
 
@@ -319,24 +328,26 @@ Status ZoneColumnarSstBuilderV2::WriteFile() {
     entry.max_timestamp = block.max_timestamp;
     block_index_.push_back(entry);
 
-    // 写入 Block Header（40 bytes）
-    char bh_data[40];
+    // 写入 Block Header（44 bytes）
+    char bh_data[44];
     EncodeFixed32(bh_data, block.row_count);
     EncodeFixed32(bh_data + 4, static_cast<uint32_t>(block.zone0_data.size()));
     EncodeFixed32(bh_data + 8, static_cast<uint32_t>(block.zone1_data.size()));
     EncodeFixed32(bh_data + 12, static_cast<uint32_t>(block.zone2_data.size()));
     EncodeFixed32(bh_data + 16, static_cast<uint32_t>(block.zone3_data.size()));
     EncodeFixed32(bh_data + 20, static_cast<uint32_t>(block.zone4_data.size()));
-    EncodeFixed64(bh_data + 24, block.min_entity_id);
-    EncodeFixed64(bh_data + 32, block.max_entity_id);
-    file_data.append(bh_data, 40);
+    EncodeFixed32(bh_data + 24, static_cast<uint32_t>(block.zone5_data.size()));
+    EncodeFixed64(bh_data + 28, block.min_entity_id);
+    EncodeFixed64(bh_data + 36, block.max_entity_id);
+    file_data.append(bh_data, 44);
 
-    // 写入 5 个 Zone
+    // 写入 6 个 Zone
     file_data.append(block.zone0_data);
     file_data.append(block.zone1_data);
     file_data.append(block.zone2_data);
     file_data.append(block.zone3_data);
     file_data.append(block.zone4_data);
+    file_data.append(block.zone5_data);
   }
 
   // 3. Block 索引

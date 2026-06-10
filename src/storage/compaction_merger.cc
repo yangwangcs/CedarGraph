@@ -10,6 +10,7 @@
 
 #include "cedar/sst/zone_columnar_format.h"
 #include "cedar/sst/zone_columnar_builder.h"
+#include "cedar/sst/sst_builder_factory.h"
 #include "cedar/core/env.h"
 #include "cedar/storage/entity_lifecycle.h"
 
@@ -38,6 +39,7 @@ void CompactionMerger::InitHeap() {
       MergeHeapItem item;
       item.key = iterators_[i]->Key();
       item.value = iterators_[i]->Value();
+      item.txn_version = iterators_[i]->TxnVersion();
       item.source_idx = i;
       heap_.push(item);
       stats_.input_entries++;
@@ -81,10 +83,8 @@ std::unique_ptr<ZoneSstMeta> CompactionMerger::Run(const std::string& output_pat
     return nullptr;
   }
   
-  // 创建 builder
-  SstBuilder::Options options;
-  options.db_path = db_path;
-  SstBuilder builder(options, file);
+  // 创建 builder (使用 V2 格式)
+  auto builder = SstBuilderFactory::Create(file, db_path);
   
   // 归并循环
   CedarKey last_key;
@@ -105,6 +105,7 @@ std::unique_ptr<ZoneSstMeta> CompactionMerger::Run(const std::string& output_pat
         MergeHeapItem new_item;
         new_item.key = iterators_[src_idx]->Key();
         new_item.value = iterators_[src_idx]->Value();
+        new_item.txn_version = iterators_[src_idx]->TxnVersion();
         new_item.source_idx = src_idx;
         heap_.push(new_item);
       }
@@ -122,6 +123,7 @@ std::unique_ptr<ZoneSstMeta> CompactionMerger::Run(const std::string& output_pat
         MergeHeapItem new_item;
         new_item.key = iterators_[src_idx]->Key();
         new_item.value = iterators_[src_idx]->Value();
+        new_item.txn_version = iterators_[src_idx]->TxnVersion();
         new_item.source_idx = src_idx;
         heap_.push(new_item);
       }
@@ -129,7 +131,7 @@ std::unique_ptr<ZoneSstMeta> CompactionMerger::Run(const std::string& output_pat
     }
     
     // 写入 builder
-    builder.Add(item.key, item.value);
+    builder->Add(item.key, item.value, item.txn_version);
     stats_.output_entries++;
     
     // 收集生命周期事件（用于生成区间锚点）
@@ -147,6 +149,7 @@ std::unique_ptr<ZoneSstMeta> CompactionMerger::Run(const std::string& output_pat
       MergeHeapItem new_item;
       new_item.key = iterators_[src_idx]->Key();
       new_item.value = iterators_[src_idx]->Value();
+      new_item.txn_version = iterators_[src_idx]->TxnVersion();
       new_item.source_idx = src_idx;
       heap_.push(new_item);
     }
@@ -154,14 +157,14 @@ std::unique_ptr<ZoneSstMeta> CompactionMerger::Run(const std::string& output_pat
   
   // 生成区间锚点（0xFFD 列）
   if (!lifecycle_events_.empty()) {
-    Status anchor_status = GenerateIntervalAnchors(builder);
+    Status anchor_status = GenerateIntervalAnchors(*builder);
     if (!anchor_status.ok()) {
       // Interval anchor generation failure is non-fatal; silently continue.
     }
   }
   
   // 完成 builder
-  s = builder.Finish();
+  s = builder->Finish();
   delete file;
   
   if (!s.ok()) {
@@ -211,7 +214,7 @@ void CompactionMerger::CollectLifecycleEvent(uint64_t entity_id, const CedarKey&
   });
 }
 
-Status CompactionMerger::GenerateIntervalAnchors(SstBuilder& builder) {
+Status CompactionMerger::GenerateIntervalAnchors(SstBuilderInterface& builder) {
   // 为每个实体生成区间锚点
   for (const auto& [entity_id, events] : lifecycle_events_) {
     if (events.empty()) continue;
@@ -275,7 +278,7 @@ Status CompactionMerger::GenerateIntervalAnchors(SstBuilder& builder) {
         static_cast<int32_t>(sorted_events.size())
     );
     
-    builder.Add(interval_key, interval_desc);
+    builder.Add(interval_key, interval_desc, Timestamp(0));
     // builder.Add 返回 void，无法检查错误
   }
   

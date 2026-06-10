@@ -47,7 +47,7 @@ TEST(ZoneColumnarReader, RoundTrip) {
             });
 
   for (const auto& [key, desc] : entries) {
-    builder->Add(key, desc);
+    builder->Add(key, desc, Timestamp(0));
   }
 
   s = builder->Finish();

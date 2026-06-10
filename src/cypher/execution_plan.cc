@@ -228,12 +228,29 @@ std::unique_ptr<PhysicalOperator> ProduceResults::Clone() const {
 // NodeScan with Storage Integration
 // ============================================================================
 
-NodeScan::NodeScan(std::string variable, std::optional<std::string> label)
-    : variable_(variable), label_(label), current_index_(0) {}
+NodeScan::NodeScan(std::string variable, std::optional<std::string> label,
+                       std::map<std::string, std::shared_ptr<Expression>> properties)
+    : variable_(variable), label_(label), properties_(std::move(properties)), current_index_(0) {}
 
 bool NodeScan::Init(ExecutionContext* ctx) {
   context_ = ctx;
   node_ids_.clear();
+  
+  // If properties contain 'id' literal, do point lookup instead of scan
+  auto id_it = properties_.find("id");
+  if (id_it != properties_.end() && id_it->second) {
+    if (id_it->second->expr_type == ExprType::LITERAL) {
+      auto* literal = static_cast<LiteralExpr*>(id_it->second.get());
+      if (literal->value.IsInt()) {
+        int64_t id_val = literal->value.GetInt();
+        if (id_val > 0) {
+          node_ids_.push_back(static_cast<uint64_t>(id_val));
+          current_index_ = 0;
+          return true;
+        }
+      }
+    }
+  }
   
   // Generic node scan - iterate over a configurable entity range.
   // Range can be customized by setting the CEDAR_SCAN_MAX_ENTITIES env var.
@@ -307,7 +324,7 @@ std::string NodeScan::GetDetails() const {
 }
 
 std::unique_ptr<PhysicalOperator> NodeScan::Clone() const {
-  auto clone = std::make_unique<NodeScan>(variable_, label_);
+  auto clone = std::make_unique<NodeScan>(variable_, label_, properties_);
   for (const auto& child : children_) {
     clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
   }
@@ -783,10 +800,11 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildScanForPattern(
           temporal_clause->end_time,
           temporal_clause->version_number);
     } else {
-      // Regular scan
+      // Regular scan with properties for point lookup optimization
       scan = std::make_shared<NodeScan>(
           node.variable,
-          node.labels.empty() ? std::nullopt : std::optional(node.labels[0]));
+          node.labels.empty() ? std::nullopt : std::optional(node.labels[0]),
+          node.properties);
     }
     
     // Build expand chain for relationships

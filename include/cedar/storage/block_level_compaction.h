@@ -21,8 +21,8 @@
 // 3. 需要维护 Block 级索引
 // =============================================================================
 
-#ifndef FERN_BLOCK_LEVEL_COMPACTION_H_
-#define FERN_BLOCK_LEVEL_COMPACTION_H_
+#ifndef CEDAR_BLOCK_LEVEL_COMPACTION_H_
+#define CEDAR_BLOCK_LEVEL_COMPACTION_H_
 
 #include <cstdint>
 #include <memory>

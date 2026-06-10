@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_WAL_BATCH_WRITER_H_
-#define FERN_WAL_BATCH_WRITER_H_
+#ifndef CEDAR_WAL_BATCH_WRITER_H_
+#define CEDAR_WAL_BATCH_WRITER_H_
 
 #include <vector>
 #include <mutex>

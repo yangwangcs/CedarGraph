@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // Compaction Merger - K-Way Merge for Zone-Columnar SST files
 
-#ifndef FERN_STORAGE_COMPACTION_MERGER_H_
-#define FERN_STORAGE_COMPACTION_MERGER_H_
+#ifndef CEDAR_STORAGE_COMPACTION_MERGER_H_
+#define CEDAR_STORAGE_COMPACTION_MERGER_H_
 
 #include <memory>
 #include <queue>
@@ -11,6 +11,7 @@
 
 #include "cedar/sst/zone_columnar_format.h"
 #include "cedar/sst/zone_columnar_reader.h"
+#include "cedar/sst/sst_builder_factory.h"
 #include "cedar/storage/size_tiered_compaction.h"
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
@@ -21,6 +22,7 @@ namespace cedar {
 struct MergeHeapItem {
   CedarKey key;
   Descriptor value;
+  Timestamp txn_version;
   size_t source_idx;  // 来自哪个输入迭代器
   
   bool operator>(const MergeHeapItem& other) const {
@@ -68,7 +70,7 @@ class CompactionMerger {
   // 收集实体生命周期事件
   void CollectLifecycleEvent(uint64_t entity_id, const CedarKey& key);
   // 生成区间锚点并写入 builder
-  Status GenerateIntervalAnchors(SstBuilder& builder);
+  Status GenerateIntervalAnchors(SstBuilderInterface& builder);
   
   std::vector<std::unique_ptr<SstReader::Iterator>> iterators_;
   std::priority_queue<MergeHeapItem, std::vector<MergeHeapItem>, std::greater<>> heap_;

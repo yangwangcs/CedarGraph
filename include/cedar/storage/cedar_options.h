@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_OPTIONS_H_
-#define FERN_OPTIONS_H_
+#ifndef CEDAR_OPTIONS_H_
+#define CEDAR_OPTIONS_H_
 
 #include <cstddef>
 #include <cstdint>

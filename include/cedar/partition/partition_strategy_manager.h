@@ -5,9 +5,12 @@
 #ifndef CEDAR_PARTITION_PARTITION_STRATEGY_MANAGER_H_
 #define CEDAR_PARTITION_PARTITION_STRATEGY_MANAGER_H_
 
+#include <atomic>
+#include <chrono>
 #include <memory>
-#include <unordered_map>
 #include <mutex>
+#include <string>
+#include <unordered_map>
 #include "cedar/partition/partition_strategy.h"
 
 namespace cedar {
@@ -73,6 +76,7 @@ class PartitionStrategyManager {
   StrategySelectionConfig config_;
   std::unordered_map<std::string, std::unique_ptr<IPartitionStrategy>> strategies_;
   IPartitionStrategy* active_strategy_ = nullptr;
+  std::atomic<IPartitionStrategy*> active_strategy_atomic_{nullptr};
   bool auto_mode_ = false;
 
   // 自动选择统计
@@ -81,6 +85,11 @@ class PartitionStrategyManager {
     uint64_t temporal_queries = 0;
     uint64_t locality_queries = 0;
   } stats_;
+
+  // 自动策略切换冷却与振荡抑制
+  std::chrono::steady_clock::time_point last_strategy_switch_time_;
+  std::string previous_strategy_name_;
+  static constexpr auto kAutoSwitchCooldown = std::chrono::seconds(60);
 };
 
 } // namespace partition

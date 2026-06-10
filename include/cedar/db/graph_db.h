@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_GRAPH_DB_H_
-#define FERN_GRAPH_DB_H_
+#ifndef CEDAR_GRAPH_DB_H_
+#define CEDAR_GRAPH_DB_H_
 
 #include <cstdint>
 #include <memory>

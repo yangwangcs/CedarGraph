@@ -27,6 +27,8 @@
 #include "cedar/dtx/storage/storaged_raft_state_machine.h"
 #include "cedar/common/json_logger.h"
 #include "cedar/common/grpc_request_id.h"
+#include "cedar/cypher/cypher_engine.h"
+#include "cedar/cypher/value.h"
 #include "meta_service.grpc.pb.h"
 #include "storage_service.grpc.pb.h"
 
@@ -121,6 +123,11 @@ Config ParseArgs(int argc, char* argv[]) {
       config.meta_server = argv[++i];
     } else if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
       config_file = argv[++i];
+    } else if (arg == "--tls" && i + 1 < argc) {
+      std::string val = argv[++i];
+      config.tls.enabled = (val == "true" || val == "1" || val == "yes");
+    } else if (arg == "--test_mode") {
+      config.tls.enabled = false;  // Disable TLS in test mode for convenience
     } else if (arg == "--help" || arg == "-h") {
       std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
       std::cout << "Options:" << std::endl;
@@ -130,6 +137,8 @@ Config ParseArgs(int argc, char* argv[]) {
       std::cout << "  -d, --data_dir <dir>   Data directory (default: /var/lib/cedar/storaged)" << std::endl;
       std::cout << "  -m, --meta <addr>      MetaD server address (default: 127.0.0.1:9559)" << std::endl;
       std::cout << "  -c, --config <path>    Configuration file (YAML)" << std::endl;
+      std::cout << "  --tls <true|false>     Enable/disable TLS (default: true)" << std::endl;
+      std::cout << "  --test_mode            Test mode (disables TLS)" << std::endl;
       std::cout << "  -h, --help             Show this help" << std::endl;
       exit(0);
     }
@@ -142,18 +151,51 @@ Config ParseArgs(int argc, char* argv[]) {
   return config;
 }
 
-// StorageD 服务实现（简化版）
+// StorageD 服务实现（完整版）
 class StorageServiceImpl final : public cedar::storage::StorageService::Service {
  public:
-  explicit StorageServiceImpl(cedar::CedarGraphStorage* storage) : storage_(storage) {}
+  explicit StorageServiceImpl(cedar::CedarGraphStorage* storage) : storage_(storage) {
+    if (storage_) {
+      cypher_engine_ = std::make_unique<cedar::cypher::CypherEngine>(storage_);
+    }
+  }
 
   grpc::Status Prepare(grpc::ServerContext* context,
                        const cedar::storage::PrepareRequest* request,
                        cedar::storage::PrepareResponse* response) override {
     (void)context;
     std::lock_guard<std::mutex> lock(txn_mutex_);
-    auto& state = txn_states_[request->txn_id()];
-    state = TxnState::kPrepared;
+    auto& ctx = txn_states_[request->txn_id()];
+    ctx.state = TxnState::kPrepared;
+    ctx.commit_ts = cedar::Timestamp(request->commit_ts());
+    
+    for (const auto& key : request->read_set()) {
+      ctx.read_set.emplace_back(
+          key.entity_id(), static_cast<cedar::EntityType>(key.entity_type()),
+          static_cast<uint16_t>(key.column_id()),
+          cedar::Timestamp(key.timestamp()),
+          static_cast<uint16_t>(key.sequence()),
+          key.target_id(), static_cast<uint8_t>(key.type_flags()),
+          static_cast<uint16_t>(key.partition_id()));
+    }
+    for (const auto& key : request->write_set()) {
+      ctx.write_set.emplace_back(
+          key.entity_id(), static_cast<cedar::EntityType>(key.entity_type()),
+          static_cast<uint16_t>(key.column_id()),
+          cedar::Timestamp(key.timestamp()),
+          static_cast<uint16_t>(key.sequence()),
+          key.target_id(), static_cast<uint8_t>(key.type_flags()),
+          static_cast<uint16_t>(key.partition_id()));
+    }
+    for (const auto& kv : request->write_descriptors()) {
+      const std::string& data = kv.second.data();
+      if (data.size() >= sizeof(uint64_t)) {
+        uint64_t raw;
+        std::memcpy(&raw, data.data(), sizeof(uint64_t));
+        ctx.write_descriptors[kv.first] = cedar::Descriptor(raw);
+      }
+    }
+    
     response->set_prepared(true);
     response->set_prepared_ts(
         std::chrono::duration_cast<std::chrono::microseconds>(
@@ -167,10 +209,37 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     (void)context;
     std::lock_guard<std::mutex> lock(txn_mutex_);
     auto it = txn_states_.find(request->txn_id());
-    if (it != txn_states_.end()) {
-      it->second = TxnState::kCommitted;
+    if (it == txn_states_.end()) {
+      response->set_success(false);
+      response->set_error_msg("Transaction not found");
+      return grpc::Status::OK;
     }
-    response->set_success(true);
+    auto& ctx = it->second;
+    if (ctx.state != TxnState::kPrepared) {
+      response->set_success(false);
+      response->set_error_msg("Transaction not in prepared state");
+      return grpc::Status::OK;
+    }
+    
+    // Persist writes to LSM
+    bool all_ok = true;
+    for (const auto& key : ctx.write_set) {
+      uint64_t key_hash = static_cast<uint64_t>(
+          std::hash<std::string>{}(std::string(reinterpret_cast<const char*>(&key), sizeof(key))));
+      auto desc_it = ctx.write_descriptors.find(key_hash);
+      cedar::Descriptor desc = (desc_it != ctx.write_descriptors.end()) ? desc_it->second : cedar::Descriptor(0);
+      auto s = storage_->Put(key.entity_id(), key.timestamp().value(), desc, ctx.commit_ts);
+      if (!s.ok()) {
+        all_ok = false;
+        std::cerr << "[StorageD] Commit Put failed: " << s.ToString() << std::endl;
+      }
+    }
+    
+    ctx.state = TxnState::kCommitted;
+    response->set_success(all_ok);
+    if (!all_ok) {
+      response->set_error_msg("Some writes failed during commit");
+    }
     return grpc::Status::OK;
   }
 
@@ -181,7 +250,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     std::lock_guard<std::mutex> lock(txn_mutex_);
     auto it = txn_states_.find(request->txn_id());
     if (it != txn_states_.end()) {
-      it->second = TxnState::kAborted;
+      it->second.state = TxnState::kAborted;
     }
     response->set_success(true);
     return grpc::Status::OK;
@@ -197,7 +266,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       response->set_state(cedar::storage::InquireResponse::UNKNOWN);
       return grpc::Status::OK;
     }
-    switch (it->second) {
+    switch (it->second.state) {
       case TxnState::kPrepared:
         response->set_state(cedar::storage::InquireResponse::PREPARED);
         break;
@@ -275,11 +344,182 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     return grpc::Status::OK;
   }
 
+  grpc::Status Scan(grpc::ServerContext* context,
+                     const cedar::storage::ScanRequest* request,
+                     cedar::storage::ScanResponse* response) override {
+    (void)context;
+    auto results = storage_->Scan(
+        request->entity_id(),
+        cedar::Timestamp(request->start_time()),
+        cedar::Timestamp(request->end_time()));
+    for (const auto& [ts, desc] : results) {
+      auto* item = response->add_items();
+      item->set_timestamp(ts.value());
+      item->mutable_descriptor_()->set_data(desc.Encode());
+    }
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status ScanNodeV2(grpc::ServerContext* context,
+                          const cedar::storage::ScanNodeRequestV2* request,
+                          cedar::storage::ScanResponse* response) override {
+    (void)context;
+    std::vector<std::pair<cedar::Timestamp, cedar::Descriptor>> results;
+    auto s = storage_->ScanNode(request->node_id(),
+                                cedar::Timestamp(request->end_time()),
+                                &results);
+    if (!s.ok()) {
+      response->set_success(false);
+      response->set_error_msg(s.ToString());
+      return grpc::Status::OK;
+    }
+    for (const auto& [ts, desc] : results) {
+      auto* item = response->add_items();
+      item->set_timestamp(ts.value());
+      item->mutable_descriptor_()->set_data(desc.Encode());
+    }
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status ScanEdgeV2(grpc::ServerContext* context,
+                          const cedar::storage::ScanEdgeRequestV2* request,
+                          cedar::storage::ScanResponse* response) override {
+    (void)context;
+    cedar::EntityType edge_dir = cedar::EntityType::EdgeOut;
+    if (request->direction() == cedar::storage::Direction::INCOMING) {
+      edge_dir = cedar::EntityType::EdgeIn;
+    } else if (request->direction() == cedar::storage::Direction::BOTH) {
+      // Scan both directions
+      auto edges_out = storage_->ScanEdgesWithFolding(
+          request->node_id(), cedar::EntityType::EdgeOut,
+          static_cast<uint16_t>(request->edge_type()),
+          cedar::Timestamp(request->end_time()));
+      auto edges_in = storage_->ScanEdgesWithFolding(
+          request->node_id(), cedar::EntityType::EdgeIn,
+          static_cast<uint16_t>(request->edge_type()),
+          cedar::Timestamp(request->end_time()));
+      response->set_success(true);
+      for (const auto& e : edges_out) {
+        auto* item = response->add_items();
+        item->set_timestamp(e.timestamp.value());
+        item->mutable_descriptor_()->set_data(e.descriptor.Encode());
+      }
+      for (const auto& e : edges_in) {
+        auto* item = response->add_items();
+        item->set_timestamp(e.timestamp.value());
+        item->mutable_descriptor_()->set_data(e.descriptor.Encode());
+      }
+      return grpc::Status::OK;
+    }
+
+    auto edges = storage_->ScanEdgesWithFolding(
+        request->node_id(), edge_dir,
+        static_cast<uint16_t>(request->edge_type()),
+        cedar::Timestamp(request->end_time()));
+    response->set_success(true);
+    for (const auto& e : edges) {
+      auto* item = response->add_items();
+      item->set_timestamp(e.timestamp.value());
+      item->mutable_descriptor_()->set_data(e.descriptor.Encode());
+    }
+    return grpc::Status::OK;
+  }
+
+  grpc::Status ExecuteSubQuery(grpc::ServerContext* context,
+                               const cedar::storage::ExecuteSubQueryRequest* request,
+                               grpc::ServerWriter<cedar::storage::SubQueryResultBatch>* writer) override {
+    (void)context;
+    cedar::storage::SubQueryResultBatch batch;
+    if (!cypher_engine_) {
+      batch.set_is_last(true);
+      writer->Write(batch);
+      return grpc::Status::OK;
+    }
+
+    // Convert proto parameters to cypher::Value map
+    std::map<std::string, cedar::cypher::Value> params;
+    for (const auto& kv : request->parameters()) {
+      const auto& qv = kv.second;
+      switch (qv.value_type_case()) {
+        case cedar::storage::QueryValue::kBoolVal:
+          params[kv.first] = cedar::cypher::Value(qv.bool_val());
+          break;
+        case cedar::storage::QueryValue::kIntVal:
+          params[kv.first] = cedar::cypher::Value(qv.int_val());
+          break;
+        case cedar::storage::QueryValue::kFloatVal:
+          params[kv.first] = cedar::cypher::Value(qv.float_val());
+          break;
+        case cedar::storage::QueryValue::kStringVal:
+          params[kv.first] = cedar::cypher::Value(qv.string_val());
+          break;
+        default:
+          params[kv.first] = cedar::cypher::Value::Null();
+          break;
+      }
+    }
+
+    auto result = cypher_engine_->Execute(request->query_fragment(), params);
+
+    if (result.HasError()) {
+      batch.set_is_last(true);
+      writer->Write(batch);
+      return grpc::Status::OK;
+    }
+
+    for (const auto& col : result.columns) {
+      batch.add_columns(col);
+    }
+    for (const auto& record : result.records) {
+      auto* row = batch.add_records();
+      for (const auto& col : result.columns) {
+        auto it = record.values.find(col);
+        if (it != record.values.end()) {
+          cedar::storage::QueryValue qv;
+          switch (it->second.Type()) {
+            case cedar::cypher::ValueType::kBool:
+              qv.set_bool_val(it->second.GetBool());
+              break;
+            case cedar::cypher::ValueType::kInt:
+              qv.set_int_val(it->second.GetInt());
+              break;
+            case cedar::cypher::ValueType::kFloat:
+              qv.set_float_val(it->second.GetFloat());
+              break;
+            case cedar::cypher::ValueType::kString:
+              qv.set_string_val(it->second.GetString());
+              break;
+            default:
+              qv.set_string_val(it->second.ToString());
+              break;
+          }
+          *row->add_values() = std::move(qv);
+        } else {
+          row->add_values();  // null
+        }
+      }
+    }
+
+    batch.set_is_last(true);
+    writer->Write(batch);
+    return grpc::Status::OK;
+  }
+
  private:
   enum class TxnState { kPrepared, kCommitted, kAborted };
+  struct TxnContext {
+    TxnState state = TxnState::kPrepared;
+    std::vector<cedar::CedarKey> read_set;
+    std::vector<cedar::CedarKey> write_set;
+    std::unordered_map<uint64_t, cedar::Descriptor> write_descriptors;
+    cedar::Timestamp commit_ts;
+  };
   cedar::CedarGraphStorage* storage_;
+  std::unique_ptr<cedar::cypher::CypherEngine> cypher_engine_;
   std::mutex txn_mutex_;
-  std::unordered_map<uint64_t, TxnState> txn_states_;
+  std::unordered_map<uint64_t, TxnContext> txn_states_;
 };
 
 // MetaD 客户端 - 处理注册和心跳
@@ -358,6 +598,11 @@ class MetaClient {
 
 // 心跳线程
 void HeartbeatLoop(MetaClient* client, int interval_sec) {
+  // Send initial heartbeat immediately so MetaD marks node as ONLINE
+  if (!client->SendHeartbeat()) {
+    std::cerr << "[StorageD] Initial heartbeat failed" << std::endl;
+  }
+  
   while (g_running) {
     for (int i = 0; i < interval_sec && g_running; i++) {
       std::this_thread::sleep_for(std::chrono::seconds(1));

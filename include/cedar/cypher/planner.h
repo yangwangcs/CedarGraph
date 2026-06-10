@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // Cypher Query Planner - Converts AST to Execution Plan
 
-#ifndef FERN_CYPHER_PLANNER_H_
-#define FERN_CYPHER_PLANNER_H_
+#ifndef CEDAR_CYPHER_PLANNER_H_
+#define CEDAR_CYPHER_PLANNER_H_
 
 #include <functional>
 #include <memory>

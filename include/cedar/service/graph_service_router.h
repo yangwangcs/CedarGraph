@@ -34,6 +34,9 @@
 #include "cedar/gcn/scatter_gather_router.h"
 
 namespace cedar {
+namespace queryd {
+class DistributedExecutor;
+}
 namespace service {
 
 // 分区路由信息
@@ -120,6 +123,11 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
 
   // 停止
   Status Stop();
+
+  // Set the distributed executor (merged from QueryD)
+  void SetDistributedExecutor(cedar::queryd::DistributedExecutor* executor) {
+    distributed_executor_ = executor;
+  }
 
   // 刷新分区映射缓存
   Status RefreshPartitionMap();
@@ -243,6 +251,9 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   
   // 查询缓存
   std::unique_ptr<cedar::query::QueryCache> query_cache_;
+
+  // Merged from QueryD: distributed query execution engine
+  cedar::queryd::DistributedExecutor* distributed_executor_ = nullptr;
   
   // 辅助方法
   std::string GenerateQueryFingerprint(const std::string& query);

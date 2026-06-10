@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_CORE_SLICE_H_
-#define FERN_CORE_SLICE_H_
+#ifndef CEDAR_CORE_SLICE_H_
+#define CEDAR_CORE_SLICE_H_
 
 #include <cassert>
 #include <cstddef>

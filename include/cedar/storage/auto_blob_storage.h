@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // 自动Blob存储管理器 - 透明处理大小数据
 
-#ifndef FERN_AUTO_BLOB_STORAGE_H_
-#define FERN_AUTO_BLOB_STORAGE_H_
+#ifndef CEDAR_AUTO_BLOB_STORAGE_H_
+#define CEDAR_AUTO_BLOB_STORAGE_H_
 
 #include <cstdint>
 #include <memory>

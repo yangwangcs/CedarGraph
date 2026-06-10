@@ -1,8 +1,8 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 // Active Entity Bitmap - 内存级活跃实体索引（Phase 4 内存加速）
 
-#ifndef FERN_ACTIVE_ENTITY_BITMAP_H_
-#define FERN_ACTIVE_ENTITY_BITMAP_H_
+#ifndef CEDAR_ACTIVE_ENTITY_BITMAP_H_
+#define CEDAR_ACTIVE_ENTITY_BITMAP_H_
 
 #include <cstdint>
 #include <vector>

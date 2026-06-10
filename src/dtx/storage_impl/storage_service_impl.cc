@@ -19,7 +19,7 @@
 
 #include <algorithm>
 #include <cstring>
-#include <glog/logging.h>
+#include "cedar/common/logging.h"
 #include <iostream>
 
 namespace cedar {

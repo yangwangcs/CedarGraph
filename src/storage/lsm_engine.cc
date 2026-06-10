@@ -421,11 +421,11 @@ std::vector<MemTableEntry> LsmEngine::GetAll(uint64_t entity_id,
       auto range_results = reader.GetRange(entity_id, entity_type, column_id,
                                            Timestamp(0), Timestamp(UINT64_MAX));
       
-      for (const auto& [key, descriptor] : range_results) {
+      for (const auto& [key, descriptor, txn_version] : range_results) {
         std::optional<uint64_t> dst_id = (key.target_id() != 0) 
             ? std::optional<uint64_t>(key.target_id()) 
             : std::nullopt;
-        results.emplace_back(key.timestamp(), descriptor, dst_id, Timestamp(0));
+        results.emplace_back(key.timestamp(), descriptor, dst_id, txn_version);
       }
     }
   }
@@ -505,7 +505,7 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
   
   // 4. Query SST files
   // 收集所有匹配的条目
-  std::vector<std::pair<CedarKey, Descriptor>> all_entries;
+  std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> all_entries;
   
   // 从 Compaction Engine 获取文件列表（如果可用）
   if (compaction_engine_) {
@@ -594,7 +594,8 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     std::optional<Descriptor> best_descriptor;
     uint64_t best_ts = 0;
     
-    for (const auto& [key, descriptor] : all_entries) {
+    for (const auto& [key, descriptor, txn_version] : all_entries) {
+      (void)txn_version;
       uint64_t ts = key.timestamp().value();
       if (ts <= timestamp.value() && ts >= best_ts) {
         best_ts = ts;
@@ -679,7 +680,7 @@ std::optional<std::pair<CedarKey, Descriptor>> LsmEngine::GetRecordAtTime(
         entity_id, column_id, static_cast<uint8_t>(entity_type));
     
     // Collect all matching entries
-    std::vector<std::pair<CedarKey, Descriptor>> all_entries;
+    std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> all_entries;
     
     for (const auto& file_meta : files) {
       // Quick range check
@@ -714,11 +715,12 @@ std::optional<std::pair<CedarKey, Descriptor>> LsmEngine::GetRecordAtTime(
     // Sort by timestamp descending
     std::sort(all_entries.begin(), all_entries.end(),
               [](const auto& a, const auto& b) {
-                return a.first.timestamp().value() > b.first.timestamp().value();
+                return std::get<0>(a).timestamp().value() > std::get<0>(b).timestamp().value();
               });
     
     // Find the version at specified time (latest version <= timestamp)
-    for (const auto& [key, descriptor] : all_entries) {
+    for (const auto& [key, descriptor, txn_version] : all_entries) {
+      (void)txn_version;
       if (key.timestamp().value() <= timestamp.value()) {
         return std::make_pair(key, descriptor);
       }
@@ -788,11 +790,11 @@ std::vector<MemTableEntry> LsmEngine::GetRange(uint64_t entity_id,
         sst_reader_cache_->Release(file_meta.path);
       }
       
-      for (const auto& [key, descriptor] : range_results) {
+      for (const auto& [key, descriptor, txn_version] : range_results) {
         std::optional<uint64_t> dst_id = (key.target_id() != 0) 
             ? std::optional<uint64_t>(key.target_id()) 
             : std::nullopt;
-        results.emplace_back(key.timestamp(), descriptor, dst_id, Timestamp(0));
+        results.emplace_back(key.timestamp(), descriptor, dst_id, txn_version);
       }
     }
   }
@@ -855,13 +857,13 @@ std::vector<MemTableEntry> LsmEngine::GetRangeLimit(uint64_t entity_id,
   // 3. Query Accumulated Buffer (for accumulated flush mode)
   if (result.size() < max_results && !accumulated_entries_.empty()) {
     std::lock_guard<std::mutex> lock(accumulated_mutex_);
-    for (const auto& [key, descriptor] : accumulated_entries_) {
+    for (const auto& [key, descriptor, txn_version] : accumulated_entries_) {
       if (result.size() >= max_results) break;
       if (key.entity_id() != entity_id) continue;
       if (static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
       if (key.column_id() != column_id) continue;
       if (key.timestamp().value() < start.value() || key.timestamp().value() > end.value()) continue;
-      result.emplace_back(key.timestamp(), descriptor, std::nullopt, Timestamp(0));
+      result.emplace_back(key.timestamp(), descriptor, std::nullopt, txn_version);
     }
   }
 
@@ -942,14 +944,14 @@ std::vector<MemTableEntry> LsmEngine::GetRangeLimit(uint64_t entity_id,
         sst_reader_cache_->Release(file_meta.path);
       }
       
-      for (const auto& [key, descriptor] : range_results) {
+      for (const auto& [key, descriptor, txn_version] : range_results) {
         if (result.size() >= max_results) {
           break;
         }
         std::optional<uint64_t> dst_id = (key.target_id() != 0) 
             ? std::optional<uint64_t>(key.target_id()) 
             : std::nullopt;
-        result.emplace_back(key.timestamp(), descriptor, dst_id, Timestamp(0));
+        result.emplace_back(key.timestamp(), descriptor, dst_id, txn_version);
       }
     }
   }
@@ -1118,13 +1120,13 @@ LsmEngine::BatchGetRangeOptimized(const std::vector<uint64_t>& entity_ids,
       for (const auto& [eid, entries] : file_results) {
         if (results[eid].size() >= max_results_per_entity) continue;
         
-        for (const auto& [key, desc] : entries) {
+        for (const auto& [key, desc, txn_version] : entries) {
           if (results[eid].size() >= max_results_per_entity) break;
           
           std::optional<uint64_t> dst_id = (key.target_id() != 0) 
               ? std::optional<uint64_t>(key.target_id()) 
               : std::nullopt;
-          results[eid].emplace_back(key.timestamp(), desc, dst_id, Timestamp(0));
+          results[eid].emplace_back(key.timestamp(), desc, dst_id, txn_version);
         }
       }
       
@@ -1190,7 +1192,7 @@ LsmEngine::ParallelGetRangeFromSST(const std::vector<uint64_t>& entity_ids,
   size_t remainder = relevant_files.size() % num_threads;
   
   // 每个线程的结果
-  std::vector<std::unordered_map<uint64_t, std::vector<std::pair<CedarKey, Descriptor>>>>
+  std::vector<std::unordered_map<uint64_t, std::vector<std::tuple<CedarKey, Descriptor, Timestamp>>>>
       thread_results(num_threads);
   
   std::vector<std::thread> threads;
@@ -1222,9 +1224,9 @@ LsmEngine::ParallelGetRangeFromSST(const std::vector<uint64_t>& entity_ids,
         auto positions = reader->GetRange(0, entity_type, column_id, start, end);
         
         // 过滤 entity_ids 中的数据
-        for (const auto& [key, desc] : positions) {
+        for (const auto& [key, desc, txn_version] : positions) {
           if (entity_set.find(key.entity_id()) != entity_set.end()) {
-            thread_results[t][key.entity_id()].emplace_back(key, desc);
+            thread_results[t][key.entity_id()].emplace_back(key, desc, txn_version);
           }
         }
         
@@ -1248,13 +1250,13 @@ LsmEngine::ParallelGetRangeFromSST(const std::vector<uint64_t>& entity_ids,
     for (const auto& [eid, entries] : thread_results[t]) {
       if (results[eid].size() >= max_results_per_entity) continue;
       
-      for (const auto& [key, desc] : entries) {
+      for (const auto& [key, desc, txn_version] : entries) {
         if (results[eid].size() >= max_results_per_entity) break;
         
         std::optional<uint64_t> dst_id = (key.target_id() != 0) 
             ? std::optional<uint64_t>(key.target_id()) 
             : std::nullopt;
-        results[eid].emplace_back(key.timestamp(), desc, dst_id, Timestamp(0));
+        results[eid].emplace_back(key.timestamp(), desc, dst_id, txn_version);
       }
     }
   }
@@ -1451,7 +1453,8 @@ std::optional<std::pair<CedarKey, Descriptor>> LsmEngine::QueryAccumulatedBuffer
   }
 
   std::optional<std::pair<CedarKey, Descriptor>> best_match;
-  for (const auto& [key, descriptor] : accumulated_entries_) {
+  for (const auto& [key, descriptor, txn_version] : accumulated_entries_) {
+    (void)txn_version;
     if (key.entity_id() != entity_id) continue;
     if (key.entity_type() != entity_type) continue;
     if (key.column_id() != column_id) continue;
@@ -1494,7 +1497,7 @@ Status LsmEngine::FlushAccumulated() {
   // 排序
   std::sort(entries_to_flush.begin(), entries_to_flush.end(),
     [](const auto& a, const auto& b) { 
-      return a.first.LessForSorting(b.first); 
+      return std::get<0>(a).LessForSorting(std::get<0>(b)); 
     });
   
   // 使用 SST Builder
@@ -1505,8 +1508,8 @@ Status LsmEngine::FlushAccumulated() {
   uint64_t min_ts = UINT64_MAX;
   uint64_t max_ts = 0;
   
-  for (const auto& [key, desc] : entries_to_flush) {
-    builder->Add(key, desc);
+  for (const auto& [key, desc, txn_version] : entries_to_flush) {
+    builder->Add(key, desc, txn_version);
     min_entity_id = std::min(min_entity_id, key.entity_id());
     max_entity_id = std::max(max_entity_id, key.entity_id());
     min_ts = std::min(min_ts, key.timestamp().value());
@@ -1583,7 +1586,7 @@ Status LsmEngine::FlushAccumulated() {
 }
 
 // ========== 立即 Flush 模式：将所有条目写入单个 SST 文件 ==========
-Status LsmEngine::FlushEntriesToSST(std::vector<std::pair<CedarKey, Descriptor>> entries) {
+Status LsmEngine::FlushEntriesToSST(std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> entries) {
   if (entries.empty()) {
     return Status::OK();
   }
@@ -1593,7 +1596,8 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::pair<CedarKey, Descriptor>>
   uint64_t min_tx_time = UINT64_MAX;
   uint64_t max_tx_time = 0;
   
-  for (const auto& [key, desc] : entries) {
+  for (const auto& [key, desc, txn_version] : entries) {
+    (void)txn_version;
     min_entity_id = std::min(min_entity_id, key.entity_id());
     max_entity_id = std::max(max_entity_id, key.entity_id());
     min_tx_time = std::min(min_tx_time, key.timestamp().value());
@@ -1602,7 +1606,7 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::pair<CedarKey, Descriptor>>
   
   // 排序（全局有序）
   std::sort(entries.begin(), entries.end(),
-    [](const auto& a, const auto& b) { return a.first.LessForSorting(b.first); });
+    [](const auto& a, const auto& b) { return std::get<0>(a).LessForSorting(std::get<0>(b)); });
   
   // 创建单个 SST 文件
   uint64_t file_number = next_file_number_.fetch_add(1);
@@ -1618,8 +1622,8 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::pair<CedarKey, Descriptor>>
   // 使用 Builder
   auto builder = SstBuilderFactory::Create(file, db_path_);
   
-  for (const auto& [key, descriptor] : entries) {
-    builder->Add(key, descriptor);
+  for (const auto& [key, descriptor, txn_version] : entries) {
+    builder->Add(key, descriptor, txn_version);
   }
   
   Status fs = builder->Finish();
@@ -2058,7 +2062,8 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
     // Query Accumulated Buffer
     if (!accumulated_entries_.empty()) {
       std::lock_guard<std::mutex> lock(accumulated_mutex_);
-      for (const auto& [key, descriptor] : accumulated_entries_) {
+      for (const auto& [key, descriptor, txn_version] : accumulated_entries_) {
+        (void)txn_version;
         if (key.entity_id() != vertex_id) continue;
         if (key.entity_type() != edge_direction) continue;
         if (key.column_id() != col_id) continue;
@@ -2097,7 +2102,8 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
         // GetRange returns CedarKey with full metadata
         auto range_results = reader->GetRange(vertex_id, edge_direction, col_id,
                                              Timestamp(0), snapshot_ts);
-        for (const auto& [key, descriptor] : range_results) {
+        for (const auto& [key, descriptor, txn_version] : range_results) {
+          (void)txn_version;
           // Cross-column SST files may contain mixed entity types;
           // filter to ensure we only process edges in the requested direction.
           if (key.entity_type() != edge_direction) {
@@ -2165,11 +2171,11 @@ Status LsmEngine::FlushMemTable(VSLMemTable* mem) {
   }
 
   // 收集所有条目（不区分 column_id，统一处理）
-  std::vector<std::pair<CedarKey, Descriptor>> all_entries;
+  std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> all_entries;
   all_entries.reserve(mem->size());
   
-  mem->Traverse([&](const CedarKey& key, const Descriptor& descriptor) -> bool {
-    all_entries.emplace_back(key, descriptor);
+  mem->Traverse([&](const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version) -> bool {
+    all_entries.emplace_back(key, descriptor, txn_version);
     return true;
   });
   
@@ -2205,7 +2211,7 @@ Status LsmEngine::FlushMemTable(VSLMemTable* mem) {
 }
 
 Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
-                                   const std::vector<std::pair<CedarKey, Descriptor>>& entries) {
+                                   const std::vector<std::tuple<CedarKey, Descriptor, Timestamp>>& entries) {
   if (entries.empty()) {
     return Status::OK();
   }
@@ -2221,7 +2227,7 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
   // 复制条目并排序（使用 CompareForSorting，timestamp 降序）
   auto sorted_entries = entries;
   std::sort(sorted_entries.begin(), sorted_entries.end(),
-    [](const auto& a, const auto& b) { return a.first.LessForSorting(b.first); });
+    [](const auto& a, const auto& b) { return std::get<0>(a).LessForSorting(std::get<0>(b)); });
   
   // ========== 使用 SST Builder 工厂 ==========
   cedar::WritableFile* file = nullptr;
@@ -2233,8 +2239,8 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
   // 使用 Zone-Columnar Builder（默认格式）
   auto builder = SstBuilderFactory::Create(file, db_path_);
   
-  for (const auto& [key, descriptor] : sorted_entries) {
-    builder->Add(key, descriptor);
+  for (const auto& [key, descriptor, txn_version] : sorted_entries) {
+    builder->Add(key, descriptor, txn_version);
     
     min_entity_id = std::min(min_entity_id, key.entity_id());
     max_entity_id = std::max(max_entity_id, key.entity_id());
@@ -2511,7 +2517,7 @@ void LsmEngine::QuerySSTFiles(uint64_t entity_id, EntityType entity_type,
 
 void LsmEngine::GetEntriesFromSst(uint64_t entity_id, EntityType entity_type,
                                   uint16_t column_id,
-                                  std::vector<std::pair<CedarKey, Descriptor>>* results) {
+                                  std::vector<std::tuple<CedarKey, Descriptor, Timestamp>>* results) {
   if (!results || levels_.empty()) {
     return;
   }
@@ -2566,15 +2572,15 @@ void LsmEngine::GetEntriesFromSst(uint64_t entity_id, EntityType entity_type,
                                      Timestamp(UINT64_MAX));
     
     // Add results
-    for (auto& [key, desc] : versions) {
-      results->emplace_back(key, desc);
+    for (auto& [key, desc, txn_version] : versions) {
+      results->emplace_back(key, desc, txn_version);
     }
   }
   
   // Sort results by timestamp descending (newest first)
   std::sort(results->begin(), results->end(), 
             [](const auto& a, const auto& b) {
-              return a.first.timestamp().value() > b.first.timestamp().value();
+              return std::get<0>(a).timestamp().value() > std::get<0>(b).timestamp().value();
             });
 }
 
