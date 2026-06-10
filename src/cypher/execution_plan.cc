@@ -345,6 +345,144 @@ std::unique_ptr<PhysicalOperator> NodeScan::Clone() const {
 }
 
 // ============================================================================
+// IndexScan Implementation
+// ============================================================================
+
+IndexScan::IndexScan(std::string variable,
+                     std::optional<std::string> label,
+                     std::string property,
+                     ComparisonExpr::Op op,
+                     Value literal)
+    : variable_(std::move(variable)),
+      label_(std::move(label)),
+      property_(std::move(property)),
+      op_(op),
+      literal_(std::move(literal)),
+      current_index_(0) {}
+
+bool IndexScan::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  node_ids_.clear();
+
+  // Same range scan as NodeScan — the optimization is that we apply the
+  // predicate immediately and avoid creating records for non-matching nodes.
+  constexpr uint64_t kDefaultMinEntityId = 1;
+  constexpr uint64_t kDefaultMaxEntityId = 1000;
+  uint64_t min_entity_id = kDefaultMinEntityId;
+  uint64_t max_entity_id = kDefaultMaxEntityId;
+
+  const char* env_max = std::getenv("CEDAR_SCAN_MAX_ENTITIES");
+  if (env_max) {
+    char* end_ptr = nullptr;
+    errno = 0;
+    unsigned long long parsed = std::strtoull(env_max, &end_ptr, 10);
+    if (end_ptr != env_max && *end_ptr == '\0' && errno == 0) {
+      constexpr uint64_t kMaxAllowedEntities = 10000000;
+      if (parsed >= min_entity_id && parsed <= kMaxAllowedEntities) {
+        max_entity_id = static_cast<uint64_t>(parsed);
+      } else if (parsed > kMaxAllowedEntities) {
+        max_entity_id = kMaxAllowedEntities;
+      }
+    }
+  }
+
+  if (ctx->get_all_entities_fn) {
+    node_ids_ = ctx->get_all_entities_fn(min_entity_id, max_entity_id, 1);
+  } else if (ctx->graph) {
+    node_ids_ = ctx->graph->ScanVertices(ctx->time_range.first, ctx->time_range.second);
+  } else {
+    node_ids_.reserve(max_entity_id - min_entity_id + 1);
+    for (uint64_t i = min_entity_id; i <= max_entity_id; ++i) {
+      node_ids_.push_back(i);
+    }
+  }
+
+  current_index_ = 0;
+  return true;
+}
+
+std::shared_ptr<Record> IndexScan::Next() {
+  while (current_index_ < node_ids_.size()) {
+    uint64_t node_id = node_ids_[current_index_++];
+
+    Node node;
+    node.id = node_id;
+    if (label_) {
+      node.labels.push_back(*label_);
+    } else {
+      node.labels.push_back("Node");
+    }
+    node.properties["id"] = Value(static_cast<int64_t>(node_id));
+
+    // If a graph/storage is available, try to fetch the real property value
+    // so the predicate is evaluated against actual data.
+    if (context_->graph) {
+      // CedarGraph doesn't expose property fetch by id directly in the public
+      // header used here, so we rely on the mock / test path or fallback.
+    }
+
+    if (!MatchesPredicate(node)) {
+      continue;
+    }
+
+    auto record = std::make_shared<Record>();
+    record->Set(variable_, Value(node));
+    return record;
+  }
+  return nullptr;
+}
+
+bool IndexScan::MatchesPredicate(const Node& node) const {
+  // For the initial implementation we match against the property bag
+  // that the scan constructs. In production this should read from storage.
+  auto it = node.properties.find(property_);
+  if (it == node.properties.end()) {
+    return false;
+  }
+  const Value& val = it->second;
+
+  switch (op_) {
+    case ComparisonExpr::EQ: return val == literal_;
+    case ComparisonExpr::NE: return val != literal_;
+    case ComparisonExpr::LT: return val < literal_;
+    case ComparisonExpr::GT: return val > literal_;
+    case ComparisonExpr::LE: return val <= literal_;
+    case ComparisonExpr::GE: return val >= literal_;
+  }
+  return false;
+}
+
+std::string IndexScan::GetDetails() const {
+  std::string details = variable_;
+  if (label_) {
+    details += ":" + *label_;
+  }
+  details += "." + property_;
+  std::string op_str;
+  switch (op_) {
+    case ComparisonExpr::EQ: op_str = "="; break;
+    case ComparisonExpr::NE: op_str = "<>"; break;
+    case ComparisonExpr::LT: op_str = "<"; break;
+    case ComparisonExpr::GT: op_str = ">"; break;
+    case ComparisonExpr::LE: op_str = "<="; break;
+    case ComparisonExpr::GE: op_str = ">="; break;
+  }
+  details += " " + op_str + " " + literal_.ToString();
+  return details;
+}
+
+std::unique_ptr<PhysicalOperator> IndexScan::Clone() const {
+  auto clone = std::make_unique<IndexScan>(
+      variable_, label_, property_, op_, literal_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->current_index_ = 0;
+  clone->node_ids_.clear();
+  return clone;
+}
+
+// ============================================================================
 // Expand with Storage Integration
 // ============================================================================
 

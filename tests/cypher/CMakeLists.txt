@@ -35,3 +35,10 @@ add_executable(test_plan_cache
 target_link_libraries(test_plan_cache cedar cedar_cypher cedar_queryd gtest gtest_main pthread)
 add_test(NAME test_plan_cache COMMAND test_plan_cache)
 
+# IndexScan Test
+add_executable(test_index_scan
+    test_index_scan.cc
+)
+target_link_libraries(test_index_scan cedar cedar_cypher gtest gtest_main pthread)
+add_test(NAME test_index_scan COMMAND test_index_scan)
+

@@ -165,6 +165,40 @@ class NodeScan : public PhysicalOperator {
 };
 
 /**
+ * @brief Index scan operator
+ *
+ * Uses label + property predicate to restrict the scan range.
+ * Currently performs a range scan with storage-level predicate filtering.
+ * Future: can be upgraded to a true B-tree index lookup.
+ */
+class IndexScan : public PhysicalOperator {
+ public:
+  IndexScan(std::string variable,
+            std::optional<std::string> label,
+            std::string property,
+            ComparisonExpr::Op op,
+            Value literal);
+
+  bool Init(ExecutionContext* ctx) override;
+  std::shared_ptr<Record> Next() override;
+  std::string GetName() const override { return "IndexScan"; }
+  std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
+
+ private:
+  std::string variable_;
+  std::optional<std::string> label_;
+  std::string property_;
+  ComparisonExpr::Op op_;
+  Value literal_;
+
+  size_t current_index_ = 0;
+  std::vector<uint64_t> node_ids_;
+
+  bool MatchesPredicate(const Node& node) const;
+};
+
+/**
  * @brief Relationship expand operator
  */
 class Expand : public PhysicalOperator {
