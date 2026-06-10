@@ -116,15 +116,19 @@ TEST(RaftTimeoutConfigTest, GflagHasCorrectDefault) {
 
 TEST(DTXRpcClientTlsTest, ConfigHasTlsField) {
   DTXRpcConfig config;
-  EXPECT_FALSE(config.tls_config.enabled);
+  // Security default: TLS is enabled by default for production
+  EXPECT_TRUE(config.tls_config.enabled);
 
-  config.tls_config.enabled = true;
   config.tls_config.ca_cert_file = "/path/to/ca.crt";
   config.tls_config.client_cert_file = "/path/to/client.crt";
   config.tls_config.client_key_file = "/path/to/client.key";
 
   EXPECT_TRUE(config.tls_config.enabled);
   EXPECT_EQ(config.tls_config.ca_cert_file, "/path/to/ca.crt");
+
+  // Verify it can be explicitly disabled for test/development
+  config.tls_config.enabled = false;
+  EXPECT_FALSE(config.tls_config.enabled);
 }
 
 // =============================================================================

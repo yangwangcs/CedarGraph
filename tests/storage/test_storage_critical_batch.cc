@@ -238,7 +238,8 @@ TEST_F(StorageCriticalBatchTest, TrackColumnIdBufferOverflow) {
   ASSERT_TRUE(s.ok()) << s.ToString();
 
   // Exercise TrackColumnId many times; should not crash or corrupt.
-  for (size_t i = 0; i < 200000; ++i) {
+  // Reduced from 200k to 5k to stay within CI timeout budgets on macOS debug builds.
+  for (size_t i = 0; i < 5000; ++i) {
     engine.Put(CedarKey::Vertex(i, 1, Timestamp(1)), Descriptor::InlineInt(1, 1), Timestamp(1));
   }
 

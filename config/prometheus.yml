@@ -1,5 +1,6 @@
 # CedarGraph Prometheus Monitoring Configuration
-# 普罗米修斯监控配置
+# Designed for Kubernetes environments with kubernetes_sd_configs.
+# For bare-metal deployments, override with static_configs via configmap.
 
 global:
   scrape_interval: 15s
@@ -7,40 +8,85 @@ global:
 
 alerting:
   alertmanagers:
-    - static_configs:
-        - targets: ['localhost:9093']
+    - kubernetes_sd_configs:
+        - role: pod
+          namespaces:
+            names:
+              - cedargraph
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_label_app]
+          action: keep
+          regex: alertmanager
+        - source_labels: [__meta_kubernetes_pod_container_port_number]
+          action: keep
+          regex: 9093
 
 rule_files:
   - /etc/prometheus/rules/cedar_alerts.yml
 
 scrape_configs:
-  # CedarGraph Storage Nodes
+  # CedarGraph Storage Nodes — discover via the storaged-metrics service endpoints
   - job_name: 'cedar-storage'
-    static_configs:
-      - targets: 
-        - 'localhost:7000'
-        - 'localhost:7001'
-        - 'localhost:7002'
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+            - cedargraph
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        action: keep
+        regex: storaged-metrics
+      - source_labels: [__meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: metrics
     metrics_path: /metrics
     scrape_interval: 10s
-    
-  # CedarGraph MetaD
+
+  # CedarGraph MetaD — pods annotated for scraping
   - job_name: 'cedar-metad'
-    static_configs:
-      - targets:
-        - 'localhost:6000'
-        - 'localhost:6001'
-        - 'localhost:6002'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - cedargraph
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: metad
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
     metrics_path: /metrics
     scrape_interval: 10s
 
-  # Node Exporter (System metrics)
-  - job_name: 'node'
-    static_configs:
-      - targets: ['localhost:9100']
+  # CedarGraph GraphD — pods annotated for scraping
+  - job_name: 'cedar-graphd'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - cedargraph
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: graphd
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+    metrics_path: /metrics
+    scrape_interval: 10s
 
-  # CedarGraph Health Monitor
-  - job_name: 'cedar-health'
-    static_configs:
-      - targets: ['localhost:8080']
-    metrics_path: /health/metrics
+  # Node Exporter (System metrics) — fallback static config for DaemonSet
+  - job_name: 'node'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: node-exporter
+    metrics_path: /metrics

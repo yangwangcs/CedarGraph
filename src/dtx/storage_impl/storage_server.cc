@@ -87,9 +87,22 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
         });
   }
 
+  // Resolve MetaD address: explicit config > environment variable
+  std::string resolved_metad_address = config.metad_address;
+  if (resolved_metad_address.empty()) {
+    const char* env_meta = std::getenv("CEDAR_METAD_ENDPOINT");
+    if (env_meta && env_meta[0] != '\0') {
+      resolved_metad_address = env_meta;
+    }
+  }
+  if (resolved_metad_address.empty()) {
+    std::cerr << "Warning: No MetaD address configured. Set CEDAR_METAD_ENDPOINT or "
+                 "StorageServerConfig::metad_address to enable MetaD registration." << std::endl;
+  }
+
   // Initialize MetaD client
   MetaServiceNodeClient::ClientConfig meta_config;
-  meta_config.SetMetaAddress(config.metad_address);
+  meta_config.SetMetaAddress(resolved_metad_address);
   meta_config.node_id = node_id_;
   meta_config.listen_address = config.listen_address;
   meta_config.data_root = config.data_root;

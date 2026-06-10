@@ -112,6 +112,18 @@ int main(int argc, char* argv[]) {
   PrintBanner();
   
   Config config = ParseArgs(argc, argv);
+
+  // Environment variable overrides for containerized / cloud deployments
+  const char* env_meta = std::getenv("CEDAR_METAD_ENDPOINT");
+  if (env_meta && env_meta[0] != '\0') {
+    config.meta_server = env_meta;
+    std::cout << "[GraphD] MetaD address overridden by CEDAR_METAD_ENDPOINT: " << config.meta_server << std::endl;
+  }
+  const char* env_gcn = std::getenv("CEDAR_GCN_ENDPOINT");
+  if (env_gcn && env_gcn[0] != '\0') {
+    config.gcn_server = env_gcn;
+    std::cout << "[GraphD] GCN address overridden by CEDAR_GCN_ENDPOINT: " << config.gcn_server << std::endl;
+  }
   
   JSON_LOG(INFO).KV("service", "graphd")
                   .KV("port", config.port)

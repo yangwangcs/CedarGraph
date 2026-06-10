@@ -126,8 +126,9 @@ grpc::Status GcnServiceImpl::OnEventStream(
     CDCEvent event;
     {
       std::unique_lock<std::mutex> lock(queue_mutex_);
-      queue_cv_.wait(
+      queue_cv_.wait_for(
           lock,
+          std::chrono::seconds(5),
           [this] { return !pending_events_.empty() || stream_closed_; });
       if (pending_events_.empty()) {
         break;

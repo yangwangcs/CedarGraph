@@ -72,9 +72,9 @@ TEST(CypherGcnRouting, FallbackToStorageWhenNoCallback) {
   // Execute query without any graph or callback
   ResultSet result = engine.Execute("MATCH (a)-[:1]->(b) RETURN b");
 
-  // Should fail with invalid execution context
+  // Should fail because Expand requires a graph or GCN callback
   EXPECT_TRUE(result.HasError());
-  EXPECT_EQ(result.error.value_or(""), "Invalid execution context");
+  EXPECT_NE(result.error.value_or("").find("requires graph or GCN callback"), std::string::npos);
 }
 
 TEST(CypherGcnRouting, CallbackReceivesCorrectEdgeType) {

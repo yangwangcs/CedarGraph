@@ -181,6 +181,7 @@ class Expand : public PhysicalOperator {
   std::string GetName() const override { return "Expand"; }
   std::string GetDetails() const override;
   std::unique_ptr<PhysicalOperator> Clone() const override;
+  bool RequiresGraph() const override { return true; }
   
  private:
   std::string from_variable_;

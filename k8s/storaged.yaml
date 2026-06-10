@@ -34,11 +34,15 @@ spec:
             fieldRef:
               fieldPath: metadata.name
         - name: BIND_ADDRESS
-          value: "0.0.0.0:7000"
+          value: "0.0.0.0:9779"
+        - name: CEDAR_ADVERTISE_ADDRESS
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
         - name: DATA_DIR
           value: "/var/lib/cedar/storage"
-        - name: METAD_ENDPOINTS
-          value: "1:metad-0.metad:6000,2:metad-1.metad:6001,3:metad-2.metad:6002"
+        - name: CEDAR_METAD_ENDPOINT
+          value: "metad:9559"
         - name: AUTO_RECOVERY
           value: "true"
         - name: HEALTH_CHECK_INTERVAL
@@ -49,23 +53,21 @@ spec:
           value: "8"
         ports:
         - name: grpc
-          containerPort: 7000
+          containerPort: 9779
           protocol: TCP
         - name: metrics
-          containerPort: 9090
+          containerPort: 7001
           protocol: TCP
         livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 7000
+          tcpSocket:
+            port: grpc
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
-          httpGet:
-            path: /readyz
-            port: 7000
+          tcpSocket:
+            port: grpc
           initialDelaySeconds: 10
           periodSeconds: 5
           timeoutSeconds: 3
@@ -111,8 +113,8 @@ spec:
     app: storaged
   ports:
   - name: grpc
-    port: 7000
-    targetPort: 7000
+    port: 9779
+    targetPort: 9779
   clusterIP: None
 ---
 apiVersion: v1
@@ -128,6 +130,6 @@ spec:
     app: storaged
   ports:
   - name: metrics
-    port: 9090
-    targetPort: 9090
+    port: 7001
+    targetPort: 7001
   type: ClusterIP

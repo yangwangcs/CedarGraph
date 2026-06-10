@@ -110,7 +110,9 @@ class ServiceRegistryImpl {
       // Create service info with timestamps
       ServiceInfo service_info = info;
       service_info.register_time_ms = CurrentTimeMillis();
-      service_info.last_heartbeat_ms = service_info.register_time_ms;
+      // Use steady (monotonic) clock for heartbeat so that calculations are
+      // unaffected by system clock changes.
+      service_info.last_heartbeat_ms = SteadyTimeMillis();
 
       // Set initial status if unknown
       if (service_info.status == ServiceStatus::kUnknown) {

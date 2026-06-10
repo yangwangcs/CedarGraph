@@ -13,16 +13,67 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
-
 #include <grpcpp/grpcpp.h>
+#include <thread>
 
 #include "cedar/gcn/coordinator_client.h"
+#include "meta_service.grpc.pb.h"
 
 using namespace cedar::gcn;
 
-TEST(CoordinatorClientTest, LocateReturnsWindow) {
-  auto channel = grpc::CreateChannel("localhost:50051",
-                                     grpc::InsecureChannelCredentials());
+class MockMetaService final : public cedar::meta::MetaService::Service {
+ public:
+  grpc::Status LocateCache(grpc::ServerContext* context,
+                           const cedar::meta::LocateCacheRequest* request,
+                           cedar::meta::LocateCacheResponse* response) override {
+    (void)context;
+    (void)request;
+    response->set_found(true);
+    auto* w = response->mutable_window();
+    w->set_entity_id(42);
+    w->set_cached_from(0);
+    w->set_cached_to(1000);
+    w->set_gcn_node_id(7);
+    w->set_version(3);
+    w->set_expire_at(2000);
+    return grpc::Status::OK;
+  }
+};
+
+class CoordinatorClientTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.RegisterService(&service_);
+    server_ = builder.BuildAndStart();
+    ASSERT_NE(server_, nullptr);
+
+    std::ostringstream oss;
+    oss << "127.0.0.1:" << port_;
+    address_ = oss.str();
+
+    server_thread_ = std::thread([this]() { server_->Wait(); });
+  }
+
+  void TearDown() override {
+    if (server_) {
+      server_->Shutdown();
+    }
+    if (server_thread_.joinable()) {
+      server_thread_.join();
+    }
+  }
+
+  MockMetaService service_;
+  std::unique_ptr<grpc::Server> server_;
+  std::thread server_thread_;
+  std::string address_;
+  int port_ = 0;
+};
+
+TEST_F(CoordinatorClientTest, LocateReturnsWindow) {
+  auto channel = grpc::CreateChannel(address_, grpc::InsecureChannelCredentials());
   CoordinatorClient client(channel);
 
   auto result = client.Locate(42, 1000);

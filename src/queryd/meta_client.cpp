@@ -299,7 +299,10 @@ Status QueryMetaClient::FetchClusterStateFromMeta(ClusterState* state) {
     if (it != node_addresses.end()) {
       info.leader_address = it->second;
     } else {
-      info.leader_address = "127.0.0.1:" + std::to_string(9779 + assign.leader_node() % 3);
+      return Status::Unavailable(
+          "Partition " + std::to_string(assign.partition_id()) +
+          " references unknown leader node " + std::to_string(assign.leader_node()) +
+          "; no address available in MetaD registry");
     }
     info.is_healthy = true;
     for (uint32_t follower : assign.follower_nodes()) {

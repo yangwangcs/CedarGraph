@@ -486,7 +486,10 @@ void MetadataService::MetadataStateMachine::ApplyDropSpace(const std::string& sp
 
 void MetadataService::MetadataStateMachine::ApplyRegisterNode(const NodeInfo& info) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
-    nodes_[info.node_id] = info;
+    NodeInfo node = info;
+    // Newly registered nodes are considered alive
+    node.last_heartbeat = std::chrono::system_clock::now();
+    nodes_[node.node_id] = std::move(node);
 
     // Test-mode fallback: if "default" space exists but has no assignments,
     // auto-assign all partitions to the first registered node.

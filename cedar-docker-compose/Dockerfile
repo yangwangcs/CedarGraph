@@ -64,8 +64,9 @@ COPY --from=builder /build/build/cedar-queryd /usr/local/bin/
 COPY scripts/cedar-cli.sh /usr/local/bin/cedar-cli
 COPY scripts/cedar_health_monitor.sh /usr/local/bin/cedar_health_monitor.sh
 COPY scripts/cedar_health_check.sh /usr/local/bin/cedar_health_check.sh
+COPY cedar-docker-compose/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/cedar_health_monitor.sh /usr/local/bin/cedar_health_check.sh && \
+RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/cedar_health_monitor.sh /usr/local/bin/cedar_health_check.sh /usr/local/bin/docker-entrypoint.sh && \
     chmod +x /usr/local/bin/cedar-*
 
 # 设置环境变量
@@ -74,10 +75,10 @@ ENV NODE_ROLE=""
 ENV DATA_DIR="/data"
 ENV LOG_DIR="/logs"
 
-# Health checks should be configured at runtime (Kubernetes/Docker Compose)
-# per role since the same image is used for metad, graphd, and storaged.
-# HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-#     CMD cedar-admin --host=localhost --port=${QUERY_PORT:-9669} status || exit 1
+# Health check: TCP probe based on NODE_ROLE port mapping.
+# Ports: metad=9559, graphd=9669, storaged=9779
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD bash -c 'case "${NODE_ROLE}" in metad) P=9559;; storaged) P=9779;; graphd) P=9669;; *) exit 1;; esac; nc -z localhost ${P} || exit 1'
 
 # 暴露端口
 EXPOSE 9559 9669 9779 19669
@@ -88,6 +89,6 @@ USER cedar
 # 数据卷
 VOLUME ["/data", "/logs"]
 
-# 默认入口
-ENTRYPOINT ["sh", "-c"]
-CMD ["echo 'Please specify NODE_ROLE environment variable (metad/storaged/graphd)'"]
+# Default entrypoint uses the role-aware wrapper with exec for proper signal forwarding.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD []

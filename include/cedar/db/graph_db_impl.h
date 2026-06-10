@@ -154,6 +154,9 @@ class CedarGraphDBImpl {
   Status MaybeScheduleFlush();
   Status MaybeScheduleCompaction();
   Status DoCompaction(int level);
+  Status DoCompactionRange(int level,
+                           uint64_t start_entity_id,
+                           uint64_t end_entity_id);
   ColumnFamilyData* FindColumnFamily(uint32_t id);
   ColumnFamilyData* FindColumnFamily(const std::string& name);
 };

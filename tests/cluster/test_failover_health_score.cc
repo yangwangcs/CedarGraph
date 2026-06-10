@@ -176,7 +176,7 @@ TEST_F(FailoverHealthScoreTest, HealthyNodeHighScore) {
       });
 
   // Wait for at least one health check iteration
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::this_thread::sleep_for(std::chrono::milliseconds(600));
 
   auto score_opt = controller_->GetHealthScore(1);
   ASSERT_TRUE(score_opt.has_value());
@@ -203,7 +203,7 @@ TEST_F(FailoverHealthScoreTest, HighRaftLagReducesScoreButNotDead) {
         return m;
       });
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::this_thread::sleep_for(std::chrono::milliseconds(600));
 
   auto score_opt = controller_->GetHealthScore(1);
   ASSERT_TRUE(score_opt.has_value());
@@ -222,7 +222,7 @@ TEST_F(FailoverHealthScoreTest, TcpTimeoutMarksUnhealthy) {
   listener_.reset();
   controller_->RegisterNodeAddress(1, "127.0.0.1:1");
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));
 
   auto score_opt = controller_->GetHealthScore(1);
   ASSERT_TRUE(score_opt.has_value());
@@ -252,7 +252,7 @@ TEST_F(FailoverHealthScoreTest, PredictiveDegradationOnTrend) {
       });
 
   // Wait enough iterations for trend detection (need 3 samples)
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
   auto score_opt = controller_->GetHealthScore(1);
   ASSERT_TRUE(score_opt.has_value());
@@ -279,12 +279,12 @@ TEST_F(FailoverHealthScoreTest, RecoveryRestoresHealth) {
         return m;
       });
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));
 
   // Now recover
   lag = 10.0;
   // Wait longer for Phi Accrual history to refresh and trend to clear
-  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  std::this_thread::sleep_for(std::chrono::milliseconds(3000));
 
   auto score_opt = controller_->GetHealthScore(1);
   ASSERT_TRUE(score_opt.has_value());

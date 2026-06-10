@@ -420,6 +420,10 @@ add_executable(test_dtx_raft_critical dtx/test_dtx_raft_critical.cc)
 target_link_libraries(test_dtx_raft_critical ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_dtx_raft_critical)
 
+add_executable(test_register_participant dtx/test_register_participant.cc)
+target_link_libraries(test_register_participant ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_register_participant)
+
 add_executable(test_tls_fail_secure dtx/test_tls_fail_secure.cc)
 target_link_libraries(test_tls_fail_secure ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_tls_fail_secure)
@@ -427,6 +431,10 @@ gtest_discover_tests(test_tls_fail_secure)
 add_executable(test_storaged_raft_stub dtx/test_storaged_raft_stub.cc)
 target_link_libraries(test_storaged_raft_stub ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_storaged_raft_stub)
+
+add_executable(test_storaged_raft_snapshot dtx/test_storaged_raft_snapshot.cc)
+target_link_libraries(test_storaged_raft_snapshot ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storaged_raft_snapshot)
 
 add_executable(test_hybrid_logical_clock dtx/test_hybrid_logical_clock.cc)
 target_link_libraries(test_hybrid_logical_clock ${CEDAR_TEST_LIBS})

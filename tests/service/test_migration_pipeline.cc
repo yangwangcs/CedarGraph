@@ -384,6 +384,14 @@ TEST_F(WatchPartitionMapTest, WatchReceivesPartitionChanges) {
         change_space_name = change.space_name;
       });
 
+  // Register the target leader node first
+  {
+    NodeInfo node;
+    node.node_id = 99;
+    node.address = "127.0.0.1:9779";
+    ASSERT_TRUE(meta_service_->RegisterNode(node).ok());
+  }
+
   // Trigger a partition leader change
   ASSERT_TRUE(meta_service_->UpdatePartitionLeader("watch_space", 0, 99).ok());
 

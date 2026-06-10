@@ -29,7 +29,7 @@
 #include <grpcpp/grpcpp.h>
 
 DEFINE_int32(gcn_port, 9780, "GCN service port");
-DEFINE_string(gcn_bind_address, "127.0.0.1", "GCN bind address (local-only for internal GraphD access)");
+DEFINE_string(gcn_bind_address, "0.0.0.0", "GCN bind address (default 0.0.0.0 for cluster visibility)");
 DEFINE_string(gcn_coordinator, "127.0.0.1:9559", "Coordinator endpoint");
 DEFINE_int64(gcn_tmv_max_chunks, 256, "Maximum TMV chunks per engine");
 DEFINE_bool(gcn_backfill_enabled, false, "Enable storage to TMV backfill on startup");
@@ -48,6 +48,18 @@ GcnNode::~GcnNode() {
 }
 
  cedar::Status GcnNode::Initialize() {
+  // Environment overrides for containerized / cloud deployments
+  const char* env_bind = std::getenv("CEDAR_GCN_BIND_ADDRESS");
+  if (env_bind && env_bind[0] != '\0') {
+    FLAGS_gcn_bind_address = env_bind;
+    std::cerr << "[GCN] Bind address overridden by CEDAR_GCN_BIND_ADDRESS: " << FLAGS_gcn_bind_address << std::endl;
+  }
+  const char* env_coord = std::getenv("CEDAR_GCN_COORDINATOR");
+  if (env_coord && env_coord[0] != '\0') {
+    FLAGS_gcn_coordinator = env_coord;
+    std::cerr << "[GCN] Coordinator overridden by CEDAR_GCN_COORDINATOR: " << FLAGS_gcn_coordinator << std::endl;
+  }
+
   // Create TMVEngine
   engine_ = std::make_unique<gcn::TMVEngine>(static_cast<size_t>(FLAGS_gcn_tmv_max_chunks));
 

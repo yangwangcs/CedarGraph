@@ -164,3 +164,55 @@ TEST_F(CompactionTest, DoCompactionOnEmptyVersionSet) {
   Status s = impl->TEST_DoCompaction(0);
   EXPECT_TRUE(s.ok()) << s.ToString();
 }
+
+TEST_F(CompactionTest, CompactRangeMergesOverlappingFiles) {
+  // Create two L0 SST files with overlapping entity ranges
+  uint64_t f1 = 2001;
+  uint64_t f2 = 2002;
+  std::string p1 = test_dir_ + "/" + std::to_string(f1) + ".sst";
+  std::string p2 = test_dir_ + "/" + std::to_string(f2) + ".sst";
+
+  Status s = CreateSstFile(p1, 1, 50, f1, 0);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+  s = CreateSstFile(p2, 30, 80, f2, 0);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  uint64_t sz1 = 0, sz2 = 0;
+  env_->GetFileSize(p1, &sz1);
+  env_->GetFileSize(p2, &sz2);
+
+  s = RegisterFileInVersionSet(f1, 0, 1, 50, sz1);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+  s = RegisterFileInVersionSet(f2, 0, 30, 80, sz2);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  // Compact only entity range [20, 60]
+  CompactRangeOptions cro;
+  cro.start_entity_id = 20;
+  cro.end_entity_id = 60;
+  s = db_->CompactRange(cro);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  auto* impl = db_->GetInternalImpl();
+  auto* vs = impl->GetVersionSet();
+
+  // After range compaction, the total file count should be <= 2
+  // (either both original files are gone + one new file created,
+  //  or one original remains if it was fully outside the range)
+  size_t file_count = vs->GetCurrentVersion()->GetFileCount();
+  EXPECT_LE(file_count, 2u);
+
+  // The old overlapping files should have been removed
+  EXPECT_FALSE(std::filesystem::exists(p1))
+      << "Old SST f1 should be removed after range compaction";
+  EXPECT_FALSE(std::filesystem::exists(p2))
+      << "Old SST f2 should be removed after range compaction";
+}
+
+TEST_F(CompactionTest, CompactRangeOnEmptyRangeIsNoOp) {
+  CompactRangeOptions cro;
+  cro.start_entity_id = 1000;
+  cro.end_entity_id = 2000;
+  Status s = db_->CompactRange(cro);
+  EXPECT_TRUE(s.ok()) << s.ToString();
+}

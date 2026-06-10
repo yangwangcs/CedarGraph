@@ -5,6 +5,8 @@
 #include <vector>
 #include <chrono>
 #include <random>
+#include <sstream>
+#include <cstdlib>
 
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/types/descriptor.h"
@@ -17,6 +19,30 @@ struct ClusterNode {
   int port;
 };
 
+static std::vector<ClusterNode> ParseClusterNodesFromEnv() {
+  std::vector<ClusterNode> nodes;
+  const char* env = std::getenv("CEDAR_CLUSTER_NODES");
+  if (!env || env[0] == '\0') return nodes;
+
+  std::string token;
+  std::istringstream stream(env);
+  while (std::getline(stream, token, ',')) {
+    // Format: node_id:host:port
+    size_t pos1 = token.find(':');
+    size_t pos2 = token.find(':', pos1 + 1);
+    if (pos1 == std::string::npos || pos2 == std::string::npos) {
+      std::cerr << "[ClusterClient] WARNING: Invalid CEDAR_CLUSTER_NODES entry: " << token << std::endl;
+      continue;
+    }
+    ClusterNode node;
+    node.node_id = token.substr(0, pos1);
+    node.address = token.substr(pos1 + 1, pos2 - pos1 - 1);
+    node.port = std::stoi(token.substr(pos2 + 1));
+    nodes.push_back(std::move(node));
+  }
+  return nodes;
+}
+
 class ClusterTestClient {
  public:
   ClusterTestClient(const std::vector<ClusterNode>& nodes) : nodes_(nodes) {}
@@ -25,7 +51,7 @@ class ClusterTestClient {
   bool Connect() {
     for (const auto& node : nodes_) {
       std::cout << "Trying to connect to " << node.node_id 
-                << " at 127.0.0.1:" << node.port << std::endl;
+                << " at " << node.address << ":" << node.port << std::endl;
       
       // 尝试初始化存储连接
       CedarOptions options;
@@ -111,12 +137,16 @@ int main(int argc, char* argv[]) {
   std::cout << "CedarGraph 3-Node Cluster Test Client" << std::endl;
   std::cout << "========================================" << std::endl;
   
-  // 定义3节点集群
-  std::vector<ClusterNode> nodes = {
-    {"node-0", "127.0.0.1", 9779},
-    {"node-1", "127.0.0.1", 9780},
-    {"node-2", "127.0.0.1", 9781}
-  };
+  // Load cluster nodes from environment variable or use localhost defaults
+  std::vector<ClusterNode> nodes = ParseClusterNodesFromEnv();
+  if (nodes.empty()) {
+    std::cerr << "[ClusterClient] WARNING: CEDAR_CLUSTER_NODES not set; using localhost defaults." << std::endl;
+    nodes = {
+      {"node-0", "127.0.0.1", 9779},
+      {"node-1", "127.0.0.1", 9780},
+      {"node-2", "127.0.0.1", 9781}
+    };
+  }
   
   ClusterTestClient client(nodes);
   

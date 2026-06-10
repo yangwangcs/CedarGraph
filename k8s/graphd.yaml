@@ -21,10 +21,17 @@ spec:
       - name: graphd
         image: cedargraph:latest
         command: ["/usr/local/bin/cedar-graphd"]
-        args: ["--meta_server=metad:9559", "--port=9669"]
+        args: ["--port=9669"]
+        env:
+        - name: CEDAR_METAD_ENDPOINT
+          value: "metad:9559"
+        - name: CEDAR_GCN_ENDPOINT
+          value: "gcn:9780"
         ports:
         - containerPort: 9669
           name: query
+        - containerPort: 9780
+          name: gcn
         resources:
           requests:
             memory: "1Gi"
@@ -33,17 +40,15 @@ spec:
             memory: "2Gi"
             cpu: "1000m"
         livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 9669
+          tcpSocket:
+            port: query
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
-          httpGet:
-            path: /readyz
-            port: 9669
+          tcpSocket:
+            port: query
           initialDelaySeconds: 10
           periodSeconds: 5
           timeoutSeconds: 3

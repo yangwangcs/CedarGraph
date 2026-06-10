@@ -2087,7 +2087,6 @@ grpc::Status GraphServiceRouter::BeginTransaction(grpc::ServerContext* context,
     txn_state_manager_->CreateTransaction(txn_id, std::vector<uint16_t>{});
   }
   
-  std::cerr << "[GraphD] BeginTransaction: " << txn_id << std::endl;
   return grpc::Status::OK;
 }
 

@@ -599,7 +599,7 @@ class StorageServer {
     NodeID node_id;
     std::string data_root = "/tmp/cedar_storage";
     std::string listen_address = "0.0.0.0:50051";
-    std::string metad_address = "127.0.0.1:50050";
+    std::string metad_address;  // Empty = must be provided via CEDAR_METAD_ENDPOINT or explicit config
     size_t max_partitions = 1024;
     std::chrono::seconds heartbeat_interval{5};
     int dtx_port = 0;  // 0 means auto-assign (storage_port + 1)

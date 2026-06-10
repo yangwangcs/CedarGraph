@@ -287,10 +287,40 @@ Status CedarGraphDBImpl::Flush(const FlushOptions& options) {
 }
 
 Status CedarGraphDBImpl::CompactRange(const CompactRangeOptions& options) {
-  // TODO(#storage-001): Implement full SST merge compaction for CompactRange.
-  // For now, ForceFlush can be used to trigger memtable compaction.
-  (void)options;
-  return Status::NotSupported("CompactRange", "SST merge not yet implemented");
+  if (!opened_.load()) {
+    return Status::InvalidArgument("CedarGraphDB", "not opened");
+  }
+
+  // Pause background compaction/flushing during manual compaction
+  BgWorkPauseGuard pause_guard(&bg_work_paused_, &bg_cv_);
+
+  // Flush all memtables so compaction works purely on SSTs
+  Status s = Flush(FlushOptions{});
+  if (!s.ok()) {
+    return s;
+  }
+
+  // Compact each level that has files overlapping the requested range
+  for (int level = 0; level < options_.max_levels; ++level) {
+    auto version = version_set_.GetCurrentVersion();
+    const auto& files = version->GetFiles(level);
+    bool has_overlap = false;
+    for (const auto& f : files) {
+      if (f.Overlaps(options.start_entity_id, options.end_entity_id)) {
+        has_overlap = true;
+        break;
+      }
+    }
+    if (has_overlap) {
+      s = DoCompactionRange(level, options.start_entity_id, options.end_entity_id);
+      if (!s.ok()) {
+        return s;
+      }
+    }
+  }
+
+  stats_.compactions.fetch_add(1, std::memory_order_relaxed);
+  return Status::OK();
 }
 
 // ==================== CedarGraphDBImpl 快照支持 ====================
@@ -897,6 +927,213 @@ Status CedarGraphDBImpl::DoCompaction(int level) {
   // 更新统计
   stats_.compactions.fetch_add(1, std::memory_order_relaxed);
   
+  return Status::OK();
+}
+
+Status CedarGraphDBImpl::DoCompactionRange(int level,
+                                            uint64_t start_entity_id,
+                                            uint64_t end_entity_id) {
+  auto version = version_set_.GetCurrentVersion();
+
+  // Select only files that overlap the requested entity range
+  const auto& all_files = version->GetFiles(level);
+  std::vector<FileMetaData> inputs;
+  for (const auto& f : all_files) {
+    if (f.Overlaps(start_entity_id, end_entity_id)) {
+      inputs.push_back(f);
+    }
+  }
+  if (inputs.empty()) {
+    return Status::OK();
+  }
+
+  // Gather overlapping files from the next level (same as DoCompaction)
+  std::vector<FileMetaData> level_files;
+  if (level + 1 < options_.max_levels) {
+    level_files = version->GetFiles(level + 1);
+  }
+
+  uint64_t smallest_entity = UINT64_MAX;
+  uint64_t largest_entity = 0;
+  for (const auto& file : inputs) {
+    smallest_entity = std::min(smallest_entity, file.smallest_entity_id);
+    largest_entity = std::max(largest_entity, file.largest_entity_id);
+  }
+
+  std::vector<FileMetaData> overlapping_files;
+  for (const auto& file : level_files) {
+    if (file.Overlaps(smallest_entity, largest_entity)) {
+      overlapping_files.push_back(file);
+    }
+  }
+
+  std::vector<FileMetaData> all_inputs = inputs;
+  all_inputs.insert(all_inputs.end(), overlapping_files.begin(),
+                    overlapping_files.end());
+
+  // K-way streaming merge — identical logic to DoCompaction
+  struct Source {
+    std::unique_ptr<ZoneColumnarSstReader> reader;
+    std::unique_ptr<ZoneColumnarSstReader::Iterator> iter;
+  };
+  std::vector<Source> sources;
+  sources.reserve(all_inputs.size());
+
+  for (const auto& file : all_inputs) {
+    std::string filepath = db_path_ + "/" + std::to_string(file.file_number) + ".sst";
+    auto reader = std::make_unique<ZoneColumnarSstReader>(filepath);
+    Status s = reader->Open();
+    if (!s.ok()) {
+      return s;
+    }
+    auto* iter = reader->NewIterator();
+    iter->SeekToFirst();
+    if (iter->Valid()) {
+      sources.push_back({std::move(reader),
+                         std::unique_ptr<ZoneColumnarSstReader::Iterator>(iter)});
+    } else {
+      delete iter;
+    }
+  }
+
+  if (sources.empty()) {
+    std::vector<ManifestEdit> edits;
+    for (const auto& file : all_inputs) {
+      edits.push_back(ManifestEdit::DeleteFile(file.level, file.file_number));
+    }
+    std::shared_ptr<Version> new_version;
+    Status s = version_set_.ApplyEdits(edits, &new_version);
+    if (!s.ok()) {
+      return s;
+    }
+    for (const auto& edit : edits) {
+      s = manifest_manager_.LogEdit(edit);
+      if (!s.ok()) {
+        return s;
+      }
+    }
+    for (const auto& file : all_inputs) {
+      std::string old_path = db_path_ + "/" + std::to_string(file.file_number) + ".sst";
+      env_->RemoveFile(old_path).IgnoreError();
+    }
+    return Status::OK();
+  }
+
+  struct HeapEntry {
+    CedarKey key;
+    Descriptor descriptor;
+    Timestamp txn_version;
+    size_t source_idx;
+    bool operator>(const HeapEntry& o) const {
+      return o.key.LessForSorting(key);
+    }
+  };
+  std::priority_queue<HeapEntry, std::vector<HeapEntry>, std::greater<>> min_heap;
+
+  for (size_t i = 0; i < sources.size(); ++i) {
+    min_heap.push({sources[i].iter->Key(), sources[i].iter->Value(),
+                   sources[i].iter->TxnVersion(), i});
+  }
+
+  int output_level = (level + 1 < options_.max_levels) ? level + 1 : level;
+  uint64_t new_file_number = version_set_.GetNextFileNumber();
+  std::string output_path = db_path_ + "/" + std::to_string(new_file_number) + ".sst";
+
+  WritableFile* file = nullptr;
+  Status s = env_->NewWritableFile(output_path, &file);
+  if (!s.ok()) {
+    return s;
+  }
+
+  auto builder = SstBuilderFactory::Create(file, db_path_);
+  uint64_t out_min_entity = UINT64_MAX;
+  uint64_t out_max_entity = 0;
+  uint64_t out_min_ts = UINT64_MAX;
+  uint64_t out_max_ts = 0;
+
+  CedarKey last_key;
+  bool has_last = false;
+  while (!min_heap.empty()) {
+    auto entry = min_heap.top();
+    min_heap.pop();
+
+    if (has_last && entry.key.CompareForSorting(last_key) == 0) {
+      size_t idx = entry.source_idx;
+      sources[idx].iter->Next();
+      if (sources[idx].iter->Valid()) {
+        min_heap.push({sources[idx].iter->Key(), sources[idx].iter->Value(),
+                       sources[idx].iter->TxnVersion(), idx});
+      }
+      continue;
+    }
+    last_key = entry.key;
+    has_last = true;
+
+    builder->Add(entry.key, entry.descriptor, entry.txn_version);
+    out_min_entity = std::min(out_min_entity, entry.key.entity_id());
+    out_max_entity = std::max(out_max_entity, entry.key.entity_id());
+    out_min_ts = std::min(out_min_ts, entry.key.timestamp().value());
+    out_max_ts = std::max(out_max_ts, entry.key.timestamp().value());
+
+    size_t idx = entry.source_idx;
+    sources[idx].iter->Next();
+    if (sources[idx].iter->Valid()) {
+      min_heap.push({sources[idx].iter->Key(), sources[idx].iter->Value(),
+                     sources[idx].iter->TxnVersion(), idx});
+    }
+  }
+
+  s = builder->Finish();
+  delete file;
+  if (!s.ok()) {
+    env_->RemoveFile(output_path);
+    return s;
+  }
+
+  uint64_t file_size = 0;
+  s = env_->GetFileSize(output_path, &file_size);
+  if (!s.ok()) {
+    env_->RemoveFile(output_path);
+    return s;
+  }
+
+  FileMetaData new_meta;
+  new_meta.file_number = new_file_number;
+  new_meta.level = output_level;
+  new_meta.file_size = file_size;
+  new_meta.smallest_entity_id = out_min_entity;
+  new_meta.largest_entity_id = out_max_entity;
+  new_meta.smallest_timestamp = out_min_ts;
+  new_meta.largest_timestamp = out_max_ts;
+  new_meta.num_entries = builder->NumEntries();
+  new_meta.num_deletions = 0;
+
+  std::vector<ManifestEdit> edits;
+  edits.reserve(all_inputs.size() + 1);
+  for (const auto& f : all_inputs) {
+    edits.push_back(ManifestEdit::DeleteFile(f.level, f.file_number));
+  }
+  edits.push_back(ManifestEdit::AddFile(output_level, new_meta));
+
+  std::shared_ptr<Version> new_version;
+  s = version_set_.ApplyEdits(edits, &new_version);
+  if (!s.ok()) {
+    env_->RemoveFile(output_path);
+    return s;
+  }
+
+  for (const auto& edit : edits) {
+    s = manifest_manager_.LogEdit(edit);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  for (const auto& f : all_inputs) {
+    std::string old_path = db_path_ + "/" + std::to_string(f.file_number) + ".sst";
+    env_->RemoveFile(old_path).IgnoreError();
+  }
+
   return Status::OK();
 }
 

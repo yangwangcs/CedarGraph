@@ -116,8 +116,10 @@ TEST_F(StorageExtensionsTest, GetCommittedVersionReturnsOk) {
   grpc::Status status = stub_->GetCommittedVersion(&context, request, &response);
 
   EXPECT_TRUE(status.ok());
-  EXPECT_EQ(response.committed_version(), 0u);
-  EXPECT_EQ(response.watermark(), 0u);
+  // committed_version returns the current wall-clock timestamp; we only verify
+  // the RPC succeeds and returns a non-zero version.
+  EXPECT_GT(response.committed_version(), 0u);
+  EXPECT_GT(response.watermark(), 0u);
 }
 
 TEST_F(StorageExtensionsTest, GetRangeForComputeOutEdges) {

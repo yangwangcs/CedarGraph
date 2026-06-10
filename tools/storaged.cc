@@ -75,6 +75,7 @@ struct Config {
   int node_id = 0;
   int port = 9779;
   std::string bind_address = "0.0.0.0";
+  std::string advertise_address;  // Empty = auto-detect; used for MetaD registration
   std::string data_dir = "/var/lib/cedar/storaged";
   std::string meta_server = "127.0.0.1:9559";
   int heartbeat_interval_sec = 10;
@@ -91,6 +92,7 @@ static void LoadConfigFromFile(Config* config, const std::string& path) {
   if (cm.HasKey("storaged.node_id")) config->node_id = cm.GetInt("storaged.node_id", config->node_id);
   if (cm.HasKey("storaged.port")) config->port = cm.GetInt("storaged.port", config->port);
   if (cm.HasKey("storaged.bind_address")) config->bind_address = cm.GetString("storaged.bind_address", config->bind_address);
+  if (cm.HasKey("storaged.advertise_address")) config->advertise_address = cm.GetString("storaged.advertise_address", config->advertise_address);
   if (cm.HasKey("storaged.data_dir")) config->data_dir = cm.GetString("storaged.data_dir", config->data_dir);
   if (cm.HasKey("storaged.meta_server")) config->meta_server = cm.GetString("storaged.meta_server", config->meta_server);
   if (cm.HasKey("storaged.heartbeat_interval_sec")) config->heartbeat_interval_sec = cm.GetInt("storaged.heartbeat_interval_sec", config->heartbeat_interval_sec);
@@ -115,6 +117,8 @@ Config ParseArgs(int argc, char* argv[]) {
       config.port = std::stoi(argv[++i]);
     } else if ((arg == "--bind" || arg == "-b") && i + 1 < argc) {
       config.bind_address = argv[++i];
+    } else if ((arg == "--advertise_address" || arg == "-a") && i + 1 < argc) {
+      config.advertise_address = argv[++i];
     } else if ((arg == "--data_dir" || arg == "-d") && i + 1 < argc) {
       config.data_dir = argv[++i];
     } else if ((arg == "--meta" || arg == "-m") && i + 1 < argc) {
@@ -132,6 +136,7 @@ Config ParseArgs(int argc, char* argv[]) {
       std::cout << "  -n, --node_id <id>     Node ID (default: 0)" << std::endl;
       std::cout << "  -p, --port <port>      Port to listen on (default: 9779)" << std::endl;
       std::cout << "  -b, --bind <addr>      Bind address (default: 0.0.0.0)" << std::endl;
+      std::cout << "  -a, --advertise_address <addr>  Address advertised to MetaD (default: auto-detect)" << std::endl;
       std::cout << "  -d, --data_dir <dir>   Data directory (default: /var/lib/cedar/storaged)" << std::endl;
       std::cout << "  -m, --meta <addr>      MetaD server address (default: 127.0.0.1:9559)" << std::endl;
       std::cout << "  -c, --config <path>    Configuration file (YAML)" << std::endl;
@@ -556,9 +561,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
 class MetaClient {
  public:
   MetaClient(const std::string& meta_addr, int node_id, int port,
+             const std::string& advertise_address,
              const std::string& data_dir,
              const cedar::dtx::raft::TlsConfig& tls)
-      : node_id_(node_id), port_(port), data_dir_(data_dir) {
+      : node_id_(node_id), port_(port), advertise_address_(advertise_address), data_dir_(data_dir) {
     auto client_creds_result = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls);
     if (!client_creds_result.ok()) {
       throw std::runtime_error(
@@ -574,7 +580,7 @@ class MetaClient {
     cedar::meta::RegisterNodeRequest request;
     auto* node_info = request.mutable_node_info();
     node_info->set_node_id(node_id_);
-    node_info->set_address("127.0.0.1:" + std::to_string(port_));
+    node_info->set_address(advertise_address_ + ":" + std::to_string(port_));
     node_info->set_data_path(data_dir_ + "/node" + std::to_string(node_id_));
     node_info->set_num_cpu_cores(4);
     node_info->set_total_memory_bytes(8ULL * 1024 * 1024 * 1024);
@@ -623,6 +629,7 @@ class MetaClient {
   std::unique_ptr<cedar::meta::MetaService::Stub> stub_;
   int node_id_;
   int port_;
+  std::string advertise_address_;
   std::string data_dir_;
 };
 
@@ -653,14 +660,6 @@ int main(int argc, char* argv[]) {
   // 使用 node_id 区分数据目录
   config.data_dir += "/node" + std::to_string(config.node_id);
   
-  JSON_LOG(INFO).KV("service", "storaged")
-                  .KV("node_id", config.node_id)
-                  .KV("port", config.port)
-                  .KV("bind", config.bind_address)
-                  .KV("data_dir", config.data_dir)
-                  .KV("meta_server", config.meta_server);
-  std::cout << std::endl;
-
   struct sigaction sa;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = 0;
@@ -690,7 +689,31 @@ int main(int argc, char* argv[]) {
   (void)raft_sm;  // keep alive for process lifetime
 
   // 3. 注册到 MetaD
-  MetaClient meta_client(config.meta_server, config.node_id, config.port, config.data_dir, config.tls);
+  // Determine advertise address: explicit > env > bind_address (if not 0.0.0.0) > 127.0.0.1 fallback
+  if (config.advertise_address.empty()) {
+    const char* env_adv = std::getenv("CEDAR_ADVERTISE_ADDRESS");
+    if (env_adv && env_adv[0] != '\0') {
+      config.advertise_address = env_adv;
+    } else if (config.bind_address != "0.0.0.0" && config.bind_address != "::") {
+      config.advertise_address = config.bind_address;
+    } else {
+      config.advertise_address = "127.0.0.1";
+      std::cerr << "[StorageD] WARNING: advertise_address not set; falling back to 127.0.0.1. "
+                << "Use --advertise_address or CEDAR_ADVERTISE_ADDRESS for cluster visibility." << std::endl;
+    }
+  }
+
+  JSON_LOG(INFO).KV("service", "storaged")
+                  .KV("node_id", config.node_id)
+                  .KV("port", config.port)
+                  .KV("bind", config.bind_address)
+                  .KV("advertise_address", config.advertise_address)
+                  .KV("data_dir", config.data_dir)
+                  .KV("meta_server", config.meta_server);
+  std::cout << std::endl;
+
+  MetaClient meta_client(config.meta_server, config.node_id, config.port,
+                         config.advertise_address, config.data_dir, config.tls);
   if (!meta_client.Register()) {
     const char* env_offline_mode = std::getenv("CEDAR_STORAGED_OFFLINE_MODE");
     bool offline_mode = (env_offline_mode != nullptr && std::string(env_offline_mode) == "1");
