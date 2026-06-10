@@ -29,6 +29,7 @@
 #include <mutex>
 
 #include "cedar/core/status.h"
+#include "cedar/dtx/meta_service_grpc.h"  // NEW
 
 namespace cedar {
 namespace dtx {
@@ -196,6 +197,7 @@ class ClusterInitializer {
  private:
   Config config_;
   std::unique_ptr<ServiceDiscovery> service_discovery_;
+  std::unique_ptr<MetaServiceGrpcClient> meta_client_;  // NEW
 };
 
 // =============================================================================

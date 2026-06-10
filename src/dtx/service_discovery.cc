@@ -594,39 +594,51 @@ Status ClusterInitializer::AutoDiscoverAndRegister() {
 
 Status ClusterInitializer::RegisterStorageNodes(const std::vector<StorageNodeInfo>& nodes) {
   std::cerr << "[ClusterInitializer] Registering storage nodes..." << std::endl;
-  
+
+  if (nodes.empty()) {
+    return Status::InvalidArgument("No storage nodes to register");
+  }
+
+  // Lazily initialize MetaServiceGrpcClient on first registration attempt
+  if (!meta_client_ && !config_.meta_servers.empty()) {
+    meta_client_ = std::make_unique<MetaServiceGrpcClient>();
+    auto connect_status = meta_client_->Connect(config_.meta_servers);
+    if (!connect_status.ok()) {
+      meta_client_.reset();
+      return Status::IOError("Failed to connect to MetaD: " + connect_status.ToString());
+    }
+  }
+
   int success_count = 0;
   for (const auto& node : nodes) {
     std::cerr << "  Registering: " << node.GetEndpoint() << " ... " << std::flush;
-    
-    // 这里应该调用 MetaService 的 AddHost 接口
-    // 简化版：模拟成功
-    
-    bool success = true;
-    int max_retries = (config_.retry_interval_seconds > 0)
-        ? config_.init_timeout_seconds / config_.retry_interval_seconds
-        : 0;
-    for (int retry = 0; retry < max_retries; ++retry) {
-      // 模拟 RPC 调用
-      // 实际应该调用: meta_client_->AddHost(node.host, node.port);
-      
-      // 模拟成功
-      success = true;
-      break;
+
+    if (!meta_client_) {
+      std::cerr << "SKIPPED (no MetaD connection)" << std::endl;
+      continue;
     }
-    
-    if (success) {
+
+    // Convert StorageNodeInfo -> NodeInfo for MetaService RPC
+    NodeInfo info;
+    info.node_id = static_cast<NodeID>(std::hash<std::string>{}(node.GetEndpoint()) & 0x7FFFFFFF);
+    info.address = node.ip_address.empty() ? node.GetEndpoint() : node.ip_address;
+    info.data_path = "/data/cedar";
+    info.state = NodeInfo::State::kOnline;
+
+    auto status = meta_client_->RegisterNode(info);
+    if (status.ok()) {
       std::cerr << "OK" << std::endl;
       success_count++;
     } else {
-      std::cerr << "FAILED" << std::endl;
+      std::cerr << "FAILED: " << status.ToString() << std::endl;
     }
   }
-  
-  std::cerr << "[ClusterInitializer] Registered " << success_count << "/" 
+
+  std::cerr << "[ClusterInitializer] Registered " << success_count << "/"
             << nodes.size() << " nodes" << std::endl;
-  
-  return success_count > 0 ? Status::OK() : Status::IOError("Failed to register any nodes");
+
+  return success_count > 0 ? Status::OK()
+                           : Status::IOError("Failed to register any nodes");
 }
 
 bool ClusterInitializer::IsClusterReady() {
