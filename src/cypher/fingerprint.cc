@@ -40,6 +40,7 @@ std::string ComputeFingerprint(const std::string& query) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
   };
 
+  // Replaces string literals, numeric literals, boolean literals, and null with '?'
   size_t i = 0;
   while (i < query.size()) {
     char c = query[i];
@@ -154,6 +155,8 @@ namespace {
 
 class FingerprintWriter {
  public:
+  explicit FingerprintWriter(const FingerprintOptions& options = {}) : options_(options) {}
+
   std::string Result() const { return oss_.str(); }
 
   void Write(const QueryStatement& stmt) {
@@ -164,7 +167,12 @@ class FingerprintWriter {
   }
 
  private:
+  FingerprintOptions options_;
   std::ostringstream oss_;
+
+  void WriteLiteralValue(const LiteralExpr& literal) {
+    oss_ << literal.value.ToString();
+  }
 
   void WriteClause(const QueryClause& clause) {
     switch (clause.clause_type) {
@@ -226,7 +234,12 @@ class FingerprintWriter {
         if (!first) oss_ << ",";
         first = false;
         oss_ << kv.first << ":";
-        WriteExpression(*kv.second);
+        if (options_.preserve_property_keys.count(kv.first) > 0 &&
+            kv.second->expr_type == ExprType::LITERAL) {
+          WriteLiteralValue(static_cast<const LiteralExpr&>(*kv.second));
+        } else {
+          WriteExpression(*kv.second);
+        }
       }
       oss_ << "}";
     }
@@ -250,7 +263,12 @@ class FingerprintWriter {
         if (!first) oss_ << ",";
         first = false;
         oss_ << kv.first << ":";
-        WriteExpression(*kv.second);
+        if (options_.preserve_property_keys.count(kv.first) > 0 &&
+            kv.second->expr_type == ExprType::LITERAL) {
+          WriteLiteralValue(static_cast<const LiteralExpr&>(*kv.second));
+        } else {
+          WriteExpression(*kv.second);
+        }
       }
       oss_ << "}";
     }
@@ -447,17 +465,21 @@ class FingerprintWriter {
 
 }  // namespace
 
-std::string ComputeFingerprint(const QueryStatement& ast) {
-  FingerprintWriter writer;
+std::string ComputeFingerprint(const QueryStatement& ast,
+                               const FingerprintOptions& options) {
+  FingerprintWriter writer(options);
   writer.Write(ast);
   std::string fp = writer.Result();
-  // Normalize whitespace (AST writer may produce double spaces)
   std::regex ws(R"(\s+)");
   fp = std::regex_replace(fp, ws, " ");
   size_t start = fp.find_first_not_of(" \t\n\r");
   if (start == std::string::npos) return "";
   size_t end = fp.find_last_not_of(" \t\n\r");
   return fp.substr(start, end - start + 1);
+}
+
+std::string ComputeFingerprint(const QueryStatement& ast) {
+  return ComputeFingerprint(ast, FingerprintOptions{});
 }
 
 }  // namespace cypher
