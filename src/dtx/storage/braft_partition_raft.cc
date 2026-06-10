@@ -75,6 +75,11 @@ std::string StorageLogEntry::Serialize() const {
   // type: 1 byte
   data.push_back(static_cast<char>(type));
 
+  // NEW: kReadIndex is a minimal no-op barrier
+  if (type == Type::kReadIndex) {
+    return data;
+  }
+
   // 2PC entries use different serialization
   if (type == Type::kPrepare || type == Type::kCommit || type == Type::kAbort) {
     // txn_id: 8 bytes
@@ -160,6 +165,11 @@ StatusOr<StorageLogEntry> StorageLogEntry::Deserialize(
 
   // type
   entry.type = static_cast<Type>(data[pos++]);
+
+  // NEW: kReadIndex is a minimal no-op barrier
+  if (entry.type == Type::kReadIndex) {
+    return entry;
+  }
 
   // 2PC entries
   if (entry.type == Type::kPrepare || entry.type == Type::kCommit || entry.type == Type::kAbort) {
@@ -362,6 +372,13 @@ void StoragePartitionStateMachine::on_apply(braft::Iterator& iter) {
     }
 
     const auto& entry = entry_result.value();
+
+    // NEW: Handle read-index barrier before storage null-check — it needs no storage
+    if (entry.type == StorageLogEntry::Type::kReadIndex) {
+      last_term_ = iter.term();
+      continue;  // no-op barrier
+    }
+
     if (!storage_) {
       LOG(ERROR) << "No storage available for apply at index=" << iter.index();
       iter.set_error_and_rollback();
@@ -795,10 +812,42 @@ class BraftPartitionNode::Impl {
   }
 
   StatusOr<uint64_t> ReadIndex(std::chrono::milliseconds timeout) {
-    // This version of braft does not support read_index API.
-    // For linearizable reads, fallback to leader read.
-    (void)timeout;
-    return Status::NotSupported("ReadIndex not supported in this braft version");
+    // Step 1: Validate leadership
+    {
+      std::lock_guard<std::mutex> lock(node_mutex_);
+      if (!node_ || !node_->is_leader()) {
+        return Status::NotLeader("Not leader");
+      }
+    }
+
+    // Step 2: Propose a read-index barrier entry
+    StorageLogEntry entry;
+    entry.type = StorageLogEntry::Type::kReadIndex;
+
+    auto propose_status = Propose(entry);
+    if (!propose_status.ok()) {
+      return propose_status;
+    }
+
+    // Step 3: Get the committed index after our barrier is committed
+    uint64_t committed_index = 0;
+    {
+      std::lock_guard<std::mutex> lock(node_mutex_);
+      if (!node_) {
+        return Status::IOError("Node not initialized");
+      }
+      braft::NodeStatus node_status;
+      node_->get_status(&node_status);
+      committed_index = static_cast<uint64_t>(node_status.committed_index);
+    }
+
+    // Step 4: Wait for the local state machine to apply up to committed_index
+    auto wait_status = WaitForApplied(committed_index, timeout);
+    if (!wait_status.ok()) {
+      return wait_status;
+    }
+
+    return committed_index;
   }
 
   Status WaitForApplied(uint64_t index, std::chrono::milliseconds timeout) {

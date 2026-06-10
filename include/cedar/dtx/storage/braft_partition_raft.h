@@ -52,6 +52,7 @@ struct StorageLogEntry {
     kPrepare = 4,
     kCommit = 5,
     kAbort = 6,
+    kReadIndex = 7,  // NEW: no-op barrier for linearizable reads
   };
 
   Type type = Type::kPut;
