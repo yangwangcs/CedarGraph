@@ -60,13 +60,11 @@ static void RecordStorageOp(const std::string& op, bool success, uint64_t latenc
 
 std::atomic<bool> g_running{true};
 std::unique_ptr<grpc::Server> g_grpc_server;
+static volatile sig_atomic_t g_shutdown_requested = 0;
 
 void SignalHandler(int sig) {
-  std::cout << "\n[StorageD] Received signal " << sig << ", shutting down..." << std::endl;
-  g_running = false;
-  if (g_grpc_server) {
-    g_grpc_server->Shutdown();
-  }
+  (void)sig;
+  g_shutdown_requested = 1;
 }
 
 void PrintBanner() {
@@ -221,23 +219,28 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       return grpc::Status::OK;
     }
     
-    // Persist writes to LSM
+    // Persist writes to LSM with sync for durability
     bool all_ok = true;
+    cedar::WriteOptions write_options;
+    write_options.sync = true;
     for (const auto& key : ctx.write_set) {
       uint64_t key_hash = static_cast<uint64_t>(
           std::hash<std::string>{}(std::string(reinterpret_cast<const char*>(&key), sizeof(key))));
       auto desc_it = ctx.write_descriptors.find(key_hash);
       cedar::Descriptor desc = (desc_it != ctx.write_descriptors.end()) ? desc_it->second : cedar::Descriptor(0);
-      auto s = storage_->Put(key.entity_id(), key.timestamp().value(), desc, ctx.commit_ts);
+      auto s = storage_->Put(write_options, key.entity_id(), key.timestamp().value(), desc, ctx.commit_ts);
       if (!s.ok()) {
         all_ok = false;
         std::cerr << "[StorageD] Commit Put failed: " << s.ToString() << std::endl;
       }
     }
     
-    ctx.state = TxnState::kCommitted;
-    response->set_success(all_ok);
-    if (!all_ok) {
+    if (all_ok) {
+      ctx.state = TxnState::kCommitted;
+      response->set_success(true);
+    } else {
+      ctx.state = TxnState::kPrepared;
+      response->set_success(false);
       response->set_error_msg("Some writes failed during commit");
     }
     return grpc::Status::OK;
@@ -292,7 +295,9 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       response->set_error_msg("Invalid descriptor");
       return grpc::Status::OK;
     }
-    auto s = storage_->Put(request->key().entity_id(),
+    cedar::WriteOptions write_options;
+    write_options.sync = (request->txn_id() != 0);
+    auto s = storage_->Put(write_options, request->key().entity_id(),
                            request->key().timestamp(),
                            desc.value(),
                            cedar::Timestamp(request->txn_version().value()));
@@ -656,8 +661,12 @@ int main(int argc, char* argv[]) {
                   .KV("meta_server", config.meta_server);
   std::cout << std::endl;
 
-  signal(SIGINT, SignalHandler);
-  signal(SIGTERM, SignalHandler);
+  struct sigaction sa;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sa.sa_handler = SignalHandler;
+  sigaction(SIGINT, &sa, nullptr);
+  sigaction(SIGTERM, &sa, nullptr);
 
   // 1. 初始化存储引擎（单机模式，分布式协调由 MetaD 处理）
   cedar::CedarOptions options;
@@ -683,8 +692,15 @@ int main(int argc, char* argv[]) {
   // 3. 注册到 MetaD
   MetaClient meta_client(config.meta_server, config.node_id, config.port, config.data_dir, config.tls);
   if (!meta_client.Register()) {
-    std::cerr << "[StorageD] Failed to register with MetaD, continuing anyway..." << std::endl;
-    // 不退出，允许离线模式运行
+    const char* env_offline_mode = std::getenv("CEDAR_STORAGED_OFFLINE_MODE");
+    bool offline_mode = (env_offline_mode != nullptr && std::string(env_offline_mode) == "1");
+    if (!offline_mode) {
+      std::cerr << "[StorageD] FATAL: Failed to register with MetaD. "
+                << "Set CEDAR_STORAGED_OFFLINE_MODE=1 to run without MetaD." << std::endl;
+      delete storage;
+      return 1;
+    }
+    std::cerr << "[StorageD] Running in offline mode (no MetaD)" << std::endl;
   }
 
   // 4. 启动心跳线程
@@ -766,8 +782,21 @@ int main(int argc, char* argv[]) {
   }
   std::cout << "[StorageD] AlertManager initialized with default rules" << std::endl;
 
-  // 9. 等待关闭
+  // 9. 等待关闭（在主线程中轮询信号）
+  std::thread shutdown_monitor([]() {
+    while (!g_shutdown_requested && g_running) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (g_shutdown_requested) {
+      std::cout << "\n[StorageD] Shutdown requested, stopping..." << std::endl;
+      g_running = false;
+      if (g_grpc_server) {
+        g_grpc_server->Shutdown();
+      }
+    }
+  });
   g_grpc_server->Wait();
+  shutdown_monitor.join();
 
   // 清理
   std::cout << "[StorageD] Shutting down..." << std::endl;
