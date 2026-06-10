@@ -365,6 +365,9 @@ class LsmEngine {
 
   // Flush memtable to SST file
   Status FlushMemTable(VSLMemTable* mem);
+
+  // Flush memtable to SST file with retry (max 3 attempts, exponential backoff)
+  Status FlushMemTableWithRetry(VSLMemTable* mem);
   
   // Flush entries directly to SST file (unified flush, cross Column ID)
   Status FlushEntriesToSST(std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> entries);

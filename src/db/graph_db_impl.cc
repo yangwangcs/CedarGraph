@@ -182,15 +182,33 @@ Status CedarGraphDBImpl::Close() {
     bg_compact_thread_.join();
   }
   
-  // Flush 所有 MemTable
+  // Flush 所有 MemTable (with retry and status checking)
   for (auto& cf : column_families_) {
     if (cf->engine) {
-      cf->engine->ForceFlush();
+      Status s;
+      for (int attempt = 1; attempt <= 3; ++attempt) {
+        s = cf->engine->ForceFlush();
+        if (s.ok()) break;
+        std::cerr << "[CedarGraphDBImpl::Close] ForceFlush attempt " << attempt
+                  << " failed for cf " << cf->name << ": " << s.ToString() << std::endl;
+        if (attempt < 3) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+      }
+      if (!s.ok()) {
+        std::cerr << "[CedarGraphDBImpl::Close] ForceFlush ultimately failed for cf "
+                  << cf->name << ": " << s.ToString() << std::endl;
+      }
     }
   }
   
-  // 关闭 WAL
+  // 关闭 WAL (ensure sync before close)
   if (wal_writer_) {
+    Status wal_sync = wal_writer_->Sync();
+    if (!wal_sync.ok()) {
+      std::cerr << "[CedarGraphDBImpl::Close] WAL sync failed: " << wal_sync.ToString() << std::endl;
+    }
+    wal_writer_->Close();
     wal_writer_.reset();
   }
   

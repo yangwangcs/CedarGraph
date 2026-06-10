@@ -192,17 +192,25 @@ Status LsmEngine::Close() {
       std::cerr << "[LsmEngine::Close] Flushing imm_" << std::endl;
       auto* imm = imm_.get();
       lock.unlock();
-      FlushMemTable(imm);
+      Status s = FlushMemTableWithRetry(imm);
       lock.lock();
-      imm_.reset();
+      if (s.ok()) {
+        imm_.reset();
+      } else {
+        std::cerr << "[LsmEngine::Close] Failed to flush imm_: " << s.ToString() << std::endl;
+        // Preserve imm_ to avoid data loss
+      }
     }
 
     if (mem_ && !mem_->IsEmpty()) {
       std::cerr << "[LsmEngine::Close] Flushing mem_" << std::endl;
       auto* mem = mem_.get();
       lock.unlock();
-      FlushMemTable(mem);
+      Status s = FlushMemTableWithRetry(mem);
       lock.lock();
+      if (!s.ok()) {
+        std::cerr << "[LsmEngine::Close] Failed to flush mem_: " << s.ToString() << std::endl;
+      }
     } else {
       std::cerr << "[LsmEngine::Close] mem_ is empty or null" << std::endl;
     }
@@ -211,7 +219,10 @@ Status LsmEngine::Close() {
   // Flush any accumulated entries (accumulated flush mode)
   if (options_.enable_accumulated_flush && !accumulated_entries_.empty()) {
     std::cerr << "[LsmEngine::Close] Flushing accumulated entries" << std::endl;
-    FlushAccumulated();
+    Status s = FlushAccumulated();
+    if (!s.ok()) {
+      std::cerr << "[LsmEngine::Close] Failed to flush accumulated entries: " << s.ToString() << std::endl;
+    }
   }
 
   // 同步并关闭 WAL，确保所有已提交数据持久化
@@ -1307,25 +1318,33 @@ Status LsmEngine::ForceFlush() {
   if (shutdown_.load() || !opened_) {
     return Status::InvalidArgument("LsmEngine", "engine not open or shutting down");
   }
-  // 等待任何后台 Flush 完成
-  while (true) {
-    {
-      std::unique_lock<std::mutex> flush_lock(flush_completion_mutex_);
-      flush_completion_cv_.wait(flush_lock, [this]() {
-        return active_flush_count_.load() == 0;
-      });
-    }
 
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    if (!imm_) {
-      break;  // 安全，没有后台 flush 在进行
-    }
-    // 后台线程可能刚设置 imm_ 但还没增加计数器，释放锁再等待一轮
-    lock.unlock();
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  // 等待任何后台 Flush 完成
+  {
+    std::unique_lock<std::mutex> flush_lock(flush_completion_mutex_);
+    flush_completion_cv_.wait(flush_lock, [this]() {
+      return active_flush_count_.load() == 0;
+    });
   }
 
   std::unique_lock<std::shared_mutex> lock(mutex_);
+
+  // If a previous flush failed, imm_ is still present. Retry flushing it.
+  if (imm_) {
+    VSLMemTable* imm = imm_.get();
+    lock.unlock();
+    active_flush_count_.fetch_add(1);
+    Status s = FlushMemTableWithRetry(imm);
+    active_flush_count_.fetch_sub(1);
+    flush_completion_cv_.notify_all();
+    lock.lock();
+    if (s.ok()) {
+      imm_.reset();
+    } else {
+      std::cerr << "[LsmEngine::ForceFlush] Failed to flush existing imm_: " << s.ToString() << std::endl;
+      return s;
+    }
+  }
 
   if (mem_->IsEmpty()) {
     return Status::OK();
@@ -1336,16 +1355,21 @@ Status LsmEngine::ForceFlush() {
 
   VSLMemTable* imm = imm_.get();
   lock.unlock();
-  
+
   // 增加计数器，让 Close 知道有 Flush 在进行
   active_flush_count_.fetch_add(1);
-  Status s = FlushMemTable(imm);
-  // 减少计数器并通知等待者（使用 RAII 确保即使异常也能执行）
+  Status s = FlushMemTableWithRetry(imm);
+  // 减少计数器并通知等待者
   active_flush_count_.fetch_sub(1);
   flush_completion_cv_.notify_all();
 
   lock.lock();
-  imm_.reset();
+  if (s.ok()) {
+    imm_.reset();
+  } else {
+    std::cerr << "[LsmEngine::ForceFlush] Failed to flush mem_ to imm_: " << s.ToString() << std::endl;
+    // imm_ is preserved for retry on next call
+  }
 
   return s;
 }
@@ -1386,10 +1410,13 @@ void LsmEngine::MaybeScheduleFlush() {
   active_flush_count_.fetch_add(1);
   lock.unlock();
   auto flush_task = [this, imm]() noexcept {
+    bool success = false;
     try {
-      Status s = FlushMemTable(imm);
-      if (!s.ok()) {
-        std::cerr << "[LsmEngine] FlushMemTable failed: " << s.ToString() << std::endl;
+      Status s = FlushMemTableWithRetry(imm);
+      if (s.ok()) {
+        success = true;
+      } else {
+        std::cerr << "[LsmEngine] FlushMemTable failed after retries: " << s.ToString() << std::endl;
       }
     } catch (const std::exception& e) {
       std::cerr << "[LsmEngine] FlushMemTable exception: " << e.what() << std::endl;
@@ -1397,7 +1424,7 @@ void LsmEngine::MaybeScheduleFlush() {
       std::cerr << "[LsmEngine] FlushMemTable unknown exception" << std::endl;
     }
 
-    {
+    if (success) {
       std::unique_lock<std::shared_mutex> cleanup_lock(mutex_);
       imm_.reset();
       if (compaction_engine_) {
@@ -2215,6 +2242,21 @@ Status LsmEngine::FlushMemTable(VSLMemTable* mem) {
   
   // ========== 立即 Flush 模式 ==========
   return FlushEntriesToSST(std::move(all_entries));
+}
+
+Status LsmEngine::FlushMemTableWithRetry(VSLMemTable* mem) {
+  Status s;
+  for (int attempt = 1; attempt <= 3; ++attempt) {
+    s = FlushMemTable(mem);
+    if (s.ok()) {
+      return s;
+    }
+    std::cerr << "[LsmEngine] Flush attempt " << attempt << " failed: " << s.ToString() << std::endl;
+    if (attempt < 3) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  return s;
 }
 
 Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
