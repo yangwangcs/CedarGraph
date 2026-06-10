@@ -391,6 +391,7 @@ std::shared_ptr<Record> Expand::Next() {
     auto from_val = current_record_->Get(from_variable_);
     if (!from_val || !from_val->IsNode()) {
       // Move to next input record
+      neighbors_.clear();  // CRITICAL FIX: clear stale neighbors
       current_record_ = children_[0]->Next();
       neighbor_index_ = 0;
       continue;
@@ -1172,6 +1173,7 @@ void Aggregate::DoAggregate() {
           for (const auto& r : records) {
             if (item.expression) {
               auto val = evaluator.Evaluate(*item.expression, r);
+              if (val.IsNull()) continue;  // SKIP NULL
               if (first || val < min_val) {
                 min_val = val;
                 first = false;
@@ -1187,6 +1189,7 @@ void Aggregate::DoAggregate() {
           for (const auto& r : records) {
             if (item.expression) {
               auto val = evaluator.Evaluate(*item.expression, r);
+              if (val.IsNull()) continue;  // SKIP NULL
               if (first || val > max_val) {
                 max_val = val;
                 first = false;

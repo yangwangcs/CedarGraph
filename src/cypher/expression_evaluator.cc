@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <limits>
 
 namespace cedar {
 namespace cypher {
@@ -120,6 +121,11 @@ Value ExpressionEvaluator::EvaluateComparison(const ComparisonExpr& expr,
                                                const Record& record) {
   auto left_val = Evaluate(*expr.left, record);
   auto right_val = Evaluate(*expr.right, record);
+
+  // Cypher 3-valued logic: NULL comparison yields unknown (NULL)
+  if (left_val.IsNull() || right_val.IsNull()) {
+    return Value::Null();
+  }
 
   int cmp = CompareValues(left_val, right_val);
 
@@ -436,10 +442,10 @@ Value ExpressionEvaluator::EvaluateMapLiteral(const MapLiteralExpr& expr,
 }
 
 int ExpressionEvaluator::CompareValues(const Value& a, const Value& b) {
-  // Handle nulls
-  if (a.IsNull() && b.IsNull()) return 0;
-  if (a.IsNull()) return -1;
-  if (b.IsNull()) return 1;
+  // Handle nulls: return sentinel for NULL (caller must check)
+  if (a.IsNull() || b.IsNull()) {
+    return std::numeric_limits<int>::min();
+  }
 
   // Compare based on types
   if (a.IsInt() && b.IsInt()) {

@@ -3,6 +3,7 @@
 #include "cedar/cypher/parser.h"
 #include <cctype>
 #include <algorithm>
+#include <limits>
 
 namespace cedar {
 namespace cypher {
@@ -865,8 +866,18 @@ std::shared_ptr<Expression> CypherParser::ParsePrimaryExpression() {
       Advance();
     }
     int64_t int_val = 0;
+    bool overflow = false;
     while (!IsAtEnd() && std::isdigit(Peek())) {
-      int_val = int_val * 10 + (Advance() - '0');
+      int64_t digit = Advance() - '0';
+      if (int_val > (std::numeric_limits<int64_t>::max() - digit) / 10) {
+        overflow = true;
+        break;
+      }
+      int_val = int_val * 10 + digit;
+    }
+    if (overflow) {
+      error_ = "Integer literal overflow";
+      return std::make_shared<LiteralExpr>(Value::Null());
     }
     if (!IsAtEnd() && Peek() == '.') {
       Advance();  // consume '.'
