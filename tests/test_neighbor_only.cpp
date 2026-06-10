@@ -79,26 +79,26 @@ class NeighborTestClient {
     auto status = stub_->BatchGet(&context, request, &response);
     
     std::vector<std::optional<int32_t>> results;
-    if (status.ok() && response.success()) {
-      for (int i = 0; i < response.found_size(); ++i) {
-        if (response.found(i) && response.descriptors(i).data().size() >= 8) {
-          auto opt_desc = cedar::Descriptor::Decode(
-              cedar::Slice(response.descriptors(i).data().data(), response.descriptors(i).data().size()));
-          if (opt_desc.has_value()) {
-            results.push_back(opt_desc.value().AsInlineInt());
-          } else {
-            results.push_back(std::nullopt);
-          }
+    if (!status.ok() || !response.success()) {
+      std::cerr << "BatchGet failed: " 
+                << (status.ok() ? response.error_msg() : status.error_message()) 
+                << std::endl;
+      return results;  // Return empty on failure
+    }
+    
+    for (int i = 0; i < response.found_size(); ++i) {
+      if (response.found(i) && response.descriptors(i).data().size() >= 8) {
+        auto opt_desc = cedar::Descriptor::Decode(
+            cedar::Slice(response.descriptors(i).data().data(),
+                         response.descriptors(i).data().size()));
+        if (opt_desc.has_value()) {
+          results.push_back(opt_desc.value().AsInlineInt());
         } else {
           results.push_back(std::nullopt);
         }
+      } else {
+        results.push_back(std::nullopt);
       }
-      return results;
-    }
-    
-    // Fallback: individual Get calls if BatchGet is not supported
-    for (const auto& [entity_id, col_id, timestamp] : keys) {
-      results.push_back(ReadVertex(entity_id, col_id, timestamp));
     }
     return results;
   }
