@@ -1,3 +1,9 @@
+# Predicate Pushdown Test
+add_executable(test_predicate_pushdown
+    test_predicate_pushdown.cc
+)
+target_link_libraries(test_predicate_pushdown cedar cedar_cypher gtest gtest_main pthread)
+add_test(NAME test_predicate_pushdown COMMAND test_predicate_pushdown)
 # Cypher Query Engine Tests
 
 # WHERE Clause Test
@@ -41,4 +47,11 @@ add_executable(test_index_scan
 )
 target_link_libraries(test_index_scan cedar cedar_cypher gtest gtest_main pthread)
 add_test(NAME test_index_scan COMMAND test_index_scan)
+
+# EXPLAIN Output Test
+add_executable(test_explain_output
+    test_explain_output.cc
+)
+target_link_libraries(test_explain_output cedar cedar_cypher gtest gtest_main pthread)
+add_test(NAME test_explain_output COMMAND test_explain_output)
 
