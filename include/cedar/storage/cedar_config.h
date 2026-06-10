@@ -244,6 +244,27 @@ struct CedarConfig {
     uint32_t slow_log_threshold_ms = 100;              // 慢查询阈值 (100ms)
     bool enable_trace = false;                         // 启用追踪
   } debug;
+
+  // ========================================================================
+  // 10. 安全参数
+  // ========================================================================
+  struct {
+    bool enable_auth = false;                          // 启用认证
+    bool enable_tls = false;                           // 启用 TLS
+    std::string jwt_secret;                            // JWT 密钥
+  } security;
+
+  // ========================================================================
+  // 11. TLS 参数
+  // ========================================================================
+  struct {
+    bool enabled = false;                              // TLS 开关
+    std::string ca_cert;                               // CA 证书路径
+    std::string server_cert;                           // 服务器证书路径
+    std::string server_key;                            // 服务器私钥路径
+    std::string client_cert;                           // 客户端证书路径
+    std::string client_key;                            // 客户端私钥路径
+  } tls;
   
   // ========================================================================
   // 便捷方法

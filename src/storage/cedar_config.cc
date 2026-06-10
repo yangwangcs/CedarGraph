@@ -384,6 +384,22 @@ Status CedarConfig::Validate() const {
   if (cache.block_cache_size < 1024) {
     return Status::InvalidArgument("block_cache_size too small (< 1KB)");
   }
+
+  // Security validation
+  if (security.enable_auth && security.jwt_secret.empty()) {
+    return Status::InvalidArgument(
+        "security.enable_auth is true but security.jwt_secret is empty");
+  }
+  if (security.enable_tls && !tls.enabled) {
+    return Status::InvalidArgument(
+        "security.enable_tls is true but tls.enabled is false");
+  }
+  if (tls.enabled) {
+    if (tls.server_cert.empty() || tls.server_key.empty()) {
+      return Status::InvalidArgument(
+          "tls.enabled is true but server_cert or server_key is empty");
+    }
+  }
   
   return Status::OK();
 }
@@ -432,6 +448,23 @@ void CedarConfig::Dump() const {
   // Cache
   std::cout << "\n[Cache]\n";
   std::cout << "  block_cache_size: " << cache.block_cache_size / 1024 / 1024 << " MB\n";
+
+  // Security
+  std::cout << "\n[Security]\n";
+  std::cout << "  enable_auth: " << (security.enable_auth ? "true" : "false") << "\n";
+  std::cout << "  enable_tls: " << (security.enable_tls ? "true" : "false") << "\n";
+  std::cout << "  jwt_secret: " << (security.jwt_secret.empty() ? "<not set>" : "<set>") << "\n";
+
+  // TLS
+  std::cout << "\n[TLS]\n";
+  std::cout << "  enabled: " << (tls.enabled ? "true" : "false") << "\n";
+  if (tls.enabled) {
+    std::cout << "  ca_cert: " << tls.ca_cert << "\n";
+    std::cout << "  server_cert: " << tls.server_cert << "\n";
+    std::cout << "  server_key: " << tls.server_key << "\n";
+    std::cout << "  client_cert: " << tls.client_cert << "\n";
+    std::cout << "  client_key: " << tls.client_key << "\n";
+  }
   
   std::cout << "\n";
 }
@@ -464,19 +497,243 @@ void CedarConfig::MergeFrom(const CedarConfig& other) {
   if (other.lsm.level0_file_num_compaction_trigger != defaults.lsm.level0_file_num_compaction_trigger) lsm.level0_file_num_compaction_trigger = other.lsm.level0_file_num_compaction_trigger;
   if (other.lsm.level0_slowdown_writes_trigger != defaults.lsm.level0_slowdown_writes_trigger) lsm.level0_slowdown_writes_trigger = other.lsm.level0_slowdown_writes_trigger;
   if (other.lsm.level0_stop_writes_trigger != defaults.lsm.level0_stop_writes_trigger) lsm.level0_stop_writes_trigger = other.lsm.level0_stop_writes_trigger;
+
+  // Security options
+  if (other.security.enable_auth != defaults.security.enable_auth) security.enable_auth = other.security.enable_auth;
+  if (other.security.enable_tls != defaults.security.enable_tls) security.enable_tls = other.security.enable_tls;
+  if (other.security.jwt_secret != defaults.security.jwt_secret) security.jwt_secret = other.security.jwt_secret;
+
+  // TLS options
+  if (other.tls.enabled != defaults.tls.enabled) tls.enabled = other.tls.enabled;
+  if (other.tls.ca_cert != defaults.tls.ca_cert) tls.ca_cert = other.tls.ca_cert;
+  if (other.tls.server_cert != defaults.tls.server_cert) tls.server_cert = other.tls.server_cert;
+  if (other.tls.server_key != defaults.tls.server_key) tls.server_key = other.tls.server_key;
+  if (other.tls.client_cert != defaults.tls.client_cert) tls.client_cert = other.tls.client_cert;
+  if (other.tls.client_key != defaults.tls.client_key) tls.client_key = other.tls.client_key;
 }
 
 // ============================================================================
 // 文件加载/保存（简化实现）
 // ============================================================================
 
+namespace {
+
+// Trim leading and trailing whitespace from a string.
+std::string Trim(const std::string& s) {
+  size_t start = 0;
+  while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) {
+    ++start;
+  }
+  size_t end = s.size();
+  while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+    --end;
+  }
+  return s.substr(start, end - start);
+}
+
+// Remove surrounding quotes from a string value.
+std::string Unquote(const std::string& s) {
+  if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') ||
+                        (s.front() == '\'' && s.back() == '\''))) {
+    return s.substr(1, s.size() - 2);
+  }
+  return s;
+}
+
+// Parse a boolean from various string representations.
+bool ParseBool(const std::string& value) {
+  std::string lower;
+  lower.reserve(value.size());
+  for (char c : value) {
+    lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  if (lower == "true" || lower == "yes" || lower == "1" || lower == "on") {
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
+
 Status CedarConfig::LoadFromFile(const std::string& path) {
   std::ifstream ifs(path);
   if (!ifs.is_open()) {
     return Status::IOError("Cannot open config file: " + path);
   }
-  // TODO(#config-001): Implement full JSON/YAML configuration file parsing.
-  // For now, verify the file exists and is readable. Default values are used.
+
+  std::string line;
+  std::string current_section;
+
+  while (std::getline(ifs, line)) {
+    std::string trimmed = Trim(line);
+
+    // Skip empty lines and comments.
+    if (trimmed.empty() || trimmed.front() == '#') {
+      continue;
+    }
+
+    // Detect section headers (YAML: "section:" or JSON: "section": {).
+    // A section is a top-level key without leading whitespace or with minimal indent.
+    size_t first_non_space = line.find_first_not_of(" \t");
+    if (first_non_space == std::string::npos) {
+      continue;
+    }
+
+    bool is_top_level = (first_non_space == 0);
+    // In YAML, nested keys are indented; in JSON, braces may appear.
+    // Treat a line ending with ':' (possibly followed by '{' in JSON) as a section.
+    size_t colon_pos = trimmed.find(':');
+    if (colon_pos != std::string::npos && colon_pos == trimmed.find_last_of(':')) {
+      // Check if the next char after colon is space, end of string, or '{'
+      size_t after_colon = colon_pos + 1;
+      while (after_colon < trimmed.size() &&
+             std::isspace(static_cast<unsigned char>(trimmed[after_colon]))) {
+        ++after_colon;
+      }
+      char next_char = (after_colon < trimmed.size()) ? trimmed[after_colon] : '\0';
+
+      if (next_char == '\0' || next_char == '{' || next_char == '#') {
+        std::string section_name = Trim(trimmed.substr(0, colon_pos));
+        // Remove quotes around section name for JSON.
+        section_name = Unquote(section_name);
+        if (section_name == "db" || section_name == "lsm" || section_name == "wal" ||
+            section_name == "security" || section_name == "tls") {
+          current_section = section_name;
+          continue;
+        }
+      }
+    }
+
+    // If we are inside a target section, look for key-value pairs.
+    if (!current_section.empty()) {
+      size_t kv_colon = trimmed.find(':');
+      if (kv_colon != std::string::npos) {
+        std::string key = Trim(trimmed.substr(0, kv_colon));
+        key = Unquote(key);
+        std::string value = Trim(trimmed.substr(kv_colon + 1));
+        // Strip trailing comma (JSON) and comments.
+        size_t comment_pos = value.find('#');
+        if (comment_pos != std::string::npos) {
+          value = Trim(value.substr(0, comment_pos));
+        }
+        if (!value.empty() && value.back() == ',') {
+          value.pop_back();
+          value = Trim(value);
+        }
+        value = Unquote(value);
+
+        // -------------------------------------------------------------------
+        // db.*
+        // -------------------------------------------------------------------
+        if (current_section == "db") {
+          if (key == "create_if_missing") {
+            db.create_if_missing = ParseBool(value);
+          } else if (key == "error_if_exists") {
+            db.error_if_exists = ParseBool(value);
+          } else if (key == "paranoid_checks") {
+            db.paranoid_checks = ParseBool(value);
+          } else if (key == "memtable_threshold") {
+            db.memtable_threshold = static_cast<size_t>(std::stoull(value));
+          } else if (key == "write_buffer_size") {
+            db.write_buffer_size = static_cast<size_t>(std::stoull(value));
+          } else if (key == "column_id") {
+            db.column_id = static_cast<uint16_t>(std::stoul(value));
+          } else if (key == "enable_bloom_filter") {
+            db.enable_bloom_filter = ParseBool(value);
+          } else if (key == "bloom_bits_per_key") {
+            db.bloom_bits_per_key = std::stoi(value);
+          } else if (key == "verify_checksums") {
+            db.verify_checksums = ParseBool(value);
+          }
+        }
+        // -------------------------------------------------------------------
+        // lsm.*
+        // -------------------------------------------------------------------
+        else if (current_section == "lsm") {
+          if (key == "min_files_for_compaction") {
+            lsm.min_files_for_compaction = static_cast<size_t>(std::stoull(value));
+          } else if (key == "min_size_for_compaction") {
+            lsm.min_size_for_compaction = static_cast<size_t>(std::stoull(value));
+          } else if (key == "target_file_size") {
+            lsm.target_file_size = static_cast<size_t>(std::stoull(value));
+          } else if (key == "max_levels") {
+            lsm.max_levels = std::stoi(value);
+          } else if (key == "level_size_multiplier") {
+            lsm.level_size_multiplier = std::stod(value);
+          } else if (key == "level0_file_num_compaction_trigger") {
+            lsm.level0_file_num_compaction_trigger = static_cast<size_t>(std::stoull(value));
+          } else if (key == "level0_slowdown_writes_trigger") {
+            lsm.level0_slowdown_writes_trigger = static_cast<size_t>(std::stoull(value));
+          } else if (key == "level0_stop_writes_trigger") {
+            lsm.level0_stop_writes_trigger = static_cast<size_t>(std::stoull(value));
+          }
+        }
+        // -------------------------------------------------------------------
+        // wal.*
+        // -------------------------------------------------------------------
+        else if (current_section == "wal") {
+          if (key == "max_file_size") {
+            wal.max_file_size = static_cast<size_t>(std::stoull(value));
+          } else if (key == "group_commit_timeout_us") {
+            wal.group_commit_timeout_us = static_cast<uint32_t>(std::stoul(value));
+          } else if (key == "group_commit_max_batch") {
+            wal.group_commit_max_batch = static_cast<size_t>(std::stoull(value));
+          } else if (key == "use_fsync") {
+            wal.use_fsync = ParseBool(value);
+          } else if (key == "preallocate_size") {
+            wal.preallocate_size = static_cast<size_t>(std::stoull(value));
+          } else if (key == "enable_sharded_wal") {
+            wal.enable_sharded_wal = ParseBool(value);
+          } else if (key == "num_shards") {
+            wal.num_shards = static_cast<uint32_t>(std::stoul(value));
+          } else if (key == "bind_by_thread_id") {
+            wal.bind_by_thread_id = ParseBool(value);
+          } else if (key == "max_file_size_per_shard") {
+            wal.max_file_size_per_shard = static_cast<size_t>(std::stoull(value));
+          } else if (key == "batch_timeout_us") {
+            wal.batch_timeout_us = static_cast<uint32_t>(std::stoul(value));
+          } else if (key == "batch_max_size") {
+            wal.batch_max_size = static_cast<size_t>(std::stoull(value));
+          } else if (key == "enable_background_merger") {
+            wal.enable_background_merger = ParseBool(value);
+          } else if (key == "merge_interval_ms") {
+            wal.merge_interval_ms = static_cast<uint32_t>(std::stoul(value));
+          }
+        }
+        // -------------------------------------------------------------------
+        // security.*
+        // -------------------------------------------------------------------
+        else if (current_section == "security") {
+          if (key == "enable_auth") {
+            security.enable_auth = ParseBool(value);
+          } else if (key == "enable_tls") {
+            security.enable_tls = ParseBool(value);
+          } else if (key == "jwt_secret") {
+            security.jwt_secret = value;
+          }
+        }
+        // -------------------------------------------------------------------
+        // tls.*
+        // -------------------------------------------------------------------
+        else if (current_section == "tls") {
+          if (key == "enabled") {
+            tls.enabled = ParseBool(value);
+          } else if (key == "ca_cert") {
+            tls.ca_cert = value;
+          } else if (key == "server_cert") {
+            tls.server_cert = value;
+          } else if (key == "server_key") {
+            tls.server_key = value;
+          } else if (key == "client_cert") {
+            tls.client_cert = value;
+          } else if (key == "client_key") {
+            tls.client_key = value;
+          }
+        }
+      }
+    }
+  }
+
   return Status::OK();
 }
 
@@ -638,6 +895,23 @@ Status CedarConfig::SaveToFile(const std::string& path) const {
   JsonKV(&json, "use_direct_io", BoolStr(filesystem.use_direct_io), false, false);
   JsonKV(&json, "advise_random_access", BoolStr(filesystem.advise_random_access), false, false);
   JsonKV(&json, "prefetch_buffer_size", ToStr(filesystem.prefetch_buffer_size), false, true);
+  json += "  },\n";
+
+  // security section
+  json += "  \"security\": {\n";
+  JsonKV(&json, "enable_auth", BoolStr(security.enable_auth), false, false);
+  JsonKV(&json, "enable_tls", BoolStr(security.enable_tls), false, false);
+  JsonKV(&json, "jwt_secret", security.jwt_secret, true, true);
+  json += "  },\n";
+
+  // tls section
+  json += "  \"tls\": {\n";
+  JsonKV(&json, "enabled", BoolStr(tls.enabled), false, false);
+  JsonKV(&json, "ca_cert", tls.ca_cert, true, false);
+  JsonKV(&json, "server_cert", tls.server_cert, true, false);
+  JsonKV(&json, "server_key", tls.server_key, true, false);
+  JsonKV(&json, "client_cert", tls.client_cert, true, false);
+  JsonKV(&json, "client_key", tls.client_key, true, true);
   json += "  },\n";
 
   // debug section
