@@ -257,6 +257,12 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   
   // 辅助方法
   std::string GenerateQueryFingerprint(const std::string& query);
+
+  // Generates a fingerprint suitable for result caching.
+  // Preserves 'id' property literals to avoid cache collisions
+  // for point-lookup queries.
+  std::string GenerateResultCacheFingerprint(const std::string& query);
+
   uint64_t CalculatePartitionHash(const std::vector<uint32_t>& partition_ids);
   
   // 统计信息

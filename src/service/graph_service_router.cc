@@ -256,14 +256,10 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   // 构建缓存键（在 ParseQueryForRouting 之后，使用 entity_id 区分点查查询）
   if (!request->explain_only()) {
     cedar::query::CacheKey cache_key;
-    cache_key.query_fingerprint = GenerateQueryFingerprint(request->query());
-    // 对点查查询，将 entity_id 加入指纹以避免缓存污染
-    if (!route_ctx.entity_ids.empty()) {
-      cache_key.query_fingerprint += ":id=" + std::to_string(route_ctx.entity_ids[0]);
-    }
+    cache_key.query_fingerprint = GenerateResultCacheFingerprint(request->query());
     cache_key.partition_hash = 0;
     cache_key.as_of_timestamp = 0;
-    
+
     // 尝试从缓存获取
     auto cached_result = query_cache_->Get(cache_key);
     if (cached_result.ok()) {
@@ -373,10 +369,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
 
       if (!request->explain_only() && query_cache_ != nullptr) {
         cedar::query::CacheKey cache_key;
-        cache_key.query_fingerprint = GenerateQueryFingerprint(request->query());
-        if (!route_ctx.entity_ids.empty()) {
-          cache_key.query_fingerprint += ":id=" + std::to_string(route_ctx.entity_ids[0]);
-        }
+        cache_key.query_fingerprint = GenerateResultCacheFingerprint(request->query());
         cache_key.partition_hash = 0;
         cache_key.as_of_timestamp = 0;
         query_cache_->Put(cache_key, response->result_set());
@@ -575,10 +568,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   // 将结果放入缓存
   if (!request->explain_only() && query_cache_ != nullptr) {
     cedar::query::CacheKey cache_key;
-    cache_key.query_fingerprint = GenerateQueryFingerprint(request->query());
-    if (!route_ctx.entity_ids.empty()) {
-      cache_key.query_fingerprint += ":id=" + std::to_string(route_ctx.entity_ids[0]);
-    }
+    cache_key.query_fingerprint = GenerateResultCacheFingerprint(request->query());
     cache_key.partition_hash = 0;
     cache_key.as_of_timestamp = 0;
     query_cache_->Put(cache_key, response->result_set());
@@ -2102,6 +2092,46 @@ Status GraphServiceRouter::ExecuteDistributedWrite(
 
 std::string GraphServiceRouter::GenerateQueryFingerprint(const std::string& query) {
   return cedar::cypher::ComputeFingerprint(query);
+}
+
+std::string GraphServiceRouter::GenerateResultCacheFingerprint(
+    const std::string& query) {
+  cedar::cypher::CypherParser parser(query);
+  auto ast = parser.ParseStatement();
+  if (!ast) {
+    return cedar::cypher::ComputeFingerprint(query);
+  }
+
+  // Check if any MATCH clause contains a node with {id: literal}
+  bool has_literal_id = false;
+  for (const auto& clause : ast->clauses) {
+    if (clause->clause_type == cedar::cypher::ClauseType::MATCH) {
+      auto* match = static_cast<cedar::cypher::MatchClause*>(clause.get());
+      for (const auto& pattern : match->patterns) {
+        for (const auto& elem : pattern.elements) {
+          if (std::holds_alternative<cedar::cypher::NodePattern>(elem)) {
+            const auto& node = std::get<cedar::cypher::NodePattern>(elem);
+            auto it = node.properties.find("id");
+            if (it != node.properties.end() &&
+                it->second->expr_type == cedar::cypher::ExprType::LITERAL) {
+              has_literal_id = true;
+              break;
+            }
+          }
+        }
+        if (has_literal_id) break;
+      }
+    }
+    if (has_literal_id) break;
+  }
+
+  if (has_literal_id) {
+    cedar::cypher::FingerprintOptions opts;
+    opts.preserve_property_keys.insert("id");
+    return cedar::cypher::ComputeFingerprint(*ast, opts);
+  }
+
+  return cedar::cypher::ComputeFingerprint(*ast);
 }
 
 uint64_t GraphServiceRouter::CalculatePartitionHash(const std::vector<uint32_t>& partition_ids) {
