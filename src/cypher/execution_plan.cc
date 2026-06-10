@@ -244,7 +244,18 @@ bool NodeScan::Init(ExecutionContext* ctx) {
       if (literal->value.IsInt()) {
         int64_t id_val = literal->value.GetInt();
         if (id_val > 0) {
-          node_ids_.push_back(static_cast<uint64_t>(id_val));
+          uint64_t node_id = static_cast<uint64_t>(id_val);
+          // If graph or storage is available, verify the node actually exists
+          bool exists = true;
+          if (ctx->graph) {
+            exists = ctx->graph->HasVertex(node_id);
+          } else if (ctx->storage) {
+            auto versions = ctx->storage->Scan(node_id, Timestamp(0), Timestamp::Max());
+            exists = !versions.empty();
+          }
+          if (exists) {
+            node_ids_.push_back(node_id);
+          }
           current_index_ = 0;
           return true;
         }
