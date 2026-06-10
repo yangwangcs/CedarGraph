@@ -670,6 +670,213 @@ std::unique_ptr<PhysicalOperator> Expand::Clone() const {
 }
 
 // ============================================================================
+// VariableLengthExpand Implementation
+// ============================================================================
+
+VariableLengthExpand::VariableLengthExpand(
+    std::string from_variable,
+    std::string rel_variable,
+    std::string to_variable,
+    Direction direction,
+    std::optional<std::string> rel_type,
+    uint64_t min_hops,
+    uint64_t max_hops)
+    : from_variable_(std::move(from_variable)),
+      rel_variable_(std::move(rel_variable)),
+      to_variable_(std::move(to_variable)),
+      direction_(direction),
+      rel_type_(std::move(rel_type)),
+      min_hops_(min_hops),
+      max_hops_(max_hops),
+      result_index_(0) {}
+
+bool VariableLengthExpand::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  if (children_.empty()) {
+    return false;
+  }
+  if (!children_[0]->Init(ctx)) {
+    return false;
+  }
+  current_record_ = children_[0]->Next();
+  result_index_ = 0;
+  result_buffer_.clear();
+  return true;
+}
+
+std::shared_ptr<Record> VariableLengthExpand::Next() {
+  while (current_record_) {
+    if (result_index_ < result_buffer_.size()) {
+      return result_buffer_[result_index_++];
+    }
+
+    if (result_index_ == 0 && result_buffer_.empty()) {
+      // First time processing this record
+      ExpandCurrentRecord();
+      if (!result_buffer_.empty()) {
+        continue;  // Results produced, return them
+      }
+    }
+
+    // No results (or already consumed) — advance to next input record
+    current_record_ = children_[0]->Next();
+    result_index_ = 0;
+    result_buffer_.clear();
+  }
+  return nullptr;
+}
+
+void VariableLengthExpand::ExpandCurrentRecord() {
+  result_buffer_.clear();
+  if (!current_record_) return;
+
+  auto from_val = current_record_->Get(from_variable_);
+  if (!from_val || !from_val->IsNode()) return;
+
+  uint64_t start_id = from_val->GetNode().id;
+
+  // Bounded BFS
+  std::deque<BfsState> queue;
+  queue.push_back({start_id, {}, 0});
+
+  std::unordered_set<uint64_t> visited_at_depth;
+
+  while (!queue.empty()) {
+    BfsState state = queue.front();
+    queue.pop_front();
+
+    if (state.depth >= max_hops_) continue;
+
+    auto neighbors = GetNeighbors(state.node_id);
+    for (const auto& [rel_id, target_id] : neighbors) {
+      auto new_path = state.path;
+      new_path.push_back({rel_id, target_id});
+
+      uint64_t new_depth = state.depth + 1;
+      if (new_depth >= min_hops_ && new_depth <= max_hops_) {
+        // Produce a result record
+        auto record = std::make_shared<Record>(*current_record_);
+
+        // Build relationship from the last hop
+        Relationship rel;
+        rel.id = rel_id;
+        rel.start_id = state.node_id;
+        rel.end_id = target_id;
+        rel.type = rel_type_.value_or("CONNECTED_TO");
+        record->Set(rel_variable_, Value(rel));
+
+        Node to_node;
+        to_node.id = target_id;
+        to_node.labels.push_back("Node");
+        to_node.properties["id"] = Value(static_cast<int64_t>(target_id));
+        record->Set(to_variable_, Value(to_node));
+
+        result_buffer_.push_back(record);
+      }
+
+      if (new_depth < max_hops_) {
+        queue.push_back({target_id, new_path, new_depth});
+      }
+    }
+  }
+}
+
+std::vector<std::pair<uint64_t, uint64_t>> VariableLengthExpand::GetNeighbors(
+    uint64_t node_id) {
+  std::vector<std::pair<uint64_t, uint64_t>> result;
+
+  uint16_t edge_type = 0;
+  if (rel_type_ && !rel_type_->empty()) {
+    char* end = nullptr;
+    long parsed = std::strtol(rel_type_->c_str(), &end, 10);
+    if (end != rel_type_->c_str() && *end == '\0') {
+      edge_type = static_cast<uint16_t>(parsed);
+    }
+  }
+
+  if (context_->gcn_traversal_callback) {
+    auto neighbor_ids = context_->gcn_traversal_callback(
+        node_id, static_cast<uint32_t>(edge_type),
+        context_->query_timestamp.value());
+    for (uint64_t nid : neighbor_ids) {
+      result.emplace_back(nid, nid);  // rel_id = target_id as placeholder
+    }
+  } else if (direction_ == Direction::INCOMING && context_->get_in_neighbors_fn) {
+    auto neighbor_list = context_->get_in_neighbors_fn(
+        node_id, edge_type, Timestamp(0), Timestamp::Max());
+    for (const auto& n : neighbor_list) {
+      result.emplace_back(n.id, n.id);
+    }
+  } else if (direction_ != Direction::INCOMING && context_->get_out_neighbors_fn) {
+    auto neighbor_list = context_->get_out_neighbors_fn(
+        node_id, edge_type, Timestamp(0), Timestamp::Max());
+    for (const auto& n : neighbor_list) {
+      result.emplace_back(n.id, n.id);
+    }
+  } else if (context_->graph) {
+    if (direction_ == Direction::INCOMING) {
+      auto neighbor_list = context_->graph->GetInNeighbors(
+          node_id, edge_type, Timestamp(0), Timestamp::Max());
+      for (const auto& n : neighbor_list) {
+        result.emplace_back(n.id, n.id);
+      }
+    } else if (direction_ == Direction::BOTH) {
+      auto out_list = context_->graph->GetOutNeighbors(
+          node_id, edge_type, Timestamp(0), Timestamp::Max());
+      for (const auto& n : out_list) {
+        result.emplace_back(n.id, n.id);
+      }
+      auto in_list = context_->graph->GetInNeighbors(
+          node_id, edge_type, Timestamp(0), Timestamp::Max());
+      for (const auto& n : in_list) {
+        result.emplace_back(n.id, n.id);
+      }
+    } else {
+      auto neighbor_list = context_->graph->GetOutNeighbors(
+          node_id, edge_type, Timestamp(0), Timestamp::Max());
+      for (const auto& n : neighbor_list) {
+        result.emplace_back(n.id, n.id);
+      }
+    }
+  }
+
+  return result;
+}
+
+void VariableLengthExpand::Reset() {
+  result_index_ = 0;
+  result_buffer_.clear();
+  current_record_.reset();
+}
+
+std::string VariableLengthExpand::GetDetails() const {
+  std::string details = "(" + from_variable_ + ")";
+  details += (direction_ == Direction::INCOMING) ? "<-" : "-";
+  details += "[" + rel_variable_;
+  if (rel_type_) {
+    details += ":" + *rel_type_;
+  }
+  details += "*" + std::to_string(min_hops_) + ".." + std::to_string(max_hops_);
+  details += "]";
+  details += (direction_ == Direction::INCOMING) ? "-" : "->";
+  details += "(" + to_variable_ + ")";
+  return details;
+}
+
+std::unique_ptr<PhysicalOperator> VariableLengthExpand::Clone() const {
+  auto clone = std::make_unique<VariableLengthExpand>(
+      from_variable_, rel_variable_, to_variable_,
+      direction_, rel_type_, min_hops_, max_hops_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->current_record_.reset();
+  clone->result_index_ = 0;
+  clone->result_buffer_.clear();
+  return clone;
+}
+
+// ============================================================================
 // Filter Implementation
 // ============================================================================
 
@@ -779,6 +986,10 @@ std::unique_ptr<PhysicalOperator> Project::Clone() const {
 // ExecutionPlanBuilder
 // ============================================================================
 
+static std::shared_ptr<PhysicalOperator> ApplyPredicatePushdown(
+    std::shared_ptr<PhysicalOperator> root,
+    const std::vector<PushablePredicate>& predicates);
+
 std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
     std::shared_ptr<QueryStatement> stmt,
     std::shared_ptr<TemporalClause> temporal_clause) {
@@ -873,11 +1084,21 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
     }
   }
   
-  // 2. WHERE → Filter
+  // 2. WHERE → Filter (with predicate pushdown into scan)
   if (where_clause && where_clause->condition && root) {
-    auto filter = std::make_shared<Filter>(where_clause->condition);
-    filter->AddChild(root);
-    root = filter;
+    auto analysis = AnalyzePredicates(*where_clause->condition);
+
+    // Try to push predicates into the leaf scan operator
+    if (!analysis.pushable.empty()) {
+      root = ApplyPredicatePushdown(root, analysis.pushable);
+    }
+
+    // If there are remaining predicates, keep a Filter on top
+    if (analysis.remaining) {
+      auto filter = std::make_shared<Filter>(analysis.remaining);
+      filter->AddChild(root);
+      root = filter;
+    }
   }
   
   // 3. ORDER BY → Sort
@@ -956,6 +1177,41 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
     root = produce;
   }
   
+  return root;
+}
+
+// ============================================================================
+// Predicate Pushdown
+// ============================================================================
+
+static std::shared_ptr<PhysicalOperator> ApplyPredicatePushdown(
+    std::shared_ptr<PhysicalOperator> root,
+    const std::vector<PushablePredicate>& predicates) {
+  // Walk down to find the leaf scan operator
+  if (!root) return root;
+
+  // If root is a NodeScan, replace or augment it
+  if (auto node_scan = std::dynamic_pointer_cast<NodeScan>(root)) {
+    // For simplicity, pick the first pushable predicate and create an IndexScan.
+    // Additional predicates become properties on the NodeScan (legacy path)
+    // or are left for a Filter on top.
+    const auto& pp = predicates[0];
+    auto index_scan = std::make_shared<IndexScan>(
+        pp.variable, std::nullopt, pp.property, pp.op, pp.literal);
+    return index_scan;
+  }
+
+  // If root has children, try to push into the first child
+  auto& children = root->GetChildren();
+  if (!children.empty()) {
+    auto new_child = ApplyPredicatePushdown(children[0], predicates);
+    // PhysicalOperator::AddChild appends; we need to replace.
+    // The cleanest way is to rebuild the operator tree, but for minimal
+    // change we use a mutable accessor. Since GetChildren() returns const&,
+    // we cast away const (internal implementation detail).
+    const_cast<std::vector<std::shared_ptr<PhysicalOperator>>&>(children)[0] = new_child;
+  }
+
   return root;
 }
 
@@ -1039,13 +1295,28 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildScanForPattern(
             std::holds_alternative<NodePattern>(pattern.elements[i + 1])) {
           const auto& next_node = std::get<NodePattern>(pattern.elements[i + 1]);
           
-          // Create expand operator
-          auto expand = std::make_shared<Expand>(
-              std::get<NodePattern>(pattern.elements[i - 1]).variable,  // Previous node
-              rel.variable,
-              next_node.variable,
-              rel.direction,
-              rel.types.empty() ? std::nullopt : std::optional(rel.types[0]));
+          std::shared_ptr<PhysicalOperator> expand;
+          bool has_hop_range = rel.min_hops.has_value() || rel.max_hops.has_value();
+          if (has_hop_range) {
+            uint64_t min_hops = rel.min_hops.value_or(1);
+            uint64_t max_hops = rel.max_hops.value_or(min_hops);
+            if (max_hops < min_hops) max_hops = min_hops;
+            expand = std::make_shared<VariableLengthExpand>(
+                std::get<NodePattern>(pattern.elements[i - 1]).variable,
+                rel.variable,
+                next_node.variable,
+                rel.direction,
+                rel.types.empty() ? std::nullopt : std::optional(rel.types[0]),
+                min_hops,
+                max_hops);
+          } else {
+            expand = std::make_shared<Expand>(
+                std::get<NodePattern>(pattern.elements[i - 1]).variable,  // Previous node
+                rel.variable,
+                next_node.variable,
+                rel.direction,
+                rel.types.empty() ? std::nullopt : std::optional(rel.types[0]));
+          }
           
           expand->AddChild(current);
           current = expand;
@@ -1435,6 +1706,87 @@ std::unique_ptr<PhysicalOperator> Aggregate::Clone() const {
   clone->current_index_ = 0;
   clone->aggregated_ = false;
   return clone;
+}
+
+// ============================================================================
+// Predicate Analysis Implementation
+// ============================================================================
+
+static std::optional<PushablePredicate> TryExtractPushable(
+    const ComparisonExpr& comp) {
+  // Look for: PropertyExpr <op> LiteralExpr  or  LiteralExpr <op> PropertyExpr
+  const PropertyExpr* prop = nullptr;
+  const LiteralExpr* lit = nullptr;
+  ComparisonExpr::Op op = comp.op;
+
+  if (comp.left->expr_type == ExprType::PROPERTY &&
+      comp.right->expr_type == ExprType::LITERAL) {
+    prop = static_cast<const PropertyExpr*>(comp.left.get());
+    lit = static_cast<const LiteralExpr*>(comp.right.get());
+  } else if (comp.left->expr_type == ExprType::LITERAL &&
+             comp.right->expr_type == ExprType::PROPERTY) {
+    prop = static_cast<const PropertyExpr*>(comp.right.get());
+    lit = static_cast<const LiteralExpr*>(comp.left.get());
+    // Flip the operator
+    switch (op) {
+      case ComparisonExpr::LT: op = ComparisonExpr::GT; break;
+      case ComparisonExpr::GT: op = ComparisonExpr::LT; break;
+      case ComparisonExpr::LE: op = ComparisonExpr::GE; break;
+      case ComparisonExpr::GE: op = ComparisonExpr::LE; break;
+      default: break;
+    }
+  }
+
+  if (!prop || !lit) {
+    return std::nullopt;
+  }
+
+  PushablePredicate pp;
+  pp.variable = prop->variable;
+  pp.property = prop->property;
+  pp.op = op;
+  pp.literal = lit->value;
+  return pp;
+}
+
+PredicateAnalysis AnalyzePredicates(const Expression& expr) {
+  PredicateAnalysis result;
+
+  if (expr.expr_type == ExprType::AND) {
+    const auto& logical = static_cast<const LogicalExpr&>(expr);
+    auto left = AnalyzePredicates(*logical.left);
+    auto right = AnalyzePredicates(*logical.right);
+
+    result.pushable.insert(result.pushable.end(),
+                           left.pushable.begin(), left.pushable.end());
+    result.pushable.insert(result.pushable.end(),
+                           right.pushable.begin(), right.pushable.end());
+
+    if (left.remaining && right.remaining) {
+      result.remaining = std::make_shared<LogicalExpr>(
+          LogicalExpr::Op::AND, left.remaining, right.remaining);
+    } else if (left.remaining) {
+      result.remaining = left.remaining;
+    } else if (right.remaining) {
+      result.remaining = right.remaining;
+    }
+    return result;
+  }
+
+  if (expr.expr_type == ExprType::COMPARISON) {
+    const auto& comp = static_cast<const ComparisonExpr&>(expr);
+    auto pushable = TryExtractPushable(comp);
+    if (pushable) {
+      result.pushable.push_back(*pushable);
+      return result;
+    }
+  }
+
+  // Not pushable — keep the whole expression as remaining
+  result.remaining = std::shared_ptr<Expression>(
+      const_cast<Expression*>(&expr),
+      [](Expression*) {});  // Non-owning, just a view
+  return result;
 }
 
 }  // namespace cypher
