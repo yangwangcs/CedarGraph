@@ -479,9 +479,34 @@ PathPattern CypherParser::ParsePattern() {
         }
         
         SkipWhitespaceAndComments();
+        // Optional hop range: *1..3
+        if (MatchSymbol('*')) {
+          SkipWhitespaceAndComments();
+          // Parse optional min hops
+          if (!IsAtEnd() && std::isdigit(Peek())) {
+            uint64_t min_hops = 0;
+            while (!IsAtEnd() && std::isdigit(Peek())) {
+              min_hops = min_hops * 10 + (Advance() - '0');
+            }
+            rel.min_hops = min_hops;
+          }
+          SkipWhitespaceAndComments();
+          if (MatchSymbol('.') && MatchSymbol('.')) {
+            SkipWhitespaceAndComments();
+            if (!IsAtEnd() && std::isdigit(Peek())) {
+              uint64_t max_hops = 0;
+              while (!IsAtEnd() && std::isdigit(Peek())) {
+                max_hops = max_hops * 10 + (Advance() - '0');
+              }
+              rel.max_hops = max_hops;
+            }
+          }
+        }
+
+        SkipWhitespaceAndComments();
         ExpectSymbol(']');
       }
-      
+
       // Arrow end
       if (rel.direction == Direction::OUTGOING) {
         if (MatchSymbol('-')) {
