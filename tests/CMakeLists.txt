@@ -120,7 +120,9 @@ add_cedar_test(test_cedar_update_validation)
 add_cedar_test(test_cedar_update_e2e)
 add_cedar_test(test_cedar_update_simple_e2e)
 add_cedar_test(test_cedar_update_persistence)
-# add_cedar_test(test_cedar_basic_persistence)
+add_executable(test_cedar_basic_persistence storage/test_cedar_basic_persistence.cc)
+target_link_libraries(test_cedar_basic_persistence ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_cedar_basic_persistence)
 add_cedar_test(test_cedar_key_roundtrip)
 
 # Security blocker tests
@@ -158,24 +160,24 @@ add_executable(test_supporting_critical security/test_supporting_critical.cc)
 target_link_libraries(test_supporting_critical ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_supporting_critical)
 
-# add_cedar_test(test_cedar_scan)
-# add_cedar_test(test_cedar_scan_simple)
-# add_cedar_test(test_cedar_scan_view)
+add_cedar_test(test_cedar_scan)
+add_cedar_test(test_cedar_scan_simple)
+add_cedar_test(test_cedar_scan_view)
 add_cedar_test(test_cedar_key_enhanced)
-# add_cedar_test(test_compaction_merger_v2)
-# add_cedar_test(test_skeleton_cache)
-# add_cedar_test(test_skeleton_cache_lsm_integration)
+add_cedar_test(test_compaction_merger_v2)
+add_cedar_test(test_skeleton_cache)
+add_cedar_test(test_skeleton_cache_lsm_integration)
 add_cedar_test(test_temporal_minimal)
-# add_cedar_test(test_cedarscan_crash)
-# add_cedar_test(test_write_perf_only)
-# add_cedar_test(test_skeleton_cache_bare_perf)
-# add_cedar_test(test_rw_performance)
+add_cedar_test(test_cedarscan_crash)
+# add_cedar_test(test_write_perf_only)      # perf test — keep disabled in CI
+# add_cedar_test(test_skeleton_cache_bare_perf)  # perf test — keep disabled in CI
+# add_cedar_test(test_rw_performance)       # perf test — keep disabled in CI
 add_cedar_test(test_driver_transaction)
 
 # End-to-end partition test
 add_executable(test_end_to_end_partition test_end_to_end_partition.cc)
 target_link_libraries(test_end_to_end_partition ${CEDAR_TEST_LIBS})
-# gtest_discover_tests(test_end_to_end_partition)
+gtest_discover_tests(test_end_to_end_partition)
 
 # Streaming partitioner thread safety test
 add_executable(test_streaming_partitioner_thread_safety partition/test_streaming_partitioner_thread_safety.cc)
@@ -199,6 +201,47 @@ gtest_discover_tests(test_meta_service)
 add_executable(test_meta_service_grpc_client dtx/unit/test_meta_service_grpc_client.cc)
 target_link_libraries(test_meta_service_grpc_client ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_meta_service_grpc_client)
+
+# DTX unit orphan tests — restored
+add_executable(test_bookmark_manager dtx/unit/test_bookmark_manager.cc)
+target_link_libraries(test_bookmark_manager ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_bookmark_manager)
+
+add_executable(test_lnd_occ dtx/unit/test_lnd_occ.cc)
+target_link_libraries(test_lnd_occ ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_lnd_occ)
+
+add_executable(test_temporal_window dtx/unit/test_temporal_window.cc)
+target_link_libraries(test_temporal_window ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_temporal_window)
+
+add_executable(test_twcd_engine dtx/unit/test_twcd_engine.cc)
+target_link_libraries(test_twcd_engine ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_twcd_engine)
+
+add_executable(test_version_chain dtx/unit/test_version_chain.cc)
+target_link_libraries(test_version_chain ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_version_chain)
+
+add_executable(test_deadlock_detector dtx/unit/test_deadlock_detector.cc)
+target_link_libraries(test_deadlock_detector ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_deadlock_detector)
+
+add_executable(test_hybrid_logical_clock_unit dtx/unit/test_hybrid_logical_clock.cc)
+target_link_libraries(test_hybrid_logical_clock_unit ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_hybrid_logical_clock_unit)
+
+add_executable(test_dtx_integration dtx/unit/test_integration.cc)
+target_link_libraries(test_dtx_integration ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_dtx_integration)
+
+add_executable(test_partition_unit dtx/unit/test_partition.cc)
+target_link_libraries(test_partition_unit ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_partition_unit)
+
+add_executable(test_storage_server_unit dtx/unit/test_storage_server.cc)
+target_link_libraries(test_storage_server_unit ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_server_unit)
 
 add_executable(test_meta_service_grpc dtx/test_meta_service_grpc.cc)
 target_link_libraries(test_meta_service_grpc ${CEDAR_TEST_LIBS})
@@ -271,6 +314,13 @@ add_executable(test_planner_signature
 target_link_libraries(test_planner_signature ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_planner_signature)
 
+add_executable(test_planner
+    cypher/test_planner.cc
+    ../src/cypher/planner.cc
+)
+target_link_libraries(test_planner ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_planner)
+
 add_executable(test_distinct_no_collision cypher/test_distinct_no_collision.cc)
 target_link_libraries(test_distinct_no_collision ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_distinct_no_collision)
@@ -279,13 +329,14 @@ add_executable(test_storage_service_impl dtx/test_storage_service_impl.cc)
 target_link_libraries(test_storage_service_impl ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_storage_service_impl)
 
-# add_cedar_test(test_sst_capacity_analysis)
-# add_cedar_test(test_auto_compaction_file_based)
-# add_cedar_test(test_sst_structure_analysis)
-# add_cedar_test(test_sstv2_production)
-# add_cedar_test(test_sstv2_integration)
-# add_cedar_test(test_large_sst)
-# add_cedar_test(test_small_file_compaction)
+# Performance/structure tests — keep disabled in CI (slow or require specific setup)
+# add_executable(test_sst_capacity_analysis storage/test_sst_capacity_analysis.cc)
+# add_executable(test_auto_compaction_file_based storage/test_auto_compaction_file_based.cc)
+# add_executable(test_sst_structure_analysis storage/test_sst_structure_analysis.cc)
+# add_executable(test_sstv2_production storage/test_sstv2_production.cc)
+# add_executable(test_sstv2_integration storage/test_sstv2_integration.cc)
+# add_executable(test_large_sst storage/test_large_sst.cc)
+# add_executable(test_small_file_compaction storage/test_small_file_compaction.cc)
 
 add_executable(test_zone_columnar_reader sst/test_zone_columnar_reader.cc)
 target_link_libraries(test_zone_columnar_reader ${CEDAR_TEST_LIBS})
@@ -491,9 +542,9 @@ add_executable(test_consistent_hash cluster/test_consistent_hash.cc)
 target_link_libraries(test_consistent_hash ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_consistent_hash)
 
-# add_executable(test_storage_integration cluster/test_storage_integration.cc)
-# target_link_libraries(test_storage_integration ${CEDAR_TEST_LIBS})
-# gtest_discover_tests(test_storage_integration)
+add_executable(test_storage_integration cluster/test_storage_integration.cc)
+target_link_libraries(test_storage_integration ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_integration)
 
 add_executable(test_corrupt_log_recovery raft/test_corrupt_log_recovery.cc)
 target_link_libraries(test_corrupt_log_recovery ${CEDAR_TEST_LIBS})
@@ -504,9 +555,9 @@ target_link_libraries(test_cross_dc_replication ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cross_dc_replication)
 
 # NEW: Partition Raft Tests
-# add_executable(test_partition_raft cluster/test_partition_raft.cc)
-# target_link_libraries(test_partition_raft ${CEDAR_TEST_LIBS})
-# gtest_discover_tests(test_partition_raft)
+add_executable(test_partition_raft cluster/test_partition_raft.cc)
+target_link_libraries(test_partition_raft ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_partition_raft)
 
 
 
@@ -520,9 +571,9 @@ elseif(GRPC_FOUND)
 endif()
 
 # Partition Raft Manager Tests
-# add_executable(test_partition_raft_manager cluster/test_partition_raft_manager.cc)
-# target_link_libraries(test_partition_raft_manager ${CEDAR_TEST_LIBS})
-# gtest_discover_tests(test_partition_raft_manager)
+add_executable(test_partition_raft_manager cluster/test_partition_raft_manager.cc)
+target_link_libraries(test_partition_raft_manager ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_partition_raft_manager)
 
 # Partition Router Tests
 add_executable(test_partition_router cluster/test_partition_router.cc)
@@ -530,24 +581,24 @@ target_link_libraries(test_partition_router ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_partition_router)
 
 # Partition Storage Integration Tests
-# add_executable(test_partition_storage_integration cluster/test_partition_storage_integration.cc)
-# target_link_libraries(test_partition_storage_integration ${CEDAR_TEST_LIBS})
-# gtest_discover_tests(test_partition_storage_integration)
+add_executable(test_partition_storage_integration cluster/test_partition_storage_integration.cc)
+target_link_libraries(test_partition_storage_integration ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_partition_storage_integration)
 
 # Partition Metadata Service Tests
-# add_executable(test_partition_metadata_service cluster/test_partition_metadata_service.cc)
-# target_link_libraries(test_partition_metadata_service ${CEDAR_TEST_LIBS})
-# gtest_discover_tests(test_partition_metadata_service)
+add_executable(test_partition_metadata_service cluster/test_partition_metadata_service.cc)
+target_link_libraries(test_partition_metadata_service ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_partition_metadata_service)
 
-# add_executable(test_partition_router_leader_only test_partition_router_leader_only.cc)
-# target_link_directories(test_partition_router_leader_only PRIVATE /opt/homebrew/lib)
-# target_link_libraries(test_partition_router_leader_only ${CEDAR_TEST_LIBS} cedar_queryd)
-# gtest_discover_tests(test_partition_router_leader_only)
+add_executable(test_partition_router_leader_only test_partition_router_leader_only.cc)
+target_link_directories(test_partition_router_leader_only PRIVATE /opt/homebrew/lib)
+target_link_libraries(test_partition_router_leader_only ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_partition_router_leader_only)
 
-# add_executable(test_cypher_validator test_cypher_validator.cc)
-# target_link_directories(test_cypher_validator PRIVATE /opt/homebrew/lib)
-# target_link_libraries(test_cypher_validator ${CEDAR_TEST_LIBS} cedar_queryd)
-# gtest_discover_tests(test_cypher_validator)
+add_executable(test_cypher_validator test_cypher_validator.cc)
+target_link_directories(test_cypher_validator PRIVATE /opt/homebrew/lib)
+target_link_libraries(test_cypher_validator ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_cypher_validator)
 
 # Storage Subquery Tests
 add_executable(test_storage_subquery storage/test_storage_subquery.cc)
@@ -571,9 +622,9 @@ add_executable(test_cedar_config storage/test_cedar_config.cc)
 target_link_libraries(test_cedar_config ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cedar_config)
 
-# add_executable(test_storage_interface_predicate test_storage_interface_predicate.cc)
-# target_link_libraries(test_storage_interface_predicate ${CEDAR_TEST_LIBS})
-# gtest_discover_tests(test_storage_interface_predicate)
+add_executable(test_storage_interface_predicate test_storage_interface_predicate.cc)
+target_link_libraries(test_storage_interface_predicate ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_interface_predicate)
 
 # Coordinator tests
 add_executable(test_location_table coordinator/test_location_table.cc)
@@ -742,3 +793,36 @@ target_link_libraries(test_2pc_cache_atomicity
   ${CEDAR_TEST_LIBS} cedar_queryd
 )
 add_test(NAME test_2pc_cache_atomicity COMMAND test_2pc_cache_atomicity)
+
+# Phase C: Critical Untested Modules
+add_executable(test_active_entity_bitmap storage/test_active_entity_bitmap.cc)
+target_link_libraries(test_active_entity_bitmap ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_active_entity_bitmap)
+
+add_executable(test_block_cache storage/test_block_cache.cc)
+target_link_libraries(test_block_cache ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_block_cache)
+
+add_executable(test_versioned_skiplist_lockfree storage/test_versioned_skiplist_lockfree.cc)
+target_link_libraries(test_versioned_skiplist_lockfree ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_versioned_skiplist_lockfree)
+
+add_executable(test_mth_partitioner partition/test_mth_partitioner.cc)
+target_link_libraries(test_mth_partitioner ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_mth_partitioner)
+
+add_executable(test_partition_strategy_manager partition/test_partition_strategy_manager.cc)
+target_link_libraries(test_partition_strategy_manager ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_partition_strategy_manager)
+
+add_executable(test_bloom_filter sst/test_bloom_filter.cc)
+target_link_libraries(test_bloom_filter ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_bloom_filter)
+
+add_executable(test_column_coders sst/test_column_coders.cc)
+target_link_libraries(test_column_coders ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_column_coders)
+
+add_executable(test_full_pipeline end_to_end/test_full_pipeline.cc)
+target_link_libraries(test_full_pipeline ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_full_pipeline)
