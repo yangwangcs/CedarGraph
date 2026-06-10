@@ -232,6 +232,54 @@ class Expand : public PhysicalOperator {
 /**
  * @brief Filter operator
  */
+/**
+ * @brief Variable-length relationship expand operator
+ *
+ * Respects min_hops/max_hops by performing bounded BFS/DFS per input record.
+ */
+class VariableLengthExpand : public PhysicalOperator {
+ public:
+  VariableLengthExpand(std::string from_variable,
+                       std::string rel_variable,
+                       std::string to_variable,
+                       Direction direction,
+                       std::optional<std::string> rel_type,
+                       uint64_t min_hops,
+                       uint64_t max_hops);
+
+  bool Init(ExecutionContext* ctx) override;
+  std::shared_ptr<Record> Next() override;
+  void Reset() override;
+  std::string GetName() const override { return "VariableLengthExpand"; }
+  std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
+  bool RequiresGraph() const override { return true; }
+
+ private:
+  std::string from_variable_;
+  std::string rel_variable_;
+  std::string to_variable_;
+  Direction direction_;
+  std::optional<std::string> rel_type_;
+  uint64_t min_hops_;
+  uint64_t max_hops_;
+
+  // Execution state
+  std::shared_ptr<Record> current_record_;
+  size_t result_index_ = 0;
+  std::vector<std::shared_ptr<Record>> result_buffer_;
+
+  // BFS queue item: (current_node_id, current_path_relationships, depth)
+  struct BfsState {
+    uint64_t node_id;
+    std::vector<std::pair<uint64_t, uint64_t>> path;  // (rel_id, target_id)
+    uint64_t depth;
+  };
+
+  void ExpandCurrentRecord();
+  std::vector<std::pair<uint64_t, uint64_t>> GetNeighbors(uint64_t node_id);
+};
+
 class Filter : public PhysicalOperator {
  public:
   explicit Filter(std::shared_ptr<Expression> predicate);
@@ -722,6 +770,37 @@ class ExecutionPlan {
  private:
   std::shared_ptr<PhysicalOperator> root_;
 };
+
+// ============================================================================
+// Predicate Analysis Helpers
+// ============================================================================
+
+/**
+ * @brief Represents a predicate that can be pushed down into a scan
+ */
+struct PushablePredicate {
+  std::string variable;   // e.g. "n"
+  std::string property;   // e.g. "name"
+  ComparisonExpr::Op op;  // e.g. EQ
+  Value literal;          // e.g. "Alice"
+};
+
+/**
+ * @brief Analyze an expression and extract pushable predicates.
+ *
+ * A predicate is pushable if it is a comparison of the form:
+ *   variable.property <op> literal
+ * or a conjunction (AND) of such comparisons.
+ *
+ * Returns a pair: (list of pushable predicates, remaining expression).
+ * If the entire expression is pushable, remaining is nullptr.
+ */
+struct PredicateAnalysis {
+  std::vector<PushablePredicate> pushable;
+  std::shared_ptr<Expression> remaining;  // nullptr if everything pushed
+};
+
+PredicateAnalysis AnalyzePredicates(const Expression& expr);
 
 }  // namespace cypher
 }  // namespace cedar
