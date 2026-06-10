@@ -345,8 +345,11 @@ Status WalWriter::WriteBatch(const WalBatch& batch) {
     if (!s.ok()) return s;
   }
   
-  // Batch sync policy: fsync periodically to balance durability and throughput
-  if (options_.sync_interval_ms > 0 || options_.sync_threshold > 0) {
+  // Safe default: fsync after every write unless explicitly disabled
+  if (options_.sync_on_write) {
+    Status sync_status = Sync();
+    if (!sync_status.ok()) return sync_status;
+  } else if (options_.sync_interval_ms > 0 || options_.sync_threshold > 0) {
     uint32_t unsynced = unsynced_writes_.fetch_add(1, std::memory_order_relaxed) + 1;
     
     bool need_sync = false;
@@ -572,17 +575,20 @@ void WalWriter::ProcessGroupCommit() {
       }
     }
     
-    // Set all promises with the same status
-    for (auto& request : batch) {
-      request->promise.set_value(write_status);
-    }
-    
-    // 批量 fsync
-    if (!batch.empty() && current_file_) {
+    // 批量 fsync — 必须在设置 promise 之前完成，确保调用者能感知 sync 失败
+    Status final_status = write_status;
+    if (write_status.ok() && !batch.empty() && current_file_) {
       cedar::Status sync_status = current_file_->Sync();
-      if (sync_status.ok()) {
+      if (!sync_status.ok()) {
+        final_status = Status::IOError("WalWriter", sync_status.ToString());
+      } else {
         stats_.syncs.fetch_add(1, std::memory_order_relaxed);
       }
+    }
+    
+    // Set all promises with the combined status (write + sync)
+    for (auto& request : batch) {
+      request->promise.set_value(final_status);
     }
   }
   

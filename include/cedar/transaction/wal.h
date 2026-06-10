@@ -119,6 +119,9 @@ struct WalOptions {
   
   // 预分配文件大小
   size_t preallocate_size = 64 * 1024 * 1024;
+  
+  // 是否在每次写入后自动调用 fsync (默认 true，保证安全)
+  bool sync_on_write = true;
 };
 
 // WAL 统计
@@ -206,6 +209,9 @@ class WalWriter {
   
   // 获取统计信息
   WalStats GetStats() const { return stats_; }
+  
+  // 获取当前 sync_on_write 配置
+  bool IsSyncOnWrite() const { return options_.sync_on_write; }
   
  private:
   // 内部写入实现

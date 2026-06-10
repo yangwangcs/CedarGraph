@@ -239,6 +239,13 @@ Status LsmEngine::Put(const CedarKey& key, const Descriptor& descriptor, Timesta
       if (!wal_status.ok()) {
         return wal_status;
       }
+      // 如果 WAL 未在 WriteBatch 中自动 sync，则在 Put 层显式 sync 保证 durability
+      if (!wal_writer_->IsSyncOnWrite()) {
+        Status sync_status = SyncWAL();
+        if (!sync_status.ok()) {
+          return sync_status;
+        }
+      }
     }
     
     Status s = mem_->Put(key, descriptor, txn_version);
