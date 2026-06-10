@@ -556,7 +556,12 @@ int StoragePartitionStateMachine::on_snapshot_load(
   // Step 1: Restore data files from snapshot to storage data_root
   std::string snapshot_data_dir = snapshot_path + "/data";
   if (std::filesystem::exists(snapshot_data_dir)) {
-    auto copied_files = CopySnapshotFiles(snapshot_data_dir, data_root);
+    auto copy_result = CopySnapshotFiles(snapshot_data_dir, data_root);
+    if (!copy_result.ok()) {
+      LOG(ERROR) << "Failed to restore snapshot files: " << copy_result.status().ToString();
+      return -1;
+    }
+    auto copied_files = std::move(copy_result.value());
     LOG(INFO) << "Restored " << copied_files.size() << " data files from snapshot"
               << " for partition " << storage_->GetPartitionId();
   }
