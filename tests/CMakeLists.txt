@@ -707,3 +707,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(test_service_meta_critical PRIVATE -Wno-vla-cxx-extension)
 endif()
 add_test(NAME test_service_meta_critical COMMAND test_service_meta_critical)
+
+add_executable(test_2pc_cache_atomicity
+  end_to_end/test_2pc_cache_atomicity.cc
+)
+target_link_libraries(test_2pc_cache_atomicity
+  ${CEDAR_TEST_LIBS} cedar_queryd
+)
+add_test(NAME test_2pc_cache_atomicity COMMAND test_2pc_cache_atomicity)
