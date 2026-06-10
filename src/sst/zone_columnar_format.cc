@@ -702,10 +702,15 @@ void ZoneColumnarHeaderV2::EncodeTo(std::string* dst) const {
   buf[pos++] = reserved[0];
   buf[pos++] = reserved[1];
   buf[pos++] = reserved[2];
-  EncodeFixed32(buf + pos, header_checksum);
+  EncodeFixed32(buf + pos, 0);  // checksum placeholder
   pos += 4;
   EncodeFixed32(buf + pos, padding);
   pos += 4;
+
+  // Compute CRC32C over entire header with checksum field zeroed
+  uint32_t checksum = cedar::crc32c::Value(buf, kEncodedSize);
+  EncodeFixed32(buf + 56, checksum);
+
   dst->append(buf, kEncodedSize);
 }
 
@@ -739,6 +744,16 @@ Status ZoneColumnarHeaderV2::DecodeFrom(Slice* input) {
   pos += 4;
   padding = DecodeFixed32(p + pos);
   pos += 4;
+
+  // Validate header checksum
+  char temp[kEncodedSize];
+  memcpy(temp, input->data(), kEncodedSize);
+  memset(temp + 56, 0, 4);  // zero out checksum field
+  uint32_t computed = cedar::crc32c::Value(temp, kEncodedSize);
+  if (computed != header_checksum) {
+    return Status::Corruption("ZoneColumnarHeaderV2", "header checksum mismatch");
+  }
+
   input->remove_prefix(kEncodedSize);
   return Status::OK();
 }

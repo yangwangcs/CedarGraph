@@ -370,6 +370,11 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
     cache_entry->zone_sizes[i] = zone_sizes[i];
     offset += zone_sizes[i];
   }
+
+  // Validate all zones fit within block data
+  if (offset > result.size()) {
+    return nullptr;
+  }
   
   // Add to cache
   {
@@ -387,38 +392,41 @@ CedarKey ZoneColumnarSstReader::ReconstructKeyFromBlock(
     const BlockCacheEntry& block, uint32_t row_idx) const {
   // Parse entity_id from zone 0
   uint64_t entity_id = 0;
-  if (block.zone_sizes[0] >= (row_idx + 1) * 8) {
+  if (block.zone_offsets[0] + block.zone_sizes[0] <= block.data.size() &&
+      block.zone_sizes[0] >= (row_idx + 1) * 8) {
     std::memcpy(&entity_id,
                 block.data.data() + block.zone_offsets[0] + row_idx * 8,
                 sizeof(entity_id));
   }
 
-  
   // Parse timestamp from zone 1 (uint64_t)
   uint64_t timestamp_val = 0;
-  if (block.zone_sizes[1] >= (row_idx + 1) * 8) {
+  if (block.zone_offsets[1] + block.zone_sizes[1] <= block.data.size() &&
+      block.zone_sizes[1] >= (row_idx + 1) * 8) {
     std::memcpy(&timestamp_val,
                 block.data.data() + block.zone_offsets[1] + row_idx * 8,
                 sizeof(timestamp_val));
   }
-  
+
   // Parse target_id from zone 2 (uint64_t)
   uint64_t target_id = 0;
-  if (block.zone_sizes[2] >= (row_idx + 1) * 8) {
+  if (block.zone_offsets[2] + block.zone_sizes[2] <= block.data.size() &&
+      block.zone_sizes[2] >= (row_idx + 1) * 8) {
     std::memcpy(&target_id,
                 block.data.data() + block.zone_offsets[2] + row_idx * 8,
                 sizeof(target_id));
   }
-  
+
   // Parse metadata from zone 3 (raw 8 bytes per row)
   uint16_t column_id = static_cast<uint16_t>(header_.column_id);
   uint8_t entity_type = header_.entity_type != 0 ? header_.entity_type : 0;
   uint16_t sequence = 0;
   uint8_t flags = 0;
   uint16_t part_id = 0;
-  
+
   size_t meta_offset = block.zone_offsets[3] + row_idx * 8;
-  if (block.zone_sizes[3] >= (row_idx + 1) * 8) {
+  if (block.zone_offsets[3] + block.zone_sizes[3] <= block.data.size() &&
+      block.zone_sizes[3] >= (row_idx + 1) * 8) {
     std::memcpy(&column_id,
                 block.data.data() + meta_offset,
                 sizeof(column_id));
@@ -435,8 +443,8 @@ CedarKey ZoneColumnarSstReader::ReconstructKeyFromBlock(
                 block.data.data() + meta_offset + 6,
                 sizeof(part_id));
   }
-  
-  return CedarKey(entity_id, 
+
+  return CedarKey(entity_id,
                   static_cast<EntityType>(entity_type),
                   column_id,
                   Timestamp(timestamp_val),
@@ -450,7 +458,8 @@ Timestamp ZoneColumnarSstReader::GetTxnVersionFromBlock(
     const BlockCacheEntry& block, uint32_t row_idx) const {
   // Parse txn_version from zone 5 (uint64_t)
   uint64_t txn_version_val = 0;
-  if (block.zone_sizes[5] >= (row_idx + 1) * 8) {
+  if (block.zone_offsets[5] + block.zone_sizes[5] <= block.data.size() &&
+      block.zone_sizes[5] >= (row_idx + 1) * 8) {
     std::memcpy(&txn_version_val,
                 block.data.data() + block.zone_offsets[5] + row_idx * 8,
                 sizeof(txn_version_val));
@@ -462,15 +471,16 @@ std::optional<Descriptor> ZoneColumnarSstReader::GetValueByRow(
     const BlockCacheEntry& block, uint32_t row_idx) const {
   // Zone 4 contains descriptor data
   Descriptor desc;
-  
-  if (block.zone_sizes[4] > row_idx * sizeof(uint64_t)) {
+
+  if (block.zone_offsets[4] + block.zone_sizes[4] <= block.data.size() &&
+      block.zone_sizes[4] >= (row_idx + 1) * sizeof(uint64_t)) {
     // Parse descriptor from zone 4
     const char* data = block.data.data() + block.zone_offsets[4] + row_idx * sizeof(uint64_t);
     uint64_t desc_data;
     std::memcpy(&desc_data, data, sizeof(desc_data));
     desc = Descriptor(desc_data);
   }
-  
+
   return desc;
 }
 
