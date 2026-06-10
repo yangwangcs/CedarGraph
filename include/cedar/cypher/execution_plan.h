@@ -525,6 +525,80 @@ class VersionScan : public PhysicalOperator {
 };
 
 // ============================================================================
+// Write Operators
+// ============================================================================
+
+/**
+ * @brief Create operator — persists nodes/edges from CREATE clause
+ */
+class CreateOperator : public PhysicalOperator {
+ public:
+  explicit CreateOperator(std::shared_ptr<CreateClause> create_clause);
+  
+  bool Init(ExecutionContext* ctx) override;
+  std::shared_ptr<Record> Next() override;
+  std::string GetName() const override { return "Create"; }
+  std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
+  bool RequiresGraph() const override { return false; }
+  
+ private:
+  std::shared_ptr<CreateClause> create_clause_;
+  size_t pattern_index_ = 0;
+  size_t element_index_ = 0;
+  bool initialized_ = false;
+  bool done_ = false;
+  std::shared_ptr<Record> result_record_;
+  uint64_t id_counter_ = 0;
+  
+  uint64_t GenerateId();
+  cedar::Status CreateNode(const NodePattern& node, Record* record);
+  cedar::Status CreateEdge(const RelationshipPattern& rel, const Record& record);
+  uint16_t PropertyNameToColumnId(const std::string& name) const;
+  cedar::Descriptor ValueToDescriptor(const Value& value, uint16_t col_id) const;
+};
+
+/**
+ * @brief Set operator — updates properties from SET clause
+ */
+class SetOperator : public PhysicalOperator {
+ public:
+  explicit SetOperator(std::shared_ptr<SetClause> set_clause);
+  
+  bool Init(ExecutionContext* ctx) override;
+  std::shared_ptr<Record> Next() override;
+  std::string GetName() const override { return "Set"; }
+  std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
+  bool RequiresGraph() const override { return false; }
+  
+ private:
+  std::shared_ptr<SetClause> set_clause_;
+  
+  cedar::Status ApplySetItem(const SetClause::SetItem& item, Record* record);
+  uint16_t PropertyNameToColumnId(const std::string& name) const;
+  cedar::Descriptor ValueToDescriptor(const Value& value, uint16_t col_id) const;
+};
+
+/**
+ * @brief Delete operator — removes vertices/edges from DELETE clause
+ */
+class DeleteOperator : public PhysicalOperator {
+ public:
+  explicit DeleteOperator(std::shared_ptr<DeleteClause> delete_clause);
+  
+  bool Init(ExecutionContext* ctx) override;
+  std::shared_ptr<Record> Next() override;
+  std::string GetName() const override { return "Delete"; }
+  std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
+  bool RequiresGraph() const override { return false; }
+  
+ private:
+  std::shared_ptr<DeleteClause> delete_clause_;
+};
+
+// ============================================================================
 // Execution Plan Builder
 // ============================================================================
 
@@ -554,6 +628,12 @@ class ExecutionPlanBuilder {
   
   static std::shared_ptr<PhysicalOperator> BuildCreatePlan(
       std::shared_ptr<CreateClause> create);
+  
+  static std::shared_ptr<PhysicalOperator> BuildSetPlan(
+      std::shared_ptr<SetClause> set);
+  
+  static std::shared_ptr<PhysicalOperator> BuildDeletePlan(
+      std::shared_ptr<DeleteClause> del);
   
   static std::shared_ptr<PhysicalOperator> BuildScanForPattern(
       PathPattern pattern,
