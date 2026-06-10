@@ -315,6 +315,18 @@ class Optimized2PCEngine {
   Status PersistCommitDecision(const CommitDecision& decision);
   Status LoadCommitDecision(TxnID txn_id, CommitDecision* out);
   std::string DecisionLogPath(TxnID txn_id) const;
+  
+  // Replicated decision log interface (stub for distributed log integration)
+  class ReplicatedDecisionLog {
+   public:
+    virtual ~ReplicatedDecisionLog() = default;
+    virtual Status Append(const CommitDecision& decision) = 0;
+  };
+  void SetReplicatedDecisionLog(std::shared_ptr<ReplicatedDecisionLog> log) {
+    replicated_decision_log_ = log;
+  }
+  
+  std::shared_ptr<ReplicatedDecisionLog> replicated_decision_log_;
 
   // Adaptive tuning state
   struct TuningState {

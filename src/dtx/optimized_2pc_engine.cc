@@ -452,6 +452,13 @@ Status Optimized2PCEngine::PersistCommitDecision(const CommitDecision& decision)
     return Status::IOError("Decision log fsync failed", path);
   }
   close(fd);
+  if (replicated_decision_log_ != nullptr) {
+    auto rep_status = replicated_decision_log_->Append(decision);
+    if (!rep_status.ok()) {
+      std::cerr << "[2PC] Decision log replication failed for txn "
+                << decision.txn_id << ": " << rep_status.ToString() << std::endl;
+    }
+  }
   return Status::OK();
 }
 
@@ -1386,21 +1393,39 @@ void Optimized2PCEngine::BatchWorkerLoop() {
     lock.unlock();
     
     for (auto& ctx : batch) {
-      // If the client timed out and aborted before we started, skip processing.
-      if (ctx->state.load() == TransactionContext::State::kAborted) {
+      try {
+        // If the client timed out and aborted before we started, skip processing.
+        if (ctx->state.load() == TransactionContext::State::kAborted) {
+          if (ctx->done_promise) {
+            ctx->done_promise->set_value();
+          }
+          continue;
+        }
+        auto status = ExecuteParallel2PC(ctx);
+        if (!status.ok()) {
+          ctx->state.store(TransactionContext::State::kAborted);
+        } else {
+          ctx->state.store(TransactionContext::State::kCommitted);
+        }
         if (ctx->done_promise) {
           ctx->done_promise->set_value();
         }
-        continue;
-      }
-      auto status = ExecuteParallel2PC(ctx);
-      if (!status.ok()) {
-        ctx->state.store(TransactionContext::State::kAborted);
-      } else {
-        ctx->state.store(TransactionContext::State::kCommitted);
-      }
-      if (ctx->done_promise) {
-        ctx->done_promise->set_value();
+      } catch (const std::exception& e) {
+        std::cerr << "[2PC] BatchWorkerLoop exception: " << e.what() << std::endl;
+        if (ctx) {
+          ctx->state.store(TransactionContext::State::kAborted);
+          if (ctx->done_promise) {
+            ctx->done_promise->set_value();
+          }
+        }
+      } catch (...) {
+        std::cerr << "[2PC] BatchWorkerLoop unknown exception" << std::endl;
+        if (ctx) {
+          ctx->state.store(TransactionContext::State::kAborted);
+          if (ctx->done_promise) {
+            ctx->done_promise->set_value();
+          }
+        }
       }
     }
   }
