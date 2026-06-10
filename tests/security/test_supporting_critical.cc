@@ -32,7 +32,7 @@ namespace security {
 TEST(SupportingCritical, PasswordHashingUsesPBKDF2) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-this-is-a-test-secret-key-with-32b!-with-32b!";
   config.accounts.push_back({"user", "password123", {"admin"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());
@@ -47,7 +47,7 @@ TEST(SupportingCritical, PasswordHashingUsesPBKDF2) {
 TEST(SupportingCritical, PasswordHashDifferentSalts) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-this-is-a-test-secret-key-with-32b!-with-32b!";
   config.accounts.push_back({"user1", "samepassword", {"admin"}});
   config.accounts.push_back({"user2", "samepassword", {"admin"}});
 
@@ -61,7 +61,7 @@ TEST(SupportingCritical, PasswordHashDifferentSalts) {
 TEST(SupportingCritical, PasswordHashTimingSafe) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-this-is-a-test-secret-key-with-32b!-with-32b!";
   config.accounts.push_back({"user", "password", {"admin"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());
@@ -78,7 +78,7 @@ TEST(SupportingCritical, PasswordHashTimingSafe) {
 TEST(SupportingCritical, JWTRobustParsing) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret-key";
+  config.jwt_secret = "this-is-a-this-is-a-test-secret-key-with-32b!-with-32b!-key";
   config.accounts.push_back({"admin", "adminpass", {"admin"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());
@@ -98,7 +98,7 @@ TEST(SupportingCritical, JWTRobustParsing) {
 TEST(SupportingCritical, JWTInvalidFormatRejected) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret-key";
+  config.jwt_secret = "this-is-a-this-is-a-test-secret-key-with-32b!-with-32b!-key";
   config.accounts.push_back({"admin", "adminpass", {"admin"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());
@@ -121,7 +121,7 @@ TEST(SupportingCritical, JWTInvalidFormatRejected) {
 TEST(SupportingCritical, JWTBase64UrlDecodeValidated) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret-key";
+  config.jwt_secret = "this-is-a-this-is-a-test-secret-key-with-32b!-with-32b!-key";
   config.accounts.push_back({"admin", "adminpass", {"admin"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());

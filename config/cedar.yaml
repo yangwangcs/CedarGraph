@@ -64,7 +64,7 @@ cluster:
 # TLS Settings (optional)
 # =============================================================================
 tls:
-  enabled: false
+  enabled: true
   ca_cert: "/etc/cedar/certs/ca.crt"
   server_cert: "/etc/cedar/certs/server.crt"
   server_key: "/etc/cedar/certs/server.key"

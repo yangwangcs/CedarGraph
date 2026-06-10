@@ -23,7 +23,7 @@ namespace security {
 TEST(SecurityBlockers, EmptyAccountsRejected) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-this-is-a-test-secret-key-with-32b!-with-32b!";
   config.accounts.clear();
 
   auto status = auth.Initialize(config);
@@ -34,7 +34,7 @@ TEST(SecurityBlockers, EmptyAccountsRejected) {
 TEST(SecurityBlockers, JWTRoundTrip) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret-key";
+  config.jwt_secret = "this-is-a-this-is-a-test-secret-key-with-32b!-with-32b!-key";
   config.accounts.push_back({"admin", "adminpass", {"admin"}});
 
   auto status = auth.Initialize(config);
@@ -72,7 +72,7 @@ TEST(SecurityBlockers, JWTRoundTrip) {
 TEST(SecurityBlockers, JWTTamperedSignatureFails) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret-key";
+  config.jwt_secret = "this-is-a-this-is-a-test-secret-key-with-32b!-with-32b!-key";
   config.accounts.push_back({"admin", "adminpass", {"admin"}});
 
   auto status = auth.Initialize(config);
@@ -93,7 +93,7 @@ TEST(SecurityBlockers, JWTTamperedSignatureFails) {
 TEST(SecurityBlockers, ConfigAccountsLoaded) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-this-is-a-test-secret-key-with-32b!-with-32b!";
   config.accounts.push_back({"user1", "pass1", {"readwrite"}});
   config.accounts.push_back({"user2", "pass2", {"readonly"}});
 

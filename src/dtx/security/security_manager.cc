@@ -138,6 +138,10 @@ Status Authenticator::Initialize(const Config& config) {
     return Status::InvalidArgument("No accounts configured");
   }
   
+  if (config_.jwt_secret.size() < 32) {
+    return Status::InvalidArgument("JWT secret must be at least 32 bytes");
+  }
+  
   for (const auto& account : config_.accounts) {
     auto status = AddUser(account.username, account.password, account.roles);
     if (!status.ok()) {
@@ -545,8 +549,23 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
 
   // Decode header to validate structure
   std::string header = Base64UrlDecode(encoded_header);
-  if (header.empty() || header.find("\"alg\"") == std::string::npos) {
-    return Status::InvalidArgument("Invalid JWT header");
+  if (header.empty()) {
+    return Status::InvalidArgument("Invalid JWT header: empty header");
+  }
+
+  try {
+    nlohmann::json header_json = nlohmann::json::parse(header);
+    if (!header_json.contains("alg") || !header_json["alg"].is_string()) {
+      return Status::InvalidArgument("Invalid JWT header: missing alg field");
+    }
+    std::string alg = header_json["alg"].get<std::string>();
+    if (alg != "HS256") {
+      return Status::InvalidArgument(
+          "Invalid JWT header: unsupported algorithm '" + alg + "'");
+    }
+  } catch (const nlohmann::json::exception& e) {
+    return Status::InvalidArgument(
+        std::string("Invalid JWT header: JSON parse error: ") + e.what());
   }
 
   // Verify HMAC-SHA256 signature

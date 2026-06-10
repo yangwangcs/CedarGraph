@@ -24,7 +24,7 @@ namespace security {
 TEST(JWTParser, RejectsMalformedJWT) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-test-secret-key-with-32b!";
   config.accounts.push_back({"admin", "adminpass", {"admin"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());
@@ -49,7 +49,7 @@ TEST(JWTParser, RejectsMalformedJWT) {
 TEST(JWTParser, RejectsEmptySignature) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-test-secret-key-with-32b!";
   config.accounts.push_back({"admin", "adminpass", {"admin"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());
@@ -66,7 +66,7 @@ TEST(JWTParser, RejectsEmptySignature) {
 TEST(JWTParser, RoundTripValidToken) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-test-secret-key-with-32b!";
   config.accounts.push_back({"admin", "adminpass", {"admin"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());
@@ -86,7 +86,7 @@ TEST(JWTParser, RoundTripValidToken) {
 TEST(JWTParser, HandlesQuotesInUsername) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-test-secret-key-with-32b!";
   config.accounts.push_back({"user\"quote", "password", {"user"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());
@@ -105,7 +105,7 @@ TEST(JWTParser, HandlesQuotesInUsername) {
 TEST(JWTParser, HandlesBackslashInUsername) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-test-secret-key-with-32b!";
   config.accounts.push_back({"user\\backslash", "password", {"user"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());
@@ -124,7 +124,7 @@ TEST(JWTParser, HandlesBackslashInUsername) {
 TEST(JWTParser, RejectsInjectionPayload) {
   Authenticator auth;
   Authenticator::Config config;
-  config.jwt_secret = "test-secret";
+  config.jwt_secret = "this-is-a-test-secret-key-with-32b!";
   config.accounts.push_back({R"(",\"roles\":[\"admin\"])", "password", {"user"}});
 
   ASSERT_TRUE(auth.Initialize(config).ok());

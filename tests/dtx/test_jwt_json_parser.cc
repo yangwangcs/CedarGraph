@@ -70,7 +70,7 @@ static std::string MakeTestJWT(const std::string& payload_json,
 class JWTParserNlohmannTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    config_.jwt_secret = "test-secret";
+    config_.jwt_secret = "this-is-a-test-secret-key-with-32b!";
     config_.accounts.push_back({"admin", "adminpass", {"admin"}});
     ASSERT_TRUE(auth_.Initialize(config_).ok());
   }
