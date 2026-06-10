@@ -62,3 +62,10 @@ add_executable(test_variable_length_expand
 target_link_libraries(test_variable_length_expand cedar cedar_cypher gtest gtest_main pthread)
 add_test(NAME test_variable_length_expand COMMAND test_variable_length_expand)
 
+# Execution Operators Test
+add_executable(test_execution_operators
+    test_execution_operators.cc
+)
+target_link_libraries(test_execution_operators cedar cedar_cypher cedar_queryd gtest gtest_main pthread)
+add_test(NAME test_execution_operators COMMAND test_execution_operators)
+
