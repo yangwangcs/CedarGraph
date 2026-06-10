@@ -279,5 +279,115 @@ cedar::Descriptor CreateOperator::ValueToDescriptor(const Value& value,
   return cedar::cypher::ValueToDescriptor(value, col_id);
 }
 
+// ============================================================================
+// SetOperator
+// ============================================================================
+
+SetOperator::SetOperator(std::shared_ptr<SetClause> set_clause)
+    : set_clause_(std::move(set_clause)) {}
+
+bool SetOperator::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  if (!children_.empty()) {
+    return children_[0]->Init(ctx);
+  }
+  return true;
+}
+
+std::shared_ptr<Record> SetOperator::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
+  
+  auto record = children_[0]->Next();
+  if (!record) {
+    return nullptr;
+  }
+  
+  if (!set_clause_ || set_clause_->items.empty()) {
+    return record;
+  }
+  
+  for (const auto& item : set_clause_->items) {
+    auto status = ApplySetItem(item, record.get());
+    if (!status.ok()) {
+      CEDAR_LOG_WARN() << "SetOperator: failed to apply set item: " << status.ToString();
+    }
+  }
+  
+  return record;
+}
+
+cedar::Status SetOperator::ApplySetItem(const SetClause::SetItem& item,
+                                         Record* record) {
+  if (!item.target || !item.value) {
+    return cedar::Status::InvalidArgument("SET item missing target or value");
+  }
+  
+  ExpressionEvaluator evaluator(context_);
+  Value new_value = evaluator.Evaluate(*item.value, *record);
+  
+  if (item.target->expr_type == ExprType::PROPERTY) {
+    auto* prop_expr = static_cast<PropertyExpr*>(item.target.get());
+    const std::string& var_name = prop_expr->variable;
+    const std::string& prop_name = prop_expr->property;
+    
+    // Update the in-memory record
+    auto var_val = record->Get(var_name);
+    if (!var_val) {
+      return cedar::Status::InvalidArgument("Variable not found in record: " + var_name);
+    }
+    
+    if (var_val->IsNode()) {
+      Node node = var_val->GetNode();
+      node.properties[prop_name] = new_value;
+      record->Set(var_name, Value(node));
+      
+      // Persist to storage
+      if (context_ && context_->storage) {
+        uint16_t col_id = PropertyNameToColumnId(prop_name);
+        Descriptor desc = ValueToDescriptor(new_value, col_id);
+        auto s = context_->storage->PutStaticVertex(node.id, col_id, desc);
+        if (!s.ok()) return s;
+      }
+    } else if (var_val->IsRelationship()) {
+      Relationship rel = var_val->GetRelationship();
+      rel.properties[prop_name] = new_value;
+      record->Set(var_name, Value(rel));
+      // Edge property update requires PutEdge; skip for MVP if storage unavailable
+    } else {
+      // Scalar variable assignment (e.g., SET x = 5)
+      record->Set(var_name, new_value);
+    }
+  } else if (item.target->expr_type == ExprType::VARIABLE) {
+    auto* var_expr = static_cast<VariableExpr*>(item.target.get());
+    record->Set(var_expr->name, new_value);
+  }
+  
+  return cedar::Status::OK();
+}
+
+std::string SetOperator::GetDetails() const {
+  if (!set_clause_) return "0 items";
+  return std::to_string(set_clause_->items.size()) + " items";
+}
+
+std::unique_ptr<PhysicalOperator> SetOperator::Clone() const {
+  auto clone = std::make_unique<SetOperator>(set_clause_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  return clone;
+}
+
+uint16_t SetOperator::PropertyNameToColumnId(const std::string& name) const {
+  return cedar::cypher::PropertyNameToColumnId(name);
+}
+
+cedar::Descriptor SetOperator::ValueToDescriptor(const Value& value,
+                                                  uint16_t col_id) const {
+  return cedar::cypher::ValueToDescriptor(value, col_id);
+}
+
 }  // namespace cypher
 }  // namespace cedar
