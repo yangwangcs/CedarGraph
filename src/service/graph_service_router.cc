@@ -14,6 +14,7 @@
 #include <sstream>
 #include <thread>
 
+#include "cedar/cypher/execution_plan.h"
 #include "cedar/cypher/parser.h"
 #include "cedar/cypher/fingerprint.h"
 #include "cedar/queryd/distributed_executor.h"
@@ -649,45 +650,24 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
     query_cache_->Put(cache_key, response->result_set());
   }
   
-  // EXPLAIN 模式
+  // EXPLAIN mode — build real execution plan and serialize operator tree
   if (request->explain_only()) {
+    // Parse the query into an AST
+    cypher::CypherParser parser(request->query());
+    auto stmt = parser.ParseStatement();
+
     std::stringstream plan;
-    plan << "Execution Plan:\n";
-    plan << "  Query: " << request->query().substr(0, 50) << "...\n";
-    
-    const char* type_str = "SCAN";
-    switch (route_ctx.query_type) {
-      case QueryType::POINT_LOOKUP: type_str = "POINT_LOOKUP"; break;
-      case QueryType::SCAN: type_str = "SCAN"; break;
-      case QueryType::NEIGHBOR_TRAVERSAL: type_str = "NEIGHBOR_TRAVERSAL"; break;
-      case QueryType::AGGREGATE: type_str = "AGGREGATE"; break;
-      default:
-        std::cerr << "[GraphServiceRouter] Unknown query type" << std::endl;
-        break;
-    }
-    plan << "  Query Type: " << type_str << "\n";
-    plan << "  Target Partitions: " << route_ctx.target_partitions.size() << "\n";
-    for (auto part_id : route_ctx.target_partitions) {
-      plan << "    - Partition " << part_id << "\n";
-    }
-    if (route_ctx.query_type == QueryType::NEIGHBOR_TRAVERSAL) {
-      plan << "  Traversal: start_node=" << route_ctx.start_node_id
-           << ", hops=" << route_ctx.hops
-           << ", edge_type=" << route_ctx.edge_type << "\n";
-    }
-    if (route_ctx.has_aggregate) {
-      plan << "  Aggregate: " << route_ctx.aggregate_function
-           << "(" << (route_ctx.aggregate_column.empty() ? "*" : route_ctx.aggregate_column)
-           << ")\n";
-    }
-    if (route_ctx.has_order_by) {
-      plan << "  Order By: " << route_ctx.order_by_column
-           << " " << (route_ctx.order_ascending ? "ASC" : "DESC") << "\n";
-    }
-    if (route_ctx.has_limit) {
-      plan << "  Limit: " << route_ctx.limit;
-      if (route_ctx.skip > 0) plan << " OFFSET " << route_ctx.skip;
-      plan << "\n";
+    if (!stmt) {
+      plan << "Execution Plan:\n  ERROR: " << parser.GetError() << "\n";
+    } else {
+      auto physical_plan = cypher::ExecutionPlanBuilder::Build(stmt, nullptr);
+      if (!physical_plan) {
+        plan << "Execution Plan:\n  ERROR: Failed to build plan\n";
+      } else {
+        cypher::ExecutionPlan plan_wrapper(physical_plan);
+        plan << "Execution Plan:\n";
+        plan << plan_wrapper.Explain();
+      }
     }
     response->set_execution_plan(plan.str());
   }
