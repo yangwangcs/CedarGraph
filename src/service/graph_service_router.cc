@@ -430,14 +430,42 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
         // 无已知分区，返回空结果
         result_set.set_total_rows(0);
       } else {
+        bool any_partition_failed = false;
+        std::string first_error;
         for (uint32_t part_id : route_ctx.target_partitions) {
-          ExecutePartitionQuery(request->query(), part_id, route_ctx, &result_set);
+          auto part_status = ExecutePartitionQuery(request->query(), part_id, route_ctx, &result_set);
+          if (!part_status.ok()) {
+            any_partition_failed = true;
+            if (first_error.empty()) {
+              first_error = "Partition " + std::to_string(part_id) + ": " + part_status.ToString();
+            }
+          }
+        }
+        if (any_partition_failed) {
+          stats_.failed_queries++;
+          response->set_success(false);
+          response->set_error_msg("Partial failure: " + first_error);
+          return grpc::Status::OK;
         }
       }
     } else {
       // 执行分区查询并聚合结果
+      bool any_partition_failed = false;
+      std::string first_error;
       for (uint32_t part_id : route_ctx.target_partitions) {
-        ExecutePartitionQuery(request->query(), part_id, route_ctx, &result_set);
+        auto part_status = ExecutePartitionQuery(request->query(), part_id, route_ctx, &result_set);
+        if (!part_status.ok()) {
+          any_partition_failed = true;
+          if (first_error.empty()) {
+            first_error = "Partition " + std::to_string(part_id) + ": " + part_status.ToString();
+          }
+        }
+      }
+      if (any_partition_failed) {
+        stats_.failed_queries++;
+        response->set_success(false);
+        response->set_error_msg("Partial failure: " + first_error);
+        return grpc::Status::OK;
       }
     }
     
@@ -1389,8 +1417,10 @@ StatusOr<PartitionRoute> GraphServiceRouter::GetPartitionRoute(uint32_t partitio
     }
   }
 
-  // Fallback for test/local mode: route to local StorageD
-  if (partition_id < kNumPartitions) {
+  const char* env_enable_local_fallback = std::getenv("CEDAR_ENABLE_LOCAL_FALLBACK");
+  bool local_fallback_enabled = (env_enable_local_fallback != nullptr &&
+                                 std::string(env_enable_local_fallback) == "1");
+  if (local_fallback_enabled && partition_id < kNumPartitions) {
     PartitionRoute route;
     route.partition_id = partition_id;
     route.leader_node = "127.0.0.1:9779";
