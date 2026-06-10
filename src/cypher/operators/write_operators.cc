@@ -389,5 +389,91 @@ cedar::Descriptor SetOperator::ValueToDescriptor(const Value& value,
   return cedar::cypher::ValueToDescriptor(value, col_id);
 }
 
+// ============================================================================
+// DeleteOperator
+// ============================================================================
+
+DeleteOperator::DeleteOperator(std::shared_ptr<DeleteClause> delete_clause)
+    : delete_clause_(std::move(delete_clause)) {}
+
+bool DeleteOperator::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  if (!children_.empty()) {
+    return children_[0]->Init(ctx);
+  }
+  return true;
+}
+
+std::shared_ptr<Record> DeleteOperator::Next() {
+  if (children_.empty()) {
+    return nullptr;
+  }
+  
+  auto record = children_[0]->Next();
+  if (!record) {
+    return nullptr;
+  }
+  
+  if (!delete_clause_ || delete_clause_->expressions.empty()) {
+    return nullptr;  // Consume the record even if no expressions
+  }
+  
+  ExpressionEvaluator evaluator(context_);
+  
+  for (const auto& expr : delete_clause_->expressions) {
+    if (!expr) continue;
+    
+    Value target_val = evaluator.Evaluate(*expr, *record);
+    
+    if (target_val.IsNode()) {
+      const Node& node = target_val.GetNode();
+      if (context_ && context_->storage) {
+        auto s = context_->storage->MarkEntityDeleted(
+            node.id, EntityType::Vertex, Timestamp::Now());
+        if (!s.ok()) {
+          CEDAR_LOG_WARN() << "DeleteOperator: MarkEntityDeleted failed: " << s.ToString();
+        }
+      }
+    } else if (target_val.IsRelationship()) {
+      const Relationship& rel = target_val.GetRelationship();
+      if (context_ && context_->storage) {
+        // Mark both directions deleted
+        auto s = context_->storage->MarkEntityDeleted(
+            rel.start_id, EntityType::EdgeOut, Timestamp::Now());
+        if (!s.ok()) {
+          CEDAR_LOG_WARN() << "DeleteOperator: edge delete failed: " << s.ToString();
+        }
+      }
+    } else if (target_val.IsInt()) {
+      // Bare ID (e.g., from a variable bound to an integer ID)
+      uint64_t entity_id = static_cast<uint64_t>(target_val.GetInt());
+      if (context_ && context_->storage) {
+        auto s = context_->storage->MarkEntityDeleted(
+            entity_id, EntityType::Vertex, Timestamp::Now());
+        if (!s.ok()) {
+          CEDAR_LOG_WARN() << "DeleteOperator: id delete failed: " << s.ToString();
+        }
+      }
+    }
+  }
+  
+  // Return nullptr to consume the record (DELETE is a terminal consuming operator)
+  return nullptr;
+}
+
+std::string DeleteOperator::GetDetails() const {
+  if (!delete_clause_) return "0 expressions";
+  return std::to_string(delete_clause_->expressions.size()) + " expressions" +
+         (delete_clause_->detach ? " (detach)" : "");
+}
+
+std::unique_ptr<PhysicalOperator> DeleteOperator::Clone() const {
+  auto clone = std::make_unique<DeleteOperator>(delete_clause_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  return clone;
+}
+
 }  // namespace cypher
 }  // namespace cedar
