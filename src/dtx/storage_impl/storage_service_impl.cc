@@ -1018,20 +1018,13 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
     }
     
     if (!all_committed) {
-      // Rollback already-committed partitions to maintain atomicity
-      for (auto* partition : committed_so_far) {
-        auto abort_status = partition->Abort(txn_id);
-        if (!abort_status.ok()) {
-          std::cerr << "[StorageServiceImpl::Commit] Rollback failed for txn=" << txn_id
-                    << " partition=" << partition->GetPartitionId()
-                    << " error=" << abort_status.ToString() << std::endl;
-          // Continue trying to rollback other partitions
-        }
-      }
-      
-      std::string error_msg = "Commit failed on one or more partitions after partial commit: ";
+      // Do NOT rollback already-committed partitions — 2PC invariant:
+      // once a participant has heard COMMIT, it must remain committed.
+      std::string error_msg = "Commit partially failed. " +
+                              std::to_string(committed_so_far.size()) +
+                              " partitions committed, remaining failed.";
       for (const auto& e : errors) {
-        error_msg += e + "; ";
+        error_msg += " " + e + ";";
       }
       std::cerr << "[StorageServiceImpl::Commit] PARTIAL_COMMIT txn_id=" << txn_id
                 << " committed=" << committed_so_far.size()
@@ -1042,6 +1035,12 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
       response->set_error_msg(error_msg);
       // Return UNAVAILABLE so the coordinator retries / triggers recovery
       return grpc::Status(grpc::StatusCode::UNAVAILABLE, error_msg);
+    }
+
+    // Commit succeeded on all partitions — clean up tracking
+    {
+      std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+      txn_partitions_.erase(txn_id);
     }
     
     response->set_success(true);
@@ -1160,6 +1159,10 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
   }
   
   if (any_success) {
+    {
+      std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
+      txn_partitions_.erase(txn_id);
+    }
     response->set_success(true);
     return grpc::Status::OK;
   } else {

@@ -201,6 +201,10 @@ Status PartitionStorage::Commit(TxnID txn_id, Timestamp commit_ts) {
   
   auto it = prepared_txns_.find(txn_id);
   if (it == prepared_txns_.end()) {
+    auto committed_it = committed_txns_.find(txn_id);
+    if (committed_it != committed_txns_.end()) {
+      return Status::OK();  // Already committed
+    }
     return Status::NotFound("Transaction not found: " + std::to_string(txn_id));
   }
   
@@ -254,6 +258,7 @@ Status PartitionStorage::Commit(TxnID txn_id, Timestamp commit_ts) {
 
   state.status = DistributedTxnState::kCommitted;
   WriteTxnWAL(txn_id, "COMMIT");
+  committed_txns_.insert(txn_id);
   prepared_txns_.erase(it);
   
   return Status::OK();
@@ -264,6 +269,10 @@ Status PartitionStorage::Abort(TxnID txn_id) {
   
   auto it = prepared_txns_.find(txn_id);
   if (it == prepared_txns_.end()) {
+    auto aborted_it = aborted_txns_.find(txn_id);
+    if (aborted_it != aborted_txns_.end()) {
+      return Status::OK();  // Already aborted
+    }
     return Status::NotFound("Transaction not found: " + std::to_string(txn_id));
   }
   
@@ -272,6 +281,7 @@ Status PartitionStorage::Abort(TxnID txn_id) {
   // Write WAL
   WriteTxnWAL(txn_id, "ABORT");
   
+  aborted_txns_.insert(txn_id);
   // Remove from prepared transactions
   prepared_txns_.erase(it);
   

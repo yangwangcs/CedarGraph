@@ -176,6 +176,8 @@ class PartitionStorage {
   std::atomic<bool> is_readonly_{false};
   mutable std::shared_mutex txn_mutex_;
   std::unordered_map<TxnID, PreparedTxnState> prepared_txns_;
+  std::unordered_set<TxnID> committed_txns_;
+  std::unordered_set<TxnID> aborted_txns_;
 };
 
 // =============================================================================
