@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include "cedar/cypher/fingerprint.h"
+#include "cedar/cypher/parser.h"
 
 using namespace cedar::cypher;
 
@@ -70,6 +71,55 @@ TEST(FingerprintTest, WhitespaceNormalization) {
       "MATCH (n:Person) RETURN n");
 
   EXPECT_EQ(fp1, fp2);
+}
+
+TEST(FingerprintTest, PreservePropertyKeys) {
+  cedar::cypher::CypherParser parser("MATCH (n:Person {id: 100}) RETURN n");
+  auto ast = parser.ParseStatement();
+  ASSERT_TRUE(ast != nullptr);
+
+  // Default: id replaced with ?
+  std::string fp_default = ComputeFingerprint(*ast);
+  EXPECT_EQ(fp_default, "match (n:Person{id:?}) return n as n");
+
+  // With preserve_property_keys={"id"}: id value kept
+  FingerprintOptions opts;
+  opts.preserve_property_keys.insert("id");
+  std::string fp_preserve = ComputeFingerprint(*ast, opts);
+  EXPECT_EQ(fp_preserve, "match (n:Person{id:100}) return n as n");
+
+  // Different id values produce different fingerprints
+  cedar::cypher::CypherParser parser2("MATCH (n:Person {id: 200}) RETURN n");
+  auto ast2 = parser2.ParseStatement();
+  ASSERT_TRUE(ast2 != nullptr);
+  std::string fp2 = ComputeFingerprint(*ast2, opts);
+  EXPECT_NE(fp_preserve, fp2);
+  EXPECT_EQ(fp2, "match (n:Person{id:200}) return n as n");
+}
+
+TEST(FingerprintTest, PreservePropertyKeysNonLiteral) {
+  cedar::cypher::CypherParser parser("MATCH (n:Person {id: $param}) RETURN n");
+  auto ast = parser.ParseStatement();
+  ASSERT_TRUE(ast != nullptr);
+
+  FingerprintOptions opts;
+  opts.preserve_property_keys.insert("id");
+  std::string fp = ComputeFingerprint(*ast, opts);
+  // Parameters are still replaced with ? even when key is preserved
+  EXPECT_EQ(fp, "match (n:Person{id:?}) return n as n");
+}
+
+TEST(FingerprintTest, PreservePropertyKeysOnlyForDesignatedKeys) {
+  cedar::cypher::CypherParser parser(
+      "MATCH (n:Person {id: 100, name: 'Alice'}) RETURN n");
+  auto ast = parser.ParseStatement();
+  ASSERT_TRUE(ast != nullptr);
+
+  FingerprintOptions opts;
+  opts.preserve_property_keys.insert("id");
+  std::string fp = ComputeFingerprint(*ast, opts);
+  // id is preserved, name is still replaced with ?
+  EXPECT_EQ(fp, "match (n:Person{id:100,name:?}) return n as n");
 }
 
 int main(int argc, char** argv) {
