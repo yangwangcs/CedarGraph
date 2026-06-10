@@ -901,9 +901,19 @@ grpc::Status StorageServiceImpl::Prepare(grpc::ServerContext* context,
   if (!all_prepared) {
     // Rollback already prepared partitions to avoid hanging prepared states
     for (PartitionID pid : prepared_partitions) {
-      auto* partition = partition_manager_->GetPartition(pid);
-      if (partition) {
-        partition->Abort(txn_id);  // Best-effort rollback
+      if (raft_manager_) {
+        auto* raft_group = raft_manager_->GetRaftGroup(pid);
+        if (raft_group && raft_group->IsLeader()) {
+          StorageLogEntry entry;
+          entry.type = StorageLogEntry::Type::kAbort;
+          entry.txn_id = txn_id;
+          raft_group->Propose(entry);  // Best-effort rollback via Raft
+        }
+      } else {
+        auto* partition = partition_manager_->GetPartition(pid);
+        if (partition) {
+          partition->Abort(txn_id);  // Best-effort rollback
+        }
       }
     }
     response->set_prepared(false);
@@ -1082,7 +1092,8 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
   
   TxnID txn_id = request->txn_id();
   
-  bool any_success = false;
+  bool all_success = true;
+  bool any_partition = false;
   std::string last_error;
   
   std::set<PartitionID> involved_partitions;
@@ -1111,8 +1122,10 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
   }
   
   for (PartitionID pid : involved_partitions) {
+    any_partition = true;
     auto* partition = partition_manager_->GetPartition(pid);
     if (!partition) {
+      all_success = false;
       last_error = "Partition not found: " + std::to_string(pid);
       continue;
     }
@@ -1121,10 +1134,12 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
     if (raft_manager_) {
       auto* raft_group = raft_manager_->GetRaftGroup(pid);
       if (!raft_group) {
+        all_success = false;
         last_error = "Raft group not found for partition: " + std::to_string(pid);
         continue;
       }
       if (!raft_group->IsLeader()) {
+        all_success = false;
         auto leader_id = raft_group->GetLeaderId();
         auto leader_addr = raft_group->GetLeaderAddress();
         response->set_success(false);
@@ -1141,9 +1156,8 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
       entry.type = StorageLogEntry::Type::kAbort;
       entry.txn_id = txn_id;
       auto status = raft_group->Propose(entry);
-      if (status.ok()) {
-        any_success = true;
-      } else {
+      if (!status.ok()) {
+        all_success = false;
         last_error = "Raft propose failed: " + status.ToString();
       }
       continue;
@@ -1151,14 +1165,19 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
     
     // Direct path (no replication or single-node mode)
     auto status = partition->Abort(txn_id);
-    if (status.ok()) {
-      any_success = true;
-    } else {
+    if (!status.ok()) {
+      all_success = false;
       last_error = status.ToString();
     }
   }
   
-  if (any_success) {
+  if (!any_partition) {
+    response->set_success(false);
+    response->set_error_msg("No partitions found");
+    return grpc::Status(grpc::StatusCode::INTERNAL, "No partitions found");
+  }
+  
+  if (all_success) {
     {
       std::lock_guard<std::mutex> lock(txn_partitions_mutex_);
       txn_partitions_.erase(txn_id);
@@ -1167,7 +1186,7 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
     return grpc::Status::OK;
   } else {
     response->set_success(false);
-    response->set_error_msg(last_error.empty() ? "No partitions found" : last_error);
+    response->set_error_msg(last_error);
     return grpc::Status(grpc::StatusCode::INTERNAL, last_error);
   }
 }

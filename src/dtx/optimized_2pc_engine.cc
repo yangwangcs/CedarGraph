@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
@@ -419,39 +420,50 @@ Status Optimized2PCEngine::PersistCommitDecision(const CommitDecision& decision)
     std::filesystem::create_directories(decision_log_dir);
   }
   std::string path = decision_log_dir + "/txn_" + std::to_string(decision.txn_id) + ".decision";
-  std::ofstream ofs(path, std::ios::binary);
-  if (!ofs) {
+  int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
     return Status::IOError("Cannot write decision log", path);
   }
+
+  auto write_all = [&](const void* data, size_t len) -> bool {
+    const char* ptr = static_cast<const char*>(data);
+    size_t written = 0;
+    while (written < len) {
+      ssize_t n = ::write(fd, ptr + written, len - written);
+      if (n < 0) {
+        if (errno == EINTR) continue;
+        return false;
+      }
+      written += static_cast<size_t>(n);
+    }
+    return true;
+  };
+
   constexpr uint32_t kMagic = 0x44454301;
   constexpr uint32_t kVersion = 1;
-  ofs.write(reinterpret_cast<const char*>(&kMagic), sizeof(kMagic));
-  ofs.write(reinterpret_cast<const char*>(&kVersion), sizeof(kVersion));
-  ofs.write(reinterpret_cast<const char*>(&decision.txn_id), sizeof(decision.txn_id));
-  ofs.write(reinterpret_cast<const char*>(&decision.commit_ts), sizeof(decision.commit_ts));
+  bool ok = write_all(&kMagic, sizeof(kMagic));
+  ok = ok && write_all(&kVersion, sizeof(kVersion));
+  ok = ok && write_all(&decision.txn_id, sizeof(decision.txn_id));
+  ok = ok && write_all(&decision.commit_ts, sizeof(decision.commit_ts));
   uint32_t num_parts = static_cast<uint32_t>(decision.participants.size());
-  ofs.write(reinterpret_cast<const char*>(&num_parts), sizeof(num_parts));
+  ok = ok && write_all(&num_parts, sizeof(num_parts));
   for (PartitionID pid : decision.participants) {
-    ofs.write(reinterpret_cast<const char*>(&pid), sizeof(pid));
+    ok = ok && write_all(&pid, sizeof(pid));
   }
-  ofs.flush();
-  if (!ofs) {
+
+  if (!ok) {
+    ::close(fd);
     return Status::IOError("Decision log write incomplete", path);
   }
-  ofs.close();
-  if (!ofs) {
-    return Status::IOError("Decision log close failed", path);
-  }
-  // fsync for durability
-  int fd = open(path.c_str(), O_RDONLY);
-  if (fd < 0) {
-    return Status::IOError("Decision log fsync open failed", path);
-  }
-  if (fsync(fd) != 0) {
-    close(fd);
+
+  if (::fsync(fd) != 0) {
+    ::close(fd);
     return Status::IOError("Decision log fsync failed", path);
   }
-  close(fd);
+
+  if (::close(fd) != 0) {
+    return Status::IOError("Decision log close failed", path);
+  }
   if (replicated_decision_log_ != nullptr) {
     auto rep_status = replicated_decision_log_->Append(decision);
     if (!rep_status.ok()) {

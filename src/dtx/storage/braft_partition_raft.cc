@@ -93,17 +93,19 @@ std::string StorageLogEntry::Serialize() const {
       uint32_t read_count = static_cast<uint32_t>(read_set.size());
       data.append(reinterpret_cast<const char*>(&read_count), sizeof(read_count));
       for (const auto& k : read_set) {
-        uint32_t k_len = sizeof(CedarKey);
+        std::string k_str = k.Encode();
+        uint32_t k_len = static_cast<uint32_t>(k_str.size());
         data.append(reinterpret_cast<const char*>(&k_len), sizeof(k_len));
-        data.append(reinterpret_cast<const char*>(&k), sizeof(CedarKey));
+        data.append(k_str);
       }
       // write_set
       uint32_t write_count = static_cast<uint32_t>(write_set.size());
       data.append(reinterpret_cast<const char*>(&write_count), sizeof(write_count));
       for (const auto& k : write_set) {
-        uint32_t k_len = sizeof(CedarKey);
+        std::string k_str = k.Encode();
+        uint32_t k_len = static_cast<uint32_t>(k_str.size());
         data.append(reinterpret_cast<const char*>(&k_len), sizeof(k_len));
-        data.append(reinterpret_cast<const char*>(&k), sizeof(CedarKey));
+        data.append(k_str);
       }
       // write_descriptors
       uint32_t desc_count = static_cast<uint32_t>(write_descriptors.size());
@@ -118,9 +120,10 @@ std::string StorageLogEntry::Serialize() const {
   }
 
   // key serialization (for kPut/kDelete/kBatch)
-  uint32_t key_len = sizeof(CedarKey);
+  std::string key_bytes = key.Encode();
+  uint32_t key_len = static_cast<uint32_t>(key_bytes.size());
   data.append(reinterpret_cast<const char*>(&key_len), sizeof(key_len));
-  data.append(reinterpret_cast<const char*>(&key), sizeof(CedarKey));
+  data.append(key_bytes);
 
   // descriptor presence + data
   if (descriptor.has_value()) {
@@ -433,7 +436,7 @@ void StoragePartitionStateMachine::on_apply(braft::Iterator& iter) {
 }
 
 // Helper: Recursively copy all files from src_dir to dst_dir
-static std::vector<std::string> CopySnapshotFiles(
+static StatusOr<std::vector<std::string>> CopySnapshotFiles(
     const std::string& src_dir,
     const std::string& dst_dir) {
   std::vector<std::string> copied_files;
@@ -453,6 +456,7 @@ static std::vector<std::string> CopySnapshotFiles(
       } catch (const std::filesystem::filesystem_error& e) {
         LOG(WARNING) << "Failed to copy file " << entry.path().string()
                      << " to " << dst_path << ": " << e.what();
+        return Status::IOError(std::string("Failed to copy snapshot file: ") + e.what());
       }
     }
   }
@@ -463,57 +467,80 @@ void StoragePartitionStateMachine::on_snapshot_save(
     braft::SnapshotWriter* writer, braft::Closure* done) {
   braft::AsyncClosureGuard done_guard(done);
   
-  if (!storage_) {
-    LOG(WARNING) << "Storage not available for snapshot save";
-    return;
-  }
-  
-  // Step 1: Flush underlying storage to ensure all data is on disk
-  auto* shared_storage = storage_->GetSharedStorage();
-  if (shared_storage) {
-    auto flush_status = shared_storage->ForceFlush();
-    if (!flush_status.ok()) {
-      LOG(WARNING) << "ForceFlush failed during snapshot: " << flush_status.ToString();
-    }
-  }
-  
-  // Step 2: Copy data files from storage data_root to snapshot directory
-  std::string data_root = storage_->GetDataRoot();
-  std::string snapshot_path = writer->get_path();
-  auto copied_files = CopySnapshotFiles(data_root, snapshot_path + "/data");
-  
-  // Register copied data files with snapshot writer
-  for (const auto& rel_path : copied_files) {
-    std::string snapshot_file = "data/" + rel_path;
-    if (writer->add_file(snapshot_file, nullptr) != 0) {
-      LOG(ERROR) << "Failed to add file to snapshot: " << snapshot_file;
+  try {
+    if (!storage_) {
+      LOG(WARNING) << "Storage not available for snapshot save";
       if (done) {
-        done->status().set_error(EIO, "Failed to add snapshot file");
+        done->status().set_error(EIO, "Storage not available for snapshot save");
       }
       return;
     }
-  }
-  
-  // Step 3: Serialize prepared transaction state (2PC)
-  std::string txn_state_path = snapshot_path + "/txn_state";
-  auto status = storage_->SavePreparedTxns(txn_state_path);
-  if (!status.ok()) {
-    LOG(ERROR) << "Failed to save prepared txns for snapshot: " << status.ToString();
-    if (done) {
-      done->status().set_error(EIO, "Failed to save txn state");
+    
+    // Step 1: Flush underlying storage to ensure all data is on disk
+    auto* shared_storage = storage_->GetSharedStorage();
+    if (shared_storage) {
+      auto flush_status = shared_storage->ForceFlush();
+      if (!flush_status.ok()) {
+        LOG(WARNING) << "ForceFlush failed during snapshot: " << flush_status.ToString();
+      }
     }
-    return;
-  }
-  if (writer->add_file("txn_state", nullptr) != 0) {
-    LOG(ERROR) << "Failed to add txn_state to snapshot";
-    if (done) {
-      done->status().set_error(EIO, "Failed to add txn_state");
+    
+    // Step 2: Copy data files from storage data_root to snapshot directory
+    std::string data_root = storage_->GetDataRoot();
+    std::string snapshot_path = writer->get_path();
+    auto copy_result = CopySnapshotFiles(data_root, snapshot_path + "/data");
+    if (!copy_result.ok()) {
+      LOG(ERROR) << "Failed to copy snapshot files: " << copy_result.status().ToString();
+      if (done) {
+        done->status().set_error(EIO, "Failed to copy snapshot files");
+      }
+      return;
     }
-    return;
+    auto copied_files = std::move(copy_result.value());
+    
+    // Register copied data files with snapshot writer
+    for (const auto& rel_path : copied_files) {
+      std::string snapshot_file = "data/" + rel_path;
+      if (writer->add_file(snapshot_file, nullptr) != 0) {
+        LOG(ERROR) << "Failed to add file to snapshot: " << snapshot_file;
+        if (done) {
+          done->status().set_error(EIO, "Failed to add snapshot file");
+        }
+        return;
+      }
+    }
+    
+    // Step 3: Serialize prepared transaction state (2PC)
+    std::string txn_state_path = snapshot_path + "/txn_state";
+    auto status = storage_->SavePreparedTxns(txn_state_path);
+    if (!status.ok()) {
+      LOG(ERROR) << "Failed to save prepared txns for snapshot: " << status.ToString();
+      if (done) {
+        done->status().set_error(EIO, "Failed to save txn state");
+      }
+      return;
+    }
+    if (writer->add_file("txn_state", nullptr) != 0) {
+      LOG(ERROR) << "Failed to add txn_state to snapshot";
+      if (done) {
+        done->status().set_error(EIO, "Failed to add txn_state");
+      }
+      return;
+    }
+    
+    LOG(INFO) << "Snapshot saved for partition " << storage_->GetPartitionId()
+              << " with " << copied_files.size() << " data files";
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "Exception during snapshot save: " << e.what();
+    if (done) {
+      done->status().set_error(EIO, std::string("Exception during snapshot save: ") + e.what());
+    }
+  } catch (...) {
+    LOG(ERROR) << "Unknown exception during snapshot save";
+    if (done) {
+      done->status().set_error(EIO, "Unknown exception during snapshot save");
+    }
   }
-  
-  LOG(INFO) << "Snapshot saved for partition " << storage_->GetPartitionId()
-            << " with " << copied_files.size() << " data files";
 }
 
 int StoragePartitionStateMachine::on_snapshot_load(
