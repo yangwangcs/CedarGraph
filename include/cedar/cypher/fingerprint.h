@@ -25,11 +25,19 @@
 #define CEDAR_CYPHER_FINGERPRINT_H_
 
 #include <string>
+#include <unordered_set>
 
 namespace cedar {
 namespace cypher {
 
 struct QueryStatement;
+
+struct FingerprintOptions {
+  // Property keys whose literal values should be preserved in the fingerprint
+  // instead of being replaced with '?'. Empty set means all literals are
+  // replaced (default behavior).
+  std::unordered_set<std::string> preserve_property_keys;
+};
 
 // Compute a parameter-agnostic fingerprint from a raw query string.
 // Replaces string literals, numeric literals, and boolean literals with '?'
@@ -39,6 +47,10 @@ std::string ComputeFingerprint(const std::string& query);
 // Compute a parameter-agnostic fingerprint from a parsed AST.
 // All LiteralExpr and ParameterExpr nodes are replaced with '?' tokens.
 std::string ComputeFingerprint(const QueryStatement& ast);
+
+// Compute a fingerprint from a parsed AST with options.
+std::string ComputeFingerprint(const QueryStatement& ast,
+                               const FingerprintOptions& options);
 
 }  // namespace cypher
 }  // namespace cedar
