@@ -42,6 +42,11 @@ class TemporaryTcpListener {
       fd_ = -1;
       return;
     }
+    // Read back the actual assigned port (supports ephemeral port 0)
+    socklen_t addr_len = sizeof(addr);
+    if (::getsockname(fd_, reinterpret_cast<struct sockaddr*>(&addr), &addr_len) == 0) {
+      port_ = ntohs(addr.sin_port);
+    }
     if (::listen(fd_, 5) < 0) {
       ::close(fd_);
       fd_ = -1;
@@ -72,9 +77,11 @@ class TemporaryTcpListener {
   }
 
   bool IsOk() const { return fd_ >= 0; }
+  int Port() const { return port_; }
 
  private:
   int fd_ = -1;
+  int port_ = -1;
   std::atomic<bool> running_{true};
   std::thread thread_;
 };
@@ -82,7 +89,7 @@ class TemporaryTcpListener {
 class FailoverHealthScoreTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    listener_ = std::make_unique<TemporaryTcpListener>(kTestPort);
+    listener_ = std::make_unique<TemporaryTcpListener>(0);
     ASSERT_TRUE(listener_->IsOk());
 
     controller_ = std::make_unique<PartitionFailoverController>();
@@ -101,7 +108,10 @@ class FailoverHealthScoreTest : public ::testing::Test {
     listener_.reset();
   }
 
-  static constexpr int kTestPort = 19779;  // Ephemeral test port
+  std::string TestAddress() const {
+    return "127.0.0.1:" + std::to_string(listener_->Port());
+  }
+
   std::unique_ptr<TemporaryTcpListener> listener_;
   std::unique_ptr<PartitionFailoverController> controller_;
 };
@@ -160,7 +170,7 @@ TEST_F(FailoverHealthScoreTest, HealthyNodeHighScore) {
   std::vector<NodeID> replicas = {1};
   Status s = controller_->RegisterPartition(100, 1, replicas);
   ASSERT_TRUE(s.ok());
-  controller_->RegisterNodeAddress(1, "127.0.0.1:19779");
+  controller_->RegisterNodeAddress(1, TestAddress());
 
   // Register a collector that reports healthy metrics
   controller_->RegisterHealthMetricsCollector(
@@ -189,7 +199,7 @@ TEST_F(FailoverHealthScoreTest, HighRaftLagReducesScoreButNotDead) {
   std::vector<NodeID> replicas = {1};
   Status s = controller_->RegisterPartition(100, 1, replicas);
   ASSERT_TRUE(s.ok());
-  controller_->RegisterNodeAddress(1, "127.0.0.1:19779");
+  controller_->RegisterNodeAddress(1, TestAddress());
 
   controller_->RegisterHealthMetricsCollector(
       [](NodeID) -> HealthMetrics {
@@ -234,7 +244,7 @@ TEST_F(FailoverHealthScoreTest, PredictiveDegradationOnTrend) {
   std::vector<NodeID> replicas = {1};
   Status s = controller_->RegisterPartition(100, 1, replicas);
   ASSERT_TRUE(s.ok());
-  controller_->RegisterNodeAddress(1, "127.0.0.1:19779");
+  controller_->RegisterNodeAddress(1, TestAddress());
 
   // Simulate a degrading trend: score drops from 90 -> 70 -> 50 -> 30
   std::vector<double> lag_values = {10.0, 100.0, 2000.0, 8000.0};
@@ -264,7 +274,7 @@ TEST_F(FailoverHealthScoreTest, RecoveryRestoresHealth) {
   std::vector<NodeID> replicas = {1};
   Status s = controller_->RegisterPartition(100, 1, replicas);
   ASSERT_TRUE(s.ok());
-  controller_->RegisterNodeAddress(1, "127.0.0.1:19779");
+  controller_->RegisterNodeAddress(1, TestAddress());
 
   double lag = 8000.0;
   controller_->RegisterHealthMetricsCollector(
