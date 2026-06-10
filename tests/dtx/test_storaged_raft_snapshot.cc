@@ -124,3 +124,30 @@ TEST_F(StorageRaftSnapshotTest, RestoreFromSnapshotReplacesData) {
   EXPECT_TRUE(result.has_value());
   EXPECT_EQ(result->AsRaw(), desc.AsRaw());
 }
+
+TEST_F(StorageRaftSnapshotTest, OnSnapshotSaveCopiesDataFiles) {
+  // Write data and flush so SST files exist on disk
+  cedar::Descriptor desc = cedar::Descriptor::InlineInt(0, 123);
+  auto s = storage_->PutStaticVertex(2001, 1, desc);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+  s = storage_->ForceFlush();
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  cedar::dtx::storage::StorageRaftStateMachine sm(storage_);
+  TestSnapshotWriter writer(snapshot_dir_);
+  sm.on_snapshot_save(&writer, nullptr);
+
+  // Verify snapshot data directory was created and contains files
+  EXPECT_TRUE(std::filesystem::exists(snapshot_dir_ + "/data"));
+  bool has_files = false;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(snapshot_dir_ + "/data")) {
+    if (entry.is_regular_file()) {
+      has_files = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(has_files) << "Snapshot data dir should contain copied SST files";
+
+  // Verify txn_state file was created
+  EXPECT_TRUE(std::filesystem::exists(snapshot_dir_ + "/txn_state"));
+}

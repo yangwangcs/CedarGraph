@@ -68,14 +68,75 @@ void StorageRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
     return;
   }
 
-  // Copy data directory to snapshot path
   try {
-    std::filesystem::path snapshot_path(writer->get_path());
-    std::filesystem::create_directories(snapshot_path);
+    std::string snapshot_path = writer->get_path();
+    std::string data_path = storage_->GetDbPath();
 
-    // TODO: Get actual data directory from storage
-    // For now, we assume the snapshot path is managed by braft
-    LOG(INFO) << "Raft snapshot saved";
+    // Step 1: Flush underlying storage to ensure all data is on disk
+    auto flush_status = storage_->ForceFlush();
+    if (!flush_status.ok()) {
+      LOG(WARNING) << "ForceFlush failed during snapshot: "
+                   << flush_status.ToString();
+    }
+
+    // Step 2: Copy data directory to snapshot path
+    std::string snapshot_data_dir = snapshot_path + "/data";
+    std::filesystem::create_directories(snapshot_data_dir);
+
+    if (std::filesystem::exists(data_path)) {
+      for (const auto& entry :
+           std::filesystem::recursive_directory_iterator(data_path)) {
+        if (entry.is_regular_file()) {
+          std::string relative =
+              std::filesystem::relative(entry.path(), data_path).string();
+          std::string dst = snapshot_data_dir + "/" + relative;
+          std::filesystem::create_directories(
+              std::filesystem::path(dst).parent_path());
+          std::filesystem::copy_file(
+              entry.path(), dst,
+              std::filesystem::copy_options::overwrite_existing);
+        }
+      }
+    }
+
+    // Register data files with snapshot writer
+    for (const auto& entry :
+         std::filesystem::recursive_directory_iterator(snapshot_data_dir)) {
+      if (entry.is_regular_file()) {
+        std::string relative =
+            std::filesystem::relative(entry.path(), snapshot_data_dir)
+                .string();
+        std::string snapshot_file = "data/" + relative;
+        if (writer->add_file(snapshot_file, nullptr) != 0) {
+          LOG(ERROR) << "Failed to add file to snapshot: " << snapshot_file;
+          if (done) {
+            done->status().set_error(EIO, "Failed to add snapshot file");
+          }
+          return;
+        }
+      }
+    }
+
+    // Step 3: Serialize prepared transaction state (2PC)
+    std::string txn_state_path = snapshot_path + "/txn_state";
+    auto status = storage_->SavePreparedTxns(txn_state_path);
+    if (!status.ok()) {
+      LOG(ERROR) << "Failed to save prepared txns for snapshot: "
+                 << status.ToString();
+      if (done) {
+        done->status().set_error(EIO, "Failed to save txn state");
+      }
+      return;
+    }
+    if (writer->add_file("txn_state", nullptr) != 0) {
+      LOG(ERROR) << "Failed to add txn_state to snapshot";
+      if (done) {
+        done->status().set_error(EIO, "Failed to add txn_state");
+      }
+      return;
+    }
+
+    LOG(INFO) << "Raft snapshot saved to " << snapshot_path;
   } catch (const std::exception& e) {
     LOG(ERROR) << "Snapshot save failed: " << e.what();
     if (done) {
