@@ -427,6 +427,17 @@ class CedarGraphStorage {
   // Returns nullptr in distributed mode
   LsmEngine* GetLsmEngine() const;
   
+  // ========== Snapshot Support API ==========
+  
+  /// Get the database path (for snapshot operations)
+  std::string GetDbPath() const;
+  
+  /// Save prepared transaction state for snapshot (2PC extension point)
+  Status SavePreparedTxns(const std::string& path) const;
+  
+  /// Load prepared transaction state from snapshot
+  Status LoadPreparedTxns(const std::string& path);
+  
   // ========== Distributed Mode API (NEW) ==========
   
   /// Check if running in distributed mode

@@ -22,6 +22,12 @@
 #include <functional>
 #include <string>
 
+// NEW includes for participant persistence
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+
 namespace cedar {
 namespace dtx {
 
@@ -318,10 +324,70 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
 ::grpc::Status DTXServiceImpl::RegisterParticipant(::grpc::ServerContext* context,
                                                    const cedar::dtx::RegisterRequest* request,
                                                    cedar::dtx::RegisterResponse* response) {
-  (void)context; (void)request;
-  response->set_success(false);
-  response->set_error_msg("RegisterParticipant not implemented");
-  return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Not implemented");
+  (void)context;
+
+  // Validate required fields
+  if (request->txn_id().empty()) {
+    response->set_success(false);
+    response->set_error_msg("txn_id is required");
+    return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "txn_id is required");
+  }
+  if (request->participant_id().empty()) {
+    response->set_success(false);
+    response->set_error_msg("participant_id is required");
+    return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "participant_id is required");
+  }
+
+  // Build record
+  ParticipantRecord record;
+  record.participant_id = request->participant_id();
+  record.endpoint = request->endpoint();
+  record.role = request->role();
+
+  // Add to in-memory registry
+  {
+    std::lock_guard<std::mutex> lock(participants_mutex_);
+    participants_[request->txn_id()].push_back(record);
+  }
+
+  // Persist to decision log (best-effort; do not fail RPC on log write failure)
+  auto persist_status = PersistParticipantRegistration(*request);
+  if (!persist_status.ok()) {
+    std::cerr << "[DTXServiceImpl] Failed to persist participant registration for txn="
+              << request->txn_id() << ": " << persist_status.ToString() << std::endl;
+  }
+
+  response->set_success(true);
+  response->set_assigned_id(request->participant_id());
+  return ::grpc::Status::OK;
+}
+
+Status DTXServiceImpl::PersistParticipantRegistration(
+    const cedar::dtx::RegisterRequest& request) {
+  if (participant_log_path_.empty()) {
+    return Status::OK();  // persistence disabled
+  }
+
+  std::string log_file = participant_log_path_ + "/participant_registry.log";
+  std::ofstream ofs(log_file, std::ios::app);
+  if (!ofs) {
+    return Status::IOError("Cannot open participant log: " + log_file);
+  }
+
+  // Format: txn_id|participant_id|endpoint|role|timestamp_us
+  auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count();
+  ofs << request.txn_id() << "|"
+      << request.participant_id() << "|"
+      << request.endpoint() << "|"
+      << static_cast<int>(request.role()) << "|"
+      << now_us << "\n";
+  ofs.flush();
+  if (!ofs) {
+    return Status::IOError("Failed to write participant log");
+  }
+  return Status::OK();
 }
 
 }  // namespace dtx

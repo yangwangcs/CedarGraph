@@ -20,11 +20,24 @@
 #include "cedar/storage/cedar_graph_storage.h"
 #include <grpcpp/grpcpp.h>
 
+// NEW includes for participant registry
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 namespace cedar {
 namespace dtx {
 
 // Forward declaration to avoid circular include
 class StorageServiceImpl;
+
+// NEW: participant record for in-memory registry
+struct ParticipantRecord {
+  std::string participant_id;
+  std::string endpoint;
+  cedar::dtx::RegisterRequest::Role role;
+};
 
 class DTXServiceImpl final : public cedar::dtx::DTXService::Service {
  public:
@@ -33,6 +46,11 @@ class DTXServiceImpl final : public cedar::dtx::DTXService::Service {
 
   void SetCrossDCReplicator(CrossDCReplicator* replicator) {
     cross_dc_replicator_ = replicator;
+  }
+
+  // NEW: set the directory where participant registration logs are persisted
+  void SetParticipantLogPath(const std::string& path) {
+    participant_log_path_ = path;
   }
 
   ::grpc::Status Prepare(::grpc::ServerContext* context,
@@ -64,6 +82,13 @@ class DTXServiceImpl final : public cedar::dtx::DTXService::Service {
   CrossDCReplicator* cross_dc_replicator_ = nullptr;
 
   Status ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log_entry);
+
+  // NEW: participant registry
+  mutable std::mutex participants_mutex_;
+  std::unordered_map<std::string, std::vector<ParticipantRecord>> participants_;
+  std::string participant_log_path_;
+
+  Status PersistParticipantRegistration(const cedar::dtx::RegisterRequest& request);
 };
 
 }  // namespace dtx

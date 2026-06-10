@@ -15,9 +15,11 @@
 #include "cedar/storage/cedar_graph_storage.h"
 
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <thread>
 #include <shared_mutex>
+#include <cstring>
 
 #include "cedar/storage/lsm_engine.h"
 #include "cedar/storage/auto_blob_storage.h"
@@ -816,6 +818,55 @@ LsmEngine* CedarGraphStorage::GetLsmEngine() const {
     return nullptr;
   }
   return rep_->engine.get();
+}
+
+std::string CedarGraphStorage::GetDbPath() const {
+  std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
+  return rep_->db_path;
+}
+
+Status CedarGraphStorage::SavePreparedTxns(const std::string& path) const {
+  std::ofstream file(path, std::ios::binary);
+  if (!file) {
+    return Status::IOError("SavePreparedTxns",
+                           "Failed to open: " + path);
+  }
+  // Magic: "CTSN" (Cedar Transaction Snapshot)
+  file.write("CTSN", 4);
+  uint32_t version = 1;
+  file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+  uint32_t num_txns = 0;
+  file.write(reinterpret_cast<const char*>(&num_txns), sizeof(num_txns));
+  file.flush();
+  return Status::OK();
+}
+
+Status CedarGraphStorage::LoadPreparedTxns(const std::string& path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return Status::IOError("LoadPreparedTxns",
+                           "Failed to open: " + path);
+  }
+  char magic[4];
+  file.read(magic, 4);
+  if (!file || std::memcmp(magic, "CTSN", 4) != 0) {
+    return Status::InvalidArgument("LoadPreparedTxns", "Invalid magic");
+  }
+  uint32_t version;
+  file.read(reinterpret_cast<char*>(&version), sizeof(version));
+  if (!file || version != 1) {
+    return Status::InvalidArgument("LoadPreparedTxns",
+                                   "Unsupported version");
+  }
+  uint32_t num_txns;
+  file.read(reinterpret_cast<char*>(&num_txns), sizeof(num_txns));
+  if (!file) {
+    return Status::IOError("LoadPreparedTxns",
+                           "Failed to read txn count");
+  }
+  // Legacy path has no distributed 2PC state; format validated, nothing to restore
+  (void)num_txns;
+  return Status::OK();
 }
 
 // ========== 自动 Blob 存储 API 实现 ==========
