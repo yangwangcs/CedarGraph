@@ -151,3 +151,51 @@ TEST_F(StorageRaftSnapshotTest, OnSnapshotSaveCopiesDataFiles) {
   // Verify txn_state file was created
   EXPECT_TRUE(std::filesystem::exists(snapshot_dir_ + "/txn_state"));
 }
+
+TEST_F(StorageRaftSnapshotTest, OnSnapshotLoadRestoresDataFiles) {
+  // Write data, flush, and save snapshot
+  cedar::Descriptor desc = cedar::Descriptor::InlineInt(0, 456);
+  auto s = storage_->PutStaticVertex(3001, 0, desc);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+  s = storage_->ForceFlush();
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  cedar::dtx::storage::StorageRaftStateMachine sm(storage_);
+  {
+    TestSnapshotWriter writer(snapshot_dir_);
+    sm.on_snapshot_save(&writer, nullptr);
+  }
+
+  // Verify original data is readable
+  auto result = storage_->GetStaticVertex(3001, 0);
+  ASSERT_TRUE(result.has_value());
+
+  // Clear original data directory to simulate empty follower
+  for (const auto& entry : std::filesystem::directory_iterator(data_dir_)) {
+    std::filesystem::remove_all(entry.path());
+  }
+
+  // Data should be unreadable now (engine still has old memtable, but we force a fresh engine)
+  // Instead, simulate the load path: close and reopen storage fresh
+  delete storage_;
+  storage_ = nullptr;
+  cedar::CedarOptions options;
+  options.create_if_missing = false;
+  s = cedar::CedarGraphStorage::Open(options, data_dir_, &storage_);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  // Before load: data is gone
+  result = storage_->GetStaticVertex(3001, 0);
+  EXPECT_FALSE(result.has_value());
+
+  // Load snapshot
+  cedar::dtx::storage::StorageRaftStateMachine sm2(storage_);
+  TestSnapshotReader reader(snapshot_dir_);
+  int rc = sm2.on_snapshot_load(&reader);
+  EXPECT_EQ(rc, 0);
+
+  // After load: data is back
+  result = storage_->GetStaticVertex(3001, 0);
+  EXPECT_TRUE(result.has_value());
+  EXPECT_EQ(result->AsRaw(), desc.AsRaw());
+}

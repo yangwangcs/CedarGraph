@@ -153,9 +153,31 @@ int StorageRaftStateMachine::on_snapshot_load(braft::SnapshotReader* reader) {
     return 0;
   }
 
-  // TODO: Restore data directory from snapshot path
-  // This requires shutting down LSM engine, copying files, and restarting
-  LOG(INFO) << "Raft snapshot loaded";
+  std::string snapshot_path = reader->get_path();
+
+  // Step 1: Restore data files from snapshot to storage data_root
+  std::string snapshot_data_dir = snapshot_path + "/data";
+  if (std::filesystem::exists(snapshot_data_dir)) {
+    auto status = storage_->RestoreFromSnapshot(snapshot_data_dir);
+    if (!status.ok()) {
+      LOG(ERROR) << "Failed to restore snapshot data: " << status.ToString();
+      return -1;
+    }
+    LOG(INFO) << "Restored data files from snapshot";
+  }
+
+  // Step 2: Restore prepared transaction state (2PC)
+  std::string txn_state_path = snapshot_path + "/txn_state";
+  if (std::filesystem::exists(txn_state_path)) {
+    auto status = storage_->LoadPreparedTxns(txn_state_path);
+    if (!status.ok()) {
+      LOG(ERROR) << "Failed to load prepared txns from snapshot: "
+                 << status.ToString();
+      return -1;
+    }
+    LOG(INFO) << "Loaded prepared txns from snapshot";
+  }
+
   return 0;
 }
 
