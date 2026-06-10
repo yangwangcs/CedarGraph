@@ -292,6 +292,9 @@ class CedarGraph {
   
   // Scan vertices that actually exist in storage within a time range
   std::vector<uint64_t> ScanVertices(Timestamp start, Timestamp end);
+
+  // Check if a vertex has any data in storage
+  bool HasVertex(uint64_t vertex_id);
   
   // Get time series data for a specific entity
   std::vector<std::pair<Timestamp, Descriptor>> GetTimeSeries(

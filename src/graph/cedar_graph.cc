@@ -418,6 +418,14 @@ std::vector<uint64_t> CedarGraph::ScanVertices(Timestamp start, Timestamp end) {
   return result;
 }
 
+bool CedarGraph::HasVertex(uint64_t vertex_id) {
+  if (!storage_) {
+    return false;
+  }
+  auto versions = storage_->Scan(vertex_id, Timestamp(0), Timestamp::Max());
+  return !versions.empty();
+}
+
 std::vector<std::pair<Timestamp, Descriptor>> CedarGraph::GetTimeSeries(
     uint64_t entity_id,
     Timestamp start_time,
