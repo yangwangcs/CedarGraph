@@ -292,7 +292,7 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   // 配置
   std::chrono::seconds partition_refresh_interval_{30};
   static constexpr uint32_t kNumPartitions = 32768;
-  std::string txn_wal_dir_ = "/tmp/cedar_graphd_txn_wal";
+  std::string txn_wal_dir_;
   static constexpr size_t kMaxCachedStubs = 100;
   static constexpr size_t kMaxActiveTransactions = 10000;
   

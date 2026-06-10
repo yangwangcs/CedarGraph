@@ -6,7 +6,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
+#include <filesystem>
 #include <iostream>
+#include <limits>
 #include <regex>
 #include <sstream>
 #include <thread>
@@ -186,6 +189,15 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   cache_config.max_memory_bytes = 100 * 1024 * 1024;  // 100MB
   cache_config.default_ttl_seconds = 60;
   query_cache_ = std::make_unique<cedar::query::QueryCache>(cache_config);
+
+  // 配置 WAL 目录
+  const char* env_wal_dir = std::getenv("CEDAR_TXN_WAL_DIR");
+  if (env_wal_dir) {
+    txn_wal_dir_ = env_wal_dir;
+  } else {
+    txn_wal_dir_ = "/var/lib/cedar/graphd/txn_wal";
+  }
+  std::filesystem::create_directories(txn_wal_dir_);
   
   std::cerr << "[GraphD] Query cache initialized" << std::endl;
 
@@ -282,9 +294,9 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   if (!request->explain_only()) {
     cedar::query::CacheKey cache_key;
     cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
-        request->query(), request->parameters().params(), request->as_of_timestamp());
+        request->query(), request->parameters().params(), 0);
     cache_key.partition_hash = route_ctx.target_partitions.empty() ? 0 : route_ctx.target_partitions[0];
-    cache_key.as_of_timestamp = request->as_of_timestamp();
+    cache_key.as_of_timestamp = 0;
 
     // 尝试从缓存获取
     auto cached_result = query_cache_->Get(cache_key);
@@ -309,6 +321,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   
   // 检测写操作（简化：关键词匹配）
   if (IsWriteQuery(request->query())) {
+    std::unique_lock<std::mutex> txn_lock(active_txns_mutex_);
     std::shared_lock<std::shared_mutex> engine_lock(engine_mutex_);
     if (!two_pc_engine_) {
       stats_.failed_queries++;
@@ -330,20 +343,17 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
     // 检查是否在显式事务中
     std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
     if (!txn_id_str.empty()) {
-      // 显式事务模式：累积 write_set 到事务上下文
-      {
-        std::lock_guard<std::mutex> lock(active_txns_mutex_);
-        auto it = active_transactions_.find(txn_id_str);
-        if (it == active_transactions_.end()) {
-          stats_.failed_queries++;
-          response->set_success(false);
-          response->set_error_msg("Transaction not found: " + txn_id_str);
-          return grpc::Status::OK;
-        }
-        it->second.write_set.insert(it->second.write_set.end(),
-                                     write_set.begin(), write_set.end());
-        it->second.has_writes = true;
+      // 显式事务模式：累积 write_set 到事务上下文（active_txns_mutex_ 已由外层持有）
+      auto it = active_transactions_.find(txn_id_str);
+      if (it == active_transactions_.end()) {
+        stats_.failed_queries++;
+        response->set_success(false);
+        response->set_error_msg("Transaction not found: " + txn_id_str);
+        return grpc::Status::OK;
       }
+      it->second.write_set.insert(it->second.write_set.end(),
+                                   write_set.begin(), write_set.end());
+      it->second.has_writes = true;
       result_set.set_total_rows(static_cast<int32_t>(route_ctx.entity_ids.size()));
     } else {
       // 自动事务模式（autocommit）：立即执行 2PC
@@ -405,9 +415,9 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
       if (!request->explain_only() && query_cache_ != nullptr) {
         cedar::query::CacheKey cache_key;
         cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
-            request->query(), request->parameters().params(), request->as_of_timestamp());
+            request->query(), request->parameters().params(), 0);
         cache_key.partition_hash = route_ctx.target_partitions.empty() ? 0 : route_ctx.target_partitions[0];
-        cache_key.as_of_timestamp = request->as_of_timestamp();
+        cache_key.as_of_timestamp = 0;
         query_cache_->Put(cache_key, response->result_set());
       }
 
@@ -633,9 +643,9 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   if (!request->explain_only() && query_cache_ != nullptr) {
     cedar::query::CacheKey cache_key;
     cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
-        request->query(), request->parameters().params(), request->as_of_timestamp());
+        request->query(), request->parameters().params(), 0);
     cache_key.partition_hash = route_ctx.target_partitions.empty() ? 0 : route_ctx.target_partitions[0];
-    cache_key.as_of_timestamp = request->as_of_timestamp();
+    cache_key.as_of_timestamp = 0;
     query_cache_->Put(cache_key, response->result_set());
   }
   
@@ -1133,6 +1143,71 @@ grpc::Status GraphServiceRouter::GetSchema(grpc::ServerContext* context,
 
 // ========== 私有方法 ==========
 
+namespace {
+
+void ExtractEntityIdsFromQuery(const std::string& query,
+                               std::vector<uint64_t>* out_ids) {
+  const size_t kMaxIterations = query.size() * 2;
+  size_t iterations = 0;
+  for (size_t i = 0; i < query.size() && iterations < kMaxIterations; ++i, ++iterations) {
+    if ((i + 2 < query.size()) &&
+        (query[i] == 'i' || query[i] == 'I') &&
+        (query[i+1] == 'd' || query[i+1] == 'D')) {
+      size_t j = i + 2;
+      while (j < query.size() && std::isspace(static_cast<unsigned char>(query[j]))) {
+        ++j; ++iterations;
+      }
+      if (j < query.size() && query[j] == '(') {
+        ++j;
+        while (j < query.size() && query[j] != ')') { ++j; ++iterations; }
+        if (j < query.size()) ++j;
+        while (j < query.size() && std::isspace(static_cast<unsigned char>(query[j]))) {
+          ++j; ++iterations;
+        }
+        if (j < query.size() && query[j] == '=') {
+          ++j;
+          while (j < query.size() && std::isspace(static_cast<unsigned char>(query[j]))) {
+            ++j; ++iterations;
+          }
+          if (j < query.size() && std::isdigit(static_cast<unsigned char>(query[j]))) {
+            uint64_t id = 0;
+            bool overflow = false;
+            while (j < query.size() && std::isdigit(static_cast<unsigned char>(query[j]))) {
+              uint64_t digit = query[j] - '0';
+              if (id > (std::numeric_limits<uint64_t>::max() - digit) / 10) {
+                overflow = true; break;
+              }
+              id = id * 10 + digit;
+              ++j; ++iterations;
+            }
+            if (!overflow) out_ids->push_back(id);
+          }
+        }
+      } else if (j < query.size() && query[j] == ':') {
+        ++j;
+        while (j < query.size() && std::isspace(static_cast<unsigned char>(query[j]))) {
+          ++j; ++iterations;
+        }
+        if (j < query.size() && std::isdigit(static_cast<unsigned char>(query[j]))) {
+          uint64_t id = 0;
+          bool overflow = false;
+          while (j < query.size() && std::isdigit(static_cast<unsigned char>(query[j]))) {
+            uint64_t digit = query[j] - '0';
+            if (id > (std::numeric_limits<uint64_t>::max() - digit) / 10) {
+              overflow = true; break;
+            }
+            id = id * 10 + digit;
+            ++j; ++iterations;
+          }
+          if (!overflow) out_ids->push_back(id);
+        }
+      }
+    }
+  }
+}
+
+}  // namespace
+
 Status GraphServiceRouter::ParseQueryForRouting(const std::string& query, 
                                                 QueryRouteContext* route_ctx) {
   // 使用 Cypher 解析器解析查询
@@ -1143,25 +1218,10 @@ Status GraphServiceRouter::ParseQueryForRouting(const std::string& query,
     return Status::InvalidArgument("Parse error: " + parser.GetError());
   }
   
-  // 保留原有的正则启发式提取（兜底）
-  std::regex id_pattern(R"(id\s*\(\s*\w+\s*\)\s*=\s*(\d+))", std::regex::icase);
-  std::smatch match;
-  std::string::const_iterator search_start(query.cbegin());
-  while (std::regex_search(search_start, query.cend(), match, id_pattern)) {
-    uint64_t entity_id = std::stoull(match[1].str());
-    route_ctx->entity_ids.push_back(entity_id);
+  // 安全的手写解析提取 entity IDs（替代 std::regex 避免 ReDoS）
+  ExtractEntityIdsFromQuery(query, &route_ctx->entity_ids);
+  for (uint64_t entity_id : route_ctx->entity_ids) {
     route_ctx->target_partitions.push_back(CalculatePartition(entity_id));
-    search_start = match.suffix().first;
-  }
-  
-  // CREATE 查询中的 {id: 123} 提取
-  std::regex create_id_pattern(R"(\{\s*id\s*:\s*(\d+))", std::regex::icase);
-  search_start = query.cbegin();
-  while (std::regex_search(search_start, query.cend(), match, create_id_pattern)) {
-    uint64_t entity_id = std::stoull(match[1].str());
-    route_ctx->entity_ids.push_back(entity_id);
-    route_ctx->target_partitions.push_back(CalculatePartition(entity_id));
-    search_start = match.suffix().first;
   }
   
   // ==========================================================================
