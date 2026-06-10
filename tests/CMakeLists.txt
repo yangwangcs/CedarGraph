@@ -43,6 +43,13 @@ add_executable(test_set_delete_parsing
 target_link_libraries(test_set_delete_parsing cedar cedar_cypher cedar_queryd gtest pthread)
 gtest_discover_tests(test_set_delete_parsing)
 
+# Write operators test
+add_executable(test_write_operators
+    cypher/test_write_operators.cc
+)
+target_link_libraries(test_write_operators cedar cedar_cypher gtest pthread)
+gtest_discover_tests(test_write_operators)
+
 # Queryd tests
 add_executable(test_subquery_execution queryd/test_subquery_execution.cc)
 target_link_libraries(test_subquery_execution ${CEDAR_TEST_LIBS} cedar_queryd)
@@ -76,6 +83,10 @@ gtest_discover_tests(test_tombstone_flush)
 add_executable(test_manifest_compact db/test_manifest_compact.cc)
 target_link_libraries(test_manifest_compact ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_manifest_compact)
+
+add_executable(test_repair_db db/test_repair_db.cc)
+target_link_libraries(test_repair_db ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_repair_db)
 
 add_executable(test_memtable_iterator_race db/test_memtable_iterator_race.cc)
 target_link_libraries(test_memtable_iterator_race ${CEDAR_TEST_LIBS})

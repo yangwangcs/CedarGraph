@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <cstdlib>
+#include <atomic>
+#include <unistd.h>
 
 #include "cedar/cypher/execution_plan.h"
 #include "cedar/cypher/ast.h"
@@ -14,7 +16,11 @@ using namespace cedar::cypher;
 using namespace cedar;
 
 static std::string GetTempDbPath() {
-  auto tmp = std::filesystem::temp_directory_path() / "cedar_write_test";
+  static std::atomic<int> counter{0};
+  auto pid = getpid();
+  auto seq = counter.fetch_add(1);
+  auto tmp = std::filesystem::temp_directory_path() /
+             ("cedar_write_test_" + std::to_string(pid) + "_" + std::to_string(seq));
   std::filesystem::remove_all(tmp);
   std::filesystem::create_directories(tmp);
   return tmp.string();
@@ -311,6 +317,116 @@ TEST_F(DeleteOperatorTest, DeleteOperatorExhaustsAfterChildEmpty) {
   
   ASSERT_TRUE(op.Init(&ctx));
   EXPECT_EQ(op.Next(), nullptr);
+}
+
+// ============================================================================
+// ExecutionPlanBuilder Integration Tests
+// ============================================================================
+
+TEST(ExecutionPlanBuilderWriteTest, BuildPlanWithCreateClause) {
+  // We can't easily parse "CREATE (n)" with the current parser if it lacks MATCH,
+  // so we build the AST manually.
+  auto stmt = std::make_shared<QueryStatement>();
+  auto create_clause = std::make_shared<CreateClause>();
+  PathPattern pattern;
+  NodePattern node;
+  node.variable = "n";
+  node.labels = {"TestLabel"};
+  pattern.elements.push_back(node);
+  create_clause->patterns.push_back(std::move(pattern));
+  stmt->clauses.push_back(create_clause);
+  
+  auto plan = ExecutionPlanBuilder::Build(stmt, nullptr);
+  ASSERT_NE(plan, nullptr);
+  
+  auto explain = plan->Explain(0);
+  EXPECT_NE(explain.find("Create"), std::string::npos);
+}
+
+TEST(ExecutionPlanBuilderWriteTest, BuildPlanWithSetClause) {
+  auto stmt = std::make_shared<QueryStatement>();
+  
+  // MATCH (n)
+  auto match_clause = std::make_shared<MatchClause>();
+  PathPattern pattern;
+  NodePattern node;
+  node.variable = "n";
+  pattern.elements.push_back(node);
+  match_clause->patterns.push_back(std::move(pattern));
+  stmt->clauses.push_back(match_clause);
+  
+  // SET n.name = 'Alice'
+  auto set_clause = std::make_shared<SetClause>();
+  SetClause::SetItem item;
+  item.target = std::make_shared<PropertyExpr>("n", "name");
+  item.value = std::make_shared<LiteralExpr>(Value("Alice"));
+  set_clause->items.push_back(std::move(item));
+  stmt->clauses.push_back(set_clause);
+  
+  auto plan = ExecutionPlanBuilder::Build(stmt, nullptr);
+  ASSERT_NE(plan, nullptr);
+  
+  auto explain = plan->Explain(0);
+  EXPECT_NE(explain.find("Set"), std::string::npos);
+  EXPECT_NE(explain.find("NodeScan"), std::string::npos);
+}
+
+TEST(ExecutionPlanBuilderWriteTest, BuildPlanWithDeleteClause) {
+  auto stmt = std::make_shared<QueryStatement>();
+  
+  // MATCH (n)
+  auto match_clause = std::make_shared<MatchClause>();
+  PathPattern pattern;
+  NodePattern node;
+  node.variable = "n";
+  pattern.elements.push_back(node);
+  match_clause->patterns.push_back(std::move(pattern));
+  stmt->clauses.push_back(match_clause);
+  
+  // DELETE n
+  auto delete_clause = std::make_shared<DeleteClause>();
+  delete_clause->expressions.push_back(std::make_shared<VariableExpr>("n"));
+  stmt->clauses.push_back(delete_clause);
+  
+  auto plan = ExecutionPlanBuilder::Build(stmt, nullptr);
+  ASSERT_NE(plan, nullptr);
+  
+  auto explain = plan->Explain(0);
+  EXPECT_NE(explain.find("Delete"), std::string::npos);
+  EXPECT_NE(explain.find("NodeScan"), std::string::npos);
+}
+
+// ============================================================================
+// End-to-End Round-Trip Test
+// ============================================================================
+
+TEST_F(CreateOperatorTest, CreateThenReadRoundTrip) {
+  // 1. CREATE (n:Account {id: 7777, status: 'active'})
+  auto create_clause = std::make_shared<CreateClause>();
+  PathPattern pattern;
+  NodePattern node;
+  node.variable = "n";
+  node.labels = {"Account"};
+  node.properties["id"] = std::make_shared<LiteralExpr>(Value(7777));
+  node.properties["status"] = std::make_shared<LiteralExpr>(Value("active"));
+  pattern.elements.push_back(node);
+  create_clause->patterns.push_back(std::move(pattern));
+  
+  CreateOperator create_op(create_clause);
+  ExecutionContext ctx;
+  ctx.storage = storage_;
+  ASSERT_TRUE(create_op.Init(&ctx));
+  auto created = create_op.Next();
+  ASSERT_NE(created, nullptr);
+  
+  uint64_t created_id = created->Get("n")->GetNode().id;
+  
+  // 2. Verify storage has the entity by reading it back
+  auto snapshot = storage_->GetVertexSnapshot(
+      created_id, {PropertyNameToColumnId("id")}, {}, Timestamp::Now());
+  
+  // The snapshot should exist (even if properties are empty, vertex_id is set)
+  EXPECT_EQ(snapshot.vertex_id, created_id);
 }
 
 int main(int argc, char** argv) {

@@ -421,6 +421,7 @@ set(CEDAR_CYPHER_SOURCES
     src/cypher/fingerprint.cc
     src/cypher/temporal_dialect.cc
     src/cypher/operators/temporal_operators.cc
+    src/cypher/operators/write_operators.cc
     src/cypher/validator.cc
 )
 

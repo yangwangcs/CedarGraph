@@ -1520,7 +1520,7 @@ git commit -m "test(cypher): add CREATE-then-read round-trip E2E test"
 
 ## Task 15: Self-Review & Cleanup
 
-- [ ] **Step 1: Spec coverage check**
+- [x] **Step 1: Spec coverage check**
 
 Verify every requirement from the context has a task:
 
@@ -1539,7 +1539,7 @@ Verify every requirement from the context has a task:
 | TDD pattern (failing test → impl → pass) | Every task |
 | Frequent commits | Every task ends with a commit |
 
-- [ ] **Step 2: Placeholder scan**
+- [x] **Step 2: Placeholder scan**
 
 Search the plan for red flags:
 ```bash
@@ -1548,7 +1548,7 @@ grep -i -E "TBD|TODO|implement later|fill in|placeholder|similar to" /Users/wang
 
 Expected: "No placeholders found" or empty result.
 
-- [ ] **Step 3: Type consistency check**
+- [x] **Step 3: Type consistency check**
 
 Verify that:
 - `PropertyNameToColumnId` is defined once and used in all three operators ✓
@@ -1556,7 +1556,7 @@ Verify that:
 - `ExecutionContext::storage` is used consistently (not `ctx.storage_` or similar) ✓
 - `EntityType::Vertex` and `EntityType::EdgeOut` are used correctly ✓
 
-- [ ] **Step 4: Final full test run**
+- [x] **Step 4: Final full test run**
 
 ```bash
 cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators test_execution_operators test_set_delete_parsing -j$(sysctl -n hw.ncpu)
@@ -1567,7 +1567,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators te
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Final commit**
+- [x] **Step 5: Final commit**
 
 ```bash
 git add docs/superpowers/plans/2026-05-26-subplan-1-cypher-write-operators.md
