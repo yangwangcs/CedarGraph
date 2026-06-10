@@ -326,6 +326,31 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     return grpc::Status::OK;
   }
 
+  grpc::Status BatchGet(grpc::ServerContext* context,
+                        const cedar::storage::BatchGetRequest* request,
+                        cedar::storage::BatchGetResponse* response) override {
+    (void)context;
+    auto start = std::chrono::steady_clock::now();
+
+    for (const auto& proto_key : request->keys()) {
+      auto result = storage_->Get(proto_key.entity_id(), proto_key.timestamp());
+      if (result.has_value()) {
+        response->add_descriptors()->set_data(result->Encode());
+        response->add_found(true);
+      } else {
+        response->add_descriptors();
+        response->add_found(false);
+      }
+    }
+
+    auto end = std::chrono::steady_clock::now();
+    auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        end - start).count();
+    RecordStorageOp("batch_get", true, latency_us);
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+
   grpc::Status Delete(grpc::ServerContext* context,
                       const cedar::storage::DeleteRequest* request,
                       cedar::storage::DeleteResponse* response) override {
