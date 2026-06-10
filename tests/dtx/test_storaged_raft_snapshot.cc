@@ -84,3 +84,42 @@ TEST_F(StorageRaftSnapshotTest, SaveAndLoadPreparedTxnsRoundTrip) {
   auto load_status = storage_->LoadPreparedTxns(txn_path);
   EXPECT_TRUE(load_status.ok()) << load_status.ToString();
 }
+
+TEST_F(StorageRaftSnapshotTest, RestoreFromSnapshotReplacesData) {
+  // Write data and flush
+  cedar::Descriptor desc = cedar::Descriptor::InlineInt(0, 42);
+  auto s = storage_->PutStaticVertex(1001, 1, desc);
+  EXPECT_TRUE(s.ok()) << s.ToString();
+  s = storage_->ForceFlush();
+  EXPECT_TRUE(s.ok()) << s.ToString();
+
+  // Verify data exists
+  auto result = storage_->GetStaticVertex(1001, 1);
+  EXPECT_TRUE(result.has_value());
+
+  // Simulate snapshot: copy data_dir_ to snapshot_dir_
+  std::filesystem::create_directories(snapshot_dir_ + "/data");
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(data_dir_)) {
+    if (entry.is_regular_file()) {
+      std::string rel = std::filesystem::relative(entry.path(), data_dir_).string();
+      std::string dst = snapshot_dir_ + "/data/" + rel;
+      std::filesystem::create_directories(std::filesystem::path(dst).parent_path());
+      std::filesystem::copy_file(entry.path(), dst);
+    }
+  }
+
+  // Clear original data
+  for (const auto& entry : std::filesystem::directory_iterator(data_dir_)) {
+    std::filesystem::remove_all(entry.path());
+  }
+
+  // Verify data is gone (engine still open, but files removed)
+  // We must close and reopen to see the change, which RestoreFromSnapshot does
+  s = storage_->RestoreFromSnapshot(snapshot_dir_ + "/data");
+  EXPECT_TRUE(s.ok()) << s.ToString();
+
+  // Data should be back
+  result = storage_->GetStaticVertex(1001, 1);
+  EXPECT_TRUE(result.has_value());
+  EXPECT_EQ(result->AsRaw(), desc.AsRaw());
+}

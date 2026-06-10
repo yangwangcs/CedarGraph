@@ -155,6 +155,9 @@ class Version {
   mutable std::mutex mutex_;
 };
 
+// VersionSet 前向声明
+class VersionSet;
+
 // Manifest 管理器
 class ManifestManager {
  public:
@@ -198,8 +201,8 @@ class ManifestManager {
   // 归档旧的 Manifest（压缩并移动到归档目录）
   Status ArchiveOldManifests(size_t keep_count);
   
-  // 压缩 Manifest 文件
-  Status CompactManifest();
+  // 压缩 Manifest 文件 — 将 VersionSet 当前快照序列化到新 Manifest
+  Status CompactManifest(VersionSet* version_set);
   
  private:
   std::string db_path_;

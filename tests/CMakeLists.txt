@@ -424,6 +424,10 @@ add_executable(test_register_participant dtx/test_register_participant.cc)
 target_link_libraries(test_register_participant ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_register_participant)
 
+add_executable(test_cluster_initializer_registration dtx/test_cluster_initializer_registration.cc)
+target_link_libraries(test_cluster_initializer_registration ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_cluster_initializer_registration)
+
 add_executable(test_tls_fail_secure dtx/test_tls_fail_secure.cc)
 target_link_libraries(test_tls_fail_secure ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_tls_fail_secure)
