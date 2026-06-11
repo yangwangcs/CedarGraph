@@ -17,6 +17,7 @@
 #include "cedar/dtx/monitoring.h"
 #include "cedar/storage/lsm_engine.h"
 #include "cedar/dtx/security.h"
+#include "cedar/storage/cedar_config.h"
 
 #include <algorithm>
 #include <cstring>
@@ -113,6 +114,15 @@ cedar::storage::CedarKey StorageServiceImpl::CedarKeyToProto(const CedarKey& key
 }
 
 namespace {
+
+grpc::Status ValidateBatchPut(const cedar::storage::BatchPutRequest* req) {
+  const auto& config = cedar::CedarConfigManager::Instance()->GetConfig();
+  if (static_cast<size_t>(req->items_size()) > config.limits.max_batch_items) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "Batch too large");
+  }
+  return grpc::Status::OK;
+}
 
 cedar::cypher::Value DeserializeCypherValue(const std::string& data) {
   if (data.empty()) return cedar::cypher::Value();
@@ -247,8 +257,25 @@ cedar::storage::Descriptor StorageServiceImpl::DescriptorToProto(const Descripto
 }
 
 // =============================================================================
+// Forward declaration for leader check used in write handlers
+// =============================================================================
+grpc::Status CheckWriteLeader(cedar::dtx::BraftPartitionNode* raft_group);
+
+// =============================================================================
 // Basic Operations
 // =============================================================================
+
+grpc::Status CheckWriteLeader(BraftPartitionNode* raft_group) {
+  if (!raft_group->IsLeader()) {
+    return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                        "Not leader for this partition");
+  }
+  if (!raft_group->IsLeaseValid()) {
+    return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                        "Leader lease expired");
+  }
+  return grpc::Status::OK;
+}
 
 grpc::Status StorageServiceImpl::Put(grpc::ServerContext* context,
                                       const cedar::storage::PutRequest* request,
@@ -288,19 +315,10 @@ grpc::Status StorageServiceImpl::Put(grpc::ServerContext* context,
       response->set_error_msg("Raft group not found for partition: " + std::to_string(pid));
       return grpc::Status(grpc::StatusCode::NOT_FOUND, "Raft group not found");
     }
-    if (!raft_group->IsLeader()) {
-      auto leader_id = raft_group->GetLeaderId();
-      auto leader_addr = raft_group->GetLeaderAddress();
+    if (auto st = CheckWriteLeader(raft_group); !st.ok()) {
       response->set_success(false);
-      if (leader_id.has_value() && leader_addr.has_value()) {
-        response->set_error_msg("Not leader, redirect to node " +
-                                std::to_string(leader_id.value()) + " at " + leader_addr.value());
-      } else if (leader_addr.has_value()) {
-        response->set_error_msg("Not leader, redirect to " + leader_addr.value());
-      } else {
-        response->set_error_msg("Not leader, leader unknown");
-      }
-      return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader");
+      response->set_error_msg(st.error_message());
+      return st;
     }
     StorageLogEntry entry;
     entry.type = StorageLogEntry::Type::kPut;
@@ -349,6 +367,18 @@ grpc::Status StorageServiceImpl::CheckReadLeader(PartitionID pid, std::string* l
     *leader_hint = leader_addr.value();
   }
   return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader or lease expired");
+}
+
+grpc::Status CheckWriteLeader(cedar::dtx::BraftPartitionNode* raft_group) {
+  if (!raft_group->IsLeader()) {
+    return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                        "Not leader for this partition");
+  }
+  if (!raft_group->IsLeaseValid()) {
+    return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                        "Leader lease expired");
+  }
+  return grpc::Status::OK;
 }
 
 grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
@@ -443,19 +473,10 @@ grpc::Status StorageServiceImpl::Delete(grpc::ServerContext* context,
       response->set_error_msg("Raft group not found for partition: " + std::to_string(pid));
       return grpc::Status(grpc::StatusCode::NOT_FOUND, "Raft group not found");
     }
-    if (!raft_group->IsLeader()) {
-      auto leader_id = raft_group->GetLeaderId();
-      auto leader_addr = raft_group->GetLeaderAddress();
+    if (auto st = CheckWriteLeader(raft_group); !st.ok()) {
       response->set_success(false);
-      if (leader_id.has_value() && leader_addr.has_value()) {
-        response->set_error_msg("Not leader, redirect to node " +
-                                std::to_string(leader_id.value()) + " at " + leader_addr.value());
-      } else if (leader_addr.has_value()) {
-        response->set_error_msg("Not leader, redirect to " + leader_addr.value());
-      } else {
-        response->set_error_msg("Not leader, leader unknown");
-      }
-      return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader");
+      response->set_error_msg(st.error_message());
+      return st;
     }
     StorageLogEntry entry;
     entry.type = StorageLogEntry::Type::kDelete;
@@ -678,7 +699,8 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
       !st.ok()) {
     return st;
   }
-  
+  if (auto st = ValidateBatchPut(request); !st.ok()) return st;
+
   Timestamp txn_version(request->txn_version().value());
   TxnID txn_id = request->txn_id();
   
@@ -735,22 +757,11 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
         all_success = false;
         continue;
       }
-      if (!raft_group->IsLeader()) {
+      if (auto st = CheckWriteLeader(raft_group); !st.ok()) {
         response->add_item_success(false);
         all_success = false;
-        auto leader_id = raft_group->GetLeaderId();
-        auto leader_addr = raft_group->GetLeaderAddress();
-        if (leader_id.has_value() && leader_addr.has_value()) {
-          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
-                                  ", redirect to node " + std::to_string(leader_id.value()) +
-                                  " at " + leader_addr.value());
-        } else if (leader_addr.has_value()) {
-          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
-                                  ", redirect to " + leader_addr.value());
-        } else {
-          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
-                                  ", leader unknown");
-        }
+        response->set_error_msg("Not leader for partition " + std::to_string(pid) +
+                                ": " + st.error_message());
         continue;
       }
       CedarKey key = ProtoToCedarKey(item->key());
@@ -932,18 +943,11 @@ grpc::Status StorageServiceImpl::Prepare(grpc::ServerContext* context,
         last_error = "Raft group not found for partition: " + std::to_string(pid);
         break;
       }
-      if (!raft_group->IsLeader()) {
-        auto leader_id = raft_group->GetLeaderId();
-        auto leader_addr = raft_group->GetLeaderAddress();
+      if (auto st = CheckWriteLeader(raft_group); !st.ok()) {
         response->set_prepared(false);
-        if (leader_id.has_value() && leader_addr.has_value()) {
-          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
-                                  ", redirect to node " + std::to_string(leader_id.value()) +
-                                  " at " + leader_addr.value());
-        } else {
-          response->set_error_msg("Not leader for partition " + std::to_string(pid));
-        }
-        return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader");
+        response->set_error_msg("Not leader for partition " + std::to_string(pid) +
+                                ": " + st.error_message());
+        return st;
       }
       StorageLogEntry entry;
       entry.type = StorageLogEntry::Type::kPrepare;
@@ -1067,18 +1071,11 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
           errors.push_back("Raft group not found for partition: " + std::to_string(pid));
           break;
         }
-        if (!raft_group->IsLeader()) {
-          auto leader_id = raft_group->GetLeaderId();
-          auto leader_addr = raft_group->GetLeaderAddress();
+        if (auto st = CheckWriteLeader(raft_group); !st.ok()) {
           response->set_success(false);
-          if (leader_id.has_value() && leader_addr.has_value()) {
-            response->set_error_msg("Not leader for partition " + std::to_string(pid) +
-                                    ", redirect to node " + std::to_string(leader_id.value()) +
-                                    " at " + leader_addr.value());
-          } else {
-            response->set_error_msg("Not leader for partition " + std::to_string(pid));
-          }
-          return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader");
+          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
+                                  ": " + st.error_message());
+          return st;
         }
         StorageLogEntry entry;
         entry.type = StorageLogEntry::Type::kCommit;
@@ -1220,19 +1217,12 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
         last_error = "Raft group not found for partition: " + std::to_string(pid);
         continue;
       }
-      if (!raft_group->IsLeader()) {
+      if (auto st = CheckWriteLeader(raft_group); !st.ok()) {
         all_success = false;
-        auto leader_id = raft_group->GetLeaderId();
-        auto leader_addr = raft_group->GetLeaderAddress();
         response->set_success(false);
-        if (leader_id.has_value() && leader_addr.has_value()) {
-          response->set_error_msg("Not leader for partition " + std::to_string(pid) +
-                                  ", redirect to node " + std::to_string(leader_id.value()) +
-                                  " at " + leader_addr.value());
-        } else {
-          response->set_error_msg("Not leader for partition " + std::to_string(pid));
-        }
-        return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader");
+        response->set_error_msg("Not leader for partition " + std::to_string(pid) +
+                                ": " + st.error_message());
+        return st;
       }
       StorageLogEntry entry;
       entry.type = StorageLogEntry::Type::kAbort;
