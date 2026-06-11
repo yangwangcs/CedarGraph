@@ -19,6 +19,7 @@
 #include "cedar/cypher/fingerprint.h"
 #include "cedar/queryd/distributed_executor.h"
 #include "cedar/queryd/query_storage_client.h"
+#include "cedar/storage/cedar_config.h"
 
 namespace cedar {
 namespace service {
@@ -28,6 +29,29 @@ using namespace cedar::meta;
 using namespace cedar::storage;
 
 namespace {
+
+grpc::Status ValidateQueryInput(const cedar::query::ExecuteQueryRequest* req) {
+  const auto& config = cedar::CedarConfigManager::Instance()->GetConfig();
+  if (req->query().size() > config.limits.max_query_length) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "Query exceeds max length");
+  }
+  if (req->timeout_ms() > config.limits.max_timeout_ms) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "Timeout exceeds max allowed");
+  }
+  if (static_cast<size_t>(req->parameters().params_size()) > config.limits.max_parameter_count) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "Too many parameters");
+  }
+  for (const auto& p : req->parameters().params()) {
+    if (p.second.ByteSizeLong() > config.limits.max_parameter_value_length) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "Parameter value too large");
+    }
+  }
+  return grpc::Status::OK;
+}
 
 // Helper: convert cypher::Value to proto Value (merged from QueryD)
 static cedar::query::Value ConvertToProtoValue(const cedar::cypher::Value& value) {
@@ -269,7 +293,8 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
       !st.ok()) {
     return st;
   }
-  
+  if (auto st = ValidateQueryInput(request); !st.ok()) return st;
+
   auto start_time = std::chrono::steady_clock::now();
   stats_.total_queries++;
   stats_.active_queries++;
