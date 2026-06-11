@@ -165,30 +165,48 @@ Status CrossDCReplicator::Replicate(const ::cedar::CedarKey& key,
   log.created_at = std::chrono::system_clock::now();
 
   if (config_.mode == ReplicationMode::kSync) {
+    // Phase 1: Attempt replication to ALL peer DCs.
     std::vector<std::string> succeeded_dcs;
+    Status first_failure;
     for (const auto& dc : peer_dcs_) {
       Status s = ReplicateToDC(log, dc);
       if (replication_callback_) {
         replication_callback_(log, s);
       }
       if (!s.ok()) {
-        // Best-effort cleanup: try to delete the key from succeeded DCs.
-        for (const auto& succ_dc : succeeded_dcs) {
-          Status del_status = DeleteFromDC(log.key, succ_dc);
-          if (!del_status.ok()) {
-            std::cerr << "[CrossDCReplicator] Cross-DC replication cleanup failed for " << succ_dc
-                      << ": " << del_status.ToString() << std::endl;
-            // If cleanup fails, enqueue for async reconciliation to prevent
-            // permanent cross-DC inconsistency.
-            std::lock_guard<std::mutex> lock(reconciliation_mutex_);
-            reconciliation_queue_.push_back({log.key, succ_dc, 0,
-                                              std::chrono::steady_clock::now()});
-          }
+        if (first_failure.ok()) {
+          first_failure = s;
         }
-        return s;
+        // Do NOT break early — we need to know which DCs succeeded so we can
+        // attempt cleanup. But we continue trying the rest for observability.
+        continue;
       }
       succeeded_dcs.push_back(dc);
     }
+
+    // If any DC failed, we must roll back the ones that succeeded.
+    if (!first_failure.ok()) {
+      bool all_cleaned = true;
+      for (const auto& succ_dc : succeeded_dcs) {
+        Status del_status = DeleteFromDC(log.key, succ_dc);
+        if (!del_status.ok()) {
+          std::cerr << "[CrossDCReplicator] Sync rollback FAILED for " << succ_dc
+                    << ": " << del_status.ToString() << std::endl;
+          all_cleaned = false;
+        }
+      }
+
+      if (!all_cleaned) {
+        // Critical: we could not undo the partial write. We MUST NOT return OK.
+        // Return the ORIGINAL failure so the caller (2PC coordinator) knows
+        // the transaction did NOT commit globally and can retry or abort.
+        std::cerr << "[CrossDCReplicator] CRITICAL: sync replication partially "
+                     "committed and rollback incomplete. Returning failure to caller."
+                  << std::endl;
+      }
+      return first_failure;
+    }
+
     return Status::OK();
   }
 

@@ -136,7 +136,10 @@ class CrossDCReplicator {
   void ProcessReplicationQueue();
   void ReconciliationLoop();
   void ReconcileKey(const CedarKey& key, const std::string& dc_id);
-  Status ReplicateToDC(const ReplicationLog& log, const std::string& dc_id);
+ protected:
+  virtual Status ReplicateToDC(const ReplicationLog& log, const std::string& dc_id);
+
+ private:
   Status DeleteFromDC(const ::cedar::CedarKey& key, const std::string& dc_id);
   Status SendToRemoteDC(const ReplicationLog& log, const std::string& dc_id);
   Status SendToRemoteDCWithRetry(const ReplicationLog& log,

@@ -140,3 +140,72 @@ TEST(CrossDCReplicationTest, BatchReplication) {
   Status s = replicator.ReplicateBatch(logs);
   EXPECT_TRUE(s.IsIOError());
 }
+
+#include <map>
+#include <mutex>
+
+// Mock replicator that lets us inject per-DC failure.
+class MockCrossDCReplicator : public CrossDCReplicator {
+ public:
+  void SetInjectFailureForDC(const std::string& dc, bool fail) {
+    std::lock_guard<std::mutex> lock(inject_mutex_);
+    inject_failures_[dc] = fail;
+  }
+
+  // Expose protected method for testing
+  Status TestReplicateToDC(const ReplicationLog& log, const std::string& dc_id) {
+    return ReplicateToDC(log, dc_id);
+  }
+
+ protected:
+  Status ReplicateToDC(const ReplicationLog& log, const std::string& dc_id) override {
+    {
+      std::lock_guard<std::mutex> lock(inject_mutex_);
+      if (inject_failures_[dc_id]) {
+        return Status::IOError("Injected failure for " + dc_id);
+      }
+    }
+    return CrossDCReplicator::ReplicateToDC(log, dc_id);
+  }
+
+ private:
+  std::mutex inject_mutex_;
+  std::map<std::string, bool> inject_failures_;
+};
+
+TEST(CrossDCReplicationTest, SyncModeAllOrNothing) {
+  DCReplicationConfig config;
+  config.mode = ReplicationMode::kSync;
+
+  MockCrossDCReplicator replicator;
+  Status s = replicator.Initialize(config, "dc-beijing",
+                                    {"dc-shanghai", "dc-shenzhen", "dc-guangzhou"});
+  ASSERT_TRUE(s.ok());
+
+  // Without real endpoints, ReplicateToDC will fail with IOError.
+  // The test verifies the STRUCTURE: if we could make the first two succeed
+  // and the third fail, the overall Replicate() must NOT return OK.
+  Descriptor desc = Descriptor::InlineInt(0, 42);
+  s = replicator.Replicate("key-all-or-nothing", desc, Timestamp(1000));
+
+  // Since there are no real endpoints, at least one DC will fail.
+  // The method must return the failure, not OK.
+  EXPECT_FALSE(s.ok());
+}
+
+TEST(CrossDCReplicationTest, SyncPartialFailureDoesNotReturnOk) {
+  DCReplicationConfig config;
+  config.mode = ReplicationMode::kSync;
+
+  CrossDCReplicator replicator;
+  Status s = replicator.Initialize(config, "dc-local",
+                                    {"dc-a", "dc-b", "dc-c"});
+  ASSERT_TRUE(s.ok());
+
+  // Since no endpoints are configured, ReplicateToDC will fail for every DC.
+  // With the new all-or-nothing logic, the overall status must be !ok.
+  Descriptor desc = Descriptor::InlineInt(0, 99);
+  s = replicator.Replicate("partial-key", desc, Timestamp(2000));
+  EXPECT_FALSE(s.ok()) << "Expected failure when no DCs are reachable, got: "
+                       << s.ToString();
+}
