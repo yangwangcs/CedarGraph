@@ -369,18 +369,6 @@ grpc::Status StorageServiceImpl::CheckReadLeader(PartitionID pid, std::string* l
   return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader or lease expired");
 }
 
-grpc::Status CheckWriteLeader(cedar::dtx::BraftPartitionNode* raft_group) {
-  if (!raft_group->IsLeader()) {
-    return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
-                        "Not leader for this partition");
-  }
-  if (!raft_group->IsLeaseValid()) {
-    return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
-                        "Leader lease expired");
-  }
-  return grpc::Status::OK;
-}
-
 grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
                                       const cedar::storage::GetRequest* request,
                                       cedar::storage::GetResponse* response) {
