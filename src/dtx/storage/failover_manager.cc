@@ -516,6 +516,12 @@ void PartitionFailoverController::SetConsensusTransferCallback(
   consensus_transfer_callback_ = std::move(callback);
 }
 
+void PartitionFailoverController::SetQuorumVerificationCallback(
+    QuorumVerificationCallback callback) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
+  quorum_verification_callback_ = std::move(callback);
+}
+
 Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
                                                          NodeID new_leader) {
   NodeID old_leader = kInvalidNodeID;
@@ -528,43 +534,81 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
     old_leader = it->second.current_leader;
   }
 
-  ConsensusTransferCallback callback;
+  ConsensusTransferCallback consensus_callback;
+  QuorumVerificationCallback quorum_callback;
   {
     std::lock_guard<std::mutex> lock(callback_mutex_);
-    callback = consensus_transfer_callback_;
+    consensus_callback = consensus_transfer_callback_;
+    quorum_callback = quorum_verification_callback_;
   }
-  if (callback) {
-    Status consensus_status = callback(pid, new_leader);
-    if (!consensus_status.ok()) {
-      std::cerr << "[FailoverManager] Consensus transfer failed for partition="
-                << pid << " target=" << new_leader
-                << " error=" << consensus_status.ToString() << std::endl;
-      return consensus_status;
-    }
+
+  if (!consensus_callback) {
+    std::cerr << "[FailoverManager] WARNING: No consensus transfer callback registered. "
+              << "Refusing to perform leader switch for partition=" << pid
+              << " in production mode. Marking for manual intervention." << std::endl;
     {
-      std::lock_guard<std::mutex> plock(partitions_mutex_);
+      std::lock_guard<std::mutex> lock(partitions_mutex_);
       auto it = partitions_.find(pid);
       if (it != partitions_.end()) {
-        it->second.current_leader = new_leader;
+        it->second.is_failover_in_progress = false;
       }
     }
-    return UpdatePartitionRoute(pid, new_leader);
+    return Status::IOError(
+        "No consensus layer available for leader transfer. "
+        "Manual intervention required for partition " + std::to_string(pid));
   }
 
-  std::cerr << "[FailoverManager] WARNING: No consensus transfer callback registered. "
-            << "Refusing to perform leader switch for partition=" << pid
-            << " in production mode. Marking for manual intervention." << std::endl;
+  // Step 1: Request consensus layer to transfer leadership.
+  Status consensus_status = consensus_callback(pid, new_leader);
+  if (!consensus_status.ok()) {
+    std::cerr << "[FailoverManager] Consensus transfer failed for partition="
+              << pid << " target=" << new_leader
+              << " error=" << consensus_status.ToString() << std::endl;
+    {
+      std::lock_guard<std::mutex> lock(partitions_mutex_);
+      auto it = partitions_.find(pid);
+      if (it != partitions_.end()) {
+        it->second.is_failover_in_progress = false;
+      }
+    }
+    return consensus_status;
+  }
 
+  // Step 2: Quorum verification -- do NOT update current_leader until
+  // the consensus layer confirms the new leader is recognized by a quorum.
+  if (quorum_callback) {
+    Status quorum_status = quorum_callback(pid, new_leader, config_.leader_switch_timeout);
+    if (!quorum_status.ok()) {
+      std::cerr << "[FailoverManager] Quorum verification FAILED for partition="
+                << pid << " target=" << new_leader
+                << " error=" << quorum_status.ToString()
+                << ". Old leader remains authoritative." << std::endl;
+      {
+        std::lock_guard<std::mutex> lock(partitions_mutex_);
+        auto it = partitions_.find(pid);
+        if (it != partitions_.end()) {
+          it->second.is_failover_in_progress = false;
+        }
+      }
+      return quorum_status;
+    }
+  } else {
+    std::cerr << "[FailoverManager] WARNING: No quorum verification callback. "
+              << "Proceeding with leader switch for partition=" << pid
+              << " WITHOUT quorum confirmation. This is unsafe in production."
+              << std::endl;
+  }
+
+  // Step 3: Safe to update current_leader.
   {
-    std::lock_guard<std::mutex> lock(partitions_mutex_);
+    std::lock_guard<std::mutex> plock(partitions_mutex_);
     auto it = partitions_.find(pid);
     if (it != partitions_.end()) {
+      it->second.current_leader = new_leader;
       it->second.is_failover_in_progress = false;
     }
   }
-  return Status::IOError(
-      "No consensus layer available for leader transfer. "
-      "Manual intervention required for partition " + std::to_string(pid));
+  return UpdatePartitionRoute(pid, new_leader);
 }
 
 Status PartitionFailoverController::UpdatePartitionRoute(PartitionID pid,
@@ -1357,7 +1401,33 @@ Status ClusterFailoverManager::ExecuteContainerizedRecovery(
 Status ClusterFailoverManager::ExecuteRecovery(const FailureEvent& event) {
   // 确定恢复策略
   auto action = DetermineRecoveryAction(event);
-  
+
+  // Enforce max_concurrent_recoveries
+  {
+    std::lock_guard<std::mutex> lock(active_recovery_mutex_);
+    if (active_recovery_count_.load(std::memory_order_relaxed) >=
+        config_.max_concurrent_recoveries) {
+      return Status::ResourceExhausted(
+          "Max concurrent recoveries (" +
+          std::to_string(config_.max_concurrent_recoveries) +
+          ") reached. Recovery action queued for later.");
+    }
+    active_recovery_count_.fetch_add(1, std::memory_order_relaxed);
+    active_recovery_ids_.insert(action.action_id);
+  }
+
+  // RAII guard to ensure the in-flight counter is decremented on every exit path.
+  struct RecoveryGuard {
+    ClusterFailoverManager* mgr;
+    uint64_t id;
+    RecoveryGuard(ClusterFailoverManager* m, uint64_t i) : mgr(m), id(i) {}
+    ~RecoveryGuard() {
+      std::lock_guard<std::mutex> lock(mgr->active_recovery_mutex_);
+      mgr->active_recovery_count_.fetch_sub(1, std::memory_order_relaxed);
+      mgr->active_recovery_ids_.erase(id);
+    }
+  } guard(this, action.action_id);
+
   // 查找对应的处理器
   std::function<Status(const FailureEvent&)> handler;
   {
@@ -1367,11 +1437,11 @@ Status ClusterFailoverManager::ExecuteRecovery(const FailureEvent& event) {
       handler = it->second;
     }
   }
-  
+
   if (handler) {
     return handler(event);
   }
-  
+
   // 默认恢复逻辑
   switch (action.strategy) {
     case RecoveryStrategy::kRestartService: {
@@ -1462,7 +1532,10 @@ RecoveryAction ClusterFailoverManager::DetermineRecoveryAction(
   action.target_partition = event.partition_id;
   action.timeout = std::chrono::milliseconds(30000);
   action.max_retries = 3;
-  
+
+  static std::atomic<uint64_t> next_action_id{1};
+  action.action_id = next_action_id.fetch_add(1, std::memory_order_relaxed);
+
   return action;
 }
 
@@ -1480,16 +1553,36 @@ void ClusterFailoverManager::RecordFailure(const FailureEvent& event) {
 
 void ClusterFailoverManager::MarkRecovered(uint64_t event_id) {
   std::lock_guard<std::mutex> lock(failures_mutex_);
-  
+
   auto it = failures_.find(event_id);
   if (it != failures_.end()) {
     it->second.is_recovered = true;
     it->second.recovered_at = std::chrono::system_clock::now();
-    
+
     // 从活跃列表移除
     active_failures_.erase(
         std::remove(active_failures_.begin(), active_failures_.end(), event_id),
         active_failures_.end());
+
+    if (config_.failure_retention_duration == std::chrono::minutes(0)) {
+      failures_.erase(it);
+    }
+    // Note: if retention > 0, CleanupOldFailures() purges old entries.
+  }
+}
+
+void ClusterFailoverManager::CleanupOldFailures() {
+  std::lock_guard<std::mutex> lock(failures_mutex_);
+  auto now = std::chrono::system_clock::now();
+  auto threshold = config_.failure_retention_duration;
+
+  for (auto it = failures_.begin(); it != failures_.end();) {
+    if (it->second.is_recovered &&
+        (now - it->second.recovered_at) > threshold) {
+      it = failures_.erase(it);
+    } else {
+      ++it;
+    }
   }
 }
 

@@ -174,6 +174,7 @@ struct RecoveryAction {
   std::string details;
   std::chrono::milliseconds timeout{30000};
   uint32_t max_retries{3};
+  uint64_t action_id{0};
 };
 
 // =============================================================================
@@ -190,6 +191,7 @@ class PartitionFailoverController {
     std::chrono::milliseconds check_interval{1000};          // 健康检查间隔
     FailureDetectionConfig detection_config;                 // 故障检测配置
     uint32_t max_failover_threads{16};                       // 故障转移工作线程池上限
+    std::chrono::milliseconds leader_switch_timeout{30000};  // NEW: quorum verification timeout
   };
   
   PartitionFailoverController();
@@ -241,6 +243,15 @@ class PartitionFailoverController {
   // Register consensus transfer callback (Raft-based leader transfer)
   using ConsensusTransferCallback = std::function<Status(PartitionID pid, NodeID new_leader)>;
   void SetConsensusTransferCallback(ConsensusTransferCallback callback);
+
+  // NEW: Quorum verification callback.
+  // Called after consensus_transfer_callback returns OK.
+  // Must return OK only when the consensus layer confirms that a quorum
+  // of nodes recognize `new_leader` as the leader for `pid`.
+  using QuorumVerificationCallback = std::function<Status(
+      PartitionID pid, NodeID new_leader, std::chrono::milliseconds timeout)>;
+
+  void SetQuorumVerificationCallback(QuorumVerificationCallback callback);
   
   // Register node address for health probing
   void RegisterNodeAddress(NodeID node_id, const std::string& address);
@@ -284,6 +295,7 @@ class PartitionFailoverController {
   std::vector<FailoverCallback> callbacks_;
   RouteUpdateCallback route_update_callback_;
   ConsensusTransferCallback consensus_transfer_callback_;
+  QuorumVerificationCallback quorum_verification_callback_;
   mutable std::mutex callback_mutex_;  // Combines all callback-related state
   
   std::thread lease_thread_;
@@ -349,6 +361,7 @@ class ClusterFailoverManager {
     bool enable_auto_recovery{true};
     uint32_t max_concurrent_recoveries{3};
     std::chrono::milliseconds recovery_cooldown{60000};  // 恢复冷却期
+    std::chrono::minutes failure_retention_duration{60};  // NEW: how long to keep recovered failures
   };
   
   ClusterFailoverManager();
@@ -426,6 +439,7 @@ class ClusterFailoverManager {
   // 记录故障历史
   void RecordFailure(const FailureEvent& event);
   void MarkRecovered(uint64_t event_id);
+  void CleanupOldFailures();
   
   Config config_;
   std::atomic<bool> running_{false};
@@ -460,7 +474,12 @@ class ClusterFailoverManager {
   // 统计
   mutable std::mutex stats_mutex_;
   FailureStats stats_;
-  
+
+  // In-flight recovery tracking for max_concurrent_recoveries enforcement
+  std::atomic<uint32_t> active_recovery_count_{0};
+  std::unordered_set<uint64_t> active_recovery_ids_;
+  mutable std::mutex active_recovery_mutex_;
+
   // 后台线程
   std::thread detection_thread_;
   std::thread recovery_thread_;
