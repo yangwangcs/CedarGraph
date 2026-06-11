@@ -1,10 +1,28 @@
 #include "cedar/dtx/meta_service_grpc.h"
 
 #include "cedar/dtx/raft/grpc_tls.h"
+#include "cedar/dtx/security.h"
 #include <grpcpp/grpcpp.h>
 #include <iostream>
 
 namespace {
+
+grpc::Status CheckAuth(grpc::ServerContext* context,
+                       cedar::dtx::security::Permission perm) {
+  auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+  if (!sm || !sm->IsAuthEnabled()) return grpc::Status::OK;
+  auto meta = context->client_metadata();
+  auto it = meta.find("authorization");
+  if (it == meta.end()) {
+    return grpc::Status(grpc::StatusCode::UNAUTHENTICATED, "Missing auth token");
+  }
+  auto st = sm->AuthenticateAndAuthorize(
+      std::string(it->second.data(), it->second.size()), perm, "");
+  if (!st.ok()) {
+    return grpc::Status(grpc::StatusCode::PERMISSION_DENIED, st.ToString());
+  }
+  return grpc::Status::OK;
+}
 
 grpc::StatusCode MapStatusToGrpcCode(const cedar::Status& status) {
     if (status.IsInvalidArgument()) return grpc::StatusCode::INVALID_ARGUMENT;
@@ -50,6 +68,7 @@ MetaServiceGrpcImpl::MetaServiceGrpcImpl(MetadataService* meta_service)
 grpc::Status MetaServiceGrpcImpl::CreateSpace(grpc::ServerContext* context,
     const cedar::meta::CreateSpaceRequest* request,
     cedar::meta::CreateSpaceResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     if (request->space().name().empty()) {
         response->set_success(false);
@@ -78,6 +97,7 @@ grpc::Status MetaServiceGrpcImpl::CreateSpace(grpc::ServerContext* context,
 grpc::Status MetaServiceGrpcImpl::GetSpace(grpc::ServerContext* context,
     const cedar::meta::GetSpaceRequest* request,
     cedar::meta::GetSpaceResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     auto result = meta_service_->GetSpace(request->space_name());
     response->set_success(result.ok());
@@ -95,6 +115,7 @@ grpc::Status MetaServiceGrpcImpl::GetSpace(grpc::ServerContext* context,
 grpc::Status MetaServiceGrpcImpl::GetPartitionAssignment(grpc::ServerContext* context,
     const cedar::meta::GetPartitionAssignmentRequest* request,
     cedar::meta::GetPartitionAssignmentResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     auto result = meta_service_->GetPartitionAssignment(request->space_name(),
                                                         request->partition_id());
@@ -117,6 +138,7 @@ grpc::Status MetaServiceGrpcImpl::GetPartitionAssignment(grpc::ServerContext* co
 grpc::Status MetaServiceGrpcImpl::UpdatePartitionAssignment(grpc::ServerContext* context,
     const cedar::meta::UpdatePartitionAssignmentRequest* request,
     cedar::meta::UpdatePartitionAssignmentResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     auto proto = request->assignment();
     cedar::dtx::PartitionAssignment assignment;
@@ -141,6 +163,7 @@ grpc::Status MetaServiceGrpcImpl::UpdatePartitionAssignment(grpc::ServerContext*
 grpc::Status MetaServiceGrpcImpl::GetSpacePartitionMap(grpc::ServerContext* context,
     const cedar::meta::GetSpacePartitionMapRequest* request,
     cedar::meta::GetSpacePartitionMapResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     auto result = meta_service_->GetSpacePartitionMap(request->space_name());
     response->set_success(result.ok());
@@ -171,6 +194,7 @@ grpc::Status MetaServiceGrpcImpl::GetSpacePartitionMap(grpc::ServerContext* cont
 grpc::Status MetaServiceGrpcImpl::RegisterNode(grpc::ServerContext* context,
     const cedar::meta::RegisterNodeRequest* request,
     cedar::meta::RegisterNodeResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     NodeInfo info;
     info.node_id = request->node_info().node_id();
@@ -188,6 +212,7 @@ grpc::Status MetaServiceGrpcImpl::RegisterNode(grpc::ServerContext* context,
 grpc::Status MetaServiceGrpcImpl::Heartbeat(grpc::ServerContext* context,
     const cedar::meta::HeartbeatRequest* request,
     cedar::meta::HeartbeatResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kMonitor); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     NodeStatus status;
     status.node_id = request->status().node_id();
@@ -216,6 +241,7 @@ grpc::Status MetaServiceGrpcImpl::Heartbeat(grpc::ServerContext* context,
 grpc::Status MetaServiceGrpcImpl::GetNode(grpc::ServerContext* context,
     const cedar::meta::GetNodeRequest* request,
     cedar::meta::GetNodeResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     auto result = meta_service_->GetNode(request->node_id());
     response->set_success(result.ok());
@@ -233,6 +259,7 @@ grpc::Status MetaServiceGrpcImpl::GetNode(grpc::ServerContext* context,
 grpc::Status MetaServiceGrpcImpl::GetAliveNodes(grpc::ServerContext* context,
     const cedar::meta::GetAliveNodesRequest* request,
     cedar::meta::GetAliveNodesResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     (void)request;
     auto nodes = meta_service_->GetAliveNodes();
@@ -297,6 +324,7 @@ void MetaServiceGrpcImpl::OnPartitionChange(const PartitionMapChange& change) {
 grpc::Status MetaServiceGrpcImpl::WatchPartitionMap(grpc::ServerContext* context,
     const cedar::meta::WatchPartitionMapRequest* request,
     grpc::ServerWriter<cedar::meta::PartitionMapChange>* writer) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     (void)request;
     
@@ -350,6 +378,7 @@ grpc::Status MetaServiceGrpcImpl::WatchPartitionMap(grpc::ServerContext* context
 grpc::Status MetaServiceGrpcImpl::CreateLabelSchema(grpc::ServerContext* context,
     const cedar::meta::CreateLabelSchemaRequest* request,
     cedar::meta::CreateLabelSchemaResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     LabelSchema schema;
     schema.name = request->schema().name();
@@ -378,6 +407,7 @@ grpc::Status MetaServiceGrpcImpl::CreateLabelSchema(grpc::ServerContext* context
 grpc::Status MetaServiceGrpcImpl::GetSchema(grpc::ServerContext* context,
     const cedar::meta::GetSchemaRequest* request,
     cedar::meta::GetSchemaResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     std::vector<std::string> labels(request->labels().begin(), request->labels().end());
     auto schemas = meta_service_->GetSchema(request->space_name(), labels);
@@ -403,6 +433,7 @@ grpc::Status MetaServiceGrpcImpl::GetSchema(grpc::ServerContext* context,
 grpc::Status MetaServiceGrpcImpl::LocateCache(grpc::ServerContext* context,
     const cedar::meta::LocateCacheRequest* request,
     cedar::meta::LocateCacheResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     auto window = location_table_.Locate(request->entity_id(), request->query_time());
     if (window) {
@@ -423,6 +454,7 @@ grpc::Status MetaServiceGrpcImpl::LocateCache(grpc::ServerContext* context,
 grpc::Status MetaServiceGrpcImpl::ReportCache(grpc::ServerContext* context,
     const cedar::meta::ReportCacheRequest* request,
     cedar::meta::ReportCacheResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     coordinator::CacheWindow window;
     window.entity_id = request->window().entity_id();
@@ -439,6 +471,7 @@ grpc::Status MetaServiceGrpcImpl::ReportCache(grpc::ServerContext* context,
 grpc::Status MetaServiceGrpcImpl::GcnHeartbeat(grpc::ServerContext* context,
     const cedar::meta::GcnHeartbeatRequest* request,
     cedar::meta::GcnHeartbeatResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kMonitor); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
     std::vector<coordinator::CacheWindow> windows;
     for (int i = 0; i < request->windows_size(); ++i) {
