@@ -58,10 +58,15 @@ struct DCReplicationConfig {
     std::string client_key_file;
   } tls_config;
   bool allow_insecure{false};
+
+  // Bounded reconciliation queue
+  size_t max_reconciliation_queue_size = 10000;
+  std::chrono::seconds reconciliation_ttl{3600};  // drop entries older than 1h
 };
 
 struct ReplicationLog {
   uint64_t sequence_num;
+  uint64_t generation = 0;  // wraparound epoch
   CedarKey key;
   Descriptor value;
   Timestamp timestamp;
@@ -72,6 +77,7 @@ struct ReplicationLog {
 
 struct ReplicationStatus {
   uint64_t last_sequence = 0;
+  uint64_t last_generation = 0;  // tracks wraparound epochs
   uint64_t replicated_count = 0;
   uint64_t failed_count = 0;
   std::chrono::milliseconds replication_lag{0};
@@ -163,6 +169,7 @@ class CrossDCReplicator {
     CedarKey key;
     std::string dc_id;
     uint32_t attempt_count{0};
+    std::chrono::steady_clock::time_point enqueued_at;  // for TTL eviction
     std::chrono::steady_clock::time_point next_attempt;
   };
   std::deque<ReconcileEntry> reconciliation_queue_;
@@ -176,6 +183,7 @@ class CrossDCReplicator {
   std::vector<std::string> peer_dcs_;
   
   std::atomic<uint64_t> sequence_counter_{0};
+  std::atomic<uint64_t> sequence_generation_{0};  // increments on wraparound
   
   mutable std::mutex queue_mutex_;
   std::condition_variable queue_cv_;

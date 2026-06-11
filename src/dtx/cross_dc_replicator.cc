@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <climits>
 #include <deque>
 #include <fstream>
 #include <iostream>
@@ -156,7 +157,13 @@ Status CrossDCReplicator::Replicate(const ::cedar::CedarKey& key,
                                      const Descriptor& value,
                                      Timestamp timestamp) {
   ReplicationLog log;
+  // Detect wraparound and bump generation
+  if (sequence_counter_.load(std::memory_order_relaxed) == UINT64_MAX) {
+    sequence_generation_.fetch_add(1, std::memory_order_relaxed);
+    sequence_counter_.store(0, std::memory_order_relaxed);
+  }
   log.sequence_num = ++sequence_counter_;
+  log.generation = sequence_generation_.load(std::memory_order_relaxed);
   log.key = key;
   log.value = value;
   log.timestamp = timestamp;
@@ -239,12 +246,32 @@ Status CrossDCReplicator::ReceiveReplication(const ReplicationLog& log) {
     std::lock_guard<std::mutex> lock(status_mutex_);
     auto it = dc_statuses_.find(log.source_dc);
     if (it != dc_statuses_.end()) {
-      if (log.sequence_num <= it->second.last_sequence && it->second.last_sequence != 0) {
-        return Status::InvalidArgument(
-            "Out-of-order replication received: expected seq > " +
-            std::to_string(it->second.last_sequence) + " got " +
-            std::to_string(log.sequence_num) + " from " + log.source_dc);
+      bool is_valid = false;
+      if (log.generation > it->second.last_generation) {
+        // New generation: always valid (wraparound happened)
+        is_valid = true;
+      } else if (log.generation == it->second.last_generation) {
+        if (it->second.last_sequence == 0) {
+          // First log from this DC in this generation
+          is_valid = true;
+        } else {
+          is_valid = (log.sequence_num > it->second.last_sequence);
+        }
+      } else {
+        // log.generation < last_generation: stale log from a previous epoch
+        is_valid = false;
       }
+
+      if (!is_valid) {
+        return Status::InvalidArgument(
+            "Out-of-order replication received: expected (gen=" +
+            std::to_string(it->second.last_generation) +
+            ", seq>" + std::to_string(it->second.last_sequence) +
+            ") got (gen=" + std::to_string(log.generation) +
+            ", seq=" + std::to_string(log.sequence_num) + ") from " + log.source_dc);
+      }
+
+      it->second.last_generation = log.generation;
       it->second.last_sequence = log.sequence_num;
       it->second.replicated_count++;
     }
@@ -523,6 +550,7 @@ Status CrossDCReplicator::SendToRemoteDC(const ReplicationLog& log,
 
   entry->set_timestamp(log.timestamp.value());
   entry->set_source_dc(log.source_dc);
+  entry->set_generation(log.generation);
   for (const auto& target : log.target_dcs) {
     entry->add_target_dcs(target);
   }
@@ -571,11 +599,40 @@ ReplicationLog CrossDCReplicator::CreateTimestampBasedResolution(
 // success by asynchronously retrying delete compensation.
 // ---------------------------------------------------------------------------
 void CrossDCReplicator::ReconciliationLoop() {
-  while (running_.load()) {
+  while (running_.load(std::memory_order_relaxed)) {
     std::vector<ReconcileEntry> batch;
     {
       std::lock_guard<std::mutex> lock(reconciliation_mutex_);
       auto now = std::chrono::steady_clock::now();
+      const auto ttl = config_.reconciliation_ttl;
+      const size_t max_size = config_.max_reconciliation_queue_size;
+
+      // TTL eviction pass: remove expired entries
+      size_t evicted_ttl = 0;
+      reconciliation_queue_.erase(
+          std::remove_if(reconciliation_queue_.begin(),
+                         reconciliation_queue_.end(),
+                         [&](const ReconcileEntry& e) {
+                           auto age = now - e.enqueued_at;
+                           if (age > ttl) {
+                             evicted_ttl++;
+                             return true;
+                           }
+                           return false;
+                         }),
+          reconciliation_queue_.end());
+      if (evicted_ttl > 0) {
+        std::cerr << "[CrossDCReplicator] Reconciliation TTL eviction: dropped "
+                  << evicted_ttl << " expired entries" << std::endl;
+      }
+
+      // Bound the queue: if still oversized, drop oldest (FIFO)
+      while (reconciliation_queue_.size() > max_size) {
+        std::cerr << "[CrossDCReplicator] Reconciliation queue overflow: dropping oldest entry"
+                  << std::endl;
+        reconciliation_queue_.pop_front();
+      }
+
       for (auto it = reconciliation_queue_.begin();
            it != reconciliation_queue_.end() && batch.size() < 64;) {
         if (it->next_attempt <= now) {
@@ -601,50 +658,63 @@ void CrossDCReplicator::ReconciliationLoop() {
 
 void CrossDCReplicator::ReconcileKey(const ::cedar::CedarKey& key,
                                      const std::string& dc_id) {
-  // Query local storage for the authoritative value.
   if (!storage_) {
     std::cerr << "[CrossDCReplicator] ReconcileKey: no storage set, cannot "
                  "reconcile " << key.ToString() << std::endl;
     return;
   }
-  // Query the *latest* local value, not the historical version encoded in
-  // the key, so that reconciliation converges to the current authoritative
-  // state rather than replicating a stale snapshot.
   auto desc_opt = storage_->Get(key.entity_id(), key.entity_type(),
                                 key.column_id(), Timestamp::Now());
 
   Status s;
   if (desc_opt.has_value()) {
-    // Key still exists locally — replicate the current value to the DC
-    // so that both sides converge (the DC may have a stale or deleted copy).
     ReplicationLog log;
     log.sequence_num = ++sequence_counter_;
+    log.generation = sequence_generation_.load(std::memory_order_relaxed);
     log.key = key;
     log.value = desc_opt.value();
     log.timestamp = Timestamp::Now();
     log.source_dc = local_dc_id_;
     log.target_dcs = {dc_id};
     log.created_at = std::chrono::system_clock::now();
-
     s = ReplicateToDC(log, dc_id);
   } else {
-    // Key does not exist locally — send a tombstone to the DC to ensure
-    // convergence.
     s = DeleteFromDC(key, dc_id);
   }
 
   if (s.ok()) {
     reconciliation_resolved_.fetch_add(1, std::memory_order_relaxed);
   } else {
-    // Re-queue with exponential backoff for later retry.
     std::lock_guard<std::mutex> lock(reconciliation_mutex_);
     ReconcileEntry retry;
     retry.key = key;
     retry.dc_id = dc_id;
-    retry.attempt_count = 1;  // simplified: actual count tracked externally if needed
-    retry.next_attempt = std::chrono::steady_clock::now() +
+    retry.attempt_count = 1;  // base for next attempt
+    retry.enqueued_at = std::chrono::steady_clock::now();
+    retry.next_attempt = retry.enqueued_at +
                          std::chrono::seconds(5);
-    reconciliation_queue_.push_back(std::move(retry));
+
+    // Check if this key/dc pair is already in the queue; if so, increment its count.
+    bool found = false;
+    for (auto& existing : reconciliation_queue_) {
+      if (existing.key.entity_id() == key.entity_id() && existing.dc_id == dc_id) {
+        existing.attempt_count = existing.attempt_count + 1;
+        // Capped exponential backoff: 5s * 2^(min(attempt_count, 6))
+        uint32_t backoff_power = std::min(existing.attempt_count, 6u);
+        auto delay = std::chrono::seconds(5 * (1 << backoff_power));
+        existing.next_attempt = std::chrono::steady_clock::now() + delay;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      reconciliation_queue_.push_back(std::move(retry));
+    }
+
+    // Enforce bound immediately on insert
+    while (reconciliation_queue_.size() > config_.max_reconciliation_queue_size) {
+      reconciliation_queue_.pop_front();
+    }
   }
 }
 

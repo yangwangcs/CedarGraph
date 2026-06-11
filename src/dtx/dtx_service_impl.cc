@@ -91,6 +91,7 @@ DTXServiceImpl::DTXServiceImpl(cedar::CedarGraphStorage* storage,
           replication_log.value = Descriptor(desc_raw);
           replication_log.timestamp = Timestamp(log.timestamp());
           replication_log.source_dc = log.source_dc();
+          replication_log.generation = log.generation();
           for (const auto& target : log.target_dcs()) {
             replication_log.target_dcs.push_back(target);
           }
@@ -138,6 +139,7 @@ DTXServiceImpl::DTXServiceImpl(cedar::CedarGraphStorage* storage,
             replication_log.value = Descriptor(desc_raw);
             replication_log.timestamp = Timestamp(log.timestamp());
             replication_log.source_dc = log.source_dc();
+            replication_log.generation = log.generation();
             for (const auto& target : log.target_dcs()) {
               replication_log.target_dcs.push_back(target);
             }

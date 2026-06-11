@@ -257,6 +257,7 @@ message ReplicationLogEntry {
   uint64 timestamp = 4;    // Microseconds since epoch
   string source_dc = 5;
   repeated string target_dcs = 6;
+  uint64 generation = 7;   // Wraparound epoch for sequence counter
 }
 
 message ReplicateRequest {
