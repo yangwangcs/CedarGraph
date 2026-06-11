@@ -1,10 +1,47 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: cedargraph-pdb
+  name: cedargraph-metad-pdb
   namespace: cedargraph
 spec:
   minAvailable: 2
   selector:
     matchLabels:
+      app.kubernetes.io/name: metad
+      app.kubernetes.io/part-of: cedargraph
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cedargraph-storaged-pdb
+  namespace: cedargraph
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: storaged
+      app.kubernetes.io/part-of: cedargraph
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cedargraph-graphd-pdb
+  namespace: cedargraph
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: graphd
+      app.kubernetes.io/part-of: cedargraph
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cedargraph-queryd-pdb
+  namespace: cedargraph
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: queryd
       app.kubernetes.io/part-of: cedargraph
