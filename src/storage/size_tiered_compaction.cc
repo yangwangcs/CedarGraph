@@ -27,6 +27,7 @@
 #endif
 
 #include "cedar/core/crc32c.h"
+#include "cedar/common/logging.h"
 
 namespace cedar {
 
@@ -827,29 +828,36 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
     output_meta.max_timestamp = max_ts;
   }
   
-  // 添加到新层级
+  // Step 1: Update in-memory metadata (add output, remove inputs/overlaps)
   {
     std::lock_guard<std::mutex> lock(levels_mutex_);
     levels_[task.output_level].files.push_back(output_meta);
+    for (const auto& f : task.input_files) {
+      RemoveFileFromLevel(f.file_number, task.input_level);
+    }
+    for (const auto& f : task.overlapping_files) {
+      RemoveFileFromLevel(f.file_number, task.output_level);
+    }
   }
-  
-  // 从旧层级移除输入文件并删除物理文件
-  for (const auto& f : task.input_files) {
-    RemoveFileFromLevel(f.file_number, task.input_level);
-    env_->RemoveFile(GetSstPath(f.file_number));
-  }
-  
-  // 从下层移除重叠文件并删除物理文件
-  for (const auto& f : task.overlapping_files) {
-    RemoveFileFromLevel(f.file_number, task.output_level);
-    env_->RemoveFile(GetSstPath(f.file_number));
-  }
-  
-  // 保存 MANIFEST
+
+  // Step 2: Persist manifest BEFORE deleting physical files
   s = SaveManifest();
-  
+  if (!s.ok()) {
+    LOG(ERROR) << "SaveManifest failed after compaction: " << s.ToString();
+    // If manifest save fails, do NOT delete old files so we can recover
+    return s;
+  }
+
+  // Step 3: Now safe to delete physical files
+  for (const auto& f : task.input_files) {
+    env_->RemoveFile(GetSstPath(f.file_number));
+  }
+  for (const auto& f : task.overlapping_files) {
+    env_->RemoveFile(GetSstPath(f.file_number));
+  }
+
   // 通知 Compaction 观察者
-  if (s.ok() && compaction_observer_) {
+  if (compaction_observer_) {
     std::vector<uint64_t> removed_files;
     for (const auto& f : task.input_files) {
       removed_files.push_back(f.file_number);
