@@ -74,6 +74,21 @@ std::shared_ptr<QueryStatement> CypherParser::ParseStatement() {
       if (del) {
         stmt->clauses.push_back(del);
       }
+    } else if (MatchKeyword("merge")) {
+      auto merge = ParseMergeClause();
+      if (merge) {
+        stmt->clauses.push_back(merge);
+      }
+    } else if (MatchKeyword("with")) {
+      auto with_clause = ParseWithClause();
+      if (with_clause) {
+        stmt->clauses.push_back(with_clause);
+      }
+    } else if (MatchKeyword("unwind")) {
+      auto unwind = ParseUnwindClause();
+      if (unwind) {
+        stmt->clauses.push_back(unwind);
+      }
     } else {
       // Unknown clause — report error instead of silent truncation
       error_ = "Unexpected token at position " + std::to_string(pos_);
@@ -610,6 +625,88 @@ std::shared_ptr<DeleteClause> CypherParser::ParseDeleteClause() {
   return clause;
 }
 
+std::shared_ptr<MergeClause> CypherParser::ParseMergeClause() {
+  SkipWhitespaceAndComments();
+  auto merge = std::make_shared<MergeClause>();
+  while (!IsAtEnd()) {
+    auto pattern = ParsePattern();
+    if (!pattern.elements.empty()) {
+      merge->patterns.push_back(pattern);
+    }
+    SkipWhitespaceAndComments();
+    if (!MatchSymbol(',')) {
+      break;
+    }
+  }
+  return merge;
+}
+
+std::shared_ptr<WithClause> CypherParser::ParseWithClause() {
+  SkipWhitespaceAndComments();
+  auto with_clause = std::make_shared<WithClause>();
+
+  // Check for DISTINCT
+  if (MatchKeyword("distinct")) {
+    with_clause->distinct = true;
+  }
+
+  // Parse projection items
+  while (!IsAtEnd()) {
+    ReturnItem item;
+    item.expression = ParseExpression();
+    if (!item.expression) {
+      error_ = "Failed to parse WITH expression";
+      break;
+    }
+
+    SkipWhitespaceAndComments();
+    if (MatchKeyword("as")) {
+      item.alias = ParseIdentifier();
+    }
+
+    if (!item.alias.has_value()) {
+      if (auto var = std::dynamic_pointer_cast<VariableExpr>(item.expression)) {
+        item.alias = var->name;
+      } else if (auto prop = std::dynamic_pointer_cast<PropertyExpr>(item.expression)) {
+        item.alias = prop->property;
+      }
+    }
+
+    with_clause->items.push_back(item);
+
+    SkipWhitespaceAndComments();
+    if (!MatchSymbol(',')) {
+      break;
+    }
+  }
+  return with_clause;
+}
+
+std::shared_ptr<UnwindClause> CypherParser::ParseUnwindClause() {
+  SkipWhitespaceAndComments();
+  auto unwind = std::make_shared<UnwindClause>();
+
+  unwind->expression = ParseExpression();
+  if (!unwind->expression) {
+    error_ = "Failed to parse UNWIND expression";
+    return nullptr;
+  }
+
+  SkipWhitespaceAndComments();
+  if (!MatchKeyword("as")) {
+    error_ = "Expected AS after UNWIND expression";
+    return nullptr;
+  }
+
+  unwind->alias = ParseIdentifier();
+  if (unwind->alias.empty()) {
+    error_ = "Expected identifier after AS in UNWIND";
+    return nullptr;
+  }
+
+  return unwind;
+}
+
 // ============================================================================
 // Expression parsers (recursive descent with precedence climbing)
 // ============================================================================
@@ -863,6 +960,26 @@ std::shared_ptr<Expression> CypherParser::ParsePrimaryExpression() {
     if (!expr) return nullptr;
     if (!ExpectSymbol(')')) return nullptr;
     return expr;
+  }
+
+  // List literal [expr, expr, ...]
+  if (MatchSymbol('[')) {
+    std::vector<std::shared_ptr<Expression>> elements;
+    SkipWhitespaceAndComments();
+    if (!MatchSymbol(']')) {
+      while (true) {
+        auto elem = ParseExpression();
+        if (!elem) {
+          error_ = "Expected expression in list literal";
+          return nullptr;
+        }
+        elements.push_back(elem);
+        SkipWhitespaceAndComments();
+        if (MatchSymbol(']')) break;
+        if (!ExpectSymbol(',')) return nullptr;
+      }
+    }
+    return std::make_shared<ListLiteralExpr>(std::move(elements));
   }
   
   // Parameter ($name)

@@ -155,7 +155,9 @@ class NodeScan : public PhysicalOperator {
   std::string GetName() const override { return "NodeScan"; }
   std::string GetDetails() const override;
   std::unique_ptr<PhysicalOperator> Clone() const override;
-  
+
+  const std::optional<std::string>& label() const { return label_; }
+
  private:
   std::string variable_;
   std::optional<std::string> label_;
@@ -194,6 +196,7 @@ class IndexScan : public PhysicalOperator {
 
   size_t current_index_ = 0;
   std::vector<uint64_t> node_ids_;
+  bool used_index_ = false;
 
   bool MatchesPredicate(const Node& node) const;
 };
@@ -680,6 +683,58 @@ class DeleteOperator : public PhysicalOperator {
   std::shared_ptr<DeleteClause> delete_clause_;
 };
 
+/**
+ * @brief Merge operator — MATCH pattern, CREATE if not found
+ */
+class MergeOperator : public PhysicalOperator {
+ public:
+  explicit MergeOperator(std::shared_ptr<MergeClause> merge_clause);
+
+  bool Init(ExecutionContext* ctx) override;
+  std::shared_ptr<Record> Next() override;
+  std::string GetName() const override { return "Merge"; }
+  std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
+  bool RequiresGraph() const override { return false; }
+
+ private:
+  std::shared_ptr<MergeClause> merge_clause_;
+  bool initialized_ = false;
+  bool done_ = false;
+  std::shared_ptr<Record> result_record_;
+  uint64_t id_counter_ = 0;
+
+  uint64_t GenerateId();
+  cedar::Status MergeNode(const NodePattern& node, Record* record);
+  cedar::Status MergeEdge(const RelationshipPattern& rel, const Record& record);
+  uint16_t PropertyNameToColumnId(const std::string& name) const;
+  cedar::Descriptor ValueToDescriptor(const Value& value, uint16_t col_id) const;
+};
+
+/**
+ * @brief Unwind operator — emit one record per list element
+ */
+class UnwindOperator : public PhysicalOperator {
+ public:
+  UnwindOperator(std::shared_ptr<Expression> list_expr, std::string alias);
+
+  bool Init(ExecutionContext* ctx) override;
+  std::shared_ptr<Record> Next() override;
+  std::string GetName() const override { return "Unwind"; }
+  std::string GetDetails() const override;
+  std::unique_ptr<PhysicalOperator> Clone() const override;
+  bool RequiresGraph() const override { return false; }
+
+ private:
+  std::shared_ptr<Expression> list_expr_;
+  std::string alias_;
+
+  std::shared_ptr<Record> current_record_;
+  std::vector<Value> current_list_;
+  size_t list_index_ = 0;
+  bool initialized_ = false;
+};
+
 // ============================================================================
 // Execution Plan Builder
 // ============================================================================
@@ -702,7 +757,14 @@ class ExecutionPlanBuilder {
   static std::shared_ptr<PhysicalOperator> BuildTemporalPlan(
       std::shared_ptr<QueryStatement> query,
       std::shared_ptr<TemporalClause> temporal_clause);
-  
+
+  static std::shared_ptr<PhysicalOperator> BuildPropertyIndex(
+      const std::string& variable,
+      const std::optional<std::string>& label,
+      const std::string& property,
+      ComparisonExpr::Op op,
+      const Value& literal);
+
  private:
   static std::shared_ptr<PhysicalOperator> BuildMatchPlan(
       std::shared_ptr<MatchClause> match,
@@ -716,11 +778,24 @@ class ExecutionPlanBuilder {
   
   static std::shared_ptr<PhysicalOperator> BuildDeletePlan(
       std::shared_ptr<DeleteClause> del);
+
+  static std::shared_ptr<PhysicalOperator> BuildMergePlan(
+      std::shared_ptr<MergeClause> merge);
+
+  static std::shared_ptr<PhysicalOperator> BuildWithPlan(
+      std::shared_ptr<WithClause> with_clause);
+
+  static std::shared_ptr<PhysicalOperator> BuildUnwindPlan(
+      std::shared_ptr<UnwindClause> unwind);
   
   static std::shared_ptr<PhysicalOperator> BuildScanForPattern(
       PathPattern pattern,
       std::shared_ptr<TemporalClause> temporal_clause);
-  
+
+  static std::shared_ptr<PhysicalOperator> BuildLabelIndex(
+      const std::string& variable,
+      const std::string& label);
+
   static std::shared_ptr<PhysicalOperator> CreateTemporalScan(
       std::string variable,
       std::optional<std::string> label,

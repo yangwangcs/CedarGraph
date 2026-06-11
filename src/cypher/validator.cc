@@ -35,6 +35,38 @@ bool QueryValidator::ValidateQueryStatement(const QueryStatement& stmt) {
       for (const auto& expr : del_clause->expressions) {
         if (!ValidateExpression(*expr)) return false;
       }
+    } else if (auto* merge_clause = dynamic_cast<const MergeClause*>(clause.get())) {
+      for (const auto& pattern : merge_clause->patterns) {
+        for (const auto& elem : pattern.elements) {
+          if (std::holds_alternative<NodePattern>(elem)) {
+            const auto& node = std::get<NodePattern>(elem);
+            if (!node.variable.empty()) {
+              pushed_vars.push_back(node.variable);
+            }
+          } else if (std::holds_alternative<RelationshipPattern>(elem)) {
+            const auto& rel = std::get<RelationshipPattern>(elem);
+            if (!rel.variable.empty()) {
+              pushed_vars.push_back(rel.variable);
+            }
+          }
+        }
+      }
+    } else if (auto* with_clause = dynamic_cast<const WithClause*>(clause.get())) {
+      for (const auto& item : with_clause->items) {
+        if (!ValidateExpression(*item.expression)) return false;
+      }
+      // Reset scope: downstream clauses only see WITH projections
+      scope_.clear();
+      for (const auto& item : with_clause->items) {
+        if (item.alias.has_value()) {
+          PushScope(*item.alias, {});
+        }
+      }
+    } else if (auto* unwind_clause = dynamic_cast<const UnwindClause*>(clause.get())) {
+      if (!ValidateExpression(*unwind_clause->expression)) return false;
+      if (!unwind_clause->alias.empty()) {
+        pushed_vars.push_back(unwind_clause->alias);
+      }
     }
     all_pushed_vars.insert(all_pushed_vars.end(),
                            pushed_vars.begin(), pushed_vars.end());

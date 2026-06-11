@@ -184,7 +184,10 @@ enum class ClauseType {
   SKIP,
   CREATE,
   SET,
-  DELETE
+  DELETE,
+  MERGE,
+  WITH,
+  UNWIND
 };
 
 // 查询子句基类
@@ -255,6 +258,27 @@ struct DeleteClause : QueryClause {
   bool detach = false;
   std::vector<std::shared_ptr<Expression>> expressions;
   DeleteClause() : QueryClause(ClauseType::DELETE) {}
+};
+
+// MERGE 子句
+struct MergeClause : QueryClause {
+  std::vector<PathPattern> patterns;
+  MergeClause() : QueryClause(ClauseType::MERGE) {}
+};
+
+// WITH 子句
+struct WithClause : QueryClause {
+  bool distinct = false;
+  std::vector<ReturnItem> items;
+  bool all = false;  // WITH *
+  WithClause() : QueryClause(ClauseType::WITH) {}
+};
+
+// UNWIND 子句
+struct UnwindClause : QueryClause {
+  std::shared_ptr<Expression> expression;
+  std::string alias;
+  UnwindClause() : QueryClause(ClauseType::UNWIND) {}
 };
 
 // 时态修饰符类型

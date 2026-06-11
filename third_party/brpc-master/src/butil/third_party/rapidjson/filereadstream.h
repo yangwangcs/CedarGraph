@@ -42,6 +42,7 @@ public:
 
     Ch Peek() const { return *current_; }
     Ch Take() { Ch c = *current_; Read(); return c; }
+    const Ch* TakeWithAddr() { const Ch* pos = current_; Read(); return pos; }
     size_t Tell() const { return count_ + static_cast<size_t>(current_ - buffer_); }
 
     // Not implemented

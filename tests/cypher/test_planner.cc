@@ -35,9 +35,11 @@ TEST(QueryPlanner, PlanSimpleMatchReturn) {
   std::string explain = plan->Explain();
   EXPECT_FALSE(explain.empty());
   
-  // Should contain ProduceResults (from RETURN) and NodeScan (from MATCH)
+  // Should contain ProduceResults (from RETURN) and a scan operator (NodeScan or
+  // IndexScan when a label-only pattern is resolved through the label index).
   EXPECT_NE(explain.find("ProduceResults"), std::string::npos);
-  EXPECT_NE(explain.find("NodeScan"), std::string::npos);
+  EXPECT_TRUE(explain.find("NodeScan") != std::string::npos ||
+              explain.find("IndexScan") != std::string::npos);
 }
 
 TEST(QueryPlanner, PlanMatchWhereReturn) {
@@ -86,6 +88,36 @@ TEST(QueryPlanner, EmptyQueryReturnsNull) {
   
   auto plan = planner.Plan(stmt);
   EXPECT_EQ(plan, nullptr);
+}
+
+TEST(QueryPlanner, PlanWithClause) {
+  QueryPlanner planner;
+  CypherParser parser("MATCH (n:Person) WITH n.name AS name RETURN name");
+  auto stmt = parser.ParseStatement();
+  ASSERT_NE(stmt, nullptr) << "Parse failed: " << parser.GetError();
+
+  auto plan = planner.Plan(*stmt);
+  ASSERT_NE(plan, nullptr) << "Plan failed: " << planner.GetLastError();
+
+  std::string explain = plan->Explain();
+  EXPECT_NE(explain.find("Project"), std::string::npos);
+  EXPECT_TRUE(explain.find("NodeScan") != std::string::npos ||
+              explain.find("IndexScan") != std::string::npos);
+  EXPECT_NE(explain.find("ProduceResults"), std::string::npos);
+}
+
+TEST(QueryPlanner, PlanUnwindClause) {
+  QueryPlanner planner;
+  CypherParser parser("UNWIND [1, 2, 3] AS x RETURN x");
+  auto stmt = parser.ParseStatement();
+  ASSERT_NE(stmt, nullptr) << "Parse failed: " << parser.GetError();
+
+  auto plan = planner.Plan(*stmt);
+  ASSERT_NE(plan, nullptr) << "Plan failed: " << planner.GetLastError();
+
+  std::string explain = plan->Explain();
+  EXPECT_NE(explain.find("Unwind"), std::string::npos);
+  EXPECT_NE(explain.find("ProduceResults"), std::string::npos);
 }
 
 int main(int argc, char** argv) {

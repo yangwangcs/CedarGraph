@@ -5,6 +5,7 @@
 #include "cedar/cypher/expression_evaluator.h"
 #include "cedar/graph/cedar_graph.h"
 #include "cedar/storage/cedar_graph_storage.h"
+#include "cedar/storage/lsm_engine.h"
 #include "cedar/core/logging.h"
 #include "cedar/core/status.h"
 #include <algorithm>
@@ -14,6 +15,30 @@
 
 namespace cedar {
 namespace cypher {
+
+// ============================================================================
+// Index helpers
+// ============================================================================
+
+static uint16_t PropertyNameToColumnId(const std::string& name) {
+  return static_cast<uint16_t>(std::hash<std::string>{}(name) & 0x0FFF);
+}
+
+static std::string ValueToIndexString(const Value& value) {
+  if (value.IsInt()) {
+    return std::to_string(value.GetInt());
+  }
+  if (value.IsFloat()) {
+    return std::to_string(value.GetFloat());
+  }
+  if (value.IsString()) {
+    return value.GetString();
+  }
+  if (value.IsBool()) {
+    return value.GetBool() ? "1" : "0";
+  }
+  return "";
+}
 
 // ============================================================================
 // Record Implementation
@@ -358,42 +383,64 @@ IndexScan::IndexScan(std::string variable,
       property_(std::move(property)),
       op_(op),
       literal_(std::move(literal)),
-      current_index_(0) {}
+      current_index_(0),
+      used_index_(false) {}
 
 bool IndexScan::Init(ExecutionContext* ctx) {
   context_ = ctx;
   node_ids_.clear();
+  used_index_ = false;
 
-  // Same range scan as NodeScan — the optimization is that we apply the
-  // predicate immediately and avoid creating records for non-matching nodes.
-  constexpr uint64_t kDefaultMinEntityId = 1;
-  constexpr uint64_t kDefaultMaxEntityId = 1000;
-  uint64_t min_entity_id = kDefaultMinEntityId;
-  uint64_t max_entity_id = kDefaultMaxEntityId;
-
-  const char* env_max = std::getenv("CEDAR_SCAN_MAX_ENTITIES");
-  if (env_max) {
-    char* end_ptr = nullptr;
-    errno = 0;
-    unsigned long long parsed = std::strtoull(env_max, &end_ptr, 10);
-    if (end_ptr != env_max && *end_ptr == '\0' && errno == 0) {
-      constexpr uint64_t kMaxAllowedEntities = 10000000;
-      if (parsed >= min_entity_id && parsed <= kMaxAllowedEntities) {
-        max_entity_id = static_cast<uint64_t>(parsed);
-      } else if (parsed > kMaxAllowedEntities) {
-        max_entity_id = kMaxAllowedEntities;
+  // Try to use the real secondary index via storage
+  if (ctx->storage) {
+    auto* engine = ctx->storage->GetLsmEngine();
+    if (engine) {
+      if (!property_.empty() && op_ == ComparisonExpr::EQ) {
+        uint16_t col_id = PropertyNameToColumnId(property_);
+        std::string val = ValueToIndexString(literal_);
+        if (!val.empty()) {
+          node_ids_ = engine->LookupPropertyIndex(col_id, val);
+          used_index_ = !node_ids_.empty();
+        }
+      }
+      if (!used_index_ && label_.has_value()) {
+        node_ids_ = engine->LookupLabelIndex(*label_);
+        used_index_ = !node_ids_.empty();
       }
     }
   }
 
-  if (ctx->get_all_entities_fn) {
-    node_ids_ = ctx->get_all_entities_fn(min_entity_id, max_entity_id, 1);
-  } else if (ctx->graph) {
-    node_ids_ = ctx->graph->ScanVertices(ctx->time_range.first, ctx->time_range.second);
-  } else {
-    node_ids_.reserve(max_entity_id - min_entity_id + 1);
-    for (uint64_t i = min_entity_id; i <= max_entity_id; ++i) {
-      node_ids_.push_back(i);
+  // Fallback to range scan if index returned nothing or storage is unavailable
+  if (!used_index_) {
+    constexpr uint64_t kDefaultMinEntityId = 1;
+    constexpr uint64_t kDefaultMaxEntityId = 1000;
+    uint64_t min_entity_id = kDefaultMinEntityId;
+    uint64_t max_entity_id = kDefaultMaxEntityId;
+
+    const char* env_max = std::getenv("CEDAR_SCAN_MAX_ENTITIES");
+    if (env_max) {
+      char* end_ptr = nullptr;
+      errno = 0;
+      unsigned long long parsed = std::strtoull(env_max, &end_ptr, 10);
+      if (end_ptr != env_max && *end_ptr == '\0' && errno == 0) {
+        constexpr uint64_t kMaxAllowedEntities = 10000000;
+        if (parsed >= min_entity_id && parsed <= kMaxAllowedEntities) {
+          max_entity_id = static_cast<uint64_t>(parsed);
+        } else if (parsed > kMaxAllowedEntities) {
+          max_entity_id = kMaxAllowedEntities;
+        }
+      }
+    }
+
+    if (ctx->get_all_entities_fn) {
+      node_ids_ = ctx->get_all_entities_fn(min_entity_id, max_entity_id, 1);
+    } else if (ctx->graph) {
+      node_ids_ = ctx->graph->ScanVertices(ctx->time_range.first, ctx->time_range.second);
+    } else {
+      node_ids_.reserve(max_entity_id - min_entity_id + 1);
+      for (uint64_t i = min_entity_id; i <= max_entity_id; ++i) {
+        node_ids_.push_back(i);
+      }
     }
   }
 
@@ -421,7 +468,7 @@ std::shared_ptr<Record> IndexScan::Next() {
       // header used here, so we rely on the mock / test path or fallback.
     }
 
-    if (!MatchesPredicate(node)) {
+    if (!used_index_ && !MatchesPredicate(node)) {
       continue;
     }
 
@@ -479,6 +526,7 @@ std::unique_ptr<PhysicalOperator> IndexScan::Clone() const {
   }
   clone->current_index_ = 0;
   clone->node_ids_.clear();
+  clone->used_index_ = false;
   return clone;
 }
 
@@ -983,6 +1031,96 @@ std::unique_ptr<PhysicalOperator> Project::Clone() const {
 }
 
 // ============================================================================
+// UnwindOperator Implementation
+// ============================================================================
+
+UnwindOperator::UnwindOperator(std::shared_ptr<Expression> list_expr,
+                               std::string alias)
+    : list_expr_(std::move(list_expr)), alias_(std::move(alias)) {}
+
+bool UnwindOperator::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  if (!children_.empty()) {
+    if (!children_[0]->Init(ctx)) {
+      return false;
+    }
+  }
+
+  current_record_.reset();
+  current_list_.clear();
+  list_index_ = 0;
+
+  // Stand-alone UNWIND has no input records; evaluate the list once against an
+  // empty record so that `UNWIND [1,2,3] AS x RETURN x` still produces rows.
+  if (children_.empty() && list_expr_) {
+    ExpressionEvaluator evaluator(context_);
+    Record empty_record;
+    Value list_val = evaluator.Evaluate(*list_expr_, empty_record);
+    if (list_val.IsList()) {
+      current_record_ = std::make_shared<Record>();
+      current_list_ = list_val.GetList();
+    }
+  }
+
+  initialized_ = true;
+  return true;
+}
+
+std::shared_ptr<Record> UnwindOperator::Next() {
+  if (!initialized_) {
+    return nullptr;
+  }
+
+  while (true) {
+    // If we have pending list elements, emit the next one
+    if (list_index_ < current_list_.size()) {
+      auto record = std::make_shared<Record>(*current_record_);
+      record->Set(alias_, current_list_[list_index_]);
+      ++list_index_;
+      return record;
+    }
+
+    // Need next input record
+    if (children_.empty()) {
+      return nullptr;
+    }
+
+    current_record_ = children_[0]->Next();
+    if (!current_record_) {
+      return nullptr;
+    }
+
+    // Evaluate the list expression
+    ExpressionEvaluator evaluator(context_);
+    Value list_val = evaluator.Evaluate(*list_expr_, *current_record_);
+
+    if (!list_val.IsList()) {
+      CEDAR_LOG_WARN() << "UnwindOperator: expression did not evaluate to a list";
+      continue;  // Skip non-list records
+    }
+
+    current_list_ = list_val.GetList();
+    list_index_ = 0;
+  }
+}
+
+std::string UnwindOperator::GetDetails() const {
+  return "AS " + alias_;
+}
+
+std::unique_ptr<PhysicalOperator> UnwindOperator::Clone() const {
+  auto clone = std::make_unique<UnwindOperator>(list_expr_, alias_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->current_record_.reset();
+  clone->current_list_.clear();
+  clone->list_index_ = 0;
+  clone->initialized_ = false;
+  return clone;
+}
+
+// ============================================================================
 // ExecutionPlanBuilder
 // ============================================================================
 
@@ -1008,6 +1146,9 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
   std::shared_ptr<CreateClause> create_clause;
   std::shared_ptr<SetClause> set_clause;
   std::shared_ptr<DeleteClause> delete_clause;
+  std::shared_ptr<MergeClause> merge_clause;
+  std::shared_ptr<WithClause> with_clause;
+  std::shared_ptr<UnwindClause> unwind_clause;
   
   for (const auto& clause : stmt->clauses) {
     switch (clause->clause_type) {
@@ -1037,6 +1178,15 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
         break;
       case ClauseType::DELETE:
         delete_clause = std::static_pointer_cast<DeleteClause>(clause);
+        break;
+      case ClauseType::MERGE:
+        merge_clause = std::static_pointer_cast<MergeClause>(clause);
+        break;
+      case ClauseType::WITH:
+        with_clause = std::static_pointer_cast<WithClause>(clause);
+        break;
+      case ClauseType::UNWIND:
+        unwind_clause = std::static_pointer_cast<UnwindClause>(clause);
         break;
       default:
         break;
@@ -1081,6 +1231,39 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
         delete_op->AddChild(root);
       }
       root = delete_op;
+    }
+  }
+
+  // 1e. MERGE → MergeOperator (like CREATE but with existence check)
+  if (merge_clause) {
+    auto merge_op = BuildMergePlan(merge_clause);
+    if (merge_op) {
+      if (root) {
+        merge_op->AddChild(root);
+      }
+      root = merge_op;
+    }
+  }
+
+  // 1f. WITH → Project (reuses existing Project operator)
+  if (with_clause) {
+    auto with_op = BuildWithPlan(with_clause);
+    if (with_op) {
+      if (root) {
+        with_op->AddChild(root);
+      }
+      root = with_op;
+    }
+  }
+
+  // 1g. UNWIND → UnwindOperator
+  if (unwind_clause) {
+    auto unwind_op = BuildUnwindPlan(unwind_clause);
+    if (unwind_op) {
+      if (root) {
+        unwind_op->AddChild(root);
+      }
+      root = unwind_op;
     }
   }
   
@@ -1184,6 +1367,27 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
 // Predicate Pushdown
 // ============================================================================
 
+std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildLabelIndex(
+    const std::string& variable,
+    const std::string& label) {
+  // Label-only scan: look up all entities with this label.
+  // For the MVP we reuse IndexScan with an empty property and a dummy EQ
+  // predicate that forces Init to fall through to the label index lookup.
+  return std::make_shared<IndexScan>(
+      variable, std::optional(label), "",
+      ComparisonExpr::EQ, Value::Null());
+}
+
+std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildPropertyIndex(
+    const std::string& variable,
+    const std::optional<std::string>& label,
+    const std::string& property,
+    ComparisonExpr::Op op,
+    const Value& literal) {
+  return std::make_shared<IndexScan>(
+      variable, label, property, op, literal);
+}
+
 static std::shared_ptr<PhysicalOperator> ApplyPredicatePushdown(
     std::shared_ptr<PhysicalOperator> root,
     const std::vector<PushablePredicate>& predicates) {
@@ -1196,8 +1400,12 @@ static std::shared_ptr<PhysicalOperator> ApplyPredicatePushdown(
     // Additional predicates become properties on the NodeScan (legacy path)
     // or are left for a Filter on top.
     const auto& pp = predicates[0];
-    auto index_scan = std::make_shared<IndexScan>(
-        pp.variable, std::nullopt, pp.property, pp.op, pp.literal);
+    auto index_scan = ExecutionPlanBuilder::BuildPropertyIndex(
+        pp.variable,
+        node_scan->label(),   // preserve the original label constraint
+        pp.property,
+        pp.op,
+        pp.literal);
     return index_scan;
   }
 
@@ -1251,6 +1459,50 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildDeletePlan(
   return std::make_shared<DeleteOperator>(del);
 }
 
+std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildMergePlan(
+    std::shared_ptr<MergeClause> merge) {
+  if (!merge || merge->patterns.empty()) {
+    return nullptr;
+  }
+  return std::make_shared<MergeOperator>(merge);
+}
+
+std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildWithPlan(
+    std::shared_ptr<WithClause> with_clause) {
+  if (!with_clause || with_clause->items.empty()) {
+    return nullptr;
+  }
+
+  std::vector<std::pair<std::string, std::shared_ptr<Expression>>> projections;
+  for (const auto& item : with_clause->items) {
+    std::string col_name = item.alias.value_or("column");
+    projections.push_back({col_name, item.expression});
+  }
+
+  auto project = std::make_shared<Project>(projections);
+
+  // DISTINCT
+  if (with_clause->distinct) {
+    std::vector<std::shared_ptr<Expression>> distinct_keys;
+    for (const auto& item : with_clause->items) {
+      distinct_keys.push_back(item.expression);
+    }
+    auto distinct_op = std::make_shared<Distinct>(distinct_keys);
+    distinct_op->AddChild(project);
+    return distinct_op;
+  }
+
+  return project;
+}
+
+std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildUnwindPlan(
+    std::shared_ptr<UnwindClause> unwind) {
+  if (!unwind || !unwind->expression || unwind->alias.empty()) {
+    return nullptr;
+  }
+  return std::make_shared<UnwindOperator>(unwind->expression, unwind->alias);
+}
+
 std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildScanForPattern(
     PathPattern pattern,
     std::shared_ptr<TemporalClause> temporal_clause) {
@@ -1275,11 +1527,15 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildScanForPattern(
           temporal_clause->end_time,
           temporal_clause->version_number);
     } else {
-      // Regular scan with properties for point lookup optimization
-      scan = std::make_shared<NodeScan>(
-          node.variable,
-          node.labels.empty() ? std::nullopt : std::optional(node.labels[0]),
-          node.properties);
+      // Prefer label index scan if a label is present and no properties
+      if (!node.labels.empty() && node.properties.empty()) {
+        scan = BuildLabelIndex(node.variable, node.labels[0]);
+      } else {
+        scan = std::make_shared<NodeScan>(
+            node.variable,
+            node.labels.empty() ? std::nullopt : std::optional(node.labels[0]),
+            node.properties);
+      }
     }
     
     // Build expand chain for relationships

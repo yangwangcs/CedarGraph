@@ -50,6 +50,27 @@ add_executable(test_write_operators
 target_link_libraries(test_write_operators cedar cedar_cypher gtest pthread)
 gtest_discover_tests(test_write_operators)
 
+# MERGE/WITH/UNWIND parsing test
+add_executable(test_merge_with_unwind_parsing
+    cypher/test_merge_with_unwind_parsing.cc
+)
+target_link_libraries(test_merge_with_unwind_parsing cedar cedar_cypher gtest pthread)
+gtest_discover_tests(test_merge_with_unwind_parsing)
+
+# MERGE/WITH/UNWIND execution test
+add_executable(test_merge_with_unwind_execution
+    cypher/test_merge_with_unwind_execution.cc
+)
+target_link_libraries(test_merge_with_unwind_execution cedar cedar_cypher gtest pthread)
+gtest_discover_tests(test_merge_with_unwind_execution)
+
+# End-to-end Cypher execution test (MERGE / UNWIND / WITH)
+add_executable(test_cypher_execution
+    cypher/test_cypher_execution.cc
+)
+target_link_libraries(test_cypher_execution cedar cedar_cypher gtest pthread)
+gtest_discover_tests(test_cypher_execution)
+
 # Queryd tests
 add_executable(test_subquery_execution queryd/test_subquery_execution.cc)
 target_link_libraries(test_subquery_execution ${CEDAR_TEST_LIBS} cedar_queryd)
@@ -115,6 +136,10 @@ gtest_discover_tests(test_failover_races)
 add_executable(lsm_engine_lifecycle_test storage/lsm_engine_lifecycle_test.cc)
 target_link_libraries(lsm_engine_lifecycle_test ${CEDAR_TEST_LIBS})
 gtest_discover_tests(lsm_engine_lifecycle_test)
+
+add_executable(test_lsm_engine_index storage/test_lsm_engine_index.cc)
+target_link_libraries(test_lsm_engine_index ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_lsm_engine_index)
 
 add_executable(test_accumulated_buffer_race storage/test_accumulated_buffer_race.cc)
 target_link_libraries(test_accumulated_buffer_race ${CEDAR_TEST_LIBS})
