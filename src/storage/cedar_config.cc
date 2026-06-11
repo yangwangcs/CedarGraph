@@ -20,6 +20,10 @@
 #include <iostream>
 #include <thread>
 #include <unistd.h>
+#include <cctype>
+#include "butil/third_party/rapidjson/document.h"
+#include "butil/third_party/rapidjson/stringbuffer.h"
+#include "butil/third_party/rapidjson/prettywriter.h"
 
 namespace cedar {
 
@@ -516,414 +520,627 @@ void CedarConfig::MergeFrom(const CedarConfig& other) {
 // 文件加载/保存（简化实现）
 // ============================================================================
 
-namespace {
-
-// Trim leading and trailing whitespace from a string.
-std::string Trim(const std::string& s) {
-  size_t start = 0;
-  while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) {
-    ++start;
-  }
-  size_t end = s.size();
-  while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
-    --end;
-  }
-  return s.substr(start, end - start);
-}
-
-// Remove surrounding quotes from a string value.
-std::string Unquote(const std::string& s) {
-  if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') ||
-                        (s.front() == '\'' && s.back() == '\''))) {
-    return s.substr(1, s.size() - 2);
-  }
-  return s;
-}
-
-// Parse a boolean from various string representations.
-bool ParseBool(const std::string& value) {
-  std::string lower;
-  lower.reserve(value.size());
-  for (char c : value) {
-    lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-  }
-  if (lower == "true" || lower == "yes" || lower == "1" || lower == "on") {
-    return true;
-  }
-  return false;
-}
-
-}  // namespace
-
 Status CedarConfig::LoadFromFile(const std::string& path) {
-  std::ifstream ifs(path);
+  std::ifstream ifs(path, std::ios::binary);
   if (!ifs.is_open()) {
     return Status::IOError("Cannot open config file: " + path);
   }
 
-  std::string line;
-  std::string current_section;
+  std::string content((std::istreambuf_iterator<char>(ifs)),
+                       std::istreambuf_iterator<char>());
+  ifs.close();
 
-  while (std::getline(ifs, line)) {
-    std::string trimmed = Trim(line);
+  butil::rapidjson::Document doc;
+  doc.Parse(content.c_str());
 
-    // Skip empty lines and comments.
-    if (trimmed.empty() || trimmed.front() == '#') {
-      continue;
-    }
+  if (doc.HasParseError()) {
+    return Status::InvalidArgument(
+        std::string("JSON parse error at offset ") +
+        std::to_string(doc.GetErrorOffset()));
+  }
+  if (!doc.IsObject()) {
+    return Status::InvalidArgument("Config file root must be a JSON object");
+  }
 
-    // Detect section headers (YAML: "section:" or JSON: "section": {).
-    // A section is a top-level key without leading whitespace or with minimal indent.
-    size_t first_non_space = line.find_first_not_of(" \t");
-    if (first_non_space == std::string::npos) {
-      continue;
-    }
-
-    bool is_top_level = (first_non_space == 0);
-    // In YAML, nested keys are indented; in JSON, braces may appear.
-    // Treat a line ending with ':' (possibly followed by '{' in JSON) as a section.
-    size_t colon_pos = trimmed.find(':');
-    if (colon_pos != std::string::npos && colon_pos == trimmed.find_last_of(':')) {
-      // Check if the next char after colon is space, end of string, or '{'
-      size_t after_colon = colon_pos + 1;
-      while (after_colon < trimmed.size() &&
-             std::isspace(static_cast<unsigned char>(trimmed[after_colon]))) {
-        ++after_colon;
+  // ---------------------------------------------------------------------------
+  // Type-safe helper lambdas (local to this function)
+  // ---------------------------------------------------------------------------
+  auto get_bool = [&](const butil::rapidjson::Value& obj, const char* key,
+                      bool def) -> bool {
+    if (!obj.HasMember(key)) return def;
+    const auto& v = obj[key];
+    if (v.IsBool()) return v.GetBool();
+    if (v.IsInt()) return v.GetInt() != 0;
+    if (v.IsUint()) return v.GetUint() != 0;
+    if (v.IsString()) {
+      std::string s(v.GetString(), v.GetStringLength());
+      for (char& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
       }
-      char next_char = (after_colon < trimmed.size()) ? trimmed[after_colon] : '\0';
-
-      if (next_char == '\0' || next_char == '{' || next_char == '#') {
-        std::string section_name = Trim(trimmed.substr(0, colon_pos));
-        // Remove quotes around section name for JSON.
-        section_name = Unquote(section_name);
-        if (section_name == "db" || section_name == "lsm" || section_name == "wal" ||
-            section_name == "security" || section_name == "tls") {
-          current_section = section_name;
-          continue;
-        }
-      }
+      return s == "true" || s == "yes" || s == "1" || s == "on";
     }
+    return def;
+  };
 
-    // If we are inside a target section, look for key-value pairs.
-    if (!current_section.empty()) {
-      size_t kv_colon = trimmed.find(':');
-      if (kv_colon != std::string::npos) {
-        std::string key = Trim(trimmed.substr(0, kv_colon));
-        key = Unquote(key);
-        std::string value = Trim(trimmed.substr(kv_colon + 1));
-        // Strip trailing comma (JSON) and comments.
-        size_t comment_pos = value.find('#');
-        if (comment_pos != std::string::npos) {
-          value = Trim(value.substr(0, comment_pos));
-        }
-        if (!value.empty() && value.back() == ',') {
-          value.pop_back();
-          value = Trim(value);
-        }
-        value = Unquote(value);
-
-        // -------------------------------------------------------------------
-        // db.*
-        // -------------------------------------------------------------------
-        if (current_section == "db") {
-          if (key == "create_if_missing") {
-            db.create_if_missing = ParseBool(value);
-          } else if (key == "error_if_exists") {
-            db.error_if_exists = ParseBool(value);
-          } else if (key == "paranoid_checks") {
-            db.paranoid_checks = ParseBool(value);
-          } else if (key == "memtable_threshold") {
-            db.memtable_threshold = static_cast<size_t>(std::stoull(value));
-          } else if (key == "write_buffer_size") {
-            db.write_buffer_size = static_cast<size_t>(std::stoull(value));
-          } else if (key == "column_id") {
-            db.column_id = static_cast<uint16_t>(std::stoul(value));
-          } else if (key == "enable_bloom_filter") {
-            db.enable_bloom_filter = ParseBool(value);
-          } else if (key == "bloom_bits_per_key") {
-            db.bloom_bits_per_key = std::stoi(value);
-          } else if (key == "verify_checksums") {
-            db.verify_checksums = ParseBool(value);
-          }
-        }
-        // -------------------------------------------------------------------
-        // lsm.*
-        // -------------------------------------------------------------------
-        else if (current_section == "lsm") {
-          if (key == "min_files_for_compaction") {
-            lsm.min_files_for_compaction = static_cast<size_t>(std::stoull(value));
-          } else if (key == "min_size_for_compaction") {
-            lsm.min_size_for_compaction = static_cast<size_t>(std::stoull(value));
-          } else if (key == "target_file_size") {
-            lsm.target_file_size = static_cast<size_t>(std::stoull(value));
-          } else if (key == "max_levels") {
-            lsm.max_levels = std::stoi(value);
-          } else if (key == "level_size_multiplier") {
-            lsm.level_size_multiplier = std::stod(value);
-          } else if (key == "level0_file_num_compaction_trigger") {
-            lsm.level0_file_num_compaction_trigger = static_cast<size_t>(std::stoull(value));
-          } else if (key == "level0_slowdown_writes_trigger") {
-            lsm.level0_slowdown_writes_trigger = static_cast<size_t>(std::stoull(value));
-          } else if (key == "level0_stop_writes_trigger") {
-            lsm.level0_stop_writes_trigger = static_cast<size_t>(std::stoull(value));
-          }
-        }
-        // -------------------------------------------------------------------
-        // wal.*
-        // -------------------------------------------------------------------
-        else if (current_section == "wal") {
-          if (key == "max_file_size") {
-            wal.max_file_size = static_cast<size_t>(std::stoull(value));
-          } else if (key == "group_commit_timeout_us") {
-            wal.group_commit_timeout_us = static_cast<uint32_t>(std::stoul(value));
-          } else if (key == "group_commit_max_batch") {
-            wal.group_commit_max_batch = static_cast<size_t>(std::stoull(value));
-          } else if (key == "use_fsync") {
-            wal.use_fsync = ParseBool(value);
-          } else if (key == "preallocate_size") {
-            wal.preallocate_size = static_cast<size_t>(std::stoull(value));
-          } else if (key == "enable_sharded_wal") {
-            wal.enable_sharded_wal = ParseBool(value);
-          } else if (key == "num_shards") {
-            wal.num_shards = static_cast<uint32_t>(std::stoul(value));
-          } else if (key == "bind_by_thread_id") {
-            wal.bind_by_thread_id = ParseBool(value);
-          } else if (key == "max_file_size_per_shard") {
-            wal.max_file_size_per_shard = static_cast<size_t>(std::stoull(value));
-          } else if (key == "batch_timeout_us") {
-            wal.batch_timeout_us = static_cast<uint32_t>(std::stoul(value));
-          } else if (key == "batch_max_size") {
-            wal.batch_max_size = static_cast<size_t>(std::stoull(value));
-          } else if (key == "enable_background_merger") {
-            wal.enable_background_merger = ParseBool(value);
-          } else if (key == "merge_interval_ms") {
-            wal.merge_interval_ms = static_cast<uint32_t>(std::stoul(value));
-          }
-        }
-        // -------------------------------------------------------------------
-        // security.*
-        // -------------------------------------------------------------------
-        else if (current_section == "security") {
-          if (key == "enable_auth") {
-            security.enable_auth = ParseBool(value);
-          } else if (key == "enable_tls") {
-            security.enable_tls = ParseBool(value);
-          } else if (key == "jwt_secret") {
-            security.jwt_secret = value;
-          }
-        }
-        // -------------------------------------------------------------------
-        // tls.*
-        // -------------------------------------------------------------------
-        else if (current_section == "tls") {
-          if (key == "enabled") {
-            tls.enabled = ParseBool(value);
-          } else if (key == "ca_cert") {
-            tls.ca_cert = value;
-          } else if (key == "server_cert") {
-            tls.server_cert = value;
-          } else if (key == "server_key") {
-            tls.server_key = value;
-          } else if (key == "client_cert") {
-            tls.client_cert = value;
-          } else if (key == "client_key") {
-            tls.client_key = value;
-          }
-        }
+  auto get_uint32 = [&](const butil::rapidjson::Value& obj, const char* key,
+                        uint32_t def) -> uint32_t {
+    if (!obj.HasMember(key)) return def;
+    const auto& v = obj[key];
+    if (v.IsUint()) return v.GetUint();
+    if (v.IsInt()) return static_cast<uint32_t>(v.GetInt());
+    if (v.IsUint64()) return static_cast<uint32_t>(v.GetUint64());
+    if (v.IsInt64()) return static_cast<uint32_t>(v.GetInt64());
+    if (v.IsString()) {
+      try {
+        return static_cast<uint32_t>(
+            std::stoul(std::string(v.GetString(), v.GetStringLength())));
+      } catch (...) {
+        return def;
       }
     }
+    return def;
+  };
+
+  auto get_size_t = [&](const butil::rapidjson::Value& obj, const char* key,
+                        size_t def) -> size_t {
+    if (!obj.HasMember(key)) return def;
+    const auto& v = obj[key];
+    if (v.IsUint64()) return static_cast<size_t>(v.GetUint64());
+    if (v.IsUint()) return static_cast<size_t>(v.GetUint());
+    if (v.IsInt64()) return static_cast<size_t>(v.GetInt64());
+    if (v.IsInt()) return static_cast<size_t>(v.GetInt());
+    if (v.IsString()) {
+      try {
+        return static_cast<size_t>(
+            std::stoull(std::string(v.GetString(), v.GetStringLength())));
+      } catch (...) {
+        return def;
+      }
+    }
+    return def;
+  };
+
+  auto get_int = [&](const butil::rapidjson::Value& obj, const char* key,
+                     int def) -> int {
+    if (!obj.HasMember(key)) return def;
+    const auto& v = obj[key];
+    if (v.IsInt()) return v.GetInt();
+    if (v.IsUint()) return static_cast<int>(v.GetUint());
+    if (v.IsString()) {
+      try {
+        return std::stoi(std::string(v.GetString(), v.GetStringLength()));
+      } catch (...) {
+        return def;
+      }
+    }
+    return def;
+  };
+
+  auto get_double = [&](const butil::rapidjson::Value& obj, const char* key,
+                        double def) -> double {
+    if (!obj.HasMember(key)) return def;
+    const auto& v = obj[key];
+    if (v.IsDouble()) return v.GetDouble();
+    if (v.IsInt()) return static_cast<double>(v.GetInt());
+    if (v.IsUint()) return static_cast<double>(v.GetUint());
+    if (v.IsInt64()) return static_cast<double>(v.GetInt64());
+    if (v.IsUint64()) return static_cast<double>(v.GetUint64());
+    if (v.IsString()) {
+      try {
+        return std::stod(std::string(v.GetString(), v.GetStringLength()));
+      } catch (...) {
+        return def;
+      }
+    }
+    return def;
+  };
+
+  auto get_string = [&](const butil::rapidjson::Value& obj, const char* key,
+                        const std::string& def) -> std::string {
+    if (!obj.HasMember(key)) return def;
+    const auto& v = obj[key];
+    if (v.IsString()) return std::string(v.GetString(), v.GetStringLength());
+    return def;
+  };
+
+  // ---------------------------------------------------------------------------
+  // Optional version check
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("version") && doc["version"].IsUint()) {
+    uint32_t file_version = doc["version"].GetUint();
+    (void)file_version;  // Reserved for future migration logic
+  }
+
+  // ---------------------------------------------------------------------------
+  // 1. db
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("db") && doc["db"].IsObject()) {
+    const auto& o = doc["db"];
+    db.create_if_missing = get_bool(o, "create_if_missing", db.create_if_missing);
+    db.error_if_exists = get_bool(o, "error_if_exists", db.error_if_exists);
+    db.paranoid_checks = get_bool(o, "paranoid_checks", db.paranoid_checks);
+    db.memtable_threshold = get_size_t(o, "memtable_threshold", db.memtable_threshold);
+    db.write_buffer_size = get_size_t(o, "write_buffer_size", db.write_buffer_size);
+    db.column_id = static_cast<uint16_t>(get_uint32(o, "column_id", db.column_id));
+    db.enable_bloom_filter = get_bool(o, "enable_bloom_filter", db.enable_bloom_filter);
+    db.bloom_bits_per_key = get_int(o, "bloom_bits_per_key", db.bloom_bits_per_key);
+    db.verify_checksums = get_bool(o, "verify_checksums", db.verify_checksums);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 2. lsm
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("lsm") && doc["lsm"].IsObject()) {
+    const auto& o = doc["lsm"];
+    lsm.min_files_for_compaction =
+        get_size_t(o, "min_files_for_compaction", lsm.min_files_for_compaction);
+    lsm.min_size_for_compaction =
+        get_size_t(o, "min_size_for_compaction", lsm.min_size_for_compaction);
+    lsm.target_file_size = get_size_t(o, "target_file_size", lsm.target_file_size);
+    lsm.max_levels = get_int(o, "max_levels", lsm.max_levels);
+    lsm.level_size_multiplier =
+        get_double(o, "level_size_multiplier", lsm.level_size_multiplier);
+    lsm.level0_file_num_compaction_trigger =
+        get_size_t(o, "level0_file_num_compaction_trigger",
+                   lsm.level0_file_num_compaction_trigger);
+    lsm.level0_slowdown_writes_trigger =
+        get_size_t(o, "level0_slowdown_writes_trigger",
+                   lsm.level0_slowdown_writes_trigger);
+    lsm.level0_stop_writes_trigger =
+        get_size_t(o, "level0_stop_writes_trigger",
+                   lsm.level0_stop_writes_trigger);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 3. wal
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("wal") && doc["wal"].IsObject()) {
+    const auto& o = doc["wal"];
+    wal.max_file_size = get_size_t(o, "max_file_size", wal.max_file_size);
+    wal.group_commit_timeout_us =
+        get_uint32(o, "group_commit_timeout_us", wal.group_commit_timeout_us);
+    wal.group_commit_max_batch =
+        get_size_t(o, "group_commit_max_batch", wal.group_commit_max_batch);
+    wal.use_fsync = get_bool(o, "use_fsync", wal.use_fsync);
+    wal.preallocate_size = get_size_t(o, "preallocate_size", wal.preallocate_size);
+    wal.enable_sharded_wal = get_bool(o, "enable_sharded_wal", wal.enable_sharded_wal);
+    wal.num_shards = get_uint32(o, "num_shards", wal.num_shards);
+    wal.bind_by_thread_id = get_bool(o, "bind_by_thread_id", wal.bind_by_thread_id);
+    wal.max_file_size_per_shard =
+        get_size_t(o, "max_file_size_per_shard", wal.max_file_size_per_shard);
+    wal.batch_timeout_us = get_uint32(o, "batch_timeout_us", wal.batch_timeout_us);
+    wal.batch_max_size = get_size_t(o, "batch_max_size", wal.batch_max_size);
+    wal.enable_background_merger =
+        get_bool(o, "enable_background_merger", wal.enable_background_merger);
+    wal.merge_interval_ms = get_uint32(o, "merge_interval_ms", wal.merge_interval_ms);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 4. memtable
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("memtable") && doc["memtable"].IsObject()) {
+    const auto& o = doc["memtable"];
+    if (o.HasMember("type")) {
+      const auto& v = o["type"];
+      int t = -1;
+      if (v.IsInt()) t = v.GetInt();
+      else if (v.IsUint()) t = static_cast<int>(v.GetUint());
+      if (t == 0 || t == 1) memtable.type = static_cast<decltype(memtable.type)>(t);
+    }
+    memtable.enable_lockfree_memtable =
+        get_bool(o, "enable_lockfree_memtable", memtable.enable_lockfree_memtable);
+    memtable.initial_capacity =
+        get_size_t(o, "initial_capacity", memtable.initial_capacity);
+    memtable.rehash_threshold =
+        get_double(o, "rehash_threshold", memtable.rehash_threshold);
+    memtable.enable_preallocation =
+        get_bool(o, "enable_preallocation", memtable.enable_preallocation);
+    memtable.preallocation_pool_size =
+        get_size_t(o, "preallocation_pool_size", memtable.preallocation_pool_size);
+    memtable.gc_interval_ms =
+        get_uint32(o, "gc_interval_ms", memtable.gc_interval_ms);
+    memtable.gc_batch_size =
+        get_size_t(o, "gc_batch_size", memtable.gc_batch_size);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 5. mvcc
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("mvcc") && doc["mvcc"].IsObject()) {
+    const auto& o = doc["mvcc"];
+    mvcc.enable_sharded_timestamp_allocator =
+        get_bool(o, "enable_sharded_timestamp_allocator",
+                 mvcc.enable_sharded_timestamp_allocator);
+    mvcc.timestamp_shard_count =
+        get_uint32(o, "timestamp_shard_count", mvcc.timestamp_shard_count);
+    mvcc.timestamp_batch_size =
+        get_uint32(o, "timestamp_batch_size", mvcc.timestamp_batch_size);
+    mvcc.enable_version_chain_index =
+        get_bool(o, "enable_version_chain_index",
+                 mvcc.enable_version_chain_index);
+    mvcc.version_chain_index_threshold =
+        get_size_t(o, "version_chain_index_threshold",
+                   mvcc.version_chain_index_threshold);
+    mvcc.version_chain_max_level =
+        get_int(o, "version_chain_max_level", mvcc.version_chain_max_level);
+    mvcc.enable_delta_encoding =
+        get_bool(o, "enable_delta_encoding", mvcc.enable_delta_encoding);
+    mvcc.delta_max_per_group =
+        get_size_t(o, "delta_max_per_group", mvcc.delta_max_per_group);
+    mvcc.enable_temporal_bloom_filter =
+        get_bool(o, "enable_temporal_bloom_filter",
+                 mvcc.enable_temporal_bloom_filter);
+    mvcc.temporal_filter_false_positive_rate =
+        get_double(o, "temporal_filter_false_positive_rate",
+                   mvcc.temporal_filter_false_positive_rate);
+    mvcc.temporal_filter_hours_per_bucket =
+        get_uint32(o, "temporal_filter_hours_per_bucket",
+                   mvcc.temporal_filter_hours_per_bucket);
+    mvcc.enable_sharded_wal =
+        get_bool(o, "enable_sharded_wal", mvcc.enable_sharded_wal);
+    mvcc.enable_lockfree_memtable =
+        get_bool(o, "enable_lockfree_memtable",
+                 mvcc.enable_lockfree_memtable);
+    mvcc.enable_async_index_builder =
+        get_bool(o, "enable_async_index_builder",
+                 mvcc.enable_async_index_builder);
+    mvcc.index_builder_worker_threads =
+        get_uint32(o, "index_builder_worker_threads",
+                   mvcc.index_builder_worker_threads);
+    mvcc.index_builder_max_concurrent =
+        get_uint32(o, "index_builder_max_concurrent",
+                   mvcc.index_builder_max_concurrent);
+    mvcc.index_builder_batch_size =
+        get_size_t(o, "index_builder_batch_size",
+                   mvcc.index_builder_batch_size);
+    mvcc.index_builder_batch_timeout_ms =
+        get_uint32(o, "index_builder_batch_timeout_ms",
+                   mvcc.index_builder_batch_timeout_ms);
+    mvcc.enable_build_cache =
+        get_bool(o, "enable_build_cache", mvcc.enable_build_cache);
+    mvcc.build_cache_size =
+        get_size_t(o, "build_cache_size", mvcc.build_cache_size);
+    mvcc.enable_deep_integration =
+        get_bool(o, "enable_deep_integration", mvcc.enable_deep_integration);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 6. transaction
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("transaction") && doc["transaction"].IsObject()) {
+    const auto& o = doc["transaction"];
+    transaction.enable_transaction =
+        get_bool(o, "enable_transaction", transaction.enable_transaction);
+    transaction.default_isolation_level =
+        get_int(o, "default_isolation_level",
+                transaction.default_isolation_level);
+    transaction.timeout_ms =
+        get_size_t(o, "timeout_ms", transaction.timeout_ms);
+    transaction.max_retries =
+        get_uint32(o, "max_retries", transaction.max_retries);
+    transaction.parallel_validation =
+        get_bool(o, "parallel_validation", transaction.parallel_validation);
+    transaction.validation_threads =
+        get_uint32(o, "validation_threads", transaction.validation_threads);
+    transaction.enable_occ =
+        get_bool(o, "enable_occ", transaction.enable_occ);
+    transaction.max_write_set_size =
+        get_size_t(o, "max_write_set_size", transaction.max_write_set_size);
+    transaction.max_read_set_size =
+        get_size_t(o, "max_read_set_size", transaction.max_read_set_size);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 7. cache
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("cache") && doc["cache"].IsObject()) {
+    const auto& o = doc["cache"];
+    cache.block_cache_size =
+        get_size_t(o, "block_cache_size", cache.block_cache_size);
+    cache.table_cache_size =
+        get_size_t(o, "table_cache_size", cache.table_cache_size);
+    cache.block_restart_interval =
+        get_int(o, "block_restart_interval", cache.block_restart_interval);
+    cache.block_size = get_size_t(o, "block_size", cache.block_size);
+    cache.version_chain_cache_size =
+        get_size_t(o, "version_chain_cache_size",
+                   cache.version_chain_cache_size);
+    cache.enable_version_chain_cache =
+        get_bool(o, "enable_version_chain_cache",
+                 cache.enable_version_chain_cache);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 8. filesystem
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("filesystem") && doc["filesystem"].IsObject()) {
+    const auto& o = doc["filesystem"];
+    filesystem.max_open_files =
+        get_int(o, "max_open_files", filesystem.max_open_files);
+    filesystem.use_direct_io =
+        get_bool(o, "use_direct_io", filesystem.use_direct_io);
+    filesystem.advise_random_access =
+        get_bool(o, "advise_random_access",
+                 filesystem.advise_random_access);
+    filesystem.prefetch_buffer_size =
+        get_size_t(o, "prefetch_buffer_size",
+                   filesystem.prefetch_buffer_size);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 9. security
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("security") && doc["security"].IsObject()) {
+    const auto& o = doc["security"];
+    security.enable_auth = get_bool(o, "enable_auth", security.enable_auth);
+    security.enable_tls = get_bool(o, "enable_tls", security.enable_tls);
+    security.jwt_secret = get_string(o, "jwt_secret", security.jwt_secret);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 10. tls
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("tls") && doc["tls"].IsObject()) {
+    const auto& o = doc["tls"];
+    tls.enabled = get_bool(o, "enabled", tls.enabled);
+    tls.ca_cert = get_string(o, "ca_cert", tls.ca_cert);
+    tls.server_cert = get_string(o, "server_cert", tls.server_cert);
+    tls.server_key = get_string(o, "server_key", tls.server_key);
+    tls.client_cert = get_string(o, "client_cert", tls.client_cert);
+    tls.client_key = get_string(o, "client_key", tls.client_key);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 11. debug
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("debug") && doc["debug"].IsObject()) {
+    const auto& o = doc["debug"];
+    debug.enable_stats = get_bool(o, "enable_stats", debug.enable_stats);
+    debug.stats_dump_interval_sec =
+        get_uint32(o, "stats_dump_interval_sec",
+                   debug.stats_dump_interval_sec);
+    debug.enable_slow_log =
+        get_bool(o, "enable_slow_log", debug.enable_slow_log);
+    debug.slow_log_threshold_ms =
+        get_uint32(o, "slow_log_threshold_ms",
+                   debug.slow_log_threshold_ms);
+    debug.enable_trace = get_bool(o, "enable_trace", debug.enable_trace);
   }
 
   return Status::OK();
 }
 
-namespace {
-
-// Simple JSON value escaper for strings
-std::string JsonEscape(const std::string& s) {
-  std::string out;
-  out.reserve(s.size());
-  for (char c : s) {
-    switch (c) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\b': out += "\\b"; break;
-      case '\f': out += "\\f"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default: out += c; break;
-    }
-  }
-  return out;
-}
-
-// Append a JSON key-value pair to a string buffer
-void JsonKV(std::string* out, const std::string& key, const std::string& value,
-            bool is_string, bool last) {
-  *out += "    \"" + JsonEscape(key) + "\": ";
-  if (is_string) {
-    *out += "\"" + JsonEscape(value) + "\"";
-  } else {
-    *out += value;
-  }
-  if (!last) *out += ",";
-  *out += "\n";
-}
-
-template <typename T>
-std::string ToStr(T v) {
-  return std::to_string(v);
-}
-
-std::string BoolStr(bool b) {
-  return b ? "true" : "false";
-}
-
-}  // namespace
-
 Status CedarConfig::SaveToFile(const std::string& path) const {
-  std::string json;
-  json += "{\n";
-  json += "  \"version\": " + std::to_string(kVersion) + ",\n";
+  butil::rapidjson::StringBuffer buffer;
+  butil::rapidjson::PrettyWriter<butil::rapidjson::StringBuffer> writer(buffer);
+  writer.SetIndent(' ', 2);
 
-  // db section
-  json += "  \"db\": {\n";
-  JsonKV(&json, "create_if_missing", BoolStr(db.create_if_missing), false, false);
-  JsonKV(&json, "error_if_exists", BoolStr(db.error_if_exists), false, false);
-  JsonKV(&json, "paranoid_checks", BoolStr(db.paranoid_checks), false, false);
-  JsonKV(&json, "memtable_threshold", ToStr(db.memtable_threshold), false, false);
-  JsonKV(&json, "write_buffer_size", ToStr(db.write_buffer_size), false, false);
-  JsonKV(&json, "column_id", ToStr(db.column_id), false, false);
-  JsonKV(&json, "enable_bloom_filter", BoolStr(db.enable_bloom_filter), false, false);
-  JsonKV(&json, "bloom_bits_per_key", ToStr(db.bloom_bits_per_key), false, false);
-  JsonKV(&json, "verify_checksums", BoolStr(db.verify_checksums), false, true);
-  json += "  },\n";
+  writer.StartObject();
 
-  // lsm section
-  json += "  \"lsm\": {\n";
-  JsonKV(&json, "min_files_for_compaction", ToStr(lsm.min_files_for_compaction), false, false);
-  JsonKV(&json, "min_size_for_compaction", ToStr(lsm.min_size_for_compaction), false, false);
-  JsonKV(&json, "target_file_size", ToStr(lsm.target_file_size), false, false);
-  JsonKV(&json, "max_levels", ToStr(lsm.max_levels), false, false);
-  JsonKV(&json, "level_size_multiplier", ToStr(lsm.level_size_multiplier), false, false);
-  JsonKV(&json, "level0_file_num_compaction_trigger", ToStr(lsm.level0_file_num_compaction_trigger), false, false);
-  JsonKV(&json, "level0_slowdown_writes_trigger", ToStr(lsm.level0_slowdown_writes_trigger), false, false);
-  JsonKV(&json, "level0_stop_writes_trigger", ToStr(lsm.level0_stop_writes_trigger), false, true);
-  json += "  },\n";
+  writer.Key("version");
+  writer.AddUint(kVersion);
 
-  // wal section
-  json += "  \"wal\": {\n";
-  JsonKV(&json, "max_file_size", ToStr(wal.max_file_size), false, false);
-  JsonKV(&json, "group_commit_timeout_us", ToStr(wal.group_commit_timeout_us), false, false);
-  JsonKV(&json, "group_commit_max_batch", ToStr(wal.group_commit_max_batch), false, false);
-  JsonKV(&json, "use_fsync", BoolStr(wal.use_fsync), false, false);
-  JsonKV(&json, "preallocate_size", ToStr(wal.preallocate_size), false, false);
-  JsonKV(&json, "enable_sharded_wal", BoolStr(wal.enable_sharded_wal), false, false);
-  JsonKV(&json, "num_shards", ToStr(wal.num_shards), false, false);
-  JsonKV(&json, "bind_by_thread_id", BoolStr(wal.bind_by_thread_id), false, false);
-  JsonKV(&json, "max_file_size_per_shard", ToStr(wal.max_file_size_per_shard), false, false);
-  JsonKV(&json, "batch_timeout_us", ToStr(wal.batch_timeout_us), false, false);
-  JsonKV(&json, "batch_max_size", ToStr(wal.batch_max_size), false, false);
-  JsonKV(&json, "enable_background_merger", BoolStr(wal.enable_background_merger), false, false);
-  JsonKV(&json, "merge_interval_ms", ToStr(wal.merge_interval_ms), false, true);
-  json += "  },\n";
+  // -------------------------------------------------------------------------
+  // db
+  // -------------------------------------------------------------------------
+  writer.Key("db");
+  writer.StartObject();
+  writer.Key("create_if_missing"); writer.Bool(db.create_if_missing);
+  writer.Key("error_if_exists"); writer.Bool(db.error_if_exists);
+  writer.Key("paranoid_checks"); writer.Bool(db.paranoid_checks);
+  writer.Key("memtable_threshold");
+  writer.AddUint64(static_cast<uint64_t>(db.memtable_threshold));
+  writer.Key("write_buffer_size");
+  writer.AddUint64(static_cast<uint64_t>(db.write_buffer_size));
+  writer.Key("column_id"); writer.AddUint(db.column_id);
+  writer.Key("enable_bloom_filter"); writer.Bool(db.enable_bloom_filter);
+  writer.Key("bloom_bits_per_key"); writer.AddInt(db.bloom_bits_per_key);
+  writer.Key("verify_checksums"); writer.Bool(db.verify_checksums);
+  writer.EndObject();
 
-  // memtable section
-  json += "  \"memtable\": {\n";
-  JsonKV(&json, "type", ToStr(static_cast<int>(memtable.type)), false, false);
-  JsonKV(&json, "enable_lockfree_memtable", BoolStr(memtable.enable_lockfree_memtable), false, false);
-  JsonKV(&json, "initial_capacity", ToStr(memtable.initial_capacity), false, false);
-  JsonKV(&json, "rehash_threshold", ToStr(memtable.rehash_threshold), false, false);
-  JsonKV(&json, "enable_preallocation", BoolStr(memtable.enable_preallocation), false, false);
-  JsonKV(&json, "preallocation_pool_size", ToStr(memtable.preallocation_pool_size), false, false);
-  JsonKV(&json, "gc_interval_ms", ToStr(memtable.gc_interval_ms), false, false);
-  JsonKV(&json, "gc_batch_size", ToStr(memtable.gc_batch_size), false, true);
-  json += "  },\n";
+  // -------------------------------------------------------------------------
+  // lsm
+  // -------------------------------------------------------------------------
+  writer.Key("lsm");
+  writer.StartObject();
+  writer.Key("min_files_for_compaction");
+  writer.AddUint64(static_cast<uint64_t>(lsm.min_files_for_compaction));
+  writer.Key("min_size_for_compaction");
+  writer.AddUint64(static_cast<uint64_t>(lsm.min_size_for_compaction));
+  writer.Key("target_file_size");
+  writer.AddUint64(static_cast<uint64_t>(lsm.target_file_size));
+  writer.Key("max_levels"); writer.AddInt(lsm.max_levels);
+  writer.Key("level_size_multiplier"); writer.Double(lsm.level_size_multiplier);
+  writer.Key("level0_file_num_compaction_trigger");
+  writer.AddUint64(static_cast<uint64_t>(lsm.level0_file_num_compaction_trigger));
+  writer.Key("level0_slowdown_writes_trigger");
+  writer.AddUint64(static_cast<uint64_t>(lsm.level0_slowdown_writes_trigger));
+  writer.Key("level0_stop_writes_trigger");
+  writer.AddUint64(static_cast<uint64_t>(lsm.level0_stop_writes_trigger));
+  writer.EndObject();
 
-  // mvcc section
-  json += "  \"mvcc\": {\n";
-  JsonKV(&json, "enable_sharded_timestamp_allocator", BoolStr(mvcc.enable_sharded_timestamp_allocator), false, false);
-  JsonKV(&json, "timestamp_shard_count", ToStr(mvcc.timestamp_shard_count), false, false);
-  JsonKV(&json, "timestamp_batch_size", ToStr(mvcc.timestamp_batch_size), false, false);
-  JsonKV(&json, "enable_version_chain_index", BoolStr(mvcc.enable_version_chain_index), false, false);
-  JsonKV(&json, "version_chain_index_threshold", ToStr(mvcc.version_chain_index_threshold), false, false);
-  JsonKV(&json, "version_chain_max_level", ToStr(mvcc.version_chain_max_level), false, false);
-  JsonKV(&json, "enable_delta_encoding", BoolStr(mvcc.enable_delta_encoding), false, false);
-  JsonKV(&json, "delta_max_per_group", ToStr(mvcc.delta_max_per_group), false, false);
-  JsonKV(&json, "enable_temporal_bloom_filter", BoolStr(mvcc.enable_temporal_bloom_filter), false, false);
-  JsonKV(&json, "temporal_filter_false_positive_rate", ToStr(mvcc.temporal_filter_false_positive_rate), false, false);
-  JsonKV(&json, "temporal_filter_hours_per_bucket", ToStr(mvcc.temporal_filter_hours_per_bucket), false, false);
-  JsonKV(&json, "enable_sharded_wal", BoolStr(mvcc.enable_sharded_wal), false, false);
-  JsonKV(&json, "enable_lockfree_memtable", BoolStr(mvcc.enable_lockfree_memtable), false, false);
-  JsonKV(&json, "enable_async_index_builder", BoolStr(mvcc.enable_async_index_builder), false, false);
-  JsonKV(&json, "index_builder_worker_threads", ToStr(mvcc.index_builder_worker_threads), false, false);
-  JsonKV(&json, "index_builder_max_concurrent", ToStr(mvcc.index_builder_max_concurrent), false, false);
-  JsonKV(&json, "index_builder_batch_size", ToStr(mvcc.index_builder_batch_size), false, false);
-  JsonKV(&json, "index_builder_batch_timeout_ms", ToStr(mvcc.index_builder_batch_timeout_ms), false, false);
-  JsonKV(&json, "enable_build_cache", BoolStr(mvcc.enable_build_cache), false, false);
-  JsonKV(&json, "build_cache_size", ToStr(mvcc.build_cache_size), false, false);
-  JsonKV(&json, "enable_deep_integration", BoolStr(mvcc.enable_deep_integration), false, true);
-  json += "  },\n";
+  // -------------------------------------------------------------------------
+  // wal
+  // -------------------------------------------------------------------------
+  writer.Key("wal");
+  writer.StartObject();
+  writer.Key("max_file_size");
+  writer.AddUint64(static_cast<uint64_t>(wal.max_file_size));
+  writer.Key("group_commit_timeout_us"); writer.AddUint(wal.group_commit_timeout_us);
+  writer.Key("group_commit_max_batch");
+  writer.AddUint64(static_cast<uint64_t>(wal.group_commit_max_batch));
+  writer.Key("use_fsync"); writer.Bool(wal.use_fsync);
+  writer.Key("preallocate_size");
+  writer.AddUint64(static_cast<uint64_t>(wal.preallocate_size));
+  writer.Key("enable_sharded_wal"); writer.Bool(wal.enable_sharded_wal);
+  writer.Key("num_shards"); writer.AddUint(wal.num_shards);
+  writer.Key("bind_by_thread_id"); writer.Bool(wal.bind_by_thread_id);
+  writer.Key("max_file_size_per_shard");
+  writer.AddUint64(static_cast<uint64_t>(wal.max_file_size_per_shard));
+  writer.Key("batch_timeout_us"); writer.AddUint(wal.batch_timeout_us);
+  writer.Key("batch_max_size");
+  writer.AddUint64(static_cast<uint64_t>(wal.batch_max_size));
+  writer.Key("enable_background_merger");
+  writer.Bool(wal.enable_background_merger);
+  writer.Key("merge_interval_ms"); writer.AddUint(wal.merge_interval_ms);
+  writer.EndObject();
 
-  // transaction section
-  json += "  \"transaction\": {\n";
-  JsonKV(&json, "enable_transaction", BoolStr(transaction.enable_transaction), false, false);
-  JsonKV(&json, "default_isolation_level", ToStr(transaction.default_isolation_level), false, false);
-  JsonKV(&json, "timeout_ms", ToStr(transaction.timeout_ms), false, false);
-  JsonKV(&json, "max_retries", ToStr(transaction.max_retries), false, false);
-  JsonKV(&json, "parallel_validation", BoolStr(transaction.parallel_validation), false, false);
-  JsonKV(&json, "validation_threads", ToStr(transaction.validation_threads), false, false);
-  JsonKV(&json, "enable_occ", BoolStr(transaction.enable_occ), false, false);
-  JsonKV(&json, "max_write_set_size", ToStr(transaction.max_write_set_size), false, false);
-  JsonKV(&json, "max_read_set_size", ToStr(transaction.max_read_set_size), false, true);
-  json += "  },\n";
+  // -------------------------------------------------------------------------
+  // memtable
+  // -------------------------------------------------------------------------
+  writer.Key("memtable");
+  writer.StartObject();
+  writer.Key("type"); writer.AddInt(static_cast<int>(memtable.type));
+  writer.Key("enable_lockfree_memtable");
+  writer.Bool(memtable.enable_lockfree_memtable);
+  writer.Key("initial_capacity");
+  writer.AddUint64(static_cast<uint64_t>(memtable.initial_capacity));
+  writer.Key("rehash_threshold"); writer.Double(memtable.rehash_threshold);
+  writer.Key("enable_preallocation");
+  writer.Bool(memtable.enable_preallocation);
+  writer.Key("preallocation_pool_size");
+  writer.AddUint64(static_cast<uint64_t>(memtable.preallocation_pool_size));
+  writer.Key("gc_interval_ms"); writer.AddUint(memtable.gc_interval_ms);
+  writer.Key("gc_batch_size");
+  writer.AddUint64(static_cast<uint64_t>(memtable.gc_batch_size));
+  writer.EndObject();
 
-  // cache section
-  json += "  \"cache\": {\n";
-  JsonKV(&json, "block_cache_size", ToStr(cache.block_cache_size), false, false);
-  JsonKV(&json, "table_cache_size", ToStr(cache.table_cache_size), false, false);
-  JsonKV(&json, "block_restart_interval", ToStr(cache.block_restart_interval), false, false);
-  JsonKV(&json, "block_size", ToStr(cache.block_size), false, false);
-  JsonKV(&json, "version_chain_cache_size", ToStr(cache.version_chain_cache_size), false, false);
-  JsonKV(&json, "enable_version_chain_cache", BoolStr(cache.enable_version_chain_cache), false, true);
-  json += "  },\n";
+  // -------------------------------------------------------------------------
+  // mvcc
+  // -------------------------------------------------------------------------
+  writer.Key("mvcc");
+  writer.StartObject();
+  writer.Key("enable_sharded_timestamp_allocator");
+  writer.Bool(mvcc.enable_sharded_timestamp_allocator);
+  writer.Key("timestamp_shard_count"); writer.AddUint(mvcc.timestamp_shard_count);
+  writer.Key("timestamp_batch_size"); writer.AddUint(mvcc.timestamp_batch_size);
+  writer.Key("enable_version_chain_index");
+  writer.Bool(mvcc.enable_version_chain_index);
+  writer.Key("version_chain_index_threshold");
+  writer.AddUint64(static_cast<uint64_t>(mvcc.version_chain_index_threshold));
+  writer.Key("version_chain_max_level"); writer.AddInt(mvcc.version_chain_max_level);
+  writer.Key("enable_delta_encoding"); writer.Bool(mvcc.enable_delta_encoding);
+  writer.Key("delta_max_per_group");
+  writer.AddUint64(static_cast<uint64_t>(mvcc.delta_max_per_group));
+  writer.Key("enable_temporal_bloom_filter");
+  writer.Bool(mvcc.enable_temporal_bloom_filter);
+  writer.Key("temporal_filter_false_positive_rate");
+  writer.Double(mvcc.temporal_filter_false_positive_rate);
+  writer.Key("temporal_filter_hours_per_bucket");
+  writer.AddUint(mvcc.temporal_filter_hours_per_bucket);
+  writer.Key("enable_sharded_wal"); writer.Bool(mvcc.enable_sharded_wal);
+  writer.Key("enable_lockfree_memtable");
+  writer.Bool(mvcc.enable_lockfree_memtable);
+  writer.Key("enable_async_index_builder");
+  writer.Bool(mvcc.enable_async_index_builder);
+  writer.Key("index_builder_worker_threads");
+  writer.AddUint(mvcc.index_builder_worker_threads);
+  writer.Key("index_builder_max_concurrent");
+  writer.AddUint(mvcc.index_builder_max_concurrent);
+  writer.Key("index_builder_batch_size");
+  writer.AddUint64(static_cast<uint64_t>(mvcc.index_builder_batch_size));
+  writer.Key("index_builder_batch_timeout_ms");
+  writer.AddUint(mvcc.index_builder_batch_timeout_ms);
+  writer.Key("enable_build_cache"); writer.Bool(mvcc.enable_build_cache);
+  writer.Key("build_cache_size");
+  writer.AddUint64(static_cast<uint64_t>(mvcc.build_cache_size));
+  writer.Key("enable_deep_integration");
+  writer.Bool(mvcc.enable_deep_integration);
+  writer.EndObject();
 
-  // filesystem section
-  json += "  \"filesystem\": {\n";
-  JsonKV(&json, "max_open_files", ToStr(filesystem.max_open_files), false, false);
-  JsonKV(&json, "use_direct_io", BoolStr(filesystem.use_direct_io), false, false);
-  JsonKV(&json, "advise_random_access", BoolStr(filesystem.advise_random_access), false, false);
-  JsonKV(&json, "prefetch_buffer_size", ToStr(filesystem.prefetch_buffer_size), false, true);
-  json += "  },\n";
+  // -------------------------------------------------------------------------
+  // transaction
+  // -------------------------------------------------------------------------
+  writer.Key("transaction");
+  writer.StartObject();
+  writer.Key("enable_transaction"); writer.Bool(transaction.enable_transaction);
+  writer.Key("default_isolation_level");
+  writer.AddInt(transaction.default_isolation_level);
+  writer.Key("timeout_ms");
+  writer.AddUint64(static_cast<uint64_t>(transaction.timeout_ms));
+  writer.Key("max_retries"); writer.AddUint(transaction.max_retries);
+  writer.Key("parallel_validation");
+  writer.Bool(transaction.parallel_validation);
+  writer.Key("validation_threads"); writer.AddUint(transaction.validation_threads);
+  writer.Key("enable_occ"); writer.Bool(transaction.enable_occ);
+  writer.Key("max_write_set_size");
+  writer.AddUint64(static_cast<uint64_t>(transaction.max_write_set_size));
+  writer.Key("max_read_set_size");
+  writer.AddUint64(static_cast<uint64_t>(transaction.max_read_set_size));
+  writer.EndObject();
 
-  // security section
-  json += "  \"security\": {\n";
-  JsonKV(&json, "enable_auth", BoolStr(security.enable_auth), false, false);
-  JsonKV(&json, "enable_tls", BoolStr(security.enable_tls), false, false);
-  JsonKV(&json, "jwt_secret", security.jwt_secret, true, true);
-  json += "  },\n";
+  // -------------------------------------------------------------------------
+  // cache
+  // -------------------------------------------------------------------------
+  writer.Key("cache");
+  writer.StartObject();
+  writer.Key("block_cache_size");
+  writer.AddUint64(static_cast<uint64_t>(cache.block_cache_size));
+  writer.Key("table_cache_size");
+  writer.AddUint64(static_cast<uint64_t>(cache.table_cache_size));
+  writer.Key("block_restart_interval");
+  writer.AddInt(cache.block_restart_interval);
+  writer.Key("block_size");
+  writer.AddUint64(static_cast<uint64_t>(cache.block_size));
+  writer.Key("version_chain_cache_size");
+  writer.AddUint64(static_cast<uint64_t>(cache.version_chain_cache_size));
+  writer.Key("enable_version_chain_cache");
+  writer.Bool(cache.enable_version_chain_cache);
+  writer.EndObject();
 
-  // tls section
-  json += "  \"tls\": {\n";
-  JsonKV(&json, "enabled", BoolStr(tls.enabled), false, false);
-  JsonKV(&json, "ca_cert", tls.ca_cert, true, false);
-  JsonKV(&json, "server_cert", tls.server_cert, true, false);
-  JsonKV(&json, "server_key", tls.server_key, true, false);
-  JsonKV(&json, "client_cert", tls.client_cert, true, false);
-  JsonKV(&json, "client_key", tls.client_key, true, true);
-  json += "  },\n";
+  // -------------------------------------------------------------------------
+  // filesystem
+  // -------------------------------------------------------------------------
+  writer.Key("filesystem");
+  writer.StartObject();
+  writer.Key("max_open_files"); writer.AddInt(filesystem.max_open_files);
+  writer.Key("use_direct_io"); writer.Bool(filesystem.use_direct_io);
+  writer.Key("advise_random_access");
+  writer.Bool(filesystem.advise_random_access);
+  writer.Key("prefetch_buffer_size");
+  writer.AddUint64(static_cast<uint64_t>(filesystem.prefetch_buffer_size));
+  writer.EndObject();
 
-  // debug section
-  json += "  \"debug\": {\n";
-  JsonKV(&json, "enable_stats", BoolStr(debug.enable_stats), false, false);
-  JsonKV(&json, "stats_dump_interval_sec", ToStr(debug.stats_dump_interval_sec), false, false);
-  JsonKV(&json, "enable_slow_log", BoolStr(debug.enable_slow_log), false, false);
-  JsonKV(&json, "slow_log_threshold_ms", ToStr(debug.slow_log_threshold_ms), false, false);
-  JsonKV(&json, "enable_trace", BoolStr(debug.enable_trace), false, true);
-  json += "  }\n";
+  // -------------------------------------------------------------------------
+  // security
+  // -------------------------------------------------------------------------
+  writer.Key("security");
+  writer.StartObject();
+  writer.Key("enable_auth"); writer.Bool(security.enable_auth);
+  writer.Key("enable_tls"); writer.Bool(security.enable_tls);
+  writer.Key("jwt_secret"); writer.String(security.jwt_secret.c_str());
+  writer.EndObject();
 
-  json += "}\n";
+  // -------------------------------------------------------------------------
+  // tls
+  // -------------------------------------------------------------------------
+  writer.Key("tls");
+  writer.StartObject();
+  writer.Key("enabled"); writer.Bool(tls.enabled);
+  writer.Key("ca_cert"); writer.String(tls.ca_cert.c_str());
+  writer.Key("server_cert"); writer.String(tls.server_cert.c_str());
+  writer.Key("server_key"); writer.String(tls.server_key.c_str());
+  writer.Key("client_cert"); writer.String(tls.client_cert.c_str());
+  writer.Key("client_key"); writer.String(tls.client_key.c_str());
+  writer.EndObject();
+
+  // -------------------------------------------------------------------------
+  // debug
+  // -------------------------------------------------------------------------
+  writer.Key("debug");
+  writer.StartObject();
+  writer.Key("enable_stats"); writer.Bool(debug.enable_stats);
+  writer.Key("stats_dump_interval_sec");
+  writer.AddUint(debug.stats_dump_interval_sec);
+  writer.Key("enable_slow_log"); writer.Bool(debug.enable_slow_log);
+  writer.Key("slow_log_threshold_ms");
+  writer.AddUint(debug.slow_log_threshold_ms);
+  writer.Key("enable_trace"); writer.Bool(debug.enable_trace);
+  writer.EndObject();
+
+  writer.EndObject();
+
+  std::string json(buffer.GetString(), buffer.GetSize());
 
   // Atomic write: temp file -> fsync -> rename
   std::string tmp_path = path + ".tmp";
@@ -940,7 +1157,6 @@ Status CedarConfig::SaveToFile(const std::string& path) const {
     return Status::IOError("SaveToFile", "Failed to write temp file: " + tmp_path);
   }
 
-  // fsync the temp file for durability
   int fd = ::open(tmp_path.c_str(), O_RDONLY);
   if (fd >= 0) {
 #if defined(__APPLE__)
@@ -951,7 +1167,6 @@ Status CedarConfig::SaveToFile(const std::string& path) const {
     ::close(fd);
   }
 
-  // fsync the directory to ensure the rename is durable
   try {
     std::filesystem::rename(tmp_path, path);
   } catch (const std::exception& e) {
