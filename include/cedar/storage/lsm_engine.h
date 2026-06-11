@@ -317,6 +317,12 @@ class LsmEngine {
   // 获取 MemTable
   VSLMemTable* GetMemTable() const { return mem_.get(); }
   
+  // Acquire a shared lock on the engine's memtable mutex.
+  // Use this when you need to prevent memtable swap during a batch operation.
+  std::shared_lock<std::shared_mutex> AcquireSharedLock() const {
+    return std::shared_lock<std::shared_mutex>(mutex_);
+  }
+  
   // 获取 Batch 执行器
   BatchExecutor* GetBatchExecutor() const { return batch_executor_.get(); }
   
@@ -712,6 +718,15 @@ class LsmEngine {
   std::atomic<int> active_flush_count_{0};
   std::mutex flush_completion_mutex_;
   std::condition_variable flush_completion_cv_;
+
+  // ============================================================================
+  // Global commit serialization (P0-6)
+  // ============================================================================
+  // Coarse-grained mutex that serializes the Validate+WAL+MemTable critical
+  // section in OCCTransaction::Commit(). Held only for the duration of commit,
+  // NOT during the entire transaction lifetime.
+  friend class OCCTransaction;
+  mutable std::mutex global_commit_mutex_;
   
   // 迁移现有的 SST 文件到新的 Compaction 引擎
   void MigrateExistingSstFiles();

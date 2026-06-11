@@ -52,6 +52,10 @@ class ShardedTimestampAllocator {
   // 获取当前全局时间戳（近似值）
   Timestamp CurrentTimestamp() const;
   
+  // 强制从全局计数器分配一个单调递增的时间戳。
+  // 用于需要跨线程顺序保证的关键路径（如事务提交）。
+  Timestamp AllocateGlobal();
+  
   // 获取全局下一个时间戳（用于GetMinActiveTimestamp）
   uint64_t GetGlobalNext() const {
     return global_next_.load(std::memory_order_acquire);

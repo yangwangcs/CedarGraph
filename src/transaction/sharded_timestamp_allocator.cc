@@ -90,6 +90,11 @@ Timestamp ShardedTimestampAllocator::CurrentTimestamp() const {
   return Timestamp(global_next_.load(std::memory_order_acquire) - 1);
 }
 
+Timestamp ShardedTimestampAllocator::AllocateGlobal() {
+  // 直接从全局计数器分配，保证跨线程单调递增。
+  return Timestamp(global_next_.fetch_add(1, std::memory_order_acq_rel));
+}
+
 ShardedTimestampAllocator::Stats ShardedTimestampAllocator::GetStats() const {
   Stats stats;
   stats.num_shards = static_cast<uint32_t>(shards_.size());

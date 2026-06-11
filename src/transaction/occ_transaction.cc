@@ -42,6 +42,14 @@ Timestamp TransactionManager::AllocateTimestampBatch(uint32_t count) {
   return timestamp_allocator_.AllocateBatch(count);
 }
 
+Timestamp TransactionManager::AllocateGlobalTimestamp() {
+  return timestamp_allocator_.AllocateGlobal();
+}
+
+Timestamp TransactionManager::CurrentTimestamp() const {
+  return timestamp_allocator_.CurrentTimestamp();
+}
+
 void TransactionManager::RegisterActiveTransaction(uint64_t txn_id, 
                                                     Timestamp start_ts) {
   std::lock_guard<std::mutex> lock(active_txns_mutex_);
@@ -119,7 +127,11 @@ Status OCCTransaction::Begin() {
   
   // 分配事务 ID 和读取时间戳
   txn_id_ = txn_manager_->AllocateTransactionId();
-  read_timestamp_ = txn_manager_->AllocateTimestamp();
+  // P0-6 FIX: Use the current global timestamp for the read snapshot so that
+  // the snapshot includes all commits that completed before this txn began.
+  // The sharded allocator's per-thread caches do NOT provide cross-thread
+  // monotonicity, which breaks visibility under concurrent commits.
+  read_timestamp_ = txn_manager_->CurrentTimestamp();
   
   // 注册到活跃事务表
   txn_manager_->RegisterActiveTransaction(txn_id_, read_timestamp_);
@@ -129,12 +141,13 @@ Status OCCTransaction::Begin() {
 
 Status OCCTransaction::Commit() {
   // 状态检查
-  TransactionState expected = TransactionState::kActive;
-  if (!state_.compare_exchange_strong(expected, TransactionState::kValidating)) {
-    return Status::InvalidArgument("OCCTransaction", 
+  if (state_.load() != TransactionState::kActive) {
+    return Status::InvalidArgument("OCCTransaction",
         "Transaction not in active state");
   }
-  
+
+  state_.store(TransactionState::kValidating);
+
   // 空事务直接成功
   if (write_set_.empty() && read_set_.empty()) {
     state_.store(TransactionState::kCommitted);
@@ -142,7 +155,7 @@ Status OCCTransaction::Commit() {
     txn_manager_->mutable_stats().txn_committed.fetch_add(1, std::memory_order_relaxed);
     return Status::OK();
   }
-  
+
   // 只读事务也直接成功
   if (write_set_.empty()) {
     state_.store(TransactionState::kCommitted);
@@ -150,15 +163,28 @@ Status OCCTransaction::Commit() {
     txn_manager_->mutable_stats().txn_committed.fetch_add(1, std::memory_order_relaxed);
     return Status::OK();
   }
-  
-  // 分配提交时间戳
-  commit_timestamp_ = txn_manager_->AllocateTimestamp();
-  
+
+  // ===================================================================
+  // P0-6 FIX: Global commit serialization
+  // Acquire the engine-wide mutex BEFORE allocating the commit timestamp
+  // and Validate() and hold it until MemTable writes are complete. This
+  // ensures monotonic commit timestamps, correct MVCC visibility, and
+  // that no other transaction can interleave its WAL/MemTable writes.
+  // ===================================================================
+  std::lock_guard<std::mutex> commit_lock(lsm_engine_->global_commit_mutex_);
+
+  // P0-6 FIX: Allocate the commit timestamp from the global counter while
+  // holding global_commit_mutex_. This guarantees commit_timestamp_ is
+  // strictly greater than any read_timestamp_ that was assigned before this
+  // commit started, which is required for correct MVCC visibility and
+  // conflict detection across threads.
+  commit_timestamp_ = txn_manager_->AllocateGlobalTimestamp();
+
   // 修复: 更新写集中的 txn_version 为 commit_timestamp_
   for (auto& entry : write_set_) {
     entry.txn_version = commit_timestamp_;
   }
-  
+
   // 修复: 重建 WAL batch，使用正确的 commit_timestamp_
   if (wal_writer_) {
     wal_batch_.Clear();
@@ -166,7 +192,7 @@ Status OCCTransaction::Commit() {
       wal_batch_.Put(entry.key, entry.descriptor, entry.txn_version);
     }
   }
-  
+
   // 验证阶段
   Status validation_status = Validate();
   if (!validation_status.ok()) {
@@ -176,9 +202,9 @@ Status OCCTransaction::Commit() {
     txn_manager_->mutable_stats().validation_failures.fetch_add(1, std::memory_order_relaxed);
     return validation_status;
   }
-  
+
   state_.store(TransactionState::kCommitting);
-  
+
   // 写入 WAL (必须先于 MemTable，保证崩溃恢复时 WAL 有记录)
   if (wal_writer_) {
     Status wal_status = WriteToWAL();
@@ -189,21 +215,27 @@ Status OCCTransaction::Commit() {
       return wal_status;
     }
   }
-  
+
   // 写入 MemTable
   Status write_status = WriteToMemTable();
   if (!write_status.ok()) {
+    // ===================================================================
+    // P0-6 PARTIAL-WRITE SAFETY: If MemTable write fails after WAL succeeded,
+    // we MUST leave a deterministic state. Since we hold global_commit_mutex_,
+    // no other txn can commit concurrently. We abort; the WAL entry will be
+    // replayed on recovery (idempotent because MVCC version is fixed).
+    // ===================================================================
     state_.store(TransactionState::kAborted);
     txn_manager_->UnregisterActiveTransaction(txn_id_);
     txn_manager_->mutable_stats().txn_aborted.fetch_add(1, std::memory_order_relaxed);
     return write_status;
   }
-  
+
   // 标记提交完成
   state_.store(TransactionState::kCommitted);
   txn_manager_->UnregisterActiveTransaction(txn_id_);
   txn_manager_->mutable_stats().txn_committed.fetch_add(1, std::memory_order_relaxed);
-  
+
   return Status::OK();
 }
 
@@ -528,9 +560,43 @@ Status OCCTransaction::Validate() {
     if (!chain_opt.empty()) {
       // 获取最新版本
       const auto& latest = chain_opt.front();
-      
-      // 1. 已提交事务在当前事务开始后修改
-      if (latest.txn_version > read_timestamp_) {
+
+      // ===================================================================
+      // P0-6 FIX: Under serialized commits (global_commit_mutex_), timestamp
+      // values from the sharded allocator are NOT monotonically ordered across
+      // OS threads. Comparing latest.txn_version > read_timestamp_ is therefore
+      // unreliable for cross-thread conflict detection. Instead, compare the
+      // latest committed version with the version this transaction actually
+      // read (if any). A blind write (no read entry) conflicts with any
+      // existing committed version.
+      // ===================================================================
+      Timestamp read_txn_version = Timestamp::Min();
+      bool has_read_entry = false;
+      for (const auto& read_entry : read_set_) {
+        if (read_entry.entity_id == write_entry.entity_id &&
+            read_entry.entity_type == write_entry.entity_type &&
+            read_entry.column_id == write_entry.column_id) {
+          read_txn_version = read_entry.read_txn_version;
+          has_read_entry = true;
+          break;
+        }
+      }
+
+      bool ww_conflict = false;
+      if (!has_read_entry) {
+        // Blind write: any existing committed version means another txn
+        // committed this key while we held no read lock.
+        ww_conflict = true;
+      } else if (read_txn_version == Timestamp::Max()) {
+        // We read this key from immutable SST. Any version now in the
+        // memtable was committed after our read.
+        ww_conflict = true;
+      } else if (latest.txn_version != read_txn_version) {
+        // The latest version no longer matches what we read.
+        ww_conflict = true;
+      }
+
+      if (ww_conflict) {
         ConflictInfo conflict;
         conflict.type = ConflictType::kWriteWrite;
         conflict.entity_id = write_entry.entity_id;
@@ -646,25 +712,55 @@ Status OCCTransaction::WriteToMemTable() {
   if (!memtable_) {
     return Status::InvalidArgument("OCCTransaction", "memtable is null");
   }
-  
+
+  size_t written = 0;
   for (const auto& entry : write_set_) {
     // 修复 2: 直接使用写入集中存储的业务时间戳
     // user_timestamp 在 Put() 阶段已经确定是业务时间戳（系统时间或用户指定）
     // 不再回退到 commit_timestamp_（事务版本号）
     Timestamp ts = entry.user_timestamp;
-    
+
     // 构建键 - 使用业务时间戳和 target_id
-    CedarKey key = MakeKey(entry.entity_id, entry.entity_type, 
+    CedarKey key = MakeKey(entry.entity_id, entry.entity_type,
                           entry.column_id, ts, entry.target_id);
-    
+
     // 写入 MemTable - 同时传递事务版本号用于 MVCC
     // 注意：这里需要支持传递 txn_version 给 MemTable
     Status s = memtable_->Put(key, entry.descriptor, entry.txn_version);
     if (!s.ok()) {
+      // ===================================================================
+      // P0-6 PARTIAL-FAILURE ROLLBACK: If a middle entry fails to insert,
+      // tombstone the entries we already wrote so the transaction remains
+      // atomic. We hold global_commit_mutex_, so no concurrent commit can
+      // observe the partial state between the failed Put and these rollback
+      // deletes.
+      // ===================================================================
+      RollbackMemTableWrites(written);
       return s;
     }
+    ++written;
   }
   return Status::OK();
+}
+
+void OCCTransaction::RollbackMemTableWrites(size_t written_count) {
+  if (!memtable_ || written_count == 0) {
+    return;
+  }
+
+  // Iterate backwards over the entries we successfully wrote and tombstone
+  // each one.  Backwards order is not required for correctness, but it is
+  // the natural undo of the forward loop above.
+  for (size_t i = written_count; i-- > 0;) {
+    const auto& entry = write_set_[i];
+    Timestamp ts = entry.user_timestamp;
+    CedarKey key = MakeKey(entry.entity_id, entry.entity_type,
+                          entry.column_id, ts, entry.target_id);
+    // Best-effort tombstone; ignore failure because we are already on the
+    // error path and the WAL will be replayed idempotently on recovery.
+    memtable_->Put(key, Descriptor::Tombstone(entry.column_id),
+                   entry.txn_version);
+  }
 }
 
 Status OCCTransaction::WriteToWAL() {

@@ -291,6 +291,10 @@ add_executable(test_commit_serializability transaction/test_commit_serializabili
 target_link_libraries(test_commit_serializability ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_commit_serializability)
 
+add_executable(test_batchwrite_memtable_refresh transaction/test_batchwrite_memtable_refresh.cc)
+target_link_libraries(test_batchwrite_memtable_refresh ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_batchwrite_memtable_refresh)
+
 add_executable(test_plan_cache_thread_safety cypher/test_plan_cache_thread_safety.cc)
 target_link_libraries(test_plan_cache_thread_safety ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_plan_cache_thread_safety)

@@ -164,6 +164,12 @@ class TransactionManager {
   // 批量预分配时间戳 (减少原子操作竞争)
   Timestamp AllocateTimestampBatch(uint32_t count);
   
+  // 强制从全局计数器分配单调递增的时间戳（用于事务提交）。
+  Timestamp AllocateGlobalTimestamp();
+  
+  // 获取当前全局最大时间戳（用于读快照）。
+  Timestamp CurrentTimestamp() const;
+  
   // 注册活跃事务
   void RegisterActiveTransaction(uint64_t txn_id, Timestamp start_ts);
   
@@ -320,6 +326,9 @@ class OCCTransaction {
   // 写入阶段
   Status WriteToMemTable();
   Status WriteToWAL();
+
+  // 部分写入失败时回滚已经写入 MemTable 的条目
+  void RollbackMemTableWrites(size_t written_count);
   
   // 构建 CedarKey
   CedarKey MakeKey(uint64_t entity_id, EntityType type, 

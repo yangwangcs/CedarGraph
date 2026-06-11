@@ -466,52 +466,63 @@ Status CedarGraphStorage::PutEdge(const WriteOptions& options,
                                  const Descriptor& descriptor,
                                  Timestamp txn_version) {
   std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
-  
+
   if (!rep_->engine) {
     return Status::InvalidArgument("CedarGraphStorage", "not opened");
   }
-  
-  // 计算分区 ID
-  // EdgeOut 按 src_id 分区，EdgeIn 按 dst_id 分区
-  uint16_t src_part_id = ComputePartition(src_id);
-  uint16_t dst_part_id = ComputePartition(dst_id);
-  
-  // 设置 flags：OpType=CREATE (00) + Distributed
-  uint8_t flags = PackCreateFlags(true);
-  
-  // ========== 1. 创建出边 Key (src -> dst) ==========
-  CedarKey edge_out_key = CedarKey::EdgeOut(src_id, dst_id, edge_type, 
-                                            timestamp, 0, src_part_id, flags);
-  
-  // 使用 descriptor 的 column_id 作为 edge_type
+
+  // txn_version is ignored: the internal OCC transaction allocates its own
+  // commit timestamp under global_commit_mutex_, guaranteeing atomicity.
+  (void)txn_version;
+
+  // ===================================================================
+  // P0-4 FIX: Use an internal OCC transaction to make EdgeOut + EdgeIn
+  // atomic. The transaction's Commit() holds global_commit_mutex_, so
+  // readers cannot interleave between the two writes.
+  // ===================================================================
+
+  TransactionOptions txn_options;
+  txn_options.isolation = IsolationLevel::kSnapshot;
+
+  auto txn = rep_->engine->BeginTransaction(txn_options);
+  if (!txn) {
+    return Status::InvalidArgument("PutEdge", "failed to begin transaction");
+  }
+
+  // 1. EdgeOut (src -> dst)
   Descriptor edge_desc = descriptor;
   edge_desc.SetColumnId(edge_type);
-  
-  Status s = rep_->engine->Put(edge_out_key, edge_desc, txn_version);
+
+  Status s = txn->Put(src_id, EntityType::EdgeOut, edge_type,
+                      edge_desc, timestamp, dst_id);
   if (!s.ok()) {
+    txn->Abort();
     return s;
   }
-  
-  // ========== 2. 创建入边反向索引 (dst <- src) ==========
-  // EdgeIn 用于支持 "谁指向我" 的反向查询
-  // entity_id 和 target_id 对调，part_id 按 dst_id 计算
-  CedarKey edge_in_key = CedarKey::EdgeIn(dst_id, src_id, edge_type,
-                                          timestamp, 0, dst_part_id, flags);
-  
-  // 入边索引通常不需要存储完整的属性数据，可以存储空值或轻量级元数据
+
+  // 2. EdgeIn (dst <- src) — reverse index
   Descriptor empty_desc = Descriptor::InlineInt(edge_type, 0);
-  
-  s = rep_->engine->Put(edge_in_key, empty_desc, txn_version);
+
+  s = txn->Put(dst_id, EntityType::EdgeIn, edge_type,
+               empty_desc, timestamp, src_id);
   if (!s.ok()) {
-    // Rollback: delete the forward edge to maintain consistency
-    rep_->engine->Delete(edge_out_key, txn_version);
+    txn->Abort();
     return s;
   }
-  
+
+  // 3. Atomic commit (Validate + WAL + MemTable under global lock)
+  s = txn->Commit();
+  if (!s.ok()) {
+    // Abort already called by Commit() on failure, but be explicit
+    txn->Abort();
+    return s;
+  }
+
+  // 4. Optional sync
   if (options.sync) {
     s = rep_->engine->ForceFlush();
   }
-  
+
   return s;
 }
 
@@ -1638,6 +1649,13 @@ Status CedarGraphStorage::BatchWrite(const std::vector<BatchWriteItem>& items,
   
   while (processed < total) {
     size_t current_batch = std::min(batch_size, total - processed);
+    
+    // ===================================================================
+    // P0-5 FIX: Hold the engine's shared_mutex during the entire batch
+    // so that background Flush cannot swap mem_->imm_ while we are
+    // writing into the memtable captured by BeginTransaction().
+    // ===================================================================
+    auto engine_lock = rep_->engine->AcquireSharedLock();
     
     // 开启批量事务
     auto* txn = BeginTransaction();
