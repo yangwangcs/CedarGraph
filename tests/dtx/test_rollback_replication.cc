@@ -139,12 +139,12 @@ TEST(RollbackReplicationTest, AbortReplicatesThroughSingleNodeRaft) {
       continue;
     }
 
-    // Wait for leader election
+    // Wait for leader election AND valid lease
     int retries = 100;
-    while (!rg->IsLeader() && retries-- > 0) {
+    while ((!rg->IsLeader() || !rg->IsLeaseValid()) && retries-- > 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    if (rg->IsLeader()) {
+    if (rg->IsLeader() && rg->IsLeaseValid()) {
       server = std::move(srv);
       raft_manager = std::move(rm);
       raft_group = rg;
