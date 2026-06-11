@@ -7,10 +7,20 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include "cedar/dtx/storage_service_impl.h"
+#include "cedar/dtx/security.h"
 
 using namespace cedar::dtx;
 
 TEST(PartialCommitRollbackTest, HaltsAndRollsBackOnSecondCommitFailure) {
+  // Disable auth for this unit test
+  {
+    auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+    cedar::dtx::security::SecurityManager::Config cfg;
+    cfg.enable_auth = false;
+    auto s = sm->Initialize(cfg);
+    ASSERT_TRUE(s.ok()) << s.ToString();
+  }
+
   std::string data_dir = "/tmp/test_partial_commit_rollback";
   std::filesystem::remove_all(data_dir);
 
@@ -71,4 +81,5 @@ TEST(PartialCommitRollbackTest, HaltsAndRollsBackOnSecondCommitFailure) {
 
   // Cleanup
   std::filesystem::remove_all(data_dir);
+  cedar::dtx::security::SecurityManager::GetInstance()->Shutdown();
 }

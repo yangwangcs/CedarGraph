@@ -12,6 +12,7 @@
 
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/dtx/storage/partition_raft_manager.h"
+#include "cedar/dtx/security.h"
 
 #include <brpc/server.h>
 #include <braft/raft.h>
@@ -19,6 +20,15 @@
 using namespace cedar::dtx;
 
 TEST(RollbackReplicationTest, AbortWithoutRaftFallsBackToDirect) {
+  // Disable auth for this unit test
+  {
+    auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+    cedar::dtx::security::SecurityManager::Config cfg;
+    cfg.enable_auth = false;
+    auto s = sm->Initialize(cfg);
+    ASSERT_TRUE(s.ok()) << s.ToString();
+  }
+
   std::string data_dir = "/tmp/test_rollback_replication_direct";
   std::filesystem::remove_all(data_dir);
 
@@ -62,9 +72,19 @@ TEST(RollbackReplicationTest, AbortWithoutRaftFallsBackToDirect) {
       << "Transaction should have been aborted, but got: " << inquire_status.ToString();
 
   std::filesystem::remove_all(data_dir);
+  cedar::dtx::security::SecurityManager::GetInstance()->Shutdown();
 }
 
 TEST(RollbackReplicationTest, AbortReplicatesThroughSingleNodeRaft) {
+  // Disable auth for this unit test
+  {
+    auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+    cedar::dtx::security::SecurityManager::Config cfg;
+    cfg.enable_auth = false;
+    auto s = sm->Initialize(cfg);
+    ASSERT_TRUE(s.ok()) << s.ToString();
+  }
+
   std::string data_dir = "/tmp/test_rollback_replication_raft";
   std::filesystem::remove_all(data_dir);
 
@@ -179,4 +199,5 @@ TEST(RollbackReplicationTest, AbortReplicatesThroughSingleNodeRaft) {
   server->Stop(0);
   server->Join();
   std::filesystem::remove_all(data_dir);
+  cedar::dtx::security::SecurityManager::GetInstance()->Shutdown();
 }
