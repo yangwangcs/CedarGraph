@@ -102,12 +102,16 @@ void PartitionRaftStateMachine::on_apply(braft::Iterator& iter) {
       if (!status.ok()) {
         LOG(ERROR) << "Apply PUT failed at index=" << iter.index()
                    << ": " << status.ToString();
+        iter.set_error_and_rollback();
+        return;
       }
     } else if (cmd.type == StorageRaftCommand::Type::kDelete) {
       auto status = storage_->Put(cmd.key, Descriptor(), cmd.txn_version, 0);
       if (!status.ok()) {
         LOG(ERROR) << "Apply DELETE failed at index=" << iter.index()
                    << ": " << status.ToString();
+        iter.set_error_and_rollback();
+        return;
       }
     }
     
