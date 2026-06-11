@@ -76,12 +76,12 @@ ENV DATA_DIR="/data"
 ENV LOG_DIR="/logs"
 
 # Health check: TCP probe based on NODE_ROLE port mapping.
-# Ports: metad=9559, graphd=9669, storaged=9779
+# Ports: metad=9559, graphd=9669, storaged=9779, queryd=9889
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD bash -c 'case "${NODE_ROLE}" in metad) P=9559;; storaged) P=9779;; graphd) P=9669;; *) exit 1;; esac; nc -z localhost ${P} || exit 1'
+    CMD bash -c 'case "${NODE_ROLE}" in metad) P=9559;; storaged) P=9779;; graphd) P=9669;; queryd) P=9889;; *) exit 1;; esac; nc -z localhost ${P} || exit 1'
 
 # 暴露端口
-EXPOSE 9559 9669 9779 19669
+EXPOSE 9559 9669 9779 9889 19669
 
 # 切换到非 root 用户
 USER cedar

@@ -17,9 +17,13 @@ case "${NODE_ROLE}" in
     BINARY="/usr/local/bin/cedar-graphd"
     HEALTH_PORT="${GRAPHD_PORT:-9669}"
     ;;
+  queryd)
+    BINARY="/usr/local/bin/cedar-queryd"
+    HEALTH_PORT="${QUERYD_PORT:-9889}"
+    ;;
   *)
     echo "ERROR: Unknown or missing NODE_ROLE='${NODE_ROLE}'."
-    echo "Valid values: metad, storaged, graphd"
+    echo "Valid values: metad, storaged, graphd, queryd"
     exit 1
     ;;
 esac
