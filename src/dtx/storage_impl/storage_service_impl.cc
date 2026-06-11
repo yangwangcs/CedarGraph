@@ -36,6 +36,10 @@ grpc::Status CheckAuth(grpc::ServerContext* context,
                         "SecurityManager not initialized");
   }
 
+  if (!sm->IsAuthEnabled()) {
+    return grpc::Status::OK;
+  }
+
   auto meta = context->client_metadata();
   auto it = meta.find("authorization");
   if (it == meta.end()) {

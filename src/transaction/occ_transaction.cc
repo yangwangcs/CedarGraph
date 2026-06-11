@@ -553,12 +553,44 @@ Status OCCTransaction::Validate() {
   for (const auto& write_entry : write_set_) {
     // 检查是否有其他事务在当前事务开始后修改了相同键
     auto chain_opt = memtable_->GetVersionChain(
-        write_entry.entity_id, 
-        write_entry.entity_type, 
+        write_entry.entity_id,
+        write_entry.entity_type,
         write_entry.column_id);
-    
-    if (!chain_opt.empty()) {
-      // 获取最新版本
+
+    if (chain_opt.empty()) {
+      continue;
+    }
+
+    // Edge keys are fully qualified by (entity, type, col, target_id,
+    // user_timestamp), so multiple edges from/to the same vertex are
+    // independent. Vertex keys remain logically unique by (entity, type, col)
+    // and keep the original blind-write conflict semantics.
+    const bool is_edge = (write_entry.entity_type == EntityType::EdgeOut ||
+                          write_entry.entity_type == EntityType::EdgeIn);
+
+    auto matches_write_key = [&](const MemTableEntry& version) -> bool {
+      if (!is_edge) {
+        return true;
+      }
+      // Edge identity includes the opposite endpoint and business timestamp.
+      bool target_match = version.dst_id.has_value() &&
+                          version.dst_id.value() == write_entry.target_id;
+      return target_match && version.timestamp == write_entry.user_timestamp;
+    };
+
+    bool ww_conflict = false;
+
+    if (is_edge) {
+      // Blind edge write: conflict only if an identical edge key already
+      // exists in the committed version chain.
+      for (const auto& version : chain_opt) {
+        if (matches_write_key(version)) {
+          ww_conflict = true;
+          break;
+        }
+      }
+    } else {
+      // Vertex property write: original P0-6 conflict logic.
       const auto& latest = chain_opt.front();
 
       // ===================================================================
@@ -582,7 +614,6 @@ Status OCCTransaction::Validate() {
         }
       }
 
-      bool ww_conflict = false;
       if (!has_read_entry) {
         // Blind write: any existing committed version means another txn
         // committed this key while we held no read lock.
@@ -595,32 +626,32 @@ Status OCCTransaction::Validate() {
         // The latest version no longer matches what we read.
         ww_conflict = true;
       }
+    }
 
-      if (ww_conflict) {
-        ConflictInfo conflict;
-        conflict.type = ConflictType::kWriteWrite;
-        conflict.entity_id = write_entry.entity_id;
-        conflict.entity_type = write_entry.entity_type;
-        conflict.column_id = write_entry.column_id;
-        conflict.conflicting_txn_id = 0;
-        conflicts_.push_back(conflict);
-        continue;
-      }
-      
-      // 2. 未提交事务（活跃事务）也修改了相同键
-      for (const auto& [active_txn_id, active_ts] : active_txns) {
-        if (active_txn_id == txn_id_) continue;  // 跳过自己
-        for (const auto& version : chain_opt) {
-          if (version.txn_version == active_ts) {
-            ConflictInfo conflict;
-            conflict.type = ConflictType::kWriteWrite;
-            conflict.entity_id = write_entry.entity_id;
-            conflict.entity_type = write_entry.entity_type;
-            conflict.column_id = write_entry.column_id;
-            conflict.conflicting_txn_id = active_txn_id;
-            conflicts_.push_back(conflict);
-            break;
-          }
+    if (ww_conflict) {
+      ConflictInfo conflict;
+      conflict.type = ConflictType::kWriteWrite;
+      conflict.entity_id = write_entry.entity_id;
+      conflict.entity_type = write_entry.entity_type;
+      conflict.column_id = write_entry.column_id;
+      conflict.conflicting_txn_id = 0;
+      conflicts_.push_back(conflict);
+      continue;
+    }
+
+    // 2. 未提交事务（活跃事务）也修改了相同键
+    for (const auto& [active_txn_id, active_ts] : active_txns) {
+      if (active_txn_id == txn_id_) continue;  // 跳过自己
+      for (const auto& version : chain_opt) {
+        if (version.txn_version == active_ts && matches_write_key(version)) {
+          ConflictInfo conflict;
+          conflict.type = ConflictType::kWriteWrite;
+          conflict.entity_id = write_entry.entity_id;
+          conflict.entity_type = write_entry.entity_type;
+          conflict.column_id = write_entry.column_id;
+          conflict.conflicting_txn_id = active_txn_id;
+          conflicts_.push_back(conflict);
+          break;
         }
       }
     }

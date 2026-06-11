@@ -20,6 +20,7 @@
 #include <grpcpp/grpcpp.h>
 #include <thread>
 
+#include "cedar/dtx/security.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "storage_service.grpc.pb.h"
 #include "storage_service.pb.h"
@@ -29,6 +30,13 @@ using namespace cedar::dtx;
 class StorageSubqueryTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    // Disable auth for unit tests so gRPC calls do not require Bearer tokens.
+    {
+      cedar::dtx::security::SecurityManager::Config sec_cfg;
+      sec_cfg.enable_auth = false;
+      cedar::dtx::security::SecurityManager::GetInstance()->Initialize(sec_cfg);
+    }
+
     // Create StorageServiceImpl with no partition manager
     // This means cypher_engine_ is null, so ExecuteSubQuery returns empty batch
     service_impl_ = std::make_unique<StorageServiceImpl>(nullptr, nullptr);

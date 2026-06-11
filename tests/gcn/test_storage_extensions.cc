@@ -17,6 +17,7 @@
 #include <thread>
 #include <filesystem>
 
+#include "cedar/dtx/security.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include "storage_service.pb.h"
@@ -31,6 +32,13 @@ class StorageExtensionsTest : public ::testing::Test {
     data_dir_ = "/tmp/cedar_storage_extensions_test_" + std::to_string(getpid());
     fs::remove_all(data_dir_);
     fs::create_directories(data_dir_);
+
+    // Disable auth for unit tests so gRPC calls do not require Bearer tokens.
+    {
+      cedar::dtx::security::SecurityManager::Config sec_cfg;
+      sec_cfg.enable_auth = false;
+      cedar::dtx::security::SecurityManager::GetInstance()->Initialize(sec_cfg);
+    }
 
     partition_manager_ = std::make_unique<dtx::StoragePartitionManager>();
     dtx::StoragePartitionManager::PartitionConfig pm_config;
