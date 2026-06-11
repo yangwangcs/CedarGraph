@@ -498,6 +498,18 @@ std::string JsonEscape(const std::string& input) {
 }
 }  // namespace
 
+// Constant-time string comparison to prevent timing attacks.
+// Returns true iff a == b. Execution time depends only on |a| and |b|,
+// not on the content of the strings.
+bool ConstantTimeCompare(const std::string& a, const std::string& b) {
+  if (a.size() != b.size()) return false;
+  volatile unsigned char result = 0;
+  for (size_t i = 0; i < a.size(); ++i) {
+    result |= static_cast<unsigned char>(a[i] ^ b[i]);
+  }
+  return result == 0;
+}
+
 std::string Authenticator::GenerateJWT(const AuthToken& token) {
   std::string header = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
 
@@ -580,7 +592,7 @@ StatusOr<AuthToken> Authenticator::ParseJWT(const std::string& jwt) {
   std::string expected_encoded_sig = Base64UrlEncode(
       std::string(reinterpret_cast<const char*>(expected_sig), expected_sig_len));
 
-  if (encoded_signature != expected_encoded_sig) {
+  if (!ConstantTimeCompare(encoded_signature, expected_encoded_sig)) {
     return Status::InvalidArgument("Invalid JWT signature");
   }
 
