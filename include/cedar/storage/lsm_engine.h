@@ -343,6 +343,27 @@ class LsmEngine {
   // Get SST files for checkpoint
   const std::vector<std::vector<SSTFileMeta>>& GetSstFiles() const { return levels_; }
   
+  // ============================================================================
+  // Secondary Index (Label / Property) — MVP in-memory only
+  // ============================================================================
+  static constexpr uint16_t kLabelColumnId = 0x0FFF;
+
+  // Add a label → entity_id mapping (called by CreateOperator)
+  void IndexLabel(uint64_t entity_id, const std::string& label);
+
+  // Remove an entity from all indexes (called by Delete)
+  void RemoveFromIndexes(uint64_t entity_id);
+
+  // Lookup entity IDs by exact label match
+  std::vector<uint64_t> LookupLabelIndex(const std::string& label) const;
+
+  // Lookup entity IDs by exact (column_id, value_string) match
+  std::vector<uint64_t> LookupPropertyIndex(uint16_t column_id,
+                                             const std::string& value) const;
+
+  // Helper: convert a Descriptor to its canonical index string
+  static std::string DescriptorToIndexString(const Descriptor& desc);
+
   // ========== Size-Tiered Compaction 引擎 ==========
   
   // 获取 Compaction 引擎
@@ -560,7 +581,18 @@ class LsmEngine {
   // Maps entity_id -> roaring bitmap of column_ids that have data
   std::unordered_map<uint64_t, RoaringBitmap> entity_column_map_;
   mutable std::shared_mutex column_map_mutex_;
-  
+
+  // Secondary indexes (in-memory only — rebuilt on Open or populated lazily)
+  std::map<std::string, std::vector<uint64_t>> label_index_;
+  std::map<std::pair<uint16_t, std::string>, std::vector<uint64_t>> property_index_;
+  mutable std::shared_mutex index_mutex_;
+
+  // Internal helpers
+  void UpdatePropertyIndex(uint64_t entity_id, uint16_t column_id,
+                           const std::string& value);
+  void RemoveEntityFromLabelIndex(uint64_t entity_id);
+  void RemoveEntityFromPropertyIndex(uint64_t entity_id);
+
   // ========== Phase 4: 锚点机制内存加速 ==========
   // 活跃实体位图（L1 缓存）- O(1) 存在性检查
   ActiveEntityBitmap active_entity_bitmap_;

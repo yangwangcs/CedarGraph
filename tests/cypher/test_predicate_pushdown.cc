@@ -23,6 +23,9 @@ TEST(PredicatePushdownTest, SimpleEqualityPushedToIndexScan) {
   EXPECT_NE(explain.find("IndexScan"), std::string::npos);
   EXPECT_EQ(explain.find("NodeScan"), std::string::npos);
   EXPECT_EQ(explain.find("Filter"), std::string::npos);
+
+  // The label must be preserved in the IndexScan details
+  EXPECT_NE(explain.find("Person"), std::string::npos);
 }
 
 TEST(PredicatePushdownTest, RangePredicatePushedToIndexScan) {

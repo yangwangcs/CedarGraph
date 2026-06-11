@@ -11,6 +11,7 @@
 #include "cedar/cypher/value.h"
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/storage/cedar_options.h"
+#include "cedar/storage/lsm_engine.h"
 
 using namespace cedar::cypher;
 using namespace cedar;
@@ -83,6 +84,39 @@ TEST_F(CreateOperatorTest, CreateSingleNode) {
   
   // Next call should return nullptr (CREATE is exhausted)
   EXPECT_EQ(op.Next(), nullptr);
+}
+
+TEST_F(CreateOperatorTest, CreateNodePopulatesLabelIndex) {
+  // Build a CREATE clause: CREATE (n:Per)
+  auto create_clause = std::make_shared<CreateClause>();
+  PathPattern pattern;
+  NodePattern node;
+  node.variable = "n";
+  node.labels = {"Per"};
+  pattern.elements.push_back(node);
+  create_clause->patterns.push_back(std::move(pattern));
+
+  CreateOperator op(create_clause);
+
+  ExecutionContext ctx;
+  ctx.storage = storage_;
+
+  ASSERT_TRUE(op.Init(&ctx));
+
+  auto record = op.Next();
+  ASSERT_NE(record, nullptr);
+
+  auto n_val = record->Get("n");
+  ASSERT_TRUE(n_val.has_value());
+  ASSERT_TRUE(n_val->IsNode());
+  uint64_t created_id = n_val->GetNode().id;
+
+  // Verify the label index was populated via LsmEngine
+  auto* engine = storage_->GetLsmEngine();
+  ASSERT_NE(engine, nullptr);
+  auto ids = engine->LookupLabelIndex("Per");
+  ASSERT_EQ(ids.size(), 1);
+  EXPECT_EQ(ids[0], created_id);
 }
 
 TEST_F(CreateOperatorTest, CreateNodeWithoutProperties) {

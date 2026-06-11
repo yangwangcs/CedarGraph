@@ -236,6 +236,92 @@ Status LsmEngine::Close() {
   return Status::OK();
 }
 
+// ============================================================================
+// Secondary Index Helpers
+// ============================================================================
+
+std::string LsmEngine::DescriptorToIndexString(const Descriptor& desc) {
+  switch (desc.GetKind()) {
+    case EntryKind::InlineInt:
+      return std::to_string(desc.AsInlineInt().value_or(0));
+    case EntryKind::InlineFloat: {
+      auto f = desc.AsInlineFloat();
+      return f ? std::to_string(*f) : "";
+    }
+    case EntryKind::InlineShortStr:
+      return desc.AsInlineShortStr();
+    default:
+      return "";
+  }
+}
+
+void LsmEngine::IndexLabel(uint64_t entity_id, const std::string& label) {
+  std::unique_lock<std::shared_mutex> lock(index_mutex_);
+  auto& ids = label_index_[label];
+  auto it = std::lower_bound(ids.begin(), ids.end(), entity_id);
+  if (it == ids.end() || *it != entity_id) {
+    ids.insert(it, entity_id);
+  }
+}
+
+void LsmEngine::UpdatePropertyIndex(uint64_t entity_id, uint16_t column_id,
+                                    const std::string& value) {
+  if (value.empty()) return;
+  std::unique_lock<std::shared_mutex> lock(index_mutex_);
+  auto key = std::make_pair(column_id, value);
+  auto& ids = property_index_[key];
+  auto it = std::lower_bound(ids.begin(), ids.end(), entity_id);
+  if (it == ids.end() || *it != entity_id) {
+    ids.insert(it, entity_id);
+  }
+}
+
+void LsmEngine::RemoveEntityFromLabelIndex(uint64_t entity_id) {
+  std::unique_lock<std::shared_mutex> lock(index_mutex_);
+  for (auto it = label_index_.begin(); it != label_index_.end(); ) {
+    auto& ids = it->second;
+    ids.erase(std::remove(ids.begin(), ids.end(), entity_id), ids.end());
+    if (ids.empty()) {
+      it = label_index_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void LsmEngine::RemoveEntityFromPropertyIndex(uint64_t entity_id) {
+  std::unique_lock<std::shared_mutex> lock(index_mutex_);
+  for (auto it = property_index_.begin(); it != property_index_.end(); ) {
+    auto& ids = it->second;
+    ids.erase(std::remove(ids.begin(), ids.end(), entity_id), ids.end());
+    if (ids.empty()) {
+      it = property_index_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void LsmEngine::RemoveFromIndexes(uint64_t entity_id) {
+  RemoveEntityFromLabelIndex(entity_id);
+  RemoveEntityFromPropertyIndex(entity_id);
+}
+
+std::vector<uint64_t> LsmEngine::LookupLabelIndex(const std::string& label) const {
+  std::shared_lock<std::shared_mutex> lock(index_mutex_);
+  auto it = label_index_.find(label);
+  if (it != label_index_.end()) return it->second;
+  return {};
+}
+
+std::vector<uint64_t> LsmEngine::LookupPropertyIndex(uint16_t column_id,
+                                                      const std::string& value) const {
+  std::shared_lock<std::shared_mutex> lock(index_mutex_);
+  auto it = property_index_.find(std::make_pair(column_id, value));
+  if (it != property_index_.end()) return it->second;
+  return {};
+}
+
 Status LsmEngine::Put(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version) {
   if (!opened_) {
     return Status::InvalidArgument("LsmEngine", "not opened");
@@ -268,6 +354,21 @@ Status LsmEngine::Put(const CedarKey& key, const Descriptor& descriptor, Timesta
     
     if (!disable_column_tracking_) {
       TrackColumnId(key.entity_id(), key.column_id());
+    }
+
+    // Update secondary indexes (strip static flag so index keys use logical
+    // column ids and labels match regardless of static bit)
+    uint16_t col_id = key.column_id() & ~key_flags::kIsStaticColumn;
+    if (col_id == kLabelColumnId) {
+      std::string label = DescriptorToIndexString(descriptor);
+      if (!label.empty()) {
+        IndexLabel(key.entity_id(), label);
+      }
+    } else if (key.entity_type() == EntityType::Vertex && !descriptor.IsTombstone()) {
+      std::string val = DescriptorToIndexString(descriptor);
+      if (!val.empty()) {
+        UpdatePropertyIndex(key.entity_id(), col_id, val);
+      }
     }
     
     // 自动 Flush 检查：当 memtable 达到阈值时触发
@@ -313,6 +414,7 @@ Status LsmEngine::Delete(const CedarKey& key, Timestamp txn_version) {
     if (!disable_column_tracking_) {
       TrackColumnId(key.entity_id(), key.column_id());
     }
+    RemoveFromIndexes(key.entity_id());
     if (mem_->ApproximateMemoryUsage() >= options_.memtable_threshold) {
       lock.unlock();
       MaybeScheduleFlush();

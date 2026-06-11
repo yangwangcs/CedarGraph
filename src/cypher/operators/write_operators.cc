@@ -5,6 +5,7 @@
 #include "cedar/cypher/expression_evaluator.h"
 #include "cedar/graph/cedar_graph.h"
 #include "cedar/storage/cedar_graph_storage.h"
+#include "cedar/storage/lsm_engine.h"
 #include "cedar/core/logging.h"
 
 #include <chrono>
@@ -146,6 +147,16 @@ std::shared_ptr<Record> CreateOperator::Next() {
     Descriptor desc = ValueToDescriptor(prop_value, col_id);
     items.emplace_back(node_id, EntityType::Vertex, col_id, desc, Timestamp::Static(), 0);
   }
+
+  // Persist labels using the reserved label column so LsmEngine can index them
+  for (const auto& label : node.labels) {
+    auto desc_opt = Descriptor::InlineShortStr(LsmEngine::kLabelColumnId, Slice(label));
+    if (desc_opt.has_value()) {
+      items.emplace_back(node_id, EntityType::Vertex,
+                         LsmEngine::kLabelColumnId,
+                         *desc_opt, Timestamp::Static(), 0);
+    }
+  }
   
   // Always write at least a placeholder property so the node exists in storage
   if (items.empty()) {
@@ -157,7 +168,15 @@ std::shared_ptr<Record> CreateOperator::Next() {
   if (!status.ok()) {
     return status;
   }
-  
+
+  // Update the in-memory label index immediately (BatchWrite goes through
+  // OCCTransaction/MemTable, so LsmEngine::Put is not invoked synchronously)
+  if (auto* engine = context_->storage->GetLsmEngine()) {
+    for (const auto& label : node.labels) {
+      engine->IndexLabel(node_id, label);
+    }
+  }
+
   // Mark entity created for lifecycle tracking
   context_->storage->MarkEntityCreated(node_id, EntityType::Vertex, Timestamp::Now());
   
@@ -473,6 +492,224 @@ std::unique_ptr<PhysicalOperator> DeleteOperator::Clone() const {
     clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
   }
   return clone;
+}
+
+// ============================================================================
+// MergeOperator
+// ============================================================================
+
+MergeOperator::MergeOperator(std::shared_ptr<MergeClause> merge_clause)
+    : merge_clause_(std::move(merge_clause)),
+      initialized_(false),
+      done_(false),
+      id_counter_(0) {}
+
+uint64_t MergeOperator::GenerateId() {
+  auto now = std::chrono::steady_clock::now().time_since_epoch();
+  auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+  return static_cast<uint64_t>(ns) + (++id_counter_);
+}
+
+bool MergeOperator::Init(ExecutionContext* ctx) {
+  context_ = ctx;
+  initialized_ = true;
+  done_ = false;
+  result_record_ = std::make_shared<Record>();
+  return true;
+}
+
+std::shared_ptr<Record> MergeOperator::Next() {
+  if (!initialized_ || done_) {
+    return nullptr;
+  }
+
+  if (!merge_clause_ || merge_clause_->patterns.empty()) {
+    done_ = true;
+    return nullptr;
+  }
+
+  // Process all patterns in one call (MERGE produces a single result record)
+  for (const auto& pattern : merge_clause_->patterns) {
+    for (const auto& element : pattern.elements) {
+      if (std::holds_alternative<NodePattern>(element)) {
+        const auto& node = std::get<NodePattern>(element);
+        // Attempt to find existing node by properties (id literal optimisation)
+        bool found = false;
+        auto id_it = node.properties.find("id");
+        if (id_it != node.properties.end() && id_it->second &&
+            id_it->second->expr_type == ExprType::LITERAL) {
+          auto* literal = static_cast<LiteralExpr*>(id_it->second.get());
+          if (literal->value.IsInt() && literal->value.GetInt() > 0) {
+            uint64_t node_id = static_cast<uint64_t>(literal->value.GetInt());
+            if (context_->graph && context_->graph->HasVertex(node_id)) {
+              found = true;
+              Node n;
+              n.id = node_id;
+              n.labels = node.labels.empty() ? std::vector<std::string>{"Node"} : node.labels;
+              n.properties["id"] = Value(static_cast<int64_t>(node_id));
+              result_record_->Set(node.variable, Value(n));
+            } else if (context_->storage) {
+              auto versions = context_->storage->Scan(node_id, Timestamp(0), Timestamp::Max());
+              if (!versions.empty()) {
+                found = true;
+                Node n;
+                n.id = node_id;
+                n.labels = node.labels.empty() ? std::vector<std::string>{"Node"} : node.labels;
+                n.properties["id"] = Value(static_cast<int64_t>(node_id));
+                result_record_->Set(node.variable, Value(n));
+              }
+            }
+          }
+        }
+        if (!found) {
+          auto status = MergeNode(node, result_record_.get());
+          if (!status.ok()) {
+            CEDAR_LOG_WARN() << "MergeOperator: failed to merge node: " << status.ToString();
+          }
+        }
+      } else if (std::holds_alternative<RelationshipPattern>(element)) {
+        const auto& rel = std::get<RelationshipPattern>(element);
+        auto status = MergeEdge(rel, *result_record_);
+        if (!status.ok()) {
+          CEDAR_LOG_WARN() << "MergeOperator: failed to merge edge: " << status.ToString();
+        }
+      }
+    }
+  }
+
+  done_ = true;
+  return result_record_;
+}
+
+cedar::Status MergeOperator::MergeNode(const NodePattern& node, Record* record) {
+  if (!context_ || !context_->storage) {
+    return cedar::Status::InvalidArgument("No storage available for MERGE");
+  }
+
+  uint64_t node_id = GenerateId();
+  Node created_node;
+  created_node.id = node_id;
+  created_node.labels = node.labels;
+
+  std::vector<CedarGraphStorage::BatchWriteItem> items;
+  ExpressionEvaluator evaluator(context_);
+  Record dummy_record;
+
+  for (const auto& [prop_name, expr] : node.properties) {
+    Value prop_value = Value::Null();
+    if (expr) {
+      prop_value = evaluator.Evaluate(*expr, dummy_record);
+    }
+    created_node.properties[prop_name] = prop_value;
+    uint16_t col_id = PropertyNameToColumnId(prop_name);
+    Descriptor desc = ValueToDescriptor(prop_value, col_id);
+    items.emplace_back(node_id, EntityType::Vertex, col_id, desc, Timestamp::Static(), 0);
+  }
+
+  if (items.empty()) {
+    items.emplace_back(node_id, EntityType::Vertex, 0,
+                       Descriptor::InlineInt(0, 0), Timestamp::Static(), 0);
+  }
+
+  auto status = context_->storage->BatchWrite(items);
+  if (!status.ok()) {
+    return status;
+  }
+
+  context_->storage->MarkEntityCreated(node_id, EntityType::Vertex, Timestamp::Now());
+  record->Set(node.variable, Value(created_node));
+  return cedar::Status::OK();
+}
+
+cedar::Status MergeOperator::MergeEdge(const RelationshipPattern& rel,
+                                       const Record& record) {
+  if (!context_ || !context_->storage) {
+    return cedar::Status::InvalidArgument("No storage available for MERGE edge");
+  }
+
+  uint64_t start_id = 0;
+  uint64_t end_id = 0;
+  for (const auto& [key, val] : record.values) {
+    if (val.IsNode()) {
+      if (start_id == 0) {
+        start_id = val.GetNode().id;
+      } else {
+        end_id = val.GetNode().id;
+      }
+    }
+  }
+
+  if (start_id == 0 || end_id == 0) {
+    return cedar::Status::InvalidArgument("MERGE edge requires both endpoints in record");
+  }
+
+  uint16_t edge_type = 0;
+  if (!rel.types.empty()) {
+    try {
+      edge_type = static_cast<uint16_t>(std::stoi(rel.types[0]));
+    } catch (...) {
+      edge_type = static_cast<uint16_t>(std::hash<std::string>{}(rel.types[0]) & 0xFFFF);
+    }
+  }
+
+  std::map<std::string, Value> edge_props;
+  ExpressionEvaluator evaluator(context_);
+  Record dummy_record;
+  for (const auto& [prop_name, expr] : rel.properties) {
+    Value prop_value = Value::Null();
+    if (expr) {
+      prop_value = evaluator.Evaluate(*expr, dummy_record);
+    }
+    edge_props[prop_name] = prop_value;
+  }
+
+  Descriptor edge_desc = Descriptor::InlineInt(0, 0);
+  if (!rel.properties.empty()) {
+    edge_desc = ValueToDescriptor(edge_props.begin()->second, 0);
+  }
+
+  auto status = context_->storage->PutEdge(
+      start_id, end_id, edge_type, Timestamp::Now(), edge_desc, Timestamp(0));
+  if (!status.ok()) {
+    return status;
+  }
+
+  Relationship relationship;
+  relationship.id = std::hash<std::string>{}(
+      std::to_string(start_id) + ":" + std::to_string(end_id));
+  relationship.start_id = start_id;
+  relationship.end_id = end_id;
+  relationship.type = rel.types.empty() ? "CONNECTED_TO" : rel.types[0];
+  relationship.properties = std::move(edge_props);
+
+  result_record_->Set(rel.variable, Value(relationship));
+  return cedar::Status::OK();
+}
+
+std::string MergeOperator::GetDetails() const {
+  if (!merge_clause_) return "0 patterns";
+  return std::to_string(merge_clause_->patterns.size()) + " patterns";
+}
+
+std::unique_ptr<PhysicalOperator> MergeOperator::Clone() const {
+  auto clone = std::make_unique<MergeOperator>(merge_clause_);
+  for (const auto& child : children_) {
+    clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
+  }
+  clone->initialized_ = false;
+  clone->done_ = false;
+  clone->id_counter_ = 0;
+  clone->result_record_.reset();
+  return clone;
+}
+
+uint16_t MergeOperator::PropertyNameToColumnId(const std::string& name) const {
+  return cedar::cypher::PropertyNameToColumnId(name);
+}
+
+cedar::Descriptor MergeOperator::ValueToDescriptor(const Value& value,
+                                                   uint16_t col_id) const {
+  return cedar::cypher::ValueToDescriptor(value, col_id);
 }
 
 }  // namespace cypher
