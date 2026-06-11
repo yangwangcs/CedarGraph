@@ -114,3 +114,53 @@ TEST_F(AccumulatedBufferRaceTest, QueryAndFlushConcurrently) {
   EXPECT_EQ(flush_errors.load(), 0);
   EXPECT_GT(reads.load(), 0);
 }
+
+TEST_F(AccumulatedBufferRaceTest, GetRangeSeesAccumulatedEntries) {
+  const uint64_t kEntityId = 42;
+  const uint16_t kColumnId = 7;
+  const EntityType kType = EntityType::Vertex;
+
+  // Write 1024 versions to trigger memtable -> accumulated flush.
+  for (int i = 0; i < 1024; ++i) {
+    CedarKey key = CedarKey::Vertex(kEntityId, kColumnId, Timestamp(static_cast<uint64_t>(i) + 1));
+    Descriptor desc = Descriptor::InlineInt(kColumnId, i);
+    Status s = engine_->Put(key, desc, Timestamp(1));
+    ASSERT_TRUE(s.ok()) << s.ToString();
+  }
+
+  // Wait for background flush to move data into accumulated_entries_.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  // GetRange must see entries that are only in the accumulated buffer.
+  auto range_results = engine_->GetRange(
+      kEntityId, kType, kColumnId,
+      Timestamp(500), Timestamp(600));
+
+  EXPECT_GE(range_results.size(), 101u);  // timestamps 500..600 inclusive
+  for (const auto& entry : range_results) {
+    EXPECT_GE(entry.timestamp.value(), 500u);
+    EXPECT_LE(entry.timestamp.value(), 600u);
+  }
+}
+
+TEST_F(AccumulatedBufferRaceTest, GetAllSeesAccumulatedEntries) {
+  const uint64_t kEntityId = 99;
+  const uint16_t kColumnId = 3;
+  const EntityType kType = EntityType::Vertex;
+
+  for (int i = 0; i < 512; ++i) {
+    CedarKey key = CedarKey::Vertex(kEntityId, kColumnId, Timestamp(static_cast<uint64_t>(i) + 1));
+    Descriptor desc = Descriptor::InlineInt(kColumnId, i * 2);
+    Status s = engine_->Put(key, desc, Timestamp(1));
+    ASSERT_TRUE(s.ok()) << s.ToString();
+  }
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  auto all_results = engine_->GetAll(kEntityId, kType, kColumnId);
+
+  EXPECT_GE(all_results.size(), 512u);
+  for (const auto& entry : all_results) {
+    EXPECT_EQ(entry.timestamp.value(), static_cast<uint64_t>(entry.descriptor.AsInlineInt().value_or(0) / 2) + 1);
+  }
+}

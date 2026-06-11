@@ -417,8 +417,22 @@ std::vector<MemTableEntry> LsmEngine::GetAll(uint64_t entity_id,
     auto imm_results = imm_->GetAll(entity_id, entity_type, column_id);
     results.insert(results.end(), imm_results.begin(), imm_results.end());
   }
-  
-  // 3. Query SST files via Size-Tiered Compaction Engine
+
+  // 3. Query Accumulated Buffer (for accumulated flush mode)
+  if (!accumulated_entries_.empty()) {
+    std::lock_guard<std::mutex> lock(accumulated_mutex_);
+    for (const auto& [key, descriptor, txn_version] : accumulated_entries_) {
+      if (key.entity_id() != entity_id) continue;
+      if (static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
+      if (key.column_id() != column_id) continue;
+      std::optional<uint64_t> dst_id = (key.target_id() != 0)
+          ? std::optional<uint64_t>(key.target_id())
+          : std::nullopt;
+      results.emplace_back(key.timestamp(), descriptor, dst_id, txn_version);
+    }
+  }
+
+  // 4. Query SST files via Size-Tiered Compaction Engine
   if (compaction_engine_) {
     auto files = compaction_engine_->GetFilesForEntity(
         entity_id, column_id, static_cast<uint8_t>(entity_type));
@@ -769,25 +783,40 @@ std::vector<MemTableEntry> LsmEngine::GetRange(uint64_t entity_id,
       results.insert(results.end(), imm_results.begin(), imm_results.end());
     }
   }
-  
-  // 3. Query SST files via Size-Tiered Compaction Engine - no lock
+
+  // 3. Query Accumulated Buffer (for accumulated flush mode)
+  if (!accumulated_entries_.empty()) {
+    std::lock_guard<std::mutex> lock(accumulated_mutex_);
+    for (const auto& [key, descriptor, txn_version] : accumulated_entries_) {
+      if (key.entity_id() != entity_id) continue;
+      if (static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
+      if (key.column_id() != column_id) continue;
+      if (key.timestamp().value() < start.value() || key.timestamp().value() > end.value()) continue;
+      std::optional<uint64_t> dst_id = (key.target_id() != 0)
+          ? std::optional<uint64_t>(key.target_id())
+          : std::nullopt;
+      results.emplace_back(key.timestamp(), descriptor, dst_id, txn_version);
+    }
+  }
+
+  // 4. Query SST files via Size-Tiered Compaction Engine - no lock
   if (compaction_engine_) {
     auto files = compaction_engine_->GetFilesForEntity(
         entity_id, column_id, static_cast<uint8_t>(entity_type));
-    
+
     for (const auto& file_meta : files) {
       // 快速范围检查
-      if (entity_id < file_meta.min_entity_id || 
+      if (entity_id < file_meta.min_entity_id ||
           entity_id > file_meta.max_entity_id) {
         continue;
       }
-      
+
       // 时间范围快速检查
-      if (file_meta.max_timestamp < start.value() || 
+      if (file_meta.max_timestamp < start.value() ||
           file_meta.min_timestamp > end.value()) {
         continue;
       }
-      
+
       // 使用缓存的 Reader
       std::shared_ptr<SstReader> reader;
       if (sst_reader_cache_) {
@@ -799,24 +828,24 @@ std::vector<MemTableEntry> LsmEngine::GetRange(uint64_t entity_id,
           continue;
         }
       }
-      
+
       // 使用 GetRange 获取时间范围内的版本
       auto range_results = reader->GetRange(entity_id, entity_type, column_id, start, end);
-      
+
       // 释放 Reader
       if (sst_reader_cache_) {
         sst_reader_cache_->Release(file_meta.path);
       }
-      
+
       for (const auto& [key, descriptor, txn_version] : range_results) {
-        std::optional<uint64_t> dst_id = (key.target_id() != 0) 
-            ? std::optional<uint64_t>(key.target_id()) 
+        std::optional<uint64_t> dst_id = (key.target_id() != 0)
+            ? std::optional<uint64_t>(key.target_id())
             : std::nullopt;
         results.emplace_back(key.timestamp(), descriptor, dst_id, txn_version);
       }
     }
   }
-  
+
   return results;
 }
 
