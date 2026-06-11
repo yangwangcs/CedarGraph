@@ -265,7 +265,19 @@ struct CedarConfig {
     std::string client_cert;                           // 客户端证书路径
     std::string client_key;                            // 客户端私钥路径
   } tls;
-  
+
+  // ========================================================================
+  // 12. Input limits (DoS protection)
+  // ========================================================================
+  struct Limits {
+    size_t max_query_length = 1024 * 1024;            // 1 MB
+    size_t max_batch_items = 10000;
+    size_t max_parameter_count = 1000;
+    size_t max_parameter_value_length = 64 * 1024;    // 64 KB
+    uint32_t max_timeout_ms = 300000;                 // 5 minutes
+    size_t max_heartbeat_partitions = 100000;
+  } limits;
+
   // ========================================================================
   // 便捷方法
   // ========================================================================

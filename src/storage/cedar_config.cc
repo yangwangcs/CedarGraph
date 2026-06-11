@@ -907,6 +907,19 @@ Status CedarConfig::LoadFromFile(const std::string& path) {
     debug.enable_trace = get_bool(o, "enable_trace", debug.enable_trace);
   }
 
+  // ---------------------------------------------------------------------------
+  // 12. limits
+  // ---------------------------------------------------------------------------
+  if (doc.HasMember("limits") && doc["limits"].IsObject()) {
+    const auto& lim = doc["limits"];
+    get_size_t(lim, "max_query_length", limits.max_query_length);
+    get_size_t(lim, "max_batch_items", limits.max_batch_items);
+    get_size_t(lim, "max_parameter_count", limits.max_parameter_count);
+    get_size_t(lim, "max_parameter_value_length", limits.max_parameter_value_length);
+    get_uint32(lim, "max_timeout_ms", limits.max_timeout_ms);
+    get_size_t(lim, "max_heartbeat_partitions", limits.max_heartbeat_partitions);
+  }
+
   return Status::OK();
 }
 
@@ -1136,6 +1149,24 @@ Status CedarConfig::SaveToFile(const std::string& path) const {
   writer.Key("slow_log_threshold_ms");
   writer.AddUint(debug.slow_log_threshold_ms);
   writer.Key("enable_trace"); writer.Bool(debug.enable_trace);
+  writer.EndObject();
+
+  // -------------------------------------------------------------------------
+  // limits
+  // -------------------------------------------------------------------------
+  writer.Key("limits");
+  writer.StartObject();
+  writer.Key("max_query_length");
+  writer.AddUint64(static_cast<uint64_t>(limits.max_query_length));
+  writer.Key("max_batch_items");
+  writer.AddUint64(static_cast<uint64_t>(limits.max_batch_items));
+  writer.Key("max_parameter_count");
+  writer.AddUint64(static_cast<uint64_t>(limits.max_parameter_count));
+  writer.Key("max_parameter_value_length");
+  writer.AddUint64(static_cast<uint64_t>(limits.max_parameter_value_length));
+  writer.Key("max_timeout_ms"); writer.AddUint(limits.max_timeout_ms);
+  writer.Key("max_heartbeat_partitions");
+  writer.AddUint64(static_cast<uint64_t>(limits.max_heartbeat_partitions));
   writer.EndObject();
 
   writer.EndObject();
