@@ -17,13 +17,19 @@ spec:
               name: cedargraph
       ports:
         - protocol: TCP
-          port: 6000
+          port: 6000   # metad
         - protocol: TCP
-          port: 7000
+          port: 7000   # internal
         - protocol: TCP
-          port: 9090
+          port: 9090   # metrics
         - protocol: TCP
-          port: 9669
+          port: 9559   # metad alt
+        - protocol: TCP
+          port: 9669   # graphd
+        - protocol: TCP
+          port: 9779   # storaged
+        - protocol: TCP
+          port: 9889   # queryd
   egress:
     - to:
         - namespaceSelector:
@@ -37,4 +43,10 @@ spec:
         - protocol: TCP
           port: 9090
         - protocol: TCP
+          port: 9559
+        - protocol: TCP
           port: 9669
+        - protocol: TCP
+          port: 9779
+        - protocol: TCP
+          port: 9889
