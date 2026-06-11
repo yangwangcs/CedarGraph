@@ -183,6 +183,11 @@ add_executable(test_security_manager dtx/test_security_manager.cc)
 target_link_libraries(test_security_manager ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_security_manager)
 
+# Constant-time JWT signature comparison tests (P4)
+add_executable(test_security_manager_jwt dtx/test_security_manager_jwt.cc)
+target_link_libraries(test_security_manager_jwt ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_security_manager_jwt)
+
 # Supporting modules critical batch
 add_executable(test_supporting_critical security/test_supporting_critical.cc)
 target_link_libraries(test_supporting_critical ${CEDAR_TEST_LIBS})
