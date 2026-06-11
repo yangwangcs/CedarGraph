@@ -17,7 +17,26 @@
 // =============================================================================
 
 #include "cedar/gcn/gcn_service.h"
+#include "cedar/dtx/security.h"
 
+namespace {
+grpc::Status CheckAuth(grpc::ServerContext* context,
+                       cedar::dtx::security::Permission perm) {
+  auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+  if (!sm || !sm->IsAuthEnabled()) return grpc::Status::OK;
+  auto meta = context->client_metadata();
+  auto it = meta.find("authorization");
+  if (it == meta.end()) {
+    return grpc::Status(grpc::StatusCode::UNAUTHENTICATED, "Missing auth token");
+  }
+  auto st = sm->AuthenticateAndAuthorize(
+      std::string(it->second.data(), it->second.size()), perm, "");
+  if (!st.ok()) {
+    return grpc::Status(grpc::StatusCode::PERMISSION_DENIED, st.ToString());
+  }
+  return grpc::Status::OK;
+}
+}  // namespace
 
 namespace cedar {
 namespace gcn {
@@ -66,6 +85,7 @@ void GcnServiceImpl::EnqueueEvent(const CDCEvent& event) {
 grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* context,
                                       const TraversalRequest* request,
                                       TraversalResponse* response) {
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
   if (context->IsCancelled()) return grpc::Status::CANCELLED;
   if (dispatcher_) {
     auto status = dispatcher_->DispatchTraversal(*request, response);
@@ -84,6 +104,7 @@ grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* context,
 grpc::Status GcnServiceImpl::SubQuery(grpc::ServerContext* context,
                                       const SubQueryRequest* request,
                                       SubQueryResponse* response) {
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
   if (context->IsCancelled()) return grpc::Status::CANCELLED;
   response->Clear();
   response->set_trace_id(request->trace_id());
@@ -108,6 +129,7 @@ grpc::Status GcnServiceImpl::SubQuery(grpc::ServerContext* context,
 grpc::Status GcnServiceImpl::OnCacheInvalidate(grpc::ServerContext* context,
                                                const CacheInvalidateNotice* request,
                                                Empty* response) {
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
   if (context->IsCancelled()) return grpc::Status::CANCELLED;
   response->Clear();
 
@@ -122,6 +144,7 @@ grpc::Status GcnServiceImpl::OnCacheInvalidate(grpc::ServerContext* context,
 grpc::Status GcnServiceImpl::OnEventStream(
     grpc::ServerContext* context,
     grpc::ServerReaderWriter<CDCEvent, Ack>* stream) {
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
   while (!context->IsCancelled()) {
     CDCEvent event;
     {
