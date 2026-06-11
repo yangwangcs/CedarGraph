@@ -53,6 +53,9 @@ class DTXServiceImpl final : public cedar::dtx::DTXService::Service {
     participant_log_path_ = path;
   }
 
+  // Test-only accessor for verifying registry state
+  size_t ParticipantCountForTest(const std::string& txn_id) const;
+
   ::grpc::Status Prepare(::grpc::ServerContext* context,
                          const cedar::dtx::PrepareRequest* request,
                          cedar::dtx::PrepareResponse* response) override;
@@ -89,6 +92,9 @@ class DTXServiceImpl final : public cedar::dtx::DTXService::Service {
   std::string participant_log_path_;
 
   Status PersistParticipantRegistration(const cedar::dtx::RegisterRequest& request);
+
+  // Remove all participant records for a completed transaction
+  void CleanupParticipants(const std::string& txn_id);
 };
 
 }  // namespace dtx

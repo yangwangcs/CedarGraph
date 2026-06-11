@@ -234,6 +234,8 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
   if (!storage_service_) {
     response->set_success(false);
     response->set_error_msg("Commit not implemented in DTXService; use StorageService");
+    // P1-1: Cleanup participant registry even when there is no storage backend
+    CleanupParticipants(request->txn_id());
     return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
   }
 
@@ -251,6 +253,10 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
 
   response->set_success(storage_resp.success());
   response->set_error_msg(storage_resp.error_msg());
+
+  // P1-1: Cleanup participant registry to prevent unbounded memory growth
+  CleanupParticipants(request->txn_id());
+
   return ::grpc::Status::OK;
 }
 
@@ -260,6 +266,8 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
   if (!storage_service_) {
     response->set_success(false);
     response->set_error_msg("Abort not implemented in DTXService; use StorageService");
+    // P1-1: Cleanup participant registry even when there is no storage backend
+    CleanupParticipants(request->txn_id());
     return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
   }
 
@@ -276,6 +284,10 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
 
   response->set_success(storage_resp.success());
   response->set_error_msg(storage_resp.error_msg());
+
+  // P1-1: Cleanup participant registry to prevent unbounded memory growth
+  CleanupParticipants(request->txn_id());
+
   return ::grpc::Status::OK;
 }
 
@@ -388,6 +400,20 @@ Status DTXServiceImpl::PersistParticipantRegistration(
     return Status::IOError("Failed to write participant log");
   }
   return Status::OK();
+}
+
+void DTXServiceImpl::CleanupParticipants(const std::string& txn_id) {
+  std::lock_guard<std::mutex> lock(participants_mutex_);
+  participants_.erase(txn_id);
+}
+
+size_t DTXServiceImpl::ParticipantCountForTest(const std::string& txn_id) const {
+  std::lock_guard<std::mutex> lock(participants_mutex_);
+  auto it = participants_.find(txn_id);
+  if (it == participants_.end()) {
+    return 0;
+  }
+  return it->second.size();
 }
 
 }  // namespace dtx

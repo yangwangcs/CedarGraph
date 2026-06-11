@@ -505,6 +505,11 @@ add_executable(test_register_participant dtx/test_register_participant.cc)
 target_link_libraries(test_register_participant ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_register_participant)
 
+# P1-1: participant registry cleanup on Commit/Abort
+add_executable(test_participant_registry_cleanup dtx/test_participant_registry_cleanup.cc)
+target_link_libraries(test_participant_registry_cleanup ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_participant_registry_cleanup)
+
 add_executable(test_cluster_initializer_registration dtx/test_cluster_initializer_registration.cc)
 target_link_libraries(test_cluster_initializer_registration ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cluster_initializer_registration)
