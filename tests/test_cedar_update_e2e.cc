@@ -134,7 +134,7 @@ TEST_F(CedarUpdateE2ETest, CreateVertexAndReadBack) {
   }
 }
 
-TEST_F(CedarUpdateE2ETest, DISABLED_CreateEdgeWithFullKeyInfo) {
+TEST_F(CedarUpdateE2ETest, CreateEdgeWithFullKeyInfo) {
   // 步骤 1：创建两个节点
   Timestamp t0(1712050000000000ULL);
   Descriptor node_desc = Descriptor::InlineInt(1, 0);
@@ -173,7 +173,7 @@ TEST_F(CedarUpdateE2ETest, DISABLED_CreateEdgeWithFullKeyInfo) {
 // CedarKey 完整信息验证
 // =============================================================================
 
-TEST_F(CedarUpdateE2ETest, DISABLED_VerifyCedarKeyAllFields) {
+TEST_F(CedarUpdateE2ETest, VerifyCedarKeyAllFields) {
   Timestamp ts(1712050000000000ULL);
   Descriptor desc = Descriptor::InlineInt(3, 999);
   
@@ -211,7 +211,7 @@ TEST_F(CedarUpdateE2ETest, DISABLED_VerifyCedarKeyAllFields) {
 // 时态属性测试
 // =============================================================================
 
-TEST_F(CedarUpdateE2ETest, DISABLED_TemporalVersioning) {
+TEST_F(CedarUpdateE2ETest, TemporalVersioning) {
   uint64_t vertex_id = 4001;
   
   // 创建节点（版本 1）
@@ -247,7 +247,7 @@ TEST_F(CedarUpdateE2ETest, DISABLED_TemporalVersioning) {
 // 批量操作测试
 // =============================================================================
 
-TEST_F(CedarUpdateE2ETest, DISABLED_BatchOperations) {
+TEST_F(CedarUpdateE2ETest, BatchOperations) {
   const int NUM_NODES = 10;
   Timestamp base_time(1712050000000000ULL);
   
@@ -275,7 +275,7 @@ TEST_F(CedarUpdateE2ETest, DISABLED_BatchOperations) {
 // DELETE 操作测试（时态墓碑）
 // =============================================================================
 
-TEST_F(CedarUpdateE2ETest, DISABLED_DeleteVertexTemporalTombstone) {
+TEST_F(CedarUpdateE2ETest, DeleteVertexTemporalTombstone) {
   uint64_t vertex_id = 6001;
   
   // 创建节点
@@ -316,7 +316,7 @@ TEST_F(CedarUpdateE2ETest, DISABLED_DeleteVertexTemporalTombstone) {
 // 严格模式校验测试
 // =============================================================================
 
-TEST_F(CedarUpdateE2ETest, DISABLED_StrictModeValidation) {
+TEST_F(CedarUpdateE2ETest, StrictModeValidation) {
   // 创建源点
   Timestamp t0(1712050000000000ULL);
   {
@@ -340,6 +340,7 @@ TEST_F(CedarUpdateE2ETest, DISABLED_StrictModeValidation) {
 // 性能基准测试
 // =============================================================================
 
+// BLOCKED: performance benchmark; not a correctness test. Keep disabled in CI.
 TEST_F(CedarUpdateE2ETest, DISABLED_WritePerformance) {
   // 性能测试暂时禁用
 }
@@ -348,7 +349,7 @@ TEST_F(CedarUpdateE2ETest, DISABLED_WritePerformance) {
 // 完整信息落盘验证
 // =============================================================================
 
-TEST_F(CedarUpdateE2ETest, DISABLED_FullKeyInfoPersistence) {
+TEST_F(CedarUpdateE2ETest, FullKeyInfoPersistence) {
   Timestamp ts(1712050000000000ULL);
   
   // 构造包含完整信息的 CedarUpdate

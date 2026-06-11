@@ -139,7 +139,8 @@ class HealthCheckerImpl {
         check_interval_ms_(0),
         http_running_(false),
         http_port_(0),
-        http_socket_(-1) {}
+        http_socket_(-1),
+        check_thread_pool_(std::make_unique<cedar::ThreadPool>(kMaxConcurrentHealthChecks)) {}
 
   ~HealthCheckerImpl() {
     Stop();
@@ -727,16 +728,35 @@ class HealthCheckerImpl {
       }
     }
 
-    // Run checks in parallel
-    std::vector<std::future<ComponentHealth>> futures;
+    // P1-3: Run checks on a bounded thread pool instead of std::async
+    std::vector<std::future<void>> futures;
     futures.reserve(checks.size());
+    std::mutex results_mutex;
+    std::vector<ComponentHealth> results;
+    results.reserve(checks.size());
+
     for (const auto& check : checks) {
-      futures.push_back(std::async(std::launch::async, [this, &check]() {
-        return RunCheck(check.first, check.second.first, check.second.second);
-      }));
+      auto promise = std::make_shared<std::promise<void>>();
+      futures.push_back(promise->get_future());
+
+      check_thread_pool_->Schedule([
+          this, &check, &results, &results_mutex, promise]() {
+        try {
+          ComponentHealth health = RunCheck(
+              check.first, check.second.first, check.second.second);
+          std::lock_guard<std::mutex> lock(results_mutex);
+          results.push_back(std::move(health));
+        } catch (const std::exception& e) {
+          std::cerr << "[HealthChecker] Check task exception for " << check.first
+                    << ": " << e.what() << std::endl;
+        } catch (...) {
+          std::cerr << "[HealthChecker] Unknown check task exception for "
+                    << check.first << std::endl;
+        }
+        promise->set_value();
+      });
     }
 
-    // Wait for all to complete
     for (auto& future : futures) {
       future.wait();
     }
@@ -983,6 +1003,10 @@ class HealthCheckerImpl {
   int http_port_;
   int http_socket_;
   std::thread http_thread_;
+
+  // Health check thread pool and concurrency limiting
+  std::unique_ptr<cedar::ThreadPool> check_thread_pool_;
+  static constexpr int kMaxConcurrentHealthChecks = 4;
 
   // HTTP thread pool and connection limiting
   std::unique_ptr<cedar::ThreadPool> http_thread_pool_;

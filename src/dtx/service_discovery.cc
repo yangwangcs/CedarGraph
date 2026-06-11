@@ -199,14 +199,25 @@ bool ServiceDiscovery::CheckNodeHealth(const StorageNodeInfo& node) {
     struct DnsResult {
       struct addrinfo* res = nullptr;
       bool success = false;
+      ~DnsResult() {
+        if (res) {
+          freeaddrinfo(res);
+          res = nullptr;
+        }
+      }
     };
     auto dns_result = std::make_shared<DnsResult>();
     std::atomic<bool> resolved{false};
-    std::thread dns_thread([dns_result, &node, &resolved]() {
+
+    // P1-5: capture node.host by value to avoid use-after-free when
+    // CheckNodeHealth returns before the detached DNS thread finishes.
+    auto host_copy = std::make_shared<std::string>(node.host);
+
+    std::thread dns_thread([dns_result, host_copy, &resolved]() {
       struct addrinfo hints = {};
       hints.ai_family = AF_INET;
       hints.ai_socktype = SOCK_STREAM;
-      if (getaddrinfo(node.host.c_str(), nullptr, &hints, &dns_result->res) == 0 
+      if (getaddrinfo(host_copy->c_str(), nullptr, &hints, &dns_result->res) == 0
           && dns_result->res != nullptr) {
         dns_result->success = true;
       }
@@ -236,7 +247,8 @@ bool ServiceDiscovery::CheckNodeHealth(const StorageNodeInfo& node) {
     struct sockaddr_in* sin = reinterpret_cast<struct sockaddr_in*>(
         dns_result->res->ai_addr);
     memcpy(&addr.sin_addr, &sin->sin_addr, sizeof(addr.sin_addr));
-    freeaddrinfo(dns_result->res);
+    // DnsResult destructor will freeaddrinfo(res) when dns_result goes out
+    // of scope, including on the timeout/detached-thread path.
   }
   
   int result = connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));

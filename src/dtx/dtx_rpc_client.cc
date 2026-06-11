@@ -311,6 +311,7 @@ std::vector<std::pair<NodeID, cedar::dtx::PrepareResponse>> DTXRpcClient::Prepar
       } catch (...) {
         std::cerr << "[DtxRpcClient] Async task exception for participant " << participant_id << std::endl;
       }
+      // P1-2: promise MUST be fulfilled even if emplace_back throws std::bad_alloc
       promise->set_value();
     });
   }
@@ -354,6 +355,7 @@ std::vector<std::pair<NodeID, cedar::dtx::CommitResponse>> DTXRpcClient::CommitA
       } catch (...) {
         std::cerr << "[DtxRpcClient] Async task exception for participant " << participant_id << std::endl;
       }
+      // P1-2: promise MUST be fulfilled even if emplace_back throws std::bad_alloc
       promise->set_value();
     });
   }
@@ -397,6 +399,7 @@ std::vector<std::pair<NodeID, cedar::dtx::AbortResponse>> DTXRpcClient::AbortAll
       } catch (...) {
         std::cerr << "[DtxRpcClient] Async task exception for participant " << participant_id << std::endl;
       }
+      // P1-2: promise MUST be fulfilled even if emplace_back throws std::bad_alloc
       promise->set_value();
     });
   }

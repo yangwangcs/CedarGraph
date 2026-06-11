@@ -85,7 +85,7 @@ class CedarUpdatePersistenceTest : public ::testing::Test {
 // =============================================================================
 // 测试 1：单节点写入后读取一致性
 // =============================================================================
-TEST_F(CedarUpdatePersistenceTest, DISABLED_SingleVertexPersistence) {
+TEST_F(CedarUpdatePersistenceTest, SingleVertexPersistence) {
   // 阶段 1：写入数据
   {
     CedarGraphStorage* storage = OpenStorage(true);
@@ -160,7 +160,7 @@ TEST_F(CedarUpdatePersistenceTest, DISABLED_SingleVertexPersistence) {
 // =============================================================================
 // 测试 2：边写入后双向读取一致性
 // =============================================================================
-TEST_F(CedarUpdatePersistenceTest, DISABLED_EdgeBidirectionalPersistence) {
+TEST_F(CedarUpdatePersistenceTest, EdgeBidirectionalPersistence) {
   // 阶段 1：写入节点和边
   {
     CedarGraphStorage* storage = OpenStorage(true);
@@ -241,6 +241,9 @@ TEST_F(CedarUpdatePersistenceTest, DISABLED_EdgeBidirectionalPersistence) {
 // =============================================================================
 // 测试 3：多版本时态一致性
 // =============================================================================
+// BLOCKED: storage skeleton does not retain the DELETE tombstone in GetAll;
+// it returns 2 versions (CREATE/UPDATE) instead of 3. Re-enable after the
+// temporal versioning engine persists and returns DELETE records.
 TEST_F(CedarUpdatePersistenceTest, DISABLED_TemporalVersioningPersistence) {
   // 阶段 1：写入多个版本
   {
@@ -327,7 +330,7 @@ TEST_F(CedarUpdatePersistenceTest, DISABLED_TemporalVersioningPersistence) {
 // =============================================================================
 // 测试 4：批量操作一致性
 // =============================================================================
-TEST_F(CedarUpdatePersistenceTest, DISABLED_BatchOperationsPersistence) {
+TEST_F(CedarUpdatePersistenceTest, BatchOperationsPersistence) {
   const int NUM_ENTITIES = 10;
   
   // 阶段 1：批量写入
@@ -383,7 +386,7 @@ TEST_F(CedarUpdatePersistenceTest, DISABLED_BatchOperationsPersistence) {
 // =============================================================================
 // 测试 5：CedarKey 32字节完整性验证
 // =============================================================================
-TEST_F(CedarUpdatePersistenceTest, DISABLED_CedarKey32ByteIntegrity) {
+TEST_F(CedarUpdatePersistenceTest, CedarKey32ByteIntegrity) {
   // 写入包含所有字段信息的 CedarKey
   {
     CedarGraphStorage* storage = OpenStorage(true);

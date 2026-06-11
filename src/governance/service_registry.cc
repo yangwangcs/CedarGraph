@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <iostream>
 
 namespace cedar {
 namespace governance {
@@ -404,8 +405,16 @@ class ServiceRegistryImpl {
     }  // Lock released
 
     // Invoke callbacks outside the lock to avoid deadlock
+    // P1-4: wrap each callback in try/catch so one thrower does not kill the caller
     for (auto& callback : callbacks_to_invoke) {
-      callback(event);
+      try {
+        callback(event);
+      } catch (const std::exception& e) {
+        std::cerr << "[ServiceRegistry] Watcher exception for service " << service_name
+                  << ": " << e.what() << std::endl;
+      } catch (...) {
+        std::cerr << "[ServiceRegistry] Unknown watcher exception for service " << service_name << std::endl;
+      }
     }
   }
 

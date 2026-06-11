@@ -171,6 +171,11 @@ add_cedar_test(test_cedar_key_enhanced)
 add_cedar_test(test_compaction_merger_v2)
 add_cedar_test(test_skeleton_cache)
 add_cedar_test(test_skeleton_cache_lsm_integration)
+
+# P1-6: build the full skeleton cache test suite (storage/test_skeleton_cache.cc)
+add_executable(test_storage_skeleton_cache storage/test_skeleton_cache.cc)
+target_link_libraries(test_storage_skeleton_cache ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_skeleton_cache)
 add_cedar_test(test_temporal_minimal)
 add_cedar_test(test_cedarscan_crash)
 # add_cedar_test(test_write_perf_only)      # perf test — keep disabled in CI
@@ -366,6 +371,10 @@ add_executable(test_service_registry governance/test_service_registry.cc)
 target_link_libraries(test_service_registry ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_service_registry)
 
+add_executable(test_service_registry_exception_safety governance/test_service_registry_exception_safety.cc)
+target_link_libraries(test_service_registry_exception_safety ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_service_registry_exception_safety)
+
 add_executable(test_config_manager governance/test_config_manager.cc)
 target_link_libraries(test_config_manager ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_config_manager)
@@ -373,6 +382,11 @@ gtest_discover_tests(test_config_manager)
 add_executable(test_health_checker governance/test_health_checker.cc)
 target_link_libraries(test_health_checker ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_health_checker)
+
+# P1-3: HealthChecker uses bounded ThreadPool instead of std::async
+add_executable(test_health_checker_thread_pool governance/test_health_checker_thread_pool.cc)
+target_link_libraries(test_health_checker_thread_pool ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_health_checker_thread_pool)
 
 add_executable(health_checker_probe_test governance/health_checker_probe_test.cc)
 target_link_libraries(health_checker_probe_test ${CEDAR_TEST_LIBS})
@@ -509,6 +523,16 @@ gtest_discover_tests(test_register_participant)
 add_executable(test_participant_registry_cleanup dtx/test_participant_registry_cleanup.cc)
 target_link_libraries(test_participant_registry_cleanup ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_participant_registry_cleanup)
+
+# P1-2: DTX RPC client promise handling OOM safety
+add_executable(test_dtx_rpc_client_promise_safety dtx/test_dtx_rpc_client_promise_safety.cc)
+target_link_libraries(test_dtx_rpc_client_promise_safety ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_dtx_rpc_client_promise_safety)
+
+# P1-5: ServiceDiscovery DNS use-after-free fix
+add_executable(test_service_discovery_dns_safety dtx/test_service_discovery_dns_safety.cc)
+target_link_libraries(test_service_discovery_dns_safety ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_service_discovery_dns_safety)
 
 add_executable(test_cluster_initializer_registration dtx/test_cluster_initializer_registration.cc)
 target_link_libraries(test_cluster_initializer_registration ${CEDAR_TEST_LIBS})

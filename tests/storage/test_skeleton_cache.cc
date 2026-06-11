@@ -439,7 +439,7 @@ TEST_F(SkeletonCacheTest, BatchHydrate) {
 }
 
 // ========== Test 12: 空节点和删除节点测试 (暂时禁用 - 需要调查) ==========
-TEST_F(SkeletonCacheTest, DISABLED_EmptyAndDeletedVertices) {
+TEST_F(SkeletonCacheTest, EmptyAndDeletedVertices) {
   // 查询不存在的节点
   auto results = engine_->ScanOutEdgesCached(999999, 0xFFFF, Timestamp(100));
   EXPECT_EQ(results.size(), 0);

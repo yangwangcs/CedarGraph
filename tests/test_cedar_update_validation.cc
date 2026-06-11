@@ -265,6 +265,8 @@ TEST_F(CedarUpdateValidationTest, ProbeKeyConstruction) {
 // 存在性校验场景测试
 // =============================================================================
 
+// BLOCKED: empty test body — requires full storage layer with strict existence
+// checking (ValidateNode with real Seek) before it can assert anything useful.
 TEST_F(CedarUpdateValidationTest, DISABLED_ValidateExistingNode) {
   // 场景 1：节点存在，校验通过
   // 暂时禁用此测试，需要完整存储层支持
@@ -293,6 +295,8 @@ TEST_F(CedarUpdateValidationTest, ValidateDstNodeNotFound) {
 // 时态校验场景测试
 // =============================================================================
 
+// BLOCKED: requires a real temporal validation engine that can compare edge
+// timestamp against the node's earliest CREATE version. Skeleton passes through.
 TEST_F(CedarUpdateValidationTest, DISABLED_TemporalAnachronism) {
   // 场景 4：时空错位 - 边时间早于节点创建时间
   // 先创建节点在 T=100
@@ -312,7 +316,7 @@ TEST_F(CedarUpdateValidationTest, DISABLED_TemporalAnachronism) {
 // 缓存优化测试
 // =============================================================================
 
-TEST_F(CedarUpdateValidationTest, DISABLED_CacheHitOptimization) {
+TEST_F(CedarUpdateValidationTest, CacheHitOptimization) {
   // 场景 5：缓存命中，避免重复 Seek
   Timestamp create_time(1712050000000000ULL);
   CreateNode(1001, create_time);
@@ -330,7 +334,7 @@ TEST_F(CedarUpdateValidationTest, DISABLED_CacheHitOptimization) {
   EXPECT_EQ(cache_->Size(), 1);
 }
 
-TEST_F(CedarUpdateValidationTest, DISABLED_CacheNegativeResult) {
+TEST_F(CedarUpdateValidationTest, CacheNegativeResult) {
   // 场景 6：缓存负结果（节点不存在）
   Timestamp query_time(1712050000000000ULL);
   
@@ -348,7 +352,7 @@ TEST_F(CedarUpdateValidationTest, DISABLED_CacheNegativeResult) {
 // LRU 缓存淘汰测试
 // =============================================================================
 
-TEST_F(CedarUpdateValidationTest, DISABLED_CacheLRUEviction) {
+TEST_F(CedarUpdateValidationTest, CacheLRUEviction) {
   // 创建小容量缓存（容量=3）
   auto small_cache = std::make_unique<ExistenceCache>(3);
   
@@ -378,6 +382,8 @@ TEST_F(CedarUpdateValidationTest, DISABLED_CacheLRUEviction) {
 // WriteBatch 内依赖测试
 // =============================================================================
 
+// BLOCKED: test body is incomplete (ends mid-implementation). Re-enable after
+// CedarUpdate's PendingWrites dependency logic is fully implemented.
 TEST_F(CedarUpdateValidationTest, DISABLED_SameBatchDependency) {
   // 场景 7：同一 Batch 内 CreateNode + AddEdge
   // CedarUpdate 应该优先检查内存中的 PendingWrites
@@ -397,7 +403,7 @@ TEST_F(CedarUpdateValidationTest, DISABLED_SameBatchDependency) {
 // 完整流程测试：Create -> Validate Edge
 // =============================================================================
 
-TEST_F(CedarUpdateValidationTest, DISABLED_FullWorkflowSuccess) {
+TEST_F(CedarUpdateValidationTest, FullWorkflowSuccess) {
   // 步骤 1：创建源点和终点
   Timestamp t0(1712050000000000ULL);
   CreateNode(1001, t0);
@@ -416,7 +422,7 @@ TEST_F(CedarUpdateValidationTest, DISABLED_FullWorkflowSuccess) {
   (void)status;
 }
 
-TEST_F(CedarUpdateValidationTest, DISABLED_FullWorkflowFailMissingDst) {
+TEST_F(CedarUpdateValidationTest, FullWorkflowFailMissingDst) {
   // 步骤 1：只创建源点
   Timestamp t0(1712050000000000ULL);
   CreateNode(1001, t0);
@@ -441,6 +447,7 @@ TEST_F(CedarUpdateValidationTest, DISABLED_FullWorkflowFailMissingDst) {
 // 性能基准测试
 // =============================================================================
 
+// BLOCKED: performance benchmark, not a correctness test. Keep disabled in CI.
 TEST_F(CedarUpdateValidationTest, DISABLED_ValidationPerformance) {
   // 创建 100 个节点
   const int NUM_NODES = 100;

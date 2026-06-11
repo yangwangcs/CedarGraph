@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "cedar/core/status.h"
+#include "cedar/core/threading.h"
 
 namespace cedar {
 namespace governance {

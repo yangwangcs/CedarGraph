@@ -50,7 +50,7 @@ TEST(TemporalMinimal, WriteOnly) {
   std::filesystem::remove_all(test_dir);
 }
 
-TEST(TemporalMinimal, DISABLED_WriteThenRead) {
+TEST(TemporalMinimal, WriteThenRead) {
   std::string test_dir = "/tmp/temporal_min_read_" + 
       std::to_string(system_clock::now().time_since_epoch().count());
   std::filesystem::create_directories(test_dir);
