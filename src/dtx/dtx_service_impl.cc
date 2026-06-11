@@ -16,6 +16,7 @@
 #include "cedar/dtx/dtx_service_impl.h"
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
+#include "cedar/dtx/security.h"
 #include <iostream>
 #include "storage_service.pb.h"
 
@@ -32,6 +33,23 @@ namespace cedar {
 namespace dtx {
 
 namespace {
+
+grpc::Status CheckAuth(grpc::ServerContext* context,
+                       cedar::dtx::security::Permission perm) {
+  auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+  if (!sm || !sm->IsAuthEnabled()) return grpc::Status::OK;
+  auto meta = context->client_metadata();
+  auto it = meta.find("authorization");
+  if (it == meta.end()) {
+    return grpc::Status(grpc::StatusCode::UNAUTHENTICATED, "Missing auth token");
+  }
+  auto st = sm->AuthenticateAndAuthorize(
+      std::string(it->second.data(), it->second.size()), perm, "");
+  if (!st.ok()) {
+    return grpc::Status(grpc::StatusCode::PERMISSION_DENIED, st.ToString());
+  }
+  return grpc::Status::OK;
+}
 
 uint64_t ConvertTxnId(const std::string& txn_id_str) {
   try {
@@ -71,7 +89,7 @@ DTXServiceImpl::DTXServiceImpl(cedar::CedarGraphStorage* storage,
     ::grpc::ServerContext* context,
     const cedar::dtx::ReplicateRequest* request,
     cedar::dtx::ReplicateResponse* response) {
-  (void)context;
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
   uint64_t last_sequence = 0;
   for (const auto& log : request->logs()) {
     Status s;
@@ -117,7 +135,7 @@ DTXServiceImpl::DTXServiceImpl(cedar::CedarGraphStorage* storage,
     ::grpc::ServerContext* context,
     ::grpc::ServerReader<cedar::dtx::ApplyReplicationRequest>* reader,
     cedar::dtx::ApplyReplicationResponse* response) {
-  (void)context;
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
   cedar::dtx::ApplyReplicationRequest request;
   uint64_t last_sequence = 0;
   while (reader->Read(&request)) {
@@ -198,6 +216,7 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
 ::grpc::Status DTXServiceImpl::Prepare(::grpc::ServerContext* context,
                                        const cedar::dtx::PrepareRequest* request,
                                        cedar::dtx::PrepareResponse* response) {
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
   if (!storage_service_) {
     response->set_success(false);
     response->set_error_msg("Prepare not implemented in DTXService; use StorageService");
@@ -233,6 +252,7 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
 ::grpc::Status DTXServiceImpl::Commit(::grpc::ServerContext* context,
                                       const cedar::dtx::CommitRequest* request,
                                       cedar::dtx::CommitResponse* response) {
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
   if (!storage_service_) {
     response->set_success(false);
     response->set_error_msg("Commit not implemented in DTXService; use StorageService");
@@ -265,6 +285,7 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
 ::grpc::Status DTXServiceImpl::Abort(::grpc::ServerContext* context,
                                      const cedar::dtx::AbortRequest* request,
                                      cedar::dtx::AbortResponse* response) {
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
   if (!storage_service_) {
     response->set_success(false);
     response->set_error_msg("Abort not implemented in DTXService; use StorageService");
@@ -296,6 +317,7 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
 ::grpc::Status DTXServiceImpl::Inquire(::grpc::ServerContext* context,
                                        const cedar::dtx::InquireRequest* request,
                                        cedar::dtx::InquireResponse* response) {
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
   if (!storage_service_) {
     response->set_state(cedar::dtx::InquireResponse_TxnState_UNKNOWN);
     return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "Use StorageService");
@@ -338,7 +360,7 @@ Status DTXServiceImpl::ApplySingleLog(const cedar::dtx::ReplicationLogEntry& log
 ::grpc::Status DTXServiceImpl::RegisterParticipant(::grpc::ServerContext* context,
                                                    const cedar::dtx::RegisterRequest* request,
                                                    cedar::dtx::RegisterResponse* response) {
-  (void)context;
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
 
   // Validate required fields
   if (request->txn_id().empty()) {
