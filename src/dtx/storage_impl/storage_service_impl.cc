@@ -16,6 +16,7 @@
 #include "cedar/dtx/storage/partition_raft_manager.h"
 #include "cedar/dtx/monitoring.h"
 #include "cedar/storage/lsm_engine.h"
+#include "cedar/dtx/security.h"
 
 #include <algorithm>
 #include <cstring>
@@ -24,6 +25,39 @@
 
 namespace cedar {
 namespace dtx {
+
+// Auth gate — called first thing in every gRPC handler
+grpc::Status CheckAuth(grpc::ServerContext* context,
+                       cedar::dtx::security::Permission required_perm,
+                       const std::string& resource = "") {
+  auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+  if (!sm) {
+    return grpc::Status(grpc::StatusCode::INTERNAL,
+                        "SecurityManager not initialized");
+  }
+
+  auto meta = context->client_metadata();
+  auto it = meta.find("authorization");
+  if (it == meta.end()) {
+    return grpc::Status(grpc::StatusCode::UNAUTHENTICATED,
+                        "Missing authorization header");
+  }
+
+  std::string auth_hdr(it->second.data(), it->second.size());
+  const std::string kBearer = "Bearer ";
+  if (auth_hdr.rfind(kBearer, 0) != 0) {
+    return grpc::Status(grpc::StatusCode::UNAUTHENTICATED,
+                        "Malformed authorization header; expected Bearer token");
+  }
+
+  std::string token = auth_hdr.substr(kBearer.length());
+  auto status = sm->AuthenticateAndAuthorize(token, required_perm, resource);
+  if (!status.ok()) {
+    return grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
+                        std::string("Auth failed: ") + status.ToString());
+  }
+  return grpc::Status::OK;
+}
 
 // =============================================================================
 // StorageServiceImpl Implementation
@@ -218,6 +252,10 @@ grpc::Status StorageServiceImpl::Put(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
+  }
   
   PartitionID pid = static_cast<PartitionID>(request->key().partition_id());
   auto* partition = partition_manager_->GetPartition(pid);
@@ -315,6 +353,10 @@ grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
   
   PartitionID pid = static_cast<PartitionID>(request->key().partition_id());
   auto* partition = partition_manager_->GetPartition(pid);
@@ -367,6 +409,10 @@ grpc::Status StorageServiceImpl::Delete(grpc::ServerContext* context,
                                          cedar::storage::DeleteResponse* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kDelete);
+      !st.ok()) {
+    return st;
   }
   
   PartitionID pid = static_cast<PartitionID>(request->key().partition_id());
@@ -442,6 +488,10 @@ grpc::Status StorageServiceImpl::Scan(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
 
   // Leader check for linearizable read
   PartitionID pid = static_cast<PartitionID>(request->partition_id());
@@ -489,6 +539,10 @@ grpc::Status StorageServiceImpl::ScanNodeV2(grpc::ServerContext* context,
                                              cedar::storage::ScanResponse* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
   }
 
   // Leader check for linearizable read
@@ -538,6 +592,10 @@ grpc::Status StorageServiceImpl::ScanEdgeV2(grpc::ServerContext* context,
                                              cedar::storage::ScanResponse* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
   }
 
   // Leader check for linearizable read
@@ -611,6 +669,10 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
                                            cedar::storage::BatchPutResponse* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
   }
   
   Timestamp txn_version(request->txn_version().value());
@@ -742,6 +804,10 @@ grpc::Status StorageServiceImpl::BatchGet(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
 
   // Leader check: all keys must belong to partitions we lead
   // For simplicity, check the first key's partition (typical use case)
@@ -795,6 +861,10 @@ grpc::Status StorageServiceImpl::Prepare(grpc::ServerContext* context,
                                           cedar::storage::PrepareResponse* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
   }
   
   TxnID txn_id = request->txn_id();
@@ -935,6 +1005,10 @@ grpc::Status StorageServiceImpl::Commit(grpc::ServerContext* context,
                                          cedar::storage::CommitResponse* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
   }
   
   try {
@@ -1089,6 +1163,10 @@ grpc::Status StorageServiceImpl::Abort(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
+  }
   
   TxnID txn_id = request->txn_id();
   
@@ -1197,6 +1275,10 @@ grpc::Status StorageServiceImpl::Inquire(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
+  }
   
   TxnID txn_id = request->txn_id();
   response->set_txn_id(txn_id);
@@ -1288,6 +1370,10 @@ grpc::Status StorageServiceImpl::GetRangeForCompute(
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
 
   auto* storage = partition_manager_->GetSharedStorage();
   if (!storage) {
@@ -1338,6 +1424,10 @@ grpc::Status StorageServiceImpl::GetCommittedVersion(
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
   (void)request;
 
   // Return the current wall-clock timestamp as an approximation of the
@@ -1360,6 +1450,10 @@ grpc::Status StorageServiceImpl::GetPartitionInfo(grpc::ServerContext* context,
                                                    cedar::storage::GetPartitionInfoResponse* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kMonitor);
+      !st.ok()) {
+    return st;
   }
   
   PartitionID pid = static_cast<PartitionID>(request->partition_id());
@@ -1406,6 +1500,10 @@ grpc::Status StorageServiceImpl::Flush(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
+  }
   
   auto status = partition_manager_->FlushAll();
   
@@ -1435,6 +1533,10 @@ grpc::Status StorageServiceImpl::Heartbeat(grpc::ServerContext* context,
                                                                      cedar::storage::HeartbeatRequest>* stream) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kMonitor);
+      !st.ok()) {
+    return st;
   }
   
   cedar::storage::HeartbeatRequest request;
@@ -1466,6 +1568,10 @@ grpc::Status StorageServiceImpl::ExecuteSubQuery(
     grpc::ServerWriter<cedar::storage::SubQueryResultBatch>* writer) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
   }
 
   // Leader check for linearizable read

@@ -378,6 +378,8 @@ class SecurityManager {
                                    Permission permission,
                                    const std::string& resource = "");
 
+  bool IsAuthEnabled() const { return config_.enable_auth; }
+
  private:
   SecurityManager() = default;
   ~SecurityManager();

@@ -5,10 +5,12 @@
 
 #include <chrono>
 #include <future>
+#include <iostream>
 #include <thread>
 
 // 包含 dtx StorageClient 头文件
 #include "cedar/dtx/storage_service_impl.h"
+#include "cedar/dtx/raft/grpc_tls.h"
 
 // 包含 StorageService proto 头文件 (for RemoteRPCNodeClient)
 #include "storage_service.grpc.pb.h"
@@ -826,7 +828,13 @@ std::shared_ptr<grpc::Channel> QueryStorageClient::GetOrCreateChannel(
     }
     address = it->second;
   }
-  auto channel = grpc::CreateChannel(address, grpc::InsecureChannelCredentials());
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok()) {
+    std::cerr << "[QueryStorageClient] TLS credential error: "
+              << creds.status().ToString() << std::endl;
+    return nullptr;
+  }
+  auto channel = grpc::CreateChannel(address, creds.ValueOrDie());
   {
     std::unique_lock<std::shared_mutex> lock(channels_mutex_);
     partition_channels_[partition_id] = channel;

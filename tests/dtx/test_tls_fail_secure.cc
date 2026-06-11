@@ -1,16 +1,6 @@
 // Copyright 2025 The Cedar Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <gtest/gtest.h>
 #include "cedar/dtx/raft/grpc_tls.h"
@@ -27,12 +17,12 @@ TEST(TlsCredentialFactory, MissingServerCertReturnsError) {
   EXPECT_FALSE(result.ok());
 }
 
-TEST(TlsCredentialFactory, DisabledReturnsInsecure) {
+TEST(TlsCredentialFactory, DisabledReturnsError) {
   TlsConfig config;
   config.enabled = false;
   auto result = TlsCredentialFactory::CreateServerCredentials(config);
-  EXPECT_TRUE(result.ok());
-  EXPECT_NE(result.ValueOrDie(), nullptr);
+  EXPECT_FALSE(result.ok());
+  EXPECT_NE(result.status().ToString().find("mandatory"), std::string::npos);
 }
 
 TEST(TlsCredentialFactory, MissingClientCertReturnsError) {
@@ -45,10 +35,29 @@ TEST(TlsCredentialFactory, MissingClientCertReturnsError) {
   EXPECT_FALSE(result.ok());
 }
 
-TEST(TlsCredentialFactory, DisabledClientReturnsInsecure) {
+TEST(TlsCredentialFactory, DisabledClientReturnsError) {
   TlsConfig config;
   config.enabled = false;
   auto result = TlsCredentialFactory::CreateClientCredentials(config);
-  EXPECT_TRUE(result.ok());
-  EXPECT_NE(result.ValueOrDie(), nullptr);
+  EXPECT_FALSE(result.ok());
+  EXPECT_NE(result.status().ToString().find("mandatory"), std::string::npos);
+}
+
+TEST(TlsCredentialFactory, ValidateConfigRejectsDisabled) {
+  TlsConfig config;
+  config.enabled = false;
+  std::string err;
+  EXPECT_FALSE(TlsCredentialFactory::ValidateConfig(config, &err));
+  EXPECT_NE(err.find("insecure"), std::string::npos);
+}
+
+TEST(TlsCredentialFactory, EnvUnsetReturnsError) {
+  unsetenv("CEDAR_GRPC_TLS_ENABLED");
+  auto srv = TlsCredentialFactory::CreateServerCredentialsFromEnv();
+  EXPECT_FALSE(srv.ok());
+  EXPECT_NE(srv.status().ToString().find("CEDAR_GRPC_TLS_ENABLED"), std::string::npos);
+
+  auto cli = TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  EXPECT_FALSE(cli.ok());
+  EXPECT_NE(cli.status().ToString().find("CEDAR_GRPC_TLS_ENABLED"), std::string::npos);
 }

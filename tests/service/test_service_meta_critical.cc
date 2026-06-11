@@ -10,6 +10,7 @@
 #include "cedar/dtx/meta_service_grpc.h"
 #include "cedar/service/partition_migration_service.h"
 #include "cedar/service/graph_service_router.h"
+#include "cedar/dtx/security.h"
 
 using namespace cedar::dtx;
 using namespace cedar::service;
@@ -199,8 +200,15 @@ TEST(PartitionMigrationCriticalTest, CleanupOldMigrationsRaceSafe) {
 // ============================================================================
 
 TEST(GraphServiceRouterCriticalTest, BeginTransactionEnforcesLimit) {
+  auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+  cedar::dtx::security::SecurityManager::Config cfg;
+  cfg.enable_auth = false;
+  auto init_status = sm->Initialize(cfg);
+  EXPECT_TRUE(init_status.ok()) << init_status.ToString();
+
   GraphServiceRouter router;
   grpc::ServerContext context;
+  context.AddInitialMetadata("authorization", "Bearer test-token");
   cedargrpc::BeginTransactionRequest request;
   request.set_isolation_level(cedargrpc::IsolationLevel::READ_COMMITTED);
 
@@ -216,6 +224,8 @@ TEST(GraphServiceRouterCriticalTest, BeginTransactionEnforcesLimit) {
   auto status = router.BeginTransaction(&context, &request, &response);
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED);
+
+  sm->Shutdown();
 }
 
 TEST(GraphServiceRouterCriticalTest, RefreshPartitionMapReturnsStatus) {

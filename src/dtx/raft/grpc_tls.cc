@@ -28,8 +28,7 @@ using ::grpc::ServerCredentials;
 using ::grpc::ChannelCredentials;
 using ::grpc::SslServerCredentialsOptions;
 using ::grpc::SslCredentialsOptions;
-using ::grpc::InsecureServerCredentials;
-using ::grpc::InsecureChannelCredentials;
+// Insecure credentials are intentionally not available.
 using ::grpc::SslServerCredentials;
 using ::grpc::SslCredentials;
 
@@ -47,7 +46,9 @@ std::string TlsCredentialFactory::LoadFile(const std::string& path) {
 StatusOr<std::shared_ptr<ServerCredentials>> TlsCredentialFactory::CreateServerCredentials(
     const TlsConfig& config) {
   if (!config.enabled) {
-    return InsecureServerCredentials();
+    return Status::InvalidArgument(
+        "TLS is mandatory. Set enabled=true and provide certificate files. "
+        "Insecure credentials are not allowed.");
   }
 
   // Load certificate and key
@@ -85,7 +86,9 @@ StatusOr<std::shared_ptr<ServerCredentials>> TlsCredentialFactory::CreateServerC
 StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClientCredentials(
     const TlsConfig& config) {
   if (!config.enabled) {
-    return InsecureChannelCredentials();
+    return Status::InvalidArgument(
+        "TLS is mandatory. Set enabled=true and provide certificate files. "
+        "Insecure credentials are not allowed.");
   }
 
   SslCredentialsOptions ssl_opts;
@@ -123,7 +126,10 @@ StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClient
 bool TlsCredentialFactory::ValidateConfig(const TlsConfig& config, 
                                            std::string* error_msg) {
   if (!config.enabled) {
-    return true;  // TLS disabled is valid
+    if (error_msg) {
+      *error_msg = "TLS must be enabled; insecure mode is not allowed";
+    }
+    return false;
   }
 
   if (config.server_cert_file.empty() || config.server_key_file.empty()) {
@@ -166,7 +172,9 @@ StatusOr<std::shared_ptr<ServerCredentials>> TlsCredentialFactory::CreateServerC
     }
     return CreateServerCredentials(config);
   }
-  return InsecureServerCredentials();
+  return Status::InvalidArgument(
+      "CEDAR_GRPC_TLS_ENABLED is not set to 1. TLS is mandatory. "
+      "Insecure credentials are not allowed.");
 }
 
 StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClientCredentialsFromEnv() {
@@ -186,7 +194,9 @@ StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClient
     }
     return CreateClientCredentials(config);
   }
-  return InsecureChannelCredentials();
+  return Status::InvalidArgument(
+      "CEDAR_GRPC_TLS_ENABLED is not set to 1. TLS is mandatory. "
+      "Insecure credentials are not allowed.");
 }
 
 }  // namespace raft

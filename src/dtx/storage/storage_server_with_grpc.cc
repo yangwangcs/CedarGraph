@@ -36,6 +36,7 @@
 #include "cedar/types/descriptor.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/storage/storage_interface.h"
+#include "cedar/dtx/security.h"
 
 // gRPC generated headers
 #include "storage_service.pb.h"
@@ -226,6 +227,43 @@ cedar::CedarKey ConvertProtoKey(const cedar::storage::CedarKey& proto_key) {
 // gRPC Service Implementation
 // =============================================================================
 
+namespace {
+
+// Auth gate — called first thing in every gRPC handler
+grpc::Status CheckAuth(grpc::ServerContext* context,
+                       cedar::dtx::security::Permission required_perm,
+                       const std::string& resource = "") {
+  auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+  if (!sm) {
+    return grpc::Status(grpc::StatusCode::INTERNAL,
+                        "SecurityManager not initialized");
+  }
+
+  auto meta = context->client_metadata();
+  auto it = meta.find("authorization");
+  if (it == meta.end()) {
+    return grpc::Status(grpc::StatusCode::UNAUTHENTICATED,
+                        "Missing authorization header");
+  }
+
+  std::string auth_hdr(it->second.data(), it->second.size());
+  const std::string kBearer = "Bearer ";
+  if (auth_hdr.rfind(kBearer, 0) != 0) {
+    return grpc::Status(grpc::StatusCode::UNAUTHENTICATED,
+                        "Malformed authorization header; expected Bearer token");
+  }
+
+  std::string token = auth_hdr.substr(kBearer.length());
+  auto status = sm->AuthenticateAndAuthorize(token, required_perm, resource);
+  if (!status.ok()) {
+    return grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
+                        std::string("Auth failed: ") + status.ToString());
+  }
+  return grpc::Status::OK;
+}
+
+}  // namespace
+
 class StorageServiceImpl final : public cedar::storage::StorageService::Service {
  public:
   StorageServiceImpl(StoragePartitionManager* partition_manager) 
@@ -241,6 +279,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                    const cedar::storage::PutRequest* request,
                    cedar::storage::PutResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+        !st.ok()) {
+      return st;
+    }
     
     // Extract partition_id from key
     cedar::CedarKey key = ConvertProtoKey(request->key());
@@ -289,6 +331,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                    const cedar::storage::GetRequest* request,
                    cedar::storage::GetResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+        !st.ok()) {
+      return st;
+    }
     
     cedar::CedarKey key = ConvertProtoKey(request->key());
     PartitionID pid = key.part_id();
@@ -324,6 +370,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                       const cedar::storage::DeleteRequest* request,
                       cedar::storage::DeleteResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kDelete);
+        !st.ok()) {
+      return st;
+    }
     
     cedar::CedarKey key = ConvertProtoKey(request->key());
     PartitionID pid = key.part_id();
@@ -355,6 +405,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                     const cedar::storage::ScanRequest* request,
                     cedar::storage::ScanResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+        !st.ok()) {
+      return st;
+    }
     (void)request;
     
     // Note: Full scan not implemented in this version
@@ -368,6 +422,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                           const cedar::storage::ScanNodeRequestV2* request,
                           cedar::storage::ScanResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+        !st.ok()) {
+      return st;
+    }
     
     if (!storage_interface_) {
       response->set_success(false);
@@ -404,6 +462,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                           const cedar::storage::ScanEdgeRequestV2* request,
                           cedar::storage::ScanResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+        !st.ok()) {
+      return st;
+    }
     
     if (!storage_interface_) {
       response->set_success(false);
@@ -461,6 +523,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                         const cedar::storage::BatchPutRequest* request,
                         cedar::storage::BatchPutResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+        !st.ok()) {
+      return st;
+    }
     
     bool all_success = true;
     
@@ -508,6 +574,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                         const cedar::storage::BatchGetRequest* request,
                         cedar::storage::BatchGetResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+        !st.ok()) {
+      return st;
+    }
     
     for (const auto& proto_key : request->keys()) {
       cedar::CedarKey key = ConvertProtoKey(proto_key);
@@ -542,6 +612,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                        const cedar::storage::PrepareRequest* request,
                        cedar::storage::PrepareResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+        !st.ok()) {
+      return st;
+    }
     
     TxnID txn_id = request->txn_id();
     Timestamp commit_ts(request->commit_ts());
@@ -653,6 +727,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                       const cedar::storage::CommitRequest* request,
                       cedar::storage::CommitResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+        !st.ok()) {
+      return st;
+    }
     
     TxnID txn_id = request->txn_id();
     Timestamp commit_ts(request->commit_ts());
@@ -718,6 +796,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                      const cedar::storage::AbortRequest* request,
                      cedar::storage::AbortResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+        !st.ok()) {
+      return st;
+    }
     
     TxnID txn_id = request->txn_id();
     
@@ -781,6 +863,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                                 const cedar::storage::GetPartitionInfoRequest* request,
                                 cedar::storage::GetPartitionInfoResponse* response) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kMonitor);
+        !st.ok()) {
+      return st;
+    }
     
     PartitionID pid = request->partition_id();
     PartitionStorage* partition = partition_manager_->GetPartition(pid);
@@ -810,6 +896,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                          grpc::ServerReaderWriter<cedar::storage::HeartbeatResponse,
                                                   cedar::storage::HeartbeatRequest>* stream) override {
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kMonitor);
+        !st.ok()) {
+      return st;
+    }
     
     cedar::storage::HeartbeatRequest request;
     while (stream->Read(&request)) {

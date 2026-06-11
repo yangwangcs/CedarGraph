@@ -100,6 +100,10 @@ add_executable(test_cedar_graph_storage storage/test_cedar_graph_storage.cc)
 target_link_libraries(test_cedar_graph_storage ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cedar_graph_storage)
 
+add_executable(test_edge_atomicity storage/test_edge_atomicity.cc)
+target_link_libraries(test_edge_atomicity ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_edge_atomicity)
+
 add_executable(test_temporal_constraint storage/test_temporal_constraint.cc)
 target_link_libraries(test_temporal_constraint ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_temporal_constraint)
@@ -283,6 +287,10 @@ add_executable(test_pool_state_reset transaction/test_pool_state_reset.cc)
 target_link_libraries(test_pool_state_reset ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_pool_state_reset)
 
+add_executable(test_commit_serializability transaction/test_commit_serializability.cc)
+target_link_libraries(test_commit_serializability ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_commit_serializability)
+
 add_executable(test_plan_cache_thread_safety cypher/test_plan_cache_thread_safety.cc)
 target_link_libraries(test_plan_cache_thread_safety ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_plan_cache_thread_safety)
@@ -328,6 +336,11 @@ gtest_discover_tests(test_distinct_no_collision)
 add_executable(test_storage_service_impl dtx/test_storage_service_impl.cc)
 target_link_libraries(test_storage_service_impl ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_storage_service_impl)
+
+# Storage Service auth tests (P0-5)
+add_executable(test_storage_service_auth dtx/test_storage_service_auth.cc)
+target_link_libraries(test_storage_service_auth ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_storage_service_auth)
 
 # Performance/structure tests — keep disabled in CI (slow or require specific setup)
 # add_executable(test_sst_capacity_analysis storage/test_sst_capacity_analysis.cc)
@@ -764,6 +777,18 @@ add_executable(test_graph_service_router
 target_link_libraries(test_graph_service_router cedar cedar_cypher cedar_queryd gRPC::grpc++ ${GTEST_MAIN_TARGET})
 target_link_directories(test_graph_service_router PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_graph_service_router)
+
+add_executable(test_graph_service_router_auth
+    service/test_graph_service_router_auth.cc
+    ../src/service/graph_service_router.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/query_service.pb.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/query_service.grpc.pb.cc
+)
+target_link_libraries(test_graph_service_router_auth cedar cedar_cypher cedar_queryd gRPC::grpc++ ${GTEST_MAIN_TARGET})
+target_link_directories(test_graph_service_router_auth PRIVATE /opt/homebrew/lib)
+gtest_discover_tests(test_graph_service_router_auth)
 
 add_executable(test_migration_pipeline
     service/test_migration_pipeline.cc

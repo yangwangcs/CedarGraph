@@ -1,7 +1,7 @@
 // Copyright 2025 The Cedar Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
+// You may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
@@ -27,15 +27,23 @@ TEST(TlsConfigTest, EmptyTlsConfigReturnsError) {
   EXPECT_FALSE(server_creds.ok());
 }
 
-TEST(TlsConfigTest, DevModeExplicitlyDisabledTls) {
+TEST(TlsConfigTest, DisabledTlsReturnsError) {
   TlsConfig config;
-  config.enabled = false;  // Explicitly disabled for dev/test
+  config.enabled = false;  // Insecure mode is no longer allowed
 
   auto server_creds = TlsCredentialFactory::CreateServerCredentials(config);
-  EXPECT_TRUE(server_creds.ok());
-  EXPECT_NE(server_creds.ValueOrDie(), nullptr);
+  EXPECT_FALSE(server_creds.ok());
+  EXPECT_NE(server_creds.status().ToString().find("mandatory"), std::string::npos);
 
   auto client_creds = TlsCredentialFactory::CreateClientCredentials(config);
-  EXPECT_TRUE(client_creds.ok());
-  EXPECT_NE(client_creds.ValueOrDie(), nullptr);
+  EXPECT_FALSE(client_creds.ok());
+  EXPECT_NE(client_creds.status().ToString().find("mandatory"), std::string::npos);
+}
+
+TEST(TlsConfigTest, ValidateConfigRejectsDisabled) {
+  TlsConfig config;
+  config.enabled = false;
+  std::string err;
+  EXPECT_FALSE(TlsCredentialFactory::ValidateConfig(config, &err));
+  EXPECT_NE(err.find("insecure"), std::string::npos);
 }

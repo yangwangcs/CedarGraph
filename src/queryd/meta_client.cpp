@@ -11,6 +11,8 @@
 #include <grpcpp/client_context.h>
 #include <grpcpp/create_channel.h>
 
+#include "cedar/dtx/raft/grpc_tls.h"
+
 // Protobuf generated headers
 #include "meta_service.pb.h"
 #include "meta_service.grpc.pb.h"
@@ -74,11 +76,14 @@ QueryMetaClient::~QueryMetaClient() {
 }
 
 Status QueryMetaClient::Init() {
-  // Create gRPC channel
-  channel_ = grpc::CreateChannel(
-      options_.meta_service_address,
-      grpc::InsecureChannelCredentials());
-  
+  // Create gRPC channel with mandatory TLS
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok()) {
+    return Status::IOError(
+        "Failed to create TLS credentials for MetaD: " + creds.status().ToString());
+  }
+  channel_ = grpc::CreateChannel(options_.meta_service_address, creds.ValueOrDie());
+
   meta_stub_ = cedar::meta::MetaService::NewStub(channel_);
   
   // Wait for connection (gRPC API compatibility: skip WaitForConnected)

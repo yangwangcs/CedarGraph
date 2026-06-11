@@ -31,6 +31,7 @@
 #include "cedar/dtx/transaction_state.h"
 #include "cedar/dtx/transaction_recovery_manager.h"
 #include "cedar/dtx/transaction_timeout_manager.h"
+#include "cedar/dtx/security.h"
 #include "cedar/gcn/scatter_gather_router.h"
 
 namespace cedar {
@@ -328,6 +329,11 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   // 执行分布式写事务（供未来完整 Cypher 解析后调用）
   Status ExecuteDistributedWrite(const std::vector<::cedar::CedarKey>& read_set,
                                  const std::vector<::cedar::CedarKey>& write_set);
+
+  // Auth gate
+  grpc::Status CheckAuth(grpc::ServerContext* context,
+                         cedar::dtx::security::Permission perm,
+                         const std::string& resource = "") const;
 };
 
 }  // namespace service

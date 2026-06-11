@@ -264,6 +264,11 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  // Auth: read permission minimum; upgraded to write inside if needed
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
   
   auto start_time = std::chrono::steady_clock::now();
   stats_.total_queries++;
@@ -292,7 +297,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   response->set_query_id(std::to_string(++query_counter));
   
   // 构建缓存键（在 ParseQueryForRouting 之后，使用 entity_id 区分点查查询）
-  if (!request->explain_only()) {
+  if (!request->explain_only() && query_cache_ != nullptr) {
     cedar::query::CacheKey cache_key;
     cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
         request->query(), request->parameters().params(), 0);
@@ -681,6 +686,10 @@ grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
 
   // 优先路由到 GCN（支持多 GCN Scatter-Gather）
   if (gcn_router_ && !gcn_peer_addresses_.empty()) {
@@ -773,6 +782,10 @@ grpc::Status GraphServiceRouter::TemporalQuery(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
 
   // 计算实体分区
   uint32_t partition_id = CalculatePartition(request->entity_id());
@@ -851,6 +864,10 @@ grpc::Status GraphServiceRouter::Health(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kMonitor);
+      !st.ok()) {
+    return st;
+  }
   (void)request;
   
   // 检查 MetaD 连接
@@ -877,6 +894,10 @@ grpc::Status GraphServiceRouter::GetStats(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kMonitor);
+      !st.ok()) {
+    return st;
+  }
   (void)request;
   
   uint64_t total = stats_.total_queries.load();
@@ -902,6 +923,10 @@ grpc::Status GraphServiceRouter::StreamQuery(grpc::ServerContext* context,
                                              grpc::ServerWriter<StreamQueryResponse>* writer) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
   }
 
   // Merged from QueryD: true streaming via DistributedExecutor
@@ -1033,6 +1058,10 @@ grpc::Status GraphServiceRouter::BatchQuery(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
   
   for (const auto& item : request->queries()) {
     auto* result = response->add_results();
@@ -1066,6 +1095,10 @@ grpc::Status GraphServiceRouter::GetSchema(grpc::ServerContext* context,
                                            cedar::query::GetSchemaResponse* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
   }
 
   if (!meta_client_) {
@@ -2037,6 +2070,10 @@ grpc::Status GraphServiceRouter::BeginTransaction(grpc::ServerContext* context,
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
   }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
+  }
   (void)request;
 
   {
@@ -2075,6 +2112,10 @@ grpc::Status GraphServiceRouter::Commit(grpc::ServerContext* context,
                                         cedargrpc::GrpcStatus* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
   }
   
   std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
@@ -2123,6 +2164,10 @@ grpc::Status GraphServiceRouter::Rollback(grpc::ServerContext* context,
                                           cedargrpc::GrpcStatus* response) {
   if (context->IsCancelled()) {
     return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite);
+      !st.ok()) {
+    return st;
   }
   
   std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
@@ -2317,6 +2362,42 @@ uint64_t GraphServiceRouter::GetQPS() const {
   // Since we don't store timestamps, approximate by assuming uniform rate
   // over the measurement window. Use total_queries as a rough proxy.
   return stats_.total_queries.load() / 60;  // Approximate average QPS over 1 minute
+}
+
+grpc::Status GraphServiceRouter::CheckAuth(
+    grpc::ServerContext* context,
+    cedar::dtx::security::Permission perm,
+    const std::string& resource) const {
+  auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+  if (!sm) {
+    return grpc::Status(grpc::StatusCode::INTERNAL,
+                        "SecurityManager not initialized");
+  }
+
+  auto meta = context->client_metadata();
+  auto it = meta.find("authorization");
+  if (it == meta.end()) {
+    if (!sm->IsAuthEnabled()) {
+      return grpc::Status::OK;
+    }
+    return grpc::Status(grpc::StatusCode::UNAUTHENTICATED,
+                        "Missing authorization header");
+  }
+
+  std::string auth_hdr(it->second.data(), it->second.size());
+  const std::string kBearer = "Bearer ";
+  if (auth_hdr.rfind(kBearer, 0) != 0) {
+    return grpc::Status(grpc::StatusCode::UNAUTHENTICATED,
+                        "Malformed authorization header; expected Bearer token");
+  }
+
+  std::string token = auth_hdr.substr(kBearer.length());
+  auto status = sm->AuthenticateAndAuthorize(token, perm, resource);
+  if (!status.ok()) {
+    return grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
+                        std::string("Auth failed: ") + status.ToString());
+  }
+  return grpc::Status::OK;
 }
 
 }  // namespace service
