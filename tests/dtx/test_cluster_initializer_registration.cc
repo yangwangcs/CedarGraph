@@ -16,6 +16,7 @@
 #include "cedar/dtx/service_discovery.h"
 #include "cedar/dtx/meta_service.h"
 #include "cedar/dtx/meta_service_grpc.h"
+#include "test_tls_certs.h"
 
 using namespace cedar;
 using namespace cedar::dtx;
@@ -23,16 +24,18 @@ using namespace cedar::dtx;
 class ClusterInitializerRegistrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    ASSERT_TRUE(cedar::test::SetupTestTlsEnvironment("cluster_initializer"));
+
     MetaServiceConfig config;
     config.node_id = 1;
-    config.listen_address = "127.0.0.1:19560";
-    config.advertise_address = "127.0.0.1:19560";
+    config.listen_address = "localhost:19560";
+    config.advertise_address = "localhost:19560";
     config.test_mode = true;
 
     auto status = meta_service_.Initialize(config);
     ASSERT_TRUE(status.ok()) << status.ToString();
 
-    auto grpc_status = grpc_server_.Start("127.0.0.1:19560", &meta_service_);
+    auto grpc_status = grpc_server_.Start("localhost:19560", &meta_service_);
     ASSERT_TRUE(grpc_status.ok()) << grpc_status.ToString();
   }
 
@@ -47,7 +50,7 @@ class ClusterInitializerRegistrationTest : public ::testing::Test {
 
 TEST_F(ClusterInitializerRegistrationTest, RegisterStorageNodesViaRealRpc) {
   ClusterInitializer::Config init_config;
-  init_config.meta_servers = {"127.0.0.1:19560"};
+  init_config.meta_servers = {"localhost:19560"};
   init_config.auto_discover_storaged = false;
 
   ClusterInitializer initializer(init_config);
@@ -78,7 +81,7 @@ TEST_F(ClusterInitializerRegistrationTest, RegisterStorageNodesViaRealRpc) {
 
 TEST_F(ClusterInitializerRegistrationTest, RegisterEmptyNodesReturnsError) {
   ClusterInitializer::Config init_config;
-  init_config.meta_servers = {"127.0.0.1:19560"};
+  init_config.meta_servers = {"localhost:19560"};
   init_config.auto_discover_storaged = false;
 
   ClusterInitializer initializer(init_config);

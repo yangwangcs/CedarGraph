@@ -15,25 +15,28 @@
 #include <gtest/gtest.h>
 #include "cedar/dtx/meta_service.h"
 #include "cedar/dtx/meta_service_grpc.h"
+#include "../test_tls_certs.h"
 
 using namespace cedar::dtx;
 
 class MetaServiceGrpcClientTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    ASSERT_TRUE(cedar::test::SetupTestTlsEnvironment("meta_service_grpc_client"));
+
     MetaServiceConfig config;
     config.node_id = 1;
-    config.listen_address = "127.0.0.1:19559";
-    config.advertise_address = "127.0.0.1:19559";
+    config.listen_address = "localhost:19559";
+    config.advertise_address = "localhost:19559";
     config.test_mode = true;
 
     auto status = meta_service_.Initialize(config);
     ASSERT_TRUE(status.ok()) << status.ToString();
 
-    auto grpc_status = grpc_server_.Start("127.0.0.1:19559", &meta_service_);
+    auto grpc_status = grpc_server_.Start("localhost:19559", &meta_service_);
     ASSERT_TRUE(grpc_status.ok()) << grpc_status.ToString();
 
-    auto connect_status = client_.Connect({"127.0.0.1:19559"});
+    auto connect_status = client_.Connect({"localhost:19559"});
     ASSERT_TRUE(connect_status.ok()) << connect_status.ToString();
   }
 
