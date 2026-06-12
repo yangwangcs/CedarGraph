@@ -14,6 +14,8 @@
 
 #include "cedar/transaction/wal.h"
 
+#include <iostream>
+
 #include <chrono>
 #include <cstring>
 #include <future>
@@ -462,7 +464,10 @@ Status WalWriter::WriteInternal(const WalBatch& batch) {
 Status WalWriter::SwitchWALFile() {
   // 同步并关闭当前文件
   if (current_file_) {
-    current_file_->Sync();
+    Status sync_status = current_file_->Sync();
+    if (!sync_status.ok()) {
+      std::cerr << "[WAL] Warning: sync failed on old file: " << sync_status.ToString() << std::endl;
+    }
     delete current_file_;
     current_file_ = nullptr;
   }

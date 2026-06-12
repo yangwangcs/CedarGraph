@@ -15,16 +15,19 @@
 #include <csignal>
 #include <atomic>
 #include <memory>
+#include <filesystem>
 
 #include <grpcpp/grpcpp.h>
 
 #include "cedar/storage/cedar_graph_storage.h"
+#include "cedar/storage/lsm_engine.h"
 #include "cedar/governance/health_checker.h"
 #include "cedar/governance/config_manager.h"
 #include "cedar/dtx/storage/metrics_collector.h"
 #include "cedar/dtx/monitoring.h"
 #include "cedar/dtx/raft/grpc_tls.h"
 #include "cedar/dtx/storage/storaged_raft_state_machine.h"
+#include "cedar/dtx/storage/partition_raft_manager.h"
 #include "cedar/common/json_logger.h"
 #include "cedar/common/grpc_request_id.h"
 #include "cedar/cypher/cypher_engine.h"
@@ -157,9 +160,15 @@ Config ParseArgs(int argc, char* argv[]) {
 // StorageD 服务实现（完整版）
 class StorageServiceImpl final : public cedar::storage::StorageService::Service {
  public:
-  explicit StorageServiceImpl(cedar::CedarGraphStorage* storage) : storage_(storage) {
+  explicit StorageServiceImpl(cedar::CedarGraphStorage* storage,
+                              cedar::dtx::PartitionRaftManager* raft_manager = nullptr,
+                              const std::string& data_dir = "") 
+      : storage_(storage), raft_manager_(raft_manager), data_dir_(data_dir) {
     if (storage_) {
       cypher_engine_ = std::make_unique<cedar::cypher::CypherEngine>(storage_);
+      if (data_dir_.empty()) {
+        data_dir_ = storage_->GetDbPath();
+      }
     }
   }
 
@@ -224,7 +233,35 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       return grpc::Status::OK;
     }
     
-    // Persist writes to LSM with sync for durability
+    // 如果有 Raft Manager，通过 Raft Propose 提交
+    if (raft_manager_) {
+      // 构造 Raft 日志条目 (Commit 类型)
+      cedar::dtx::StorageLogEntry entry;
+      entry.type = cedar::dtx::StorageLogEntry::Type::kCommit;
+      entry.txn_id = request->txn_id();
+      entry.commit_ts = ctx.commit_ts;
+      
+      // 选择第一个 write_set 的分区作为 Raft Group
+      uint32_t partition_id = 0;
+      if (!ctx.write_set.empty()) {
+        partition_id = GetPartitionId(ctx.write_set[0].entity_id());
+      }
+      
+      auto* raft_group = raft_manager_->GetRaftGroup(partition_id);
+      if (raft_group && raft_group->IsLeader()) {
+        auto raft_status = raft_group->Propose(entry);
+        if (raft_status.ok()) {
+          ctx.state = TxnState::kCommitted;
+          response->set_success(true);
+        } else {
+          response->set_success(false);
+          response->set_error_msg("Raft commit failed: " + raft_status.ToString());
+        }
+        return grpc::Status::OK;
+      }
+    }
+    
+    // Fallback: 直接提交 (无 Raft 模式)
     bool all_ok = true;
     cedar::WriteOptions write_options;
     write_options.sync = true;
@@ -300,6 +337,41 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       response->set_error_msg("Invalid descriptor");
       return grpc::Status::OK;
     }
+    
+    // 构造 CedarKey
+    cedar::CedarKey key(
+        request->key().entity_id(),
+        static_cast<cedar::EntityType>(request->key().entity_type()),
+        static_cast<uint16_t>(request->key().column_id()),
+        cedar::Timestamp(request->key().timestamp()),
+        static_cast<uint16_t>(request->key().sequence()),
+        request->key().target_id(),
+        static_cast<uint8_t>(request->key().type_flags()),
+        static_cast<uint16_t>(request->key().partition_id()));
+    
+    // 如果有 Raft Manager，通过 Raft Propose 写入
+    if (raft_manager_) {
+      uint32_t partition_id = request->key().partition_id();
+      if (partition_id == 0) {
+        partition_id = GetPartitionId(request->key().entity_id());
+      }
+      
+      auto raft_status = ProposeWrite(partition_id, key, desc.value(),
+                                       cedar::Timestamp(request->txn_version().value()));
+      auto end = std::chrono::steady_clock::now();
+      auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+      RecordStorageOp("put", raft_status.ok(), latency_us);
+      
+      if (raft_status.ok()) {
+        response->set_success(true);
+      } else {
+        response->set_success(false);
+        response->set_error_msg(raft_status.error_message());
+      }
+      return grpc::Status::OK;
+    }
+    
+    // Fallback: 直接写入 (无 Raft 模式)
     cedar::WriteOptions write_options;
     write_options.sync = (request->txn_id() != 0);
     auto s = storage_->Put(write_options, request->key().entity_id(),
@@ -321,6 +393,25 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                    cedar::storage::GetResponse* response) override {
     (void)context;
     auto start = std::chrono::steady_clock::now();
+    
+    // 如果有 Raft Manager，检查 Lease 有效性 (线性一致性读)
+    if (raft_manager_) {
+      uint32_t partition_id = request->key().partition_id();
+      if (partition_id == 0) {
+        partition_id = GetPartitionId(request->key().entity_id());
+      }
+      
+      auto* raft_group = raft_manager_->GetRaftGroup(partition_id);
+      if (raft_group) {
+        // 如果不是 Leader 且 Lease 无效，拒绝读取
+        if (!raft_group->IsLeader() && !raft_group->IsLeaseValid()) {
+          auto leader_addr = raft_group->GetLeaderAddress();
+          std::string hint = leader_addr.value_or("unknown");
+          return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader, redirect to: " + hint);
+        }
+      }
+    }
+    
     auto result = storage_->Get(request->key().entity_id(),
                                 request->key().timestamp());
     auto end = std::chrono::steady_clock::now();
@@ -366,6 +457,45 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                       cedar::storage::DeleteResponse* response) override {
     (void)context;
     auto start = std::chrono::steady_clock::now();
+    
+    // 如果有 Raft Manager，通过 Raft Propose 删除
+    if (raft_manager_) {
+      cedar::CedarKey key(
+          request->key().entity_id(),
+          static_cast<cedar::EntityType>(request->key().entity_type()),
+          static_cast<uint16_t>(request->key().column_id()),
+          cedar::Timestamp(request->key().timestamp()),
+          static_cast<uint16_t>(request->key().sequence()),
+          request->key().target_id(),
+          static_cast<uint8_t>(request->key().type_flags()),
+          static_cast<uint16_t>(request->key().partition_id()));
+      
+      uint32_t partition_id = request->key().partition_id();
+      if (partition_id == 0) {
+        partition_id = GetPartitionId(request->key().entity_id());
+      }
+      
+      auto* raft_group = raft_manager_->GetRaftGroup(partition_id);
+      if (raft_group && raft_group->IsLeader()) {
+        cedar::dtx::StorageLogEntry entry;
+        entry.type = cedar::dtx::StorageLogEntry::Type::kDelete;
+        entry.key = key;
+        entry.txn_version = cedar::Timestamp(request->txn_version().value());
+        
+        auto raft_status = raft_group->Propose(entry);
+        auto end = std::chrono::steady_clock::now();
+        auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        RecordStorageOp("delete", raft_status.ok(), latency_us);
+        
+        response->set_success(raft_status.ok());
+        if (!raft_status.ok()) {
+          response->set_error_msg(raft_status.ToString());
+        }
+        return grpc::Status::OK;
+      }
+    }
+    
+    // Fallback: 直接删除
     auto s = storage_->Delete(request->key().entity_id(),
                               request->key().timestamp(),
                               cedar::Timestamp(request->txn_version().value()));
@@ -542,7 +672,287 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     return grpc::Status::OK;
   }
 
+  // ============================================================================
+  // 备份恢复
+  // ============================================================================
+
+  grpc::Status CreateBackup(grpc::ServerContext* context,
+                            const cedar::storage::CreateBackupRequest* request,
+                            cedar::storage::CreateBackupResponse* response) override {
+    if (!storage_) {
+      response->set_success(false);
+      response->set_error_msg("Storage not initialized");
+      return grpc::Status::OK;
+    }
+
+    // Determine backup path
+    std::string backup_path = request->backup_path();
+    if (backup_path.empty()) {
+      auto now = std::chrono::system_clock::now();
+      auto ts = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+      backup_path = data_dir_ + "/backups/backup_" + std::to_string(ts);
+    }
+
+    // Flush memtable if requested
+    if (request->flush_first()) {
+      auto* engine = storage_->GetLsmEngine();
+      if (engine) {
+        auto flush_status = engine->ForceFlush();
+        if (!flush_status.ok()) {
+          std::cerr << "[StorageD] Backup flush warning: " << flush_status.ToString() << std::endl;
+        }
+      }
+    }
+
+    // Create backup directory
+    try {
+      std::filesystem::create_directories(backup_path);
+    } catch (const std::exception& e) {
+      response->set_success(false);
+      response->set_error_msg(std::string("Failed to create backup dir: ") + e.what());
+      return grpc::Status::OK;
+    }
+
+    // Copy data directory to backup
+    std::string data_path = storage_->GetDbPath();
+    uint64_t total_size = 0;
+    try {
+      for (const auto& entry : std::filesystem::recursive_directory_iterator(data_path)) {
+        if (entry.is_regular_file()) {
+          std::string relative = std::filesystem::relative(entry.path(), data_path).string();
+          std::string dst = backup_path + "/" + relative;
+          std::filesystem::create_directories(std::filesystem::path(dst).parent_path());
+          std::filesystem::copy_file(entry.path(), dst,
+                                     std::filesystem::copy_options::overwrite_existing);
+          total_size += entry.file_size();
+        }
+      }
+    } catch (const std::exception& e) {
+      response->set_success(false);
+      response->set_error_msg(std::string("Backup copy failed: ") + e.what());
+      return grpc::Status::OK;
+    }
+
+    response->set_success(true);
+    response->set_backup_path(backup_path);
+    response->set_backup_size(total_size);
+    response->set_timestamp_unix(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+
+    std::cout << "[StorageD] Backup created: " << backup_path 
+              << " (" << total_size << " bytes)" << std::endl;
+    return grpc::Status::OK;
+  }
+
+  grpc::Status RestoreFromBackup(grpc::ServerContext* context,
+                                 const cedar::storage::RestoreFromBackupRequest* request,
+                                 cedar::storage::RestoreFromBackupResponse* response) override {
+    if (!storage_) {
+      response->set_success(false);
+      response->set_error_msg("Storage not initialized");
+      return grpc::Status::OK;
+    }
+
+    auto status = storage_->RestoreFromSnapshot(request->backup_path());
+    if (!status.ok()) {
+      response->set_success(false);
+      response->set_error_msg(status.ToString());
+    } else {
+      response->set_success(true);
+      std::cout << "[StorageD] Restored from backup: " << request->backup_path() << std::endl;
+    }
+    return grpc::Status::OK;
+  }
+
+  grpc::Status ListBackups(grpc::ServerContext* context,
+                           const cedar::storage::ListBackupsRequest* request,
+                           cedar::storage::ListBackupsResponse* response) override {
+    std::string backup_dir = request->backup_dir();
+    if (backup_dir.empty()) {
+      backup_dir = data_dir_ + "/backups";
+    }
+
+    if (!std::filesystem::exists(backup_dir)) {
+      response->set_success(true);
+      return grpc::Status::OK;
+    }
+
+    try {
+      for (const auto& entry : std::filesystem::directory_iterator(backup_dir)) {
+        if (entry.is_directory()) {
+          auto* info = response->add_backups();
+          info->set_path(entry.path().string());
+          
+          // Calculate directory size
+          uint64_t size = 0;
+          for (const auto& f : std::filesystem::recursive_directory_iterator(entry)) {
+            if (f.is_regular_file()) {
+              size += f.file_size();
+            }
+          }
+          info->set_size(size);
+          
+          // Get creation time (use last_write_time as proxy)
+          auto ftime = entry.last_write_time();
+          auto sctp = std::chrono::time_point_cast<std::chrono::seconds>(
+              ftime - std::filesystem::file_time_type::clock::now() + 
+              std::chrono::system_clock::now());
+          info->set_created_at_unix(sctp.time_since_epoch().count());
+          
+          info->set_status("complete");
+        }
+      }
+    } catch (const std::exception& e) {
+      response->set_success(false);
+      response->set_error_msg(std::string("Failed to list backups: ") + e.what());
+      return grpc::Status::OK;
+    }
+
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+
+  // ============================================================================
+  // 热点检测
+  // ============================================================================
+
+  grpc::Status GetHotSpots(grpc::ServerContext* context,
+                           const cedar::storage::GetHotSpotsRequest* request,
+                           cedar::storage::GetHotSpotsResponse* response) override {
+    if (!storage_) {
+      response->set_success(false);
+      response->set_error_msg("Storage not initialized");
+      return grpc::Status::OK;
+    }
+
+    auto* engine = storage_->GetLsmEngine();
+    if (!engine) {
+      response->set_success(false);
+      response->set_error_msg("LSM engine not available");
+      return grpc::Status::OK;
+    }
+
+    size_t top_n = request->top_n() > 0 ? request->top_n() : 20;
+    auto hot_spots = engine->GetHotSpots(top_n);
+
+    for (const auto& spot : hot_spots) {
+      auto* info = response->add_hot_spots();
+      info->set_entity_id(spot.entity_id);
+      info->set_column_id(spot.column_id);
+      info->set_query_count(spot.query_count);
+      // Convert steady_clock to approximate unix timestamp
+      auto now = std::chrono::system_clock::now();
+      auto elapsed = std::chrono::steady_clock::now() - spot.last_query;
+      auto last_query_sys = now - std::chrono::duration_cast<std::chrono::system_clock::duration>(elapsed);
+      info->set_last_query_unix(
+          std::chrono::duration_cast<std::chrono::seconds>(last_query_sys.time_since_epoch()).count());
+    }
+
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status ResetHotSpotStats(grpc::ServerContext* context,
+                                 const cedar::storage::ResetHotSpotStatsRequest* request,
+                                 cedar::storage::ResetHotSpotStatsResponse* response) override {
+    if (!storage_) {
+      response->set_success(false);
+      return grpc::Status::OK;
+    }
+
+    auto* engine = storage_->GetLsmEngine();
+    if (engine) {
+      engine->ResetQueryPatterns();
+    }
+
+    response->set_success(true);
+    std::cout << "[StorageD] Hot spot statistics reset" << std::endl;
+    return grpc::Status::OK;
+  }
+
+  // ============================================================================
+  // 存储容量监控
+  // ============================================================================
+
+  grpc::Status GetStorageCapacity(grpc::ServerContext* context,
+                                  const cedar::storage::GetStorageCapacityRequest* request,
+                                  cedar::storage::GetStorageCapacityResponse* response) override {
+    if (!storage_) {
+      response->set_success(false);
+      response->set_error_msg("Storage not initialized");
+      return grpc::Status::OK;
+    }
+
+    auto* engine = storage_->GetLsmEngine();
+    if (!engine) {
+      response->set_success(false);
+      response->set_error_msg("LSM engine not available");
+      return grpc::Status::OK;
+    }
+
+    auto capacity = engine->GetCapacityInfo();
+    auto stats = engine->GetStats();
+
+    response->set_success(true);
+    response->set_total_disk_bytes(capacity.total_bytes);
+    response->set_used_disk_bytes(capacity.used_bytes);
+    response->set_available_disk_bytes(capacity.available_bytes);
+    response->set_db_size_bytes(capacity.db_size_bytes);
+    response->set_disk_usage_percent(capacity.usage_percent);
+    response->set_is_warning(capacity.is_warning);
+    response->set_is_critical(capacity.is_critical);
+    response->set_memtable_size(stats.memtable_size);
+    response->set_sst_size(stats.sst_size);
+    response->set_sst_count(stats.sst_count);
+
+    return grpc::Status::OK;
+  }
+
  private:
+  // 根据 entity_id 计算分区 ID (简化: 取模)
+  uint32_t GetPartitionId(uint64_t entity_id) const {
+    return static_cast<uint32_t>(entity_id % 32768);
+  }
+  
+  // 通过 Raft Propose 写入
+  grpc::Status ProposeWrite(uint32_t partition_id,
+                            const cedar::CedarKey& key,
+                            const cedar::Descriptor& desc,
+                            cedar::Timestamp txn_version) {
+    if (!raft_manager_) {
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Raft manager not initialized");
+    }
+    
+    auto* raft_group = raft_manager_->GetRaftGroup(partition_id);
+    if (!raft_group) {
+      return grpc::Status(grpc::StatusCode::NOT_FOUND,
+                          "No Raft group for partition " + std::to_string(partition_id));
+    }
+    
+    // 检查是否是 Leader
+    if (!raft_group->IsLeader()) {
+      auto leader_addr = raft_group->GetLeaderAddress();
+      std::string hint = leader_addr.value_or("unknown");
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader, redirect to: " + hint);
+    }
+    
+    // 构造 Raft 日志条目
+    cedar::dtx::StorageLogEntry entry;
+    entry.type = cedar::dtx::StorageLogEntry::Type::kPut;
+    entry.key = key;
+    entry.descriptor = desc;
+    entry.txn_version = txn_version;
+    
+    // Propose 到 Raft
+    auto status = raft_group->Propose(entry);
+    if (!status.ok()) {
+      return grpc::Status(grpc::StatusCode::INTERNAL, status.ToString());
+    }
+    
+    return grpc::Status::OK;
+  }
+  
   enum class TxnState { kPrepared, kCommitted, kAborted };
   struct TxnContext {
     TxnState state = TxnState::kPrepared;
@@ -552,7 +962,9 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     cedar::Timestamp commit_ts;
   };
   cedar::CedarGraphStorage* storage_;
+  cedar::dtx::PartitionRaftManager* raft_manager_;
   std::unique_ptr<cedar::cypher::CypherEngine> cypher_engine_;
+  std::string data_dir_;
   std::mutex txn_mutex_;
   std::unordered_map<uint64_t, TxnContext> txn_states_;
 };
@@ -680,13 +1092,16 @@ int main(int argc, char* argv[]) {
   }
   std::cout << "[StorageD] Storage engine opened" << std::endl;
 
-  // Initialize Raft state machine for partition replication
-  // TODO: Create actual braft::Node groups per partition once partition
-  // management is fully wired. For now, instantiate the state machine
-  // so the replication layer is not completely absent.
-  auto raft_sm = std::make_unique<cedar::dtx::storage::StorageRaftStateMachine>(storage);
-  LOG(INFO) << "[StorageD] Raft state machine initialized (stub mode)";
-  (void)raft_sm;  // keep alive for process lifetime
+  // Initialize Raft manager for partition replication
+  cedar::dtx::PartitionRaftManager raft_manager;
+  auto raft_init_status = raft_manager.Initialize(
+      config.node_id, config.data_dir + "/raft", config.bind_address + ":" + std::to_string(config.port + 100));
+  if (raft_init_status.ok()) {
+    std::cout << "[StorageD] Raft manager initialized on port " << (config.port + 100) << std::endl;
+  } else {
+    std::cerr << "[StorageD] WARNING: Raft manager init failed: " << raft_init_status.ToString() << std::endl;
+    std::cerr << "[StorageD] Running without Raft replication" << std::endl;
+  }
 
   // 3. 注册到 MetaD
   // Determine advertise address: explicit > env > bind_address (if not 0.0.0.0) > 127.0.0.1 fallback
@@ -730,7 +1145,7 @@ int main(int argc, char* argv[]) {
   std::thread heartbeat_thread(HeartbeatLoop, &meta_client, config.heartbeat_interval_sec);
 
   // 5. 创建 gRPC 服务
-  StorageServiceImpl service_impl(storage);
+  StorageServiceImpl service_impl(storage, &raft_manager, config.data_dir);
   
   // 6. 启动 gRPC 服务器
   std::string server_address = config.bind_address + ":" + std::to_string(config.port);
@@ -763,6 +1178,25 @@ int main(int argc, char* argv[]) {
     return storage ? cedar::governance::HealthStatus::kHealthy 
                    : cedar::governance::HealthStatus::kUnhealthy;
   });
+  
+  // Capacity monitoring component
+  health_checker.RegisterComponent("disk_capacity", [&storage]() {
+    if (!storage) return cedar::governance::HealthStatus::kUnknown;
+    auto* engine = storage->GetLsmEngine();
+    if (!engine) return cedar::governance::HealthStatus::kUnknown;
+    
+    auto capacity = engine->GetCapacityInfo();
+    if (capacity.is_critical) {
+      std::cerr << "[StorageD] CRITICAL: Disk usage at " << capacity.usage_percent << "%" << std::endl;
+      return cedar::governance::HealthStatus::kUnhealthy;
+    }
+    if (capacity.is_warning) {
+      std::cerr << "[StorageD] WARNING: Disk usage at " << capacity.usage_percent << "%" << std::endl;
+      return cedar::governance::HealthStatus::kDegraded;
+    }
+    return cedar::governance::HealthStatus::kHealthy;
+  });
+  
   auto health_status = health_checker.StartHttpEndpoint("0.0.0.0", 7000);
   if (health_status.ok()) {
     std::cout << "[StorageD] Health endpoint on http://0.0.0.0:7000/health" << std::endl;
@@ -777,7 +1211,20 @@ int main(int argc, char* argv[]) {
     std::cout << "[StorageD] Metrics endpoint on http://0.0.0.0:7001/metrics" << std::endl;
   }
 
-  // 8. 初始化告警管理器
+  // 8. 启动配置热加载
+  cedar::governance::ConfigManager config_mgr;
+  std::string config_file = config.data_dir + "/storaged.yaml";
+  if (std::filesystem::exists(config_file)) {
+    auto load_status = config_mgr.LoadFromFile(config_file);
+    if (load_status.ok()) {
+      auto reload_status = config_mgr.EnableHotReload(config_file, 5000);
+      if (reload_status.ok()) {
+        std::cout << "[StorageD] Config hot reload enabled: " << config_file << std::endl;
+      }
+    }
+  }
+
+  // 9. 初始化告警管理器
   auto* alert_mgr = cedar::dtx::monitoring::AlertManager::GetInstance();
   cedar::dtx::monitoring::AlertManager::Config alert_config;
   alert_mgr->Initialize(alert_config);

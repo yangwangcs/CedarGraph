@@ -53,9 +53,9 @@
 #include <memory>
 #include <optional>
 #include <shared_mutex>
+#include <unordered_map>
 #include <vector>
 
-// DeltaVersionEncoder removed in cleanup.
 #include "cedar/types/descriptor.h"
 #include "cedar/types/cedar_key.h"
 
@@ -66,6 +66,149 @@ namespace cedar {
 // ============================================================================
 
 class DeltaVersionChain;
+
+// ============================================================================
+// Delta 编码类型
+// ============================================================================
+
+enum class DeltaType : uint8_t {
+  kNone = 0,      // 无变化
+  kXOR = 1,       // XOR 增量（适用于小变化）
+  kFull = 2,      // 完整值（变化太大时）
+};
+
+// ============================================================================
+// DeltaEntry - 增量条目
+// ============================================================================
+
+struct DeltaEntry {
+  Timestamp timestamp;       // 版本时间戳
+  DeltaType type;            // 增量类型
+  std::vector<uint8_t> data; // 增量数据（XOR 结果或完整值）
+  
+  DeltaEntry() : type(DeltaType::kNone) {}
+  DeltaEntry(Timestamp ts, DeltaType t, std::vector<uint8_t> d)
+      : timestamp(ts), type(t), data(std::move(d)) {}
+  
+  // 计算总大小
+  size_t TotalSize() const {
+    return sizeof(DeltaEntry) + data.size();
+  }
+};
+
+// ============================================================================
+// VersionGroup - 版本组配置
+// ============================================================================
+
+struct VersionGroup {
+  struct Config {
+    size_t max_deltas = 16;        // 每组最大 delta 数量
+    size_t max_bytes = 1024;       // 每组最大字节数
+    double delta_threshold = 0.5;  // 变化超过 50% 时使用完整值
+    
+    Config() = default;
+  };
+};
+
+// ============================================================================
+// DeltaVersionEncoder - 增量编码器
+// ============================================================================
+
+/**
+ * DeltaVersionEncoder - 增量编码器
+ *
+ * 使用 XOR 增量编码压缩连续版本之间的差异。
+ * 对于 Descriptor（8 字节），XOR 编码可以实现高效压缩。
+ */
+class DeltaVersionEncoder {
+ public:
+  struct Config {
+    size_t max_delta_size = 8;     // 最大增量大小（字节）
+    bool enable_xor = true;        // 启用 XOR 编码
+    
+    Config() = default;
+  };
+  
+  DeltaVersionEncoder() = default;
+  explicit DeltaVersionEncoder(const Config& config) : config_(config) {}
+  
+  // 编码两个版本之间的增量 (2 参数版本，兼容 DeltaVersionChain)
+  DeltaEntry Encode(const Descriptor& base, const Descriptor& target) const {
+    uint64_t base_raw = base.AsRaw();
+    uint64_t target_raw = target.AsRaw();
+    
+    if (base_raw == target_raw) {
+      // 无变化
+      return DeltaEntry(Timestamp(0), DeltaType::kNone, {});
+    }
+    
+    if (config_.enable_xor) {
+      // XOR 增量
+      uint64_t xor_result = base_raw ^ target_raw;
+      std::vector<uint8_t> data(sizeof(uint64_t));
+      std::memcpy(data.data(), &xor_result, sizeof(uint64_t));
+      return DeltaEntry(Timestamp(0), DeltaType::kXOR, std::move(data));
+    } else {
+      // 完整值
+      std::vector<uint8_t> data(sizeof(uint64_t));
+      std::memcpy(data.data(), &target_raw, sizeof(uint64_t));
+      return DeltaEntry(Timestamp(0), DeltaType::kFull, std::move(data));
+    }
+  }
+  
+  // 编码两个版本之间的增量 (3 参数版本，带时间戳)
+  DeltaEntry Encode(const Descriptor& base, const Descriptor& target, 
+                    Timestamp target_ts) const {
+    DeltaEntry entry = Encode(base, target);
+    entry.timestamp = target_ts;
+    return entry;
+  }
+  
+  // 从基准版本和单个增量重建目标版本 (2 参数版本)
+  Descriptor Rebuild(const Descriptor& base, const DeltaEntry& delta) const {
+    if (delta.type == DeltaType::kNone) {
+      return base;
+    }
+    
+    uint64_t base_raw = base.AsRaw();
+    uint64_t result;
+    
+    if (delta.type == DeltaType::kXOR && delta.data.size() >= sizeof(uint64_t)) {
+      uint64_t xor_delta;
+      std::memcpy(&xor_delta, delta.data.data(), sizeof(uint64_t));
+      result = base_raw ^ xor_delta;
+    } else if (delta.type == DeltaType::kFull && delta.data.size() >= sizeof(uint64_t)) {
+      std::memcpy(&result, delta.data.data(), sizeof(uint64_t));
+    } else {
+      return base;  // 回退到基准版本
+    }
+    
+    return Descriptor(result);
+  }
+  
+  // Decode 方法 (Rebuild 的别名，兼容 DeltaVersionChain)
+  Descriptor Decode(const Descriptor& base, const DeltaEntry& delta) const {
+    return Rebuild(base, delta);
+  }
+  
+  // 从基准版本和增量列表重建到指定位置 (3 参数版本，兼容 DeltaVersionChain)
+  Descriptor Rebuild(const Descriptor& base, const std::vector<DeltaEntry>& deltas,
+                     size_t target_index) const {
+    Descriptor current = base;
+    for (size_t i = 0; i <= target_index && i < deltas.size(); ++i) {
+      current = Rebuild(current, deltas[i]);
+    }
+    return current;
+  }
+  
+  // 计算增量大小
+  size_t GetDeltaSize(const DeltaEntry& delta) const {
+    return sizeof(DeltaEntry) + delta.data.size();
+  }
+
+ private:
+  Config config_;
+};
 
 // ============================================================================
 // 压缩版本节点（VersionGroup 的链表节点）
@@ -199,6 +342,7 @@ struct CompressedVersionNode {
  *
  * 缓存最近重建的版本，避免重复计算 delta 链。
  * 使用 LRU 淘汰策略，线程安全。
+ * 优化：使用 unordered_map 实现 O(1) 查找
  */
 class VersionCache {
  public:
@@ -208,6 +352,7 @@ class VersionCache {
     uint64_t access_count;
     uint64_t last_access;
     
+    CacheEntry() : timestamp(0), access_count(0), last_access(0) {}
     CacheEntry(Timestamp ts, const Descriptor& val)
         : timestamp(ts), value(val), access_count(1), last_access(0) {}
   };
@@ -235,31 +380,29 @@ class VersionCache {
     return *this;
   }
   
-  // 获取缓存中的版本
+  // 获取缓存中的版本 - O(1) 查找
   std::optional<Descriptor> Get(Timestamp ts) {
     std::shared_lock<std::shared_mutex> lock(mutex_);
-    for (auto& entry : entries_) {
-      if (entry.timestamp == ts) {
-        entry.access_count++;
-        entry.last_access = ++access_counter_;
-        return entry.value;
-      }
+    auto it = entries_.find(ts.value());
+    if (it != entries_.end()) {
+      it->second.access_count++;
+      it->second.last_access = ++access_counter_;
+      return it->second.value;
     }
     return std::nullopt;
   }
   
-  // 添加版本到缓存
+  // 添加版本到缓存 - O(1) 插入
   void Put(Timestamp ts, const Descriptor& value) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     
     // 检查是否已存在
-    for (auto& entry : entries_) {
-      if (entry.timestamp == ts) {
-        entry.value = value;
-        entry.access_count++;
-        entry.last_access = ++access_counter_;
-        return;
-      }
+    auto it = entries_.find(ts.value());
+    if (it != entries_.end()) {
+      it->second.value = value;
+      it->second.access_count++;
+      it->second.last_access = ++access_counter_;
+      return;
     }
     
     // 如果缓存已满，淘汰最久未访问的
@@ -267,8 +410,8 @@ class VersionCache {
       EvictLRU();
     }
     
-    entries_.emplace_back(ts, value);
-    entries_.back().last_access = ++access_counter_;
+    entries_[ts.value()] = CacheEntry(ts, value);
+    entries_[ts.value()].last_access = ++access_counter_;
   }
   
   // 清空缓存
@@ -307,21 +450,18 @@ class VersionCache {
   void EvictLRU() {
     if (entries_.empty()) return;
     
-    size_t min_idx = 0;
-    uint64_t min_access = entries_[0].last_access;
-    
-    for (size_t i = 1; i < entries_.size(); ++i) {
-      if (entries_[i].last_access < min_access) {
-        min_access = entries_[i].last_access;
-        min_idx = i;
+    auto oldest = entries_.begin();
+    for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+      if (it->second.last_access < oldest->second.last_access) {
+        oldest = it;
       }
     }
     
-    entries_.erase(entries_.begin() + min_idx);
+    entries_.erase(oldest);
   }
   
   size_t capacity_;
-  std::vector<CacheEntry> entries_;
+  std::unordered_map<uint64_t, CacheEntry> entries_;
   mutable std::shared_mutex mutex_;
   mutable std::atomic<uint64_t> access_counter_{0};
   mutable std::atomic<size_t> cache_hits_{0};

@@ -30,4 +30,4 @@
 #define CEDAR_LOG_INFO() \
   std::cerr << "[CEDAR INFO]  " << __FILE__ << ":" << __LINE__ << " "
 
-#endif  // FERN_CORE_LOGGING_H_
+#endif  // CEDAR_CORE_LOGGING_H_

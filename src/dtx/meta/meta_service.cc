@@ -659,6 +659,43 @@ std::vector<LabelSchema> MetadataService::MetadataStateMachine::GetSchema(
     return result;
 }
 
+Status MetadataService::MetadataStateMachine::CreateIndex(
+    const std::string& space_name, const IndexDef& index) {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    indexes_[space_name][index.name] = index;
+    return Status::OK();
+}
+
+Status MetadataService::MetadataStateMachine::DropIndex(
+    const std::string& space_name, const std::string& index_name) {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    auto space_it = indexes_.find(space_name);
+    if (space_it == indexes_.end()) {
+        return Status::NotFound("Space not found: " + space_name);
+    }
+    auto it = space_it->second.find(index_name);
+    if (it == space_it->second.end()) {
+        return Status::NotFound("Index not found: " + index_name);
+    }
+    space_it->second.erase(it);
+    return Status::OK();
+}
+
+std::vector<IndexDef> MetadataService::MetadataStateMachine::ListIndexes(
+    const std::string& space_name, const std::string& label_name) const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::vector<IndexDef> result;
+    auto space_it = indexes_.find(space_name);
+    if (space_it == indexes_.end()) return result;
+
+    for (const auto& [name, index] : space_it->second) {
+        if (label_name.empty() || index.label_name == label_name) {
+            result.push_back(index);
+        }
+    }
+    return result;
+}
+
 std::vector<NodeID> MetadataService::MetadataStateMachine::CheckNodeHeartbeats(uint64_t timeout_sec) const {
     std::vector<NodeID> failed_nodes;
     std::shared_lock<std::shared_mutex> lock(mutex_);
@@ -1077,6 +1114,19 @@ Status MetadataService::CreateLabelSchema(const std::string& space_name, const L
 std::vector<LabelSchema> MetadataService::GetSchema(const std::string& space_name,
                                                      const std::vector<std::string>& labels) const {
     return state_machine_.GetSchema(space_name, labels);
+}
+
+Status MetadataService::CreateIndex(const std::string& space_name, const IndexDef& index) {
+    return state_machine_.CreateIndex(space_name, index);
+}
+
+Status MetadataService::DropIndex(const std::string& space_name, const std::string& index_name) {
+    return state_machine_.DropIndex(space_name, index_name);
+}
+
+std::vector<IndexDef> MetadataService::ListIndexes(const std::string& space_name,
+                                                     const std::string& label_name) const {
+    return state_machine_.ListIndexes(space_name, label_name);
 }
 
 bool MetadataService::IsLeader() const {

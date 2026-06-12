@@ -15,6 +15,7 @@
 #include "cedar/transaction/wal_batch_writer.h"
 
 #include <chrono>
+#include <iostream>
 
 namespace cedar {
 
@@ -222,7 +223,13 @@ TransactionWalBatch::TransactionWalBatch(WalBatchWriter* writer)
 
 TransactionWalBatch::~TransactionWalBatch() {
   if (!entries_.empty()) {
-    Commit();
+    // Best-effort flush on destruction. Do NOT throw or propagate errors
+    // during stack unwinding — just log and discard.
+    try {
+      Commit();
+    } catch (...) {
+      std::cerr << "[WalBatchWriter] Warning: Commit failed during destruction" << std::endl;
+    }
   }
 }
 

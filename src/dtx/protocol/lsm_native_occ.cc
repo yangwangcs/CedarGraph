@@ -335,6 +335,17 @@ LndOccCommitResult LndOccEngine::SameTemporalRangeCommit(
         Status::InvalidArgument("SameTemporalRangeCommit", "No participants"));
   }
 
+  TxnID txn_id = ctx->GetTxnID();
+
+  // Persist transaction state for crash recovery
+  if (txn_state_manager_) {
+    auto status = txn_state_manager_->CreateTransaction(txn_id, participants);
+    if (!status.ok()) {
+      return LndOccCommitResult::Error(status);
+    }
+    txn_state_manager_->UpdateState(txn_id, TxnState::kPreparing);
+  }
+
   // Phase 1: Validate (Prepare) all participants
   std::vector<std::pair<PartitionID, Status>> prepare_results;
   bool all_prepared = true;
@@ -363,20 +374,40 @@ LndOccCommitResult LndOccEngine::SameTemporalRangeCommit(
         }
       }
     }
+    if (txn_state_manager_) {
+      txn_state_manager_->UpdateState(txn_id, TxnState::kAborted);
+    }
     return LndOccCommitResult::Error(
         Status::IOError("SameTemporalRangeCommit", "Prepare phase failed"));
   }
 
+  // Persist commit decision before broadcasting
+  if (txn_state_manager_) {
+    txn_state_manager_->UpdateState(txn_id, TxnState::kCommitting);
+  }
+
   // Phase 2: Commit all participants
   LndOccCommitResult overall = LndOccCommitResult::Ok(ctx->GetCommitTimestamp());
+  bool all_committed = true;
   for (PartitionID pid : participants) {
     auto* coordinator = GetCoordinator(pid);
     if (!coordinator) continue;  // Should not happen after prepare
     auto result = coordinator->Commit(ctx);
     if (!result.success) {
       overall = result;
+      all_committed = false;
       LOG(ERROR) << "SameTemporalRangeCommit: commit failed after prepare success"
                  << " partition=" << pid;
+    }
+  }
+
+  // Update final state
+  if (txn_state_manager_) {
+    if (all_committed) {
+      txn_state_manager_->UpdateState(txn_id, TxnState::kCommitted);
+    } else {
+      // Partial commit - mark as committing so recovery can complete it
+      txn_state_manager_->UpdateState(txn_id, TxnState::kCommitting);
     }
   }
 
@@ -556,8 +587,13 @@ LndOccCommitResult LndOccEngine::FullTwoPhaseCommit(
   
   // 步骤 5: 更新最终状态
   if (txn_state_manager_) {
-    txn_state_manager_->UpdateState(
-        txn_id, all_committed ? TxnState::kCommitted : TxnState::kUnknown);
+    if (all_committed) {
+      txn_state_manager_->UpdateState(txn_id, TxnState::kCommitted);
+    } else {
+      // 部分提交 - 标记为 kCommitting 而非 kUnknown
+      // 这样恢复管理器可以识别并完成剩余提交
+      txn_state_manager_->UpdateState(txn_id, TxnState::kCommitting);
+    }
   }
   
   // 记录指标

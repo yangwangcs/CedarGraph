@@ -147,6 +147,24 @@ message GetAliveNodesResponse {
     repeated NodeInfo nodes = 3;
 }
 
+message ListSpacesRequest {}
+
+message ListSpacesResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated SpaceDef spaces = 3;
+}
+
+message ListLabelsRequest {
+    string space_name = 1;
+}
+
+message ListLabelsResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated LabelSchema labels = 3;
+}
+
 message RegisterQueryDRequest {
     string listen_address = 1;
 }
@@ -232,6 +250,7 @@ service MetaService {
     // Space 管理
     rpc CreateSpace(CreateSpaceRequest) returns (CreateSpaceResponse);
     rpc GetSpace(GetSpaceRequest) returns (GetSpaceResponse);
+    rpc ListSpaces(ListSpacesRequest) returns (ListSpacesResponse);
     
     // 分区管理
     rpc GetPartitionAssignment(GetPartitionAssignmentRequest) returns (GetPartitionAssignmentResponse);
@@ -254,6 +273,20 @@ service MetaService {
     // Schema 管理
     rpc CreateLabelSchema(CreateLabelSchemaRequest) returns (CreateLabelSchemaResponse);
     rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
+    rpc ListLabels(ListLabelsRequest) returns (ListLabelsResponse);
+
+    // 索引管理
+    rpc CreateIndex(CreateIndexRequest) returns (CreateIndexResponse);
+    rpc DropIndex(DropIndexRequest) returns (DropIndexResponse);
+    rpc ListIndexes(ListIndexesRequest) returns (ListIndexesResponse);
+
+    // RBAC 角色管理
+    rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+    rpc DropRole(DropRoleRequest) returns (DropRoleResponse);
+    rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+    rpc AssignRole(AssignRoleRequest) returns (AssignRoleResponse);
+    rpc RevokeRole(RevokeRoleRequest) returns (RevokeRoleResponse);
+    rpc GetUserRoles(GetUserRolesRequest) returns (GetUserRolesResponse);
 
     // GCN Cache 管理
     rpc LocateCache(LocateCacheRequest) returns (LocateCacheResponse);
@@ -297,4 +330,116 @@ message GetSchemaResponse {
     bool success = 1;
     string error_msg = 2;
     repeated LabelSchema labels = 3;
+}
+
+// ============================================================================
+// 索引管理
+// ============================================================================
+
+message IndexDef {
+    string name = 1;
+    string label_name = 2;       // TAG or EDGE type name
+    repeated string properties = 3;  // indexed property names
+    string space_name = 4;
+    bool unique = 5;
+}
+
+message CreateIndexRequest {
+    string space_name = 1;
+    IndexDef index = 2;
+}
+
+message CreateIndexResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message DropIndexRequest {
+    string space_name = 1;
+    string index_name = 2;
+}
+
+message DropIndexResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message ListIndexesRequest {
+    string space_name = 1;
+    string label_name = 2;  // optional filter
+}
+
+message ListIndexesResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated IndexDef indexes = 3;
+}
+
+// ============================================================================
+// RBAC 角色管理
+// ============================================================================
+
+message RoleDef {
+    string name = 1;
+    string description = 2;
+    uint32 permissions = 3;  // Permission bitmask
+    repeated string allowed_resources = 4;
+    repeated string denied_resources = 5;
+}
+
+message CreateRoleRequest {
+    RoleDef role = 1;
+}
+
+message CreateRoleResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message DropRoleRequest {
+    string role_name = 1;
+}
+
+message DropRoleResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message ListRolesRequest {}
+
+message ListRolesResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated RoleDef roles = 3;
+}
+
+message AssignRoleRequest {
+    string user_id = 1;
+    string role_name = 2;
+}
+
+message AssignRoleResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message RevokeRoleRequest {
+    string user_id = 1;
+    string role_name = 2;
+}
+
+message RevokeRoleResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message GetUserRolesRequest {
+    string user_id = 1;
+}
+
+message GetUserRolesResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated string roles = 3;
+    RoleDef effective_role = 4;
 }

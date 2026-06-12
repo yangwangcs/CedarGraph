@@ -391,4 +391,4 @@ class SkeletonHydrator {
 
 }  // namespace cedar
 
-#endif  // FERN_SKELETON_CACHE_H_
+#endif  // CEDAR_SKELETON_CACHE_H_

@@ -325,6 +325,18 @@ service StorageService {
 
     // 心跳（流式，StorageD 定期上报）
     rpc Heartbeat(stream HeartbeatRequest) returns (stream HeartbeatResponse);
+
+    // 备份恢复
+    rpc CreateBackup(CreateBackupRequest) returns (CreateBackupResponse);
+    rpc RestoreFromBackup(RestoreFromBackupRequest) returns (RestoreFromBackupResponse);
+    rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);
+
+    // 热点检测
+    rpc GetHotSpots(GetHotSpotsRequest) returns (GetHotSpotsResponse);
+    rpc ResetHotSpotStats(ResetHotSpotStatsRequest) returns (ResetHotSpotStatsResponse);
+
+    // 存储容量监控
+    rpc GetStorageCapacity(GetStorageCapacityRequest) returns (GetStorageCapacityResponse);
 }
 
 // Flush 请求/响应
@@ -397,4 +409,97 @@ message SubQueryResultBatch {
     repeated QueryRow records = 1;
     repeated string columns = 2;
     bool is_last = 3;
+}
+
+// ============================================================================
+// 备份恢复
+// ============================================================================
+
+message CreateBackupRequest {
+    string backup_path = 1;    // 备份目标路径（留空则自动生成）
+    bool flush_first = 2;      // 备份前先 flush memtable
+}
+
+message CreateBackupResponse {
+    bool success = 1;
+    string error_msg = 2;
+    string backup_path = 3;    // 实际备份路径
+    uint64 backup_size = 4;    // 备份大小（字节）
+    int64 timestamp_unix = 5;  // 备份时间戳
+}
+
+message RestoreFromBackupRequest {
+    string backup_path = 1;    // 备份源路径
+}
+
+message RestoreFromBackupResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message ListBackupsRequest {
+    string backup_dir = 1;     // 备份目录
+}
+
+message BackupInfo {
+    string path = 1;
+    uint64 size = 2;
+    int64 created_at_unix = 3;
+    string status = 4;         // "complete", "in_progress", "failed"
+}
+
+message ListBackupsResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated BackupInfo backups = 3;
+}
+
+// ============================================================================
+// 热点检测
+// ============================================================================
+
+message GetHotSpotsRequest {
+    uint32 top_n = 1;  // 返回前N个热点（默认20）
+}
+
+message HotSpotInfo {
+    uint64 entity_id = 1;
+    uint32 column_id = 2;
+    uint64 query_count = 3;
+    int64 last_query_unix = 4;
+}
+
+message GetHotSpotsResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated HotSpotInfo hot_spots = 3;
+    uint64 total_tracked_entities = 4;
+}
+
+message ResetHotSpotStatsRequest {}
+message ResetHotSpotStatsResponse {
+    bool success = 1;
+}
+
+// ============================================================================
+// 存储容量监控
+// ============================================================================
+
+message GetStorageCapacityRequest {}
+
+message GetStorageCapacityResponse {
+    bool success = 1;
+    string error_msg = 2;
+    uint64 total_disk_bytes = 3;
+    uint64 used_disk_bytes = 4;
+    uint64 available_disk_bytes = 5;
+    uint64 db_size_bytes = 6;
+    double disk_usage_percent = 7;
+    bool is_warning = 8;      // > 80% usage
+    bool is_critical = 9;     // > 90% usage
+    // Component sizes
+    uint64 memtable_size = 10;
+    uint64 sst_size = 11;
+    uint64 wal_size = 12;
+    uint64 sst_count = 13;
 }

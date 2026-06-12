@@ -129,6 +129,8 @@ class AutoBatchExecutor {
           descriptor(desc), user_timestamp(ts) {}
   };
   
+  Status FlushInternal(std::vector<BufferedOp>& pending);
+  
   CedarGraphStorage* storage_;
   Options options_;
   
@@ -139,4 +141,4 @@ class AutoBatchExecutor {
 
 }  // namespace cedar
 
-#endif  // FERN_BATCH_TRANSACTION_H_
+#endif  // CEDAR_BATCH_TRANSACTION_H_

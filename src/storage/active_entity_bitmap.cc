@@ -142,15 +142,27 @@ void AnchorCache::Put(uint64_t entity_id, EntityType entity_type,
                       const StateAnchor& anchor) {
   std::lock_guard<std::mutex> lock(mutex_);
   
-  // 简单 LRU：如果满了，随机淘汰一个（实际应使用真正的 LRU）
-  if (cache_.size() >= capacity_ && !cache_.empty()) {
-    // 随机淘汰策略（简化实现）
-    auto it = cache_.begin();
-    std::advance(it, cache_.size() / 2);  // 淘汰中间位置的
-    cache_.erase(it);
+  AnchorCacheKey key{entity_id, static_cast<uint8_t>(entity_type)};
+  
+  // If key already exists, update it
+  auto existing = cache_.find(key);
+  if (existing != cache_.end()) {
+    existing->second.anchor = anchor;
+    existing->second.access_count++;
+    return;
   }
   
-  AnchorCacheKey key{entity_id, static_cast<uint8_t>(entity_type)};
+  // If full, evict the oldest entry (lowest access_count)
+  if (cache_.size() >= capacity_ && !cache_.empty()) {
+    auto oldest = cache_.begin();
+    for (auto it = cache_.begin(); it != cache_.end(); ++it) {
+      if (it->second.access_count < oldest->second.access_count) {
+        oldest = it;
+      }
+    }
+    cache_.erase(oldest);
+  }
+  
   CacheEntry entry{anchor, 1};
   cache_[key] = entry;
 }

@@ -202,6 +202,10 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   Status ParseQueryForRouting(const std::string& query, 
                               QueryRouteContext* route_ctx);
   
+  // Handle SHOW commands (SHOW SPACES, SHOW TAGS, etc.)
+  grpc::Status HandleShowCommand(const cypher::ShowClause* show_clause,
+                                  query::ExecuteQueryResponse* response);
+  
   // 计算实体 ID 对应的分区
   uint32_t CalculatePartition(uint64_t entity_id);
   
@@ -281,9 +285,21 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   std::vector<uint64_t> latency_history_;
   size_t latency_history_pos_ = 0;
   
+  // QPS sliding window: track query timestamps for accurate QPS calculation
+  static constexpr size_t kQPSWindowSize = 10000;
+  std::vector<std::chrono::steady_clock::time_point> qps_window_;
+  size_t qps_window_pos_ = 0;
+  
   void RecordLatency(uint64_t latency_us);
   uint64_t GetP99Latency() const;
   uint64_t GetQPS() const;
+  
+  // Session space tracking: session_id -> current_space
+  mutable std::mutex session_space_mutex_;
+  std::unordered_map<std::string, std::string> session_spaces_;
+  
+  std::string GetSessionSpace(const std::string& session_id) const;
+  void SetSessionSpace(const std::string& session_id, const std::string& space_name);
   
   std::atomic<bool> running_{false};
   mutable std::mutex cv_mutex_;

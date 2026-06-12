@@ -1,8 +1,8 @@
 // Lock-Free Versioned SkipList
 // 使用原子操作实现真正的无锁并发
 
-#ifndef FERN_VERSIONED_SKIPLIST_LOCKFREE_H_
-#define FERN_VERSIONED_SKIPLIST_LOCKFREE_H_
+#ifndef CEDAR_VERSIONED_SKIPLIST_LOCKFREE_H_
+#define CEDAR_VERSIONED_SKIPLIST_LOCKFREE_H_
 
 #include <atomic>
 #include <cstdint>
@@ -165,4 +165,4 @@ class LockedVSL {
 
 }  // namespace cedar
 
-#endif  // FERN_VERSIONED_SKIPLIST_LOCKFREE_H_
+#endif  // CEDAR_VERSIONED_SKIPLIST_LOCKFREE_H_

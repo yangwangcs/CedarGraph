@@ -56,6 +56,7 @@ bool ColumnGroupTaskQueue::Pop(PrioritizedCompactionTask* out_task,
     return false;
   }
   
+  // Use const_cast to move from priority_queue top (safe because we pop immediately after)
   *out_task = std::move(const_cast<PrioritizedCompactionTask&>(queue_.top()));
   queue_.pop();
   return true;

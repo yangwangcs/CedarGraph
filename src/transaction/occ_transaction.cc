@@ -165,11 +165,9 @@ Status OCCTransaction::Commit() {
   }
 
   // ===================================================================
-  // P0-6 FIX: Global commit serialization
-  // Acquire the engine-wide mutex BEFORE allocating the commit timestamp
-  // and Validate() and hold it until MemTable writes are complete. This
-  // ensures monotonic commit timestamps, correct MVCC visibility, and
-  // that no other transaction can interleave its WAL/MemTable writes.
+  // P0-6 FIX: Commit serialization
+  // Use global lock for correctness. Per-entity locking can be enabled
+  // later with careful testing for multi-entity transactions.
   // ===================================================================
   std::lock_guard<std::mutex> commit_lock(lsm_engine_->global_commit_mutex_);
 
@@ -256,7 +254,10 @@ Status OCCTransaction::Abort() {
   
   // 写入 WAL 中止记录 (用于恢复)
   if (wal_writer_) {
-    wal_writer_->WriteAbort(txn_id_, commit_timestamp_);
+    Status wal_status = wal_writer_->WriteAbort(txn_id_, commit_timestamp_);
+    if (!wal_status.ok()) {
+      std::cerr << "[OCC] Warning: failed to write abort record to WAL: " << wal_status.ToString() << std::endl;
+    }
   }
   
   Cleanup();
@@ -390,11 +391,12 @@ Status OCCTransaction::GetAllColumns(uint64_t entity_id,
       }
     } else if (lsm_engine_) {
       // 3. MemTable 中没有找到，查询 LsmEngine (SST 文件)
-      auto desc_opt = lsm_engine_->GetAtTime(entity_id, entity_type, col_id, Timestamp::Max());
+      // 使用 read_timestamp_ 而非 Timestamp::Max()，确保验证能检测到并发写入
+      auto desc_opt = lsm_engine_->GetAtTime(entity_id, entity_type, col_id, read_timestamp_);
       if (desc_opt.has_value()) {
         columns->emplace_back(col_id, desc_opt.value());
         read_set_.push_back({entity_id, entity_type, col_id, 
-                             Timestamp::Max(), Timestamp::Max()});
+                             read_timestamp_, read_timestamp_});
       }
     }
   }
@@ -622,9 +624,18 @@ Status OCCTransaction::Validate() {
         // We read this key from immutable SST. Any version now in the
         // memtable was committed after our read.
         ww_conflict = true;
-      } else if (latest.txn_version != read_txn_version) {
-        // The latest version no longer matches what we read.
-        ww_conflict = true;
+      } else if (latest.txn_version > read_txn_version) {
+        // The latest version is newer than what we read.
+        // Only flag conflict if the new version is within our snapshot window.
+        // Versions committed after read_timestamp_ are outside our snapshot
+        // and don't affect our transaction's view.
+        if (latest.txn_version <= read_timestamp_) {
+          // New version committed within our snapshot window - conflict
+          ww_conflict = true;
+        }
+        // If latest.txn_version > read_timestamp_, the new version is outside
+        // our snapshot. We still need to verify our read version exists.
+        // This is handled by the read-write conflict check in Validate().
       }
     }
 
@@ -715,15 +726,17 @@ bool OCCTransaction::ValidateReadEntry(const ReadSetEntry& entry) {
       entry.entity_id, entry.entity_type, entry.column_id);
   
   if (chain_opt.empty()) {
-    // 记录被删除，但如果读时存在则冲突
-    // 但如果读取的是 SST 数据，MemTable 为空是正常的
-    // 需要检查 SST 中是否仍有该数据
+    // MemTable 为空 - 可能是被 flush 到 SST 或者被删除
     if (lsm_engine_) {
       auto desc_opt = lsm_engine_->GetAtTime(
-          entry.entity_id, entry.entity_type, entry.column_id, Timestamp::Max());
-      // 如果 SST 中仍有数据，则验证通过（SST 数据不可变）
-      return desc_opt.has_value();
+          entry.entity_id, entry.entity_type, entry.column_id, read_timestamp_);
+      if (desc_opt.has_value()) {
+        // 数据在 SST 中存在 - 验证通过（SST 数据不可变）
+        return true;
+      }
     }
+    // 数据不在 MemTable 也不在 SST - 可能被删除
+    // 这是冲突：我们读取的数据已被删除
     return false;
   }
   
@@ -732,7 +745,25 @@ bool OCCTransaction::ValidateReadEntry(const ReadSetEntry& entry) {
   
   // ✅ 修复: 使用 entry.read_txn_version（读取时的事务版本号）进行比较
   // 如果最新版本的事务版本号 > 读取时记录的事务版本号，说明被修改过
+  // 但只检查在快照窗口内的变更 (txn_version <= read_timestamp_)
+  // 快照窗口外的变更不影响当前事务的视图
   if (latest.txn_version > entry.read_txn_version) {
+    // 检查新版本是否在快照窗口内
+    if (latest.txn_version <= read_timestamp_) {
+      // 新版本在快照窗口内 - 冲突：我们读取的版本已被覆盖
+      return false;
+    }
+    // 新版本在快照窗口外 - 不影响我们的视图，但需要检查我们读取的版本是否还在
+    // 遍历版本链找到我们读取的版本
+    for (const auto& version : chain_opt) {
+      if (version.txn_version == entry.read_txn_version) {
+        return true;  // 我们读取的版本仍然存在
+      }
+      if (version.txn_version < entry.read_txn_version) {
+        break;  // 已经过了我们读取的版本
+      }
+    }
+    // 我们读取的版本不在链中 - 可能被覆盖或删除
     return false;
   }
   

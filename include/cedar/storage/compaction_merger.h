@@ -121,4 +121,4 @@ class CompactionMergerV2 {
 
 }  // namespace cedar
 
-#endif  // FERN_STORAGE_COMPACTION_MERGER_H_
+#endif  // CEDAR_STORAGE_COMPACTION_MERGER_H_

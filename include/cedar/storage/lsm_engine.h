@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_LSM_ENGINE_H_
-#define FERN_LSM_ENGINE_H_
+#ifndef CEDAR_LSM_ENGINE_H_
+#define CEDAR_LSM_ENGINE_H_
 
 #include <atomic>
 #include <chrono>
@@ -301,8 +301,25 @@ class LsmEngine {
     size_t sst_count = 0;
     size_t sst_size = 0;
     int num_levels = 0;
+    // Disk usage tracking
+    uint64_t total_disk_bytes = 0;      // Total disk space
+    uint64_t used_disk_bytes = 0;       // Used disk space
+    uint64_t db_size_bytes = 0;         // Database directory size
+    double disk_usage_percent = 0.0;    // Disk usage percentage
   };
   Stats GetStats() const;
+  
+  // Storage capacity monitoring
+  struct CapacityInfo {
+    uint64_t total_bytes = 0;
+    uint64_t used_bytes = 0;
+    uint64_t available_bytes = 0;
+    uint64_t db_size_bytes = 0;
+    double usage_percent = 0.0;
+    bool is_critical = false;     // > 90% usage
+    bool is_warning = false;      // > 80% usage
+  };
+  CapacityInfo GetCapacityInfo() const;
 
   // ========== WAL 和事务支持 ==========
   
@@ -446,7 +463,7 @@ class LsmEngine {
   // Background thread
   std::atomic<bool> shutdown_;
   std::atomic<bool> disable_auto_flush_{false};
-  std::thread* bg_thread_;
+  std::unique_ptr<std::thread> bg_thread_;
   std::atomic<bool> compaction_scheduled_;
 
   // File number generator
@@ -624,6 +641,16 @@ class LsmEngine {
   // 获取活跃实体位图引用
   const ActiveEntityBitmap& GetActiveEntityBitmap() const { return active_entity_bitmap_; }
   
+  // Hot spot detection: returns top-N most queried entities
+  struct HotSpot {
+    uint64_t entity_id;
+    uint16_t column_id;
+    uint64_t query_count;
+    std::chrono::steady_clock::time_point last_query;
+  };
+  std::vector<HotSpot> GetHotSpots(size_t top_n = 20) const;
+  void ResetQueryPatterns();
+  
   // SkeletonCache 接口
   // 启用 SkeletonCache（默认自动启用）
   void EnableSkeletonCache(
@@ -743,7 +770,7 @@ class LsmEngine {
   
   // 后台自动触发 Compaction 线程
   std::atomic<bool> auto_compaction_enabled_{true};
-  std::thread* auto_compaction_thread_ = nullptr;
+  std::unique_ptr<std::thread> auto_compaction_thread_;
   void AutoCompactionThread();
   
   // 跟踪后台 Flush 操作
@@ -752,12 +779,21 @@ class LsmEngine {
   std::condition_variable flush_completion_cv_;
 
   // ============================================================================
-  // Global commit serialization (P0-6)
+  // Commit serialization (P0-6) - Striped locks for better concurrency
   // ============================================================================
-  // Coarse-grained mutex that serializes the Validate+WAL+MemTable critical
-  // section in OCCTransaction::Commit(). Held only for the duration of commit,
-  // NOT during the entire transaction lifetime.
+  // Instead of a single global mutex, use striped locks based on entity_id.
+  // This allows transactions on different entities to commit concurrently.
   friend class OCCTransaction;
+  
+  static constexpr size_t kCommitLockStripes = 64;  // Power of 2 for fast modulo
+  mutable std::array<std::mutex, kCommitLockStripes> commit_lock_stripes_;
+  
+  // Get the lock stripe for a given entity_id
+  std::mutex& GetCommitLock(uint64_t entity_id) const {
+    return commit_lock_stripes_[entity_id & (kCommitLockStripes - 1)];
+  }
+  
+  // Legacy global lock for backward compatibility (deprecated)
   mutable std::mutex global_commit_mutex_;
   
   // 迁移现有的 SST 文件到新的 Compaction 引擎
@@ -766,4 +802,4 @@ class LsmEngine {
 
 }  // namespace cedar
 
-#endif  // FERN_LSM_ENGINE_H_
+#endif  // CEDAR_LSM_ENGINE_H_

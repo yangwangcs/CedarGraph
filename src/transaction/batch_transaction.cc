@@ -137,23 +137,38 @@ Status AutoBatchExecutor::SubmitPut(uint64_t entity_id,
                                      uint16_t column_id,
                                      const Descriptor& descriptor,
                                      Timestamp user_timestamp) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<BufferedOp> pending;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    buffer_.emplace_back(OpType::PUT,
+                         entity_id, entity_type, column_id,
+                         descriptor, user_timestamp);
+    
+    if (buffer_.size() >= options_.batch_size) {
+      pending.swap(buffer_);
+    }
+  }
   
-  buffer_.emplace_back(OpType::PUT,
-                       entity_id, entity_type, column_id,
-                       descriptor, user_timestamp);
-  
-  if (buffer_.size() >= options_.batch_size) {
-    return Flush();
+  if (!pending.empty()) {
+    return FlushInternal(pending);
   }
   
   return Status::OK();
 }
 
 Status AutoBatchExecutor::Flush() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<BufferedOp> pending;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pending.swap(buffer_);
+  }
+  return FlushInternal(pending);
+}
+
+Status AutoBatchExecutor::FlushInternal(std::vector<BufferedOp>& pending) {
   
-  if (buffer_.empty()) {
+  if (pending.empty()) {
     return Status::OK();
   }
   
@@ -162,7 +177,7 @@ Status AutoBatchExecutor::Flush() {
     return Status::InvalidArgument("AutoBatchExecutor", "failed to begin transaction");
   }
   
-  for (const auto& op : buffer_) {
+  for (const auto& op : pending) {
     Status s = txn->Put(op.entity_id, op.entity_type, op.column_id,
                         op.descriptor, op.user_timestamp);
     if (!s.ok()) {
@@ -176,10 +191,8 @@ Status AutoBatchExecutor::Flush() {
   delete txn;
   
   if (commit_status.ok()) {
-    executed_count_.fetch_add(buffer_.size(), std::memory_order_relaxed);
+    executed_count_.fetch_add(pending.size(), std::memory_order_relaxed);
   }
-  
-  buffer_.clear();
   
   return commit_status;
 }

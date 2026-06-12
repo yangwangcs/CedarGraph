@@ -27,6 +27,7 @@
 #include "cedar/types/descriptor.h"
 #include "cedar/types/cedar_key.h"
 #include "cedar/core/status.h"
+#include "cedar/storage/delta_version_chain.h"
 
 namespace cedar {
 
@@ -235,6 +236,16 @@ class CedarMemTable {
   
   // 版本链节点内存池 (避免频繁分配)
   std::vector<std::unique_ptr<TemporalVersionNode>> node_pool_;
+  
+  // Delta 压缩版本链存储 (用于旧版本压缩)
+  // 当版本数量超过阈值时，旧版本会被压缩存储
+  std::unordered_map<InternalKey, std::unique_ptr<DeltaVersionChain>> compressed_chains_;
+  
+  // 配置: 多少个版本后开始压缩 (0 = 禁用压缩)
+  static constexpr size_t kCompressionThreshold = 16;
+  
+  // DeltaVersionEncoder (共享实例)
+  DeltaVersionEncoder delta_encoder_;
 
   size_t size_threshold_;
   std::atomic<size_t> approximate_size_;
@@ -313,4 +324,4 @@ class CedarMemTable::VersionChainIterator {
 
 }  // namespace cedar
 
-#endif  // FERN_FERN_MEMTABLE_H_
+#endif  // CEDAR_MEMTABLE_H_

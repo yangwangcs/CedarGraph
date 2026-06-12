@@ -1008,4 +1008,4 @@ inline VersionChainIndex::Stats VersionChainIndex::GetStats() const {
 
 }  // namespace cedar
 
-#endif  // FERN_STORAGE_VERSION_CHAIN_INDEX_H_
+#endif  // CEDAR_STORAGE_VERSION_CHAIN_INDEX_H_

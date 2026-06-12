@@ -46,6 +46,7 @@
 #include "cedar/sst/zone_columnar_format.h"
 #include "cedar/sst/zone_columnar_builder.h"
 #include "cedar/sst/zone_columnar_reader.h"
+#include "cedar/storage/rate_limiter.h"
 
 namespace cedar {
 
@@ -79,6 +80,9 @@ struct SizeTieredConfig {
   // 后台线程
   int compaction_threads = 2;                    // 合并线程数
   bool enable_background_compaction = true;      // 是否启用后台合并
+  
+  // I/O 限速
+  int64_t compaction_rate_bytes_per_sec = 0;     // 0 = unlimited
 };
 
 // =============================================================================
@@ -482,6 +486,9 @@ class SizeTieredCompactionEngine {
   
   // Compaction 完成回调
   CompactionObserver compaction_observer_;
+  
+  // I/O 限速器
+  std::unique_ptr<RateLimiter> rate_limiter_;
 };
 
 // =============================================================================
@@ -499,4 +506,4 @@ int CalculateCompactionPriority(const LevelState& level, const SizeTieredConfig&
 
 }  // namespace cedar
 
-#endif  // FERN_SIZE_TIERED_COMPACTION_H_
+#endif  // CEDAR_SIZE_TIERED_COMPACTION_H_

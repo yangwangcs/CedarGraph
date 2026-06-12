@@ -2,8 +2,8 @@
 // 完整替换 LockFreeMemTable + VersionChain
 // 使用 Lock-Free CAS 操作实现真正的无锁并发
 
-#ifndef FERN_VSL_MEMTABLE_H_
-#define FERN_VSL_MEMTABLE_H_
+#ifndef CEDAR_VSL_MEMTABLE_H_
+#define CEDAR_VSL_MEMTABLE_H_
 
 #include "cedar/storage/versioned_skiplist_lockfree.h"
 #include "cedar/storage/cedar_memtable.h"
@@ -83,4 +83,4 @@ class VSLMemTable {
 
 }  // namespace cedar
 
-#endif  // FERN_VSL_MEMTABLE_H_
+#endif  // CEDAR_VSL_MEMTABLE_H_

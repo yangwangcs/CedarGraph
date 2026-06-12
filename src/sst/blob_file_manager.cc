@@ -166,7 +166,7 @@ Status BlobFileManager::WriteBlob(const Slice& data,
     return Status::InvalidArgument("BlobFileManager", "data too large");
   }
   
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<std::mutex> lock(write_mutex_);
   
   // 检查是否需要创建新文件
   uint32_t entry_total_size = static_cast<uint32_t>(BlobEntryHeader::kHeaderSize + data.size());
@@ -229,7 +229,7 @@ Status BlobFileManager::ReadBlob(uint32_t file_id,
   
   // 获取或打开 blob 文件（仅在此阶段持有锁）
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(read_mutex_);
     auto it = read_files_.find(file_id);
     if (it != read_files_.end()) {
       file = it->second;
@@ -310,6 +310,13 @@ Status BlobFileManager::Sync() {
 
 std::string BlobFileManager::GetBlobFilePath(uint32_t file_id) const {
   return config_.blob_dir + "/" + std::to_string(file_id) + ".blob";
+}
+
+void BlobFileManager::OnSSTDeleted(uint32_t sst_id) {
+  if (blob_gc_mgr_) {
+    std::string blob_path = GetBlobFilePath(sst_id);
+    blob_gc_mgr_->OnSSTDeleted(blob_path, sst_id);
+  }
 }
 
 }  // namespace cedar

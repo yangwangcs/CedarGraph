@@ -173,6 +173,14 @@ struct LabelSchema {
     static StatusOr<LabelSchema> Deserialize(const std::string& data);
 };
 
+struct IndexDef {
+    std::string name;
+    std::string label_name;
+    std::vector<std::string> properties;
+    std::string space_name;
+    bool unique = false;
+};
+
 // =============================================================================
 // 节点管理
 // =============================================================================
@@ -340,6 +348,13 @@ public:
     std::vector<LabelSchema> GetSchema(const std::string& space_name,
                                         const std::vector<std::string>& labels) const;
     
+    // ===== 索引管理 =====
+    
+    Status CreateIndex(const std::string& space_name, const IndexDef& index);
+    Status DropIndex(const std::string& space_name, const std::string& index_name);
+    std::vector<IndexDef> ListIndexes(const std::string& space_name,
+                                       const std::string& label_name = "") const;
+    
     // ===== 订阅/通知 =====
     
     using PartitionChangeCallback = std::function<void(const PartitionMapChange&)>;
@@ -404,6 +419,12 @@ private:
         std::vector<LabelSchema> GetSchema(const std::string& space_name,
                                             const std::vector<std::string>& labels) const;
         
+        // Indexes
+        Status CreateIndex(const std::string& space_name, const IndexDef& index);
+        Status DropIndex(const std::string& space_name, const std::string& index_name);
+        std::vector<IndexDef> ListIndexes(const std::string& space_name,
+                                           const std::string& label_name) const;
+        
         // Heartbeat / failure detection
         std::vector<NodeID> CheckNodeHeartbeats(uint64_t timeout_sec) const;
         bool MarkNodeOffline(NodeID node_id);
@@ -420,6 +441,9 @@ private:
         
         // Schema: space_name -> label_name -> LabelSchema
         std::unordered_map<std::string, std::unordered_map<std::string, LabelSchema>> schemas_;
+        
+        // Indexes: space_name -> index_name -> IndexDef
+        std::unordered_map<std::string, std::unordered_map<std::string, IndexDef>> indexes_;
         
         // 分区映射
         std::unordered_map<std::string, SpacePartitionMap> partition_maps_;

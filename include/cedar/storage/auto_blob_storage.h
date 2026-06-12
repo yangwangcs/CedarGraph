@@ -147,4 +147,4 @@ class AutoBlobStorage {
 
 }  // namespace cedar
 
-#endif  // FERN_AUTO_BLOB_STORAGE_H_
+#endif  // CEDAR_AUTO_BLOB_STORAGE_H_

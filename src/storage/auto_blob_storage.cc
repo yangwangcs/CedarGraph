@@ -136,13 +136,19 @@ std::optional<std::string> AutoBlobStorage::GetInlineString(uint64_t entity_id, 
         return std::nullopt;
     }
     
-    // 解码为字符串
-    char buf[5] = {};
+    // 解码为字符串 - 使用实际长度而非 null 终止
     uint32_t payload = static_cast<uint32_t>(*val);
+    char buf[4];
     memcpy(buf, &payload, 4);
     
+    // 计算实际长度（最多4字节，去除尾部 null）
+    size_t len = 4;
+    while (len > 0 && buf[len - 1] == '\0') {
+      --len;
+    }
+    
     stats_.inline_reads++;
-    return std::string(buf);
+    return std::string(buf, len);
 }
 
 std::optional<std::string> AutoBlobStorage::GetBlobString(uint64_t entity_id, uint16_t col_id) {

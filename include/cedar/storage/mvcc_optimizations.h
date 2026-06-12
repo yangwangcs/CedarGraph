@@ -37,4 +37,4 @@
 // 方案六：时间范围布隆过滤器
 #include "cedar/storage/temporal_bloom_filter.h"
 
-#endif  // FERN_MVCC_OPTIMIZATIONS_H_
+#endif  // CEDAR_MVCC_OPTIMIZATIONS_H_

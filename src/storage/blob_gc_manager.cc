@@ -45,6 +45,7 @@ Status BlobGCManager::Stop() {
   }
   
   shutdown_ = true;
+  cv_.notify_all();  // Wake up the background thread
   
   if (bg_thread_ && bg_thread_->joinable()) {
     bg_thread_->join();
@@ -62,6 +63,7 @@ void BlobGCManager::OnSSTDeleted(const std::string& blob_path, uint32_t sst_id) 
                      std::chrono::seconds(delay_seconds_);
   
   gc_queue_.emplace_back(blob_path, delete_time, sst_id);
+  cv_.notify_one();  // Wake up GC thread
 }
 
 Status BlobGCManager::RunGC() {
@@ -110,14 +112,17 @@ Status BlobGCManager::DeleteBlobFile(const std::string& path) {
 
 void BlobGCManager::BackgroundGC() {
   while (!shutdown_) {
-    // 每 60 秒执行一次 GC
-    for (int i = 0; i < 60 && !shutdown_; ++i) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+    // Wait for items to be added or shutdown signal
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      cv_.wait_for(lock, std::chrono::seconds(60), [this] {
+        return shutdown_ || !gc_queue_.empty();
+      });
     }
     
-    if (!shutdown_) {
-      RunGC();
-    }
+    if (shutdown_) break;
+    
+    RunGC();
   }
 }
 

@@ -289,15 +289,39 @@ void TransactionRecoveryManager::RecoveryLoop() {
       if (result.recommended_action != RecoveryAction::kNone) {
         Status s = ApplyRecoveryAction(txn_id, result.recommended_action);
         if (!s.ok()) {
-          std::cerr << "[RecoveryManager] Recovery failed for txn=" << txn_id
-                    << ", action=" << static_cast<int>(result.recommended_action)
-                    << ", error=" << s.ToString()
-                    << ", will retry" << std::endl;
+          // Track retry count with backoff
+          size_t retry_count = 0;
           {
-            std::lock_guard<std::mutex> relock(mutex_);
-            recovery_queue_.push(txn_id);
+            std::lock_guard<std::mutex> relock(retry_count_mutex_);
+            retry_count = ++retry_counts_[txn_id];
           }
-          cv_.notify_one();
+          
+          constexpr size_t kMaxRetries = 10;
+          if (retry_count >= kMaxRetries) {
+            std::cerr << "[RecoveryManager] Recovery failed for txn=" << txn_id
+                      << " after " << kMaxRetries << " retries, giving up"
+                      << std::endl;
+            std::lock_guard<std::mutex> relock(retry_count_mutex_);
+            retry_counts_.erase(txn_id);
+          } else {
+            std::cerr << "[RecoveryManager] Recovery failed for txn=" << txn_id
+                      << ", action=" << static_cast<int>(result.recommended_action)
+                      << ", error=" << s.ToString()
+                      << ", retry=" << retry_count << "/" << kMaxRetries
+                      << std::endl;
+            // Exponential backoff: 100ms, 200ms, 400ms, ...
+            auto backoff = std::chrono::milliseconds(100 * (1 << std::min(retry_count, size_t(6))));
+            {
+              std::lock_guard<std::mutex> relock(mutex_);
+              recovery_queue_.push(txn_id);
+            }
+            std::this_thread::sleep_for(backoff);
+            cv_.notify_one();
+          }
+        } else {
+          // Success - clear retry count
+          std::lock_guard<std::mutex> relock(retry_count_mutex_);
+          retry_counts_.erase(txn_id);
         }
       }
     } catch (...) {
@@ -309,11 +333,55 @@ void TransactionRecoveryManager::RecoveryLoop() {
 Status TransactionRecoveryManager::RecoverAsCoordinator(
     dtx::TxnID txn_id,
     const TransactionRecord& record) {
-  // 优先只向未提交参与者发送 commit，避免冗余 RPC
-  auto result = StartRecovery(txn_id);
-  const auto& targets = result.pending_participants.empty()
-      ? record.participants : result.pending_participants;
-  auto status = SendCommitToParticipants(txn_id, targets, record.commit_ts);
+  // Recursion guard: prevent infinite recursion
+  {
+    std::lock_guard<std::mutex> lock(recovering_mutex_);
+    if (recovering_txns_.count(txn_id)) {
+      // Already recovering this transaction - avoid recursive loop
+      // Just send commit directly to pending participants
+      std::vector<dtx::PartitionID> pending;
+      for (const auto& [pid, ps] : record.participant_states) {
+        if (ps.state != ParticipantState::State::kCommitted) {
+          pending.push_back(pid);
+        }
+      }
+      if (pending.empty()) {
+        if (state_manager_) {
+          state_manager_->UpdateState(txn_id, TxnState::kCommitted);
+        }
+        return Status::OK();
+      }
+      auto status = SendCommitToParticipants(txn_id, pending, record.commit_ts);
+      if (status.ok() && state_manager_) {
+        state_manager_->UpdateState(txn_id, TxnState::kCommitted);
+      }
+      return status;
+    }
+    recovering_txns_.insert(txn_id);
+  }
+  // Ensure we remove from recovering set on scope exit
+  struct Guard {
+    std::set<dtx::TxnID>& set;
+    dtx::TxnID id;
+    std::mutex& mtx;
+    ~Guard() { std::lock_guard<std::mutex> l(mtx); set.erase(id); }
+  } guard{recovering_txns_, txn_id, recovering_mutex_};
+
+  // Determine which participants still need commit
+  std::vector<dtx::PartitionID> pending;
+  for (const auto& [pid, ps] : record.participant_states) {
+    if (ps.state != ParticipantState::State::kCommitted) {
+      pending.push_back(pid);
+    }
+  }
+  if (pending.empty()) {
+    if (state_manager_) {
+      state_manager_->UpdateState(txn_id, TxnState::kCommitted);
+    }
+    return Status::OK();
+  }
+
+  auto status = SendCommitToParticipants(txn_id, pending, record.commit_ts);
   if (status.ok() && state_manager_) {
     state_manager_->UpdateState(txn_id, TxnState::kCommitted);
   }

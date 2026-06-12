@@ -274,4 +274,4 @@ class EnvWrapper : public Env {
 
 }  // namespace cedar
 
-#endif  // FERN_CORE_ENV_H_
+#endif  // CEDAR_CORE_ENV_H_

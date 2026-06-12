@@ -122,6 +122,41 @@ bool CedarMemTable::UpdateVersionChain(const InternalKey& internal_key,
       }
       current->older = node_ptr;
     }
+    
+    // Delta 压缩: 当版本链长度超过阈值时，压缩旧版本
+    if (kCompressionThreshold > 0) {
+      size_t chain_length = 0;
+      TemporalVersionNode* count_node = it->second;
+      while (count_node != nullptr && chain_length <= kCompressionThreshold) {
+        count_node = count_node->older;
+        chain_length++;
+      }
+      
+      if (chain_length > kCompressionThreshold) {
+        // 找到第 kCompressionThreshold 个节点（要压缩的起始位置）
+        TemporalVersionNode* compress_start = it->second;
+        for (size_t i = 1; i < kCompressionThreshold && compress_start->older != nullptr; ++i) {
+          compress_start = compress_start->older;
+        }
+        
+        // 获取或创建压缩链
+        auto comp_it = compressed_chains_.find(internal_key);
+        if (comp_it == compressed_chains_.end()) {
+          auto chain = std::make_unique<DeltaVersionChain>();
+          comp_it = compressed_chains_.emplace(internal_key, std::move(chain)).first;
+        }
+        
+        // 将旧版本添加到压缩链
+        TemporalVersionNode* old_node = compress_start->older;
+        while (old_node != nullptr) {
+          comp_it->second->InsertVersion(old_node->timestamp, old_node->descriptor);
+          old_node = old_node->older;
+        }
+        
+        // 断开压缩部分的链接
+        compress_start->older = nullptr;
+      }
+    }
   }
   return true;
 }
@@ -148,21 +183,27 @@ std::optional<Descriptor> CedarMemTable::GetAtTime(uint64_t entity_id,
   std::shared_lock<std::shared_mutex> lock(mutex_);
 
   InternalKey internal_key(entity_id, entity_type, column_id);
+  
+  // 1. 首先检查主存储 (map_)
   auto it = map_->find(internal_key);
-  if (it == map_->end()) {
-    return std::nullopt;
+  if (it != map_->end()) {
+    const auto& entries = it->second;
+    
+    // Entries are sorted in descending order by timestamp.
+    // Use binary search to find the first entry with timestamp <= target.
+    auto fit = std::lower_bound(entries.begin(), entries.end(), timestamp,
+        [](const MemTableEntry& entry, Timestamp ts) {
+          return entry.timestamp > ts;  // descending order
+        });
+    if (fit != entries.end()) {
+      return fit->descriptor;
+    }
   }
-
-  const auto& entries = it->second;  // const ref, no copy
-
-  // Entries are sorted in descending order by timestamp.
-  // Use binary search to find the first entry with timestamp <= target.
-  auto fit = std::lower_bound(entries.begin(), entries.end(), timestamp,
-      [](const MemTableEntry& entry, Timestamp ts) {
-        return entry.timestamp > ts;  // descending order
-      });
-  if (fit != entries.end()) {
-    return fit->descriptor;
+  
+  // 2. 如果主存储没找到，检查压缩链
+  auto comp_it = compressed_chains_.find(internal_key);
+  if (comp_it != compressed_chains_.end()) {
+    return comp_it->second->GetVersionAt(timestamp);
   }
 
   return std::nullopt;
@@ -267,17 +308,41 @@ std::vector<MemTableEntry> CedarMemTable::GetVersionChain(
   std::vector<MemTableEntry> result;
   
   InternalKey internal_key(entity_id, entity_type, column_id);
+  
+  // 1. 从活跃版本链获取近期版本 (完整值)
   auto it = version_chains_.find(internal_key);
-  if (it == version_chains_.end()) {
-    return result;  // 空结果
+  if (it != version_chains_.end()) {
+    TemporalVersionNode* current = it->second;
+    while (current != nullptr) {
+      result.emplace_back(current->timestamp, current->descriptor, current->txn_version);
+      current = current->older;
+    }
   }
   
-  // 遍历版本链 (从最新到最旧)
-  TemporalVersionNode* current = it->second;
-  while (current != nullptr) {
-    result.emplace_back(current->timestamp, current->descriptor, current->txn_version);
-    current = current->older;
+  // 2. 从压缩链获取旧版本 (通过 DeltaVersionEncoder 重建)
+  auto comp_it = compressed_chains_.find(internal_key);
+  if (comp_it != compressed_chains_.end()) {
+    auto compressed_versions = comp_it->second->GetAllVersions();
+    for (const auto& [ts, desc] : compressed_versions) {
+      // 检查是否已经在结果中 (避免重复)
+      bool duplicate = false;
+      for (const auto& existing : result) {
+        if (existing.timestamp == ts) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (!duplicate) {
+        result.emplace_back(ts, desc, Timestamp(0));  // txn_version 未知
+      }
+    }
   }
+  
+  // 按时间戳降序排序
+  std::sort(result.begin(), result.end(),
+            [](const MemTableEntry& a, const MemTableEntry& b) {
+              return a.timestamp > b.timestamp;
+            });
   
   return result;
 }
@@ -290,19 +355,27 @@ void CedarMemTable::TraverseVersionChain(
   std::shared_lock<std::shared_mutex> lock(mutex_);
   
   InternalKey internal_key(entity_id, entity_type, column_id);
+  
+  // 1. 遍历活跃版本链 (近期版本)
   auto it = version_chains_.find(internal_key);
-  if (it == version_chains_.end()) {
-    return;
+  if (it != version_chains_.end()) {
+    TemporalVersionNode* current = it->second;
+    while (current != nullptr) {
+      MemTableEntry entry(current->timestamp, current->descriptor, current->txn_version);
+      if (!callback(entry)) {
+        return;  // 回调返回 false，停止遍历
+      }
+      current = current->older;
+    }
   }
   
-  // 遍历版本链
-  TemporalVersionNode* current = it->second;
-  while (current != nullptr) {
-    MemTableEntry entry(current->timestamp, current->descriptor, current->txn_version);
-    if (!callback(entry)) {
-      break;  // 回调返回 false，停止遍历
-    }
-    current = current->older;
+  // 2. 遍历压缩链 (旧版本)
+  auto comp_it = compressed_chains_.find(internal_key);
+  if (comp_it != compressed_chains_.end()) {
+    comp_it->second->Traverse([&callback](Timestamp ts, const Descriptor& desc) -> bool {
+      MemTableEntry entry(ts, desc, Timestamp(0));
+      return callback(entry);
+    });
   }
 }
 
@@ -313,18 +386,24 @@ size_t CedarMemTable::GetVersionChainLength(
   std::shared_lock<std::shared_mutex> lock(mutex_);
   
   InternalKey internal_key(entity_id, entity_type, column_id);
+  size_t count = 0;
+  
+  // 1. 活跃版本链长度
   auto it = version_chains_.find(internal_key);
-  if (it == version_chains_.end()) {
-    return 0;
+  if (it != version_chains_.end()) {
+    TemporalVersionNode* current = it->second;
+    while (current != nullptr) {
+      ++count;
+      current = current->older;
+    }
   }
   
-  // 遍历计数
-  size_t count = 0;
-  TemporalVersionNode* current = it->second;
-  while (current != nullptr) {
-    ++count;
-    current = current->older;
+  // 2. 压缩链版本数量
+  auto comp_it = compressed_chains_.find(internal_key);
+  if (comp_it != compressed_chains_.end()) {
+    count += comp_it->second->GetVersionCount();
   }
+  
   return count;
 }
 

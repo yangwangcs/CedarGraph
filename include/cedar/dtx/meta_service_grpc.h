@@ -94,6 +94,27 @@ public:
                            const cedar::meta::GetSchemaRequest* request,
                            cedar::meta::GetSchemaResponse* response) override;
 
+    grpc::Status ListSpaces(grpc::ServerContext* context,
+                            const cedar::meta::ListSpacesRequest* request,
+                            cedar::meta::ListSpacesResponse* response) override;
+
+    grpc::Status ListLabels(grpc::ServerContext* context,
+                            const cedar::meta::ListLabelsRequest* request,
+                            cedar::meta::ListLabelsResponse* response) override;
+
+    // 索引管理
+    grpc::Status CreateIndex(grpc::ServerContext* context,
+                             const cedar::meta::CreateIndexRequest* request,
+                             cedar::meta::CreateIndexResponse* response) override;
+
+    grpc::Status DropIndex(grpc::ServerContext* context,
+                           const cedar::meta::DropIndexRequest* request,
+                           cedar::meta::DropIndexResponse* response) override;
+
+    grpc::Status ListIndexes(grpc::ServerContext* context,
+                             const cedar::meta::ListIndexesRequest* request,
+                             cedar::meta::ListIndexesResponse* response) override;
+
     // GCN Cache management
     grpc::Status LocateCache(grpc::ServerContext* context,
                              const cedar::meta::LocateCacheRequest* request,

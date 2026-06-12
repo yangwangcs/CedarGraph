@@ -122,4 +122,4 @@ const char* EntityStateToString(EntityState state);
 
 }  // namespace cedar
 
-#endif  // FERN_ENTITY_LIFECYCLE_H_
+#endif  // CEDAR_ENTITY_LIFECYCLE_H_

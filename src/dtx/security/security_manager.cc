@@ -685,6 +685,90 @@ StatusOr<Role> Authorizer::GetRole(const std::string& role_name) const {
   return it->second;
 }
 
+std::vector<Role> Authorizer::ListRoles() const {
+  std::lock_guard<std::mutex> lock(roles_mutex_);
+  std::vector<Role> result;
+  for (const auto& [name, role] : roles_) {
+    result.push_back(role);
+  }
+  return result;
+}
+
+Status Authorizer::AssignRole(const std::string& user_id, const std::string& role_name) {
+  // Verify role exists
+  {
+    std::lock_guard<std::mutex> lock(roles_mutex_);
+    if (roles_.find(role_name) == roles_.end()) {
+      return Status::NotFound("Role not found: " + role_name);
+    }
+  }
+  
+  std::lock_guard<std::mutex> lock(user_roles_mutex_);
+  user_roles_[user_id].insert(role_name);
+  return Status::OK();
+}
+
+Status Authorizer::RevokeRole(const std::string& user_id, const std::string& role_name) {
+  std::lock_guard<std::mutex> lock(user_roles_mutex_);
+  auto it = user_roles_.find(user_id);
+  if (it == user_roles_.end()) {
+    return Status::NotFound("User has no roles");
+  }
+  if (it->second.erase(role_name) == 0) {
+    return Status::NotFound("User does not have role: " + role_name);
+  }
+  return Status::OK();
+}
+
+std::vector<std::string> Authorizer::GetUserRoles(const std::string& user_id) const {
+  std::lock_guard<std::mutex> lock(user_roles_mutex_);
+  auto it = user_roles_.find(user_id);
+  if (it == user_roles_.end()) {
+    return {};
+  }
+  return std::vector<std::string>(it->second.begin(), it->second.end());
+}
+
+StatusOr<Role> Authorizer::GetUserEffectiveRole(const std::string& user_id) const {
+  std::vector<std::string> roles;
+  {
+    std::lock_guard<std::mutex> lock(user_roles_mutex_);
+    auto it = user_roles_.find(user_id);
+    if (it == user_roles_.end() || it->second.empty()) {
+      // Return default readonly role
+      std::lock_guard<std::mutex> rlock(roles_mutex_);
+      auto rit = roles_.find("readonly");
+      if (rit != roles_.end()) return rit->second;
+      return Status::NotFound("No roles assigned and no default role");
+    }
+    roles = std::vector<std::string>(it->second.begin(), it->second.end());
+  }
+  
+  // Merge permissions from all assigned roles
+  Role effective;
+  effective.name = "effective_" + user_id;
+  effective.permissions = Permission::kNone;
+  
+  std::lock_guard<std::mutex> rlock(roles_mutex_);
+  for (const auto& role_name : roles) {
+    auto it = roles_.find(role_name);
+    if (it != roles_.end()) {
+      effective.permissions = static_cast<Permission>(
+          static_cast<uint32_t>(effective.permissions) | 
+          static_cast<uint32_t>(it->second.permissions));
+      // Merge resource lists
+      for (const auto& r : it->second.allowed_resources) {
+        effective.allowed_resources.push_back(r);
+      }
+      for (const auto& r : it->second.denied_resources) {
+        effective.denied_resources.push_back(r);
+      }
+    }
+  }
+  
+  return effective;
+}
+
 namespace {
 bool GlobMatch(const std::string& pattern, const std::string& text) {
   size_t p = 0, t = 0;

@@ -244,6 +244,13 @@ class Authorizer {
   Status AddRole(const Role& role);
   Status RemoveRole(const std::string& role_name);
   StatusOr<Role> GetRole(const std::string& role_name) const;
+  std::vector<Role> ListRoles() const;
+  
+  // 用户角色分配
+  Status AssignRole(const std::string& user_id, const std::string& role_name);
+  Status RevokeRole(const std::string& user_id, const std::string& role_name);
+  std::vector<std::string> GetUserRoles(const std::string& user_id) const;
+  StatusOr<Role> GetUserEffectiveRole(const std::string& user_id) const;
   
   // 权限检查
   Status CheckPermission(const AuthToken& token, Permission permission,
@@ -262,6 +269,10 @@ class Authorizer {
   
   mutable std::mutex roles_mutex_;
   std::map<std::string, Role> roles_;
+  
+  // User-role assignments: user_id -> set of role names
+  mutable std::mutex user_roles_mutex_;
+  std::map<std::string, std::set<std::string>> user_roles_;
 };
 
 // =============================================================================

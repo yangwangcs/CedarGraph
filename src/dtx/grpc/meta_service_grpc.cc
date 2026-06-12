@@ -10,7 +10,7 @@ namespace {
 grpc::Status CheckAuth(grpc::ServerContext* context,
                        cedar::dtx::security::Permission perm) {
   auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
-  if (!sm || !sm->IsAuthEnabled()) return grpc::Status::OK;
+  if (!sm || !sm->IsAuthEnabled() || !sm->GetAuthenticator()) return grpc::Status::OK;
   auto meta = context->client_metadata();
   auto it = meta.find("authorization");
   if (it == meta.end()) {
@@ -424,6 +424,118 @@ grpc::Status MetaServiceGrpcImpl::GetSchema(grpc::ServerContext* context,
         }
         for (const auto& idx : schema.indexes) {
             out->add_indexes(idx);
+        }
+    }
+    response->set_success(true);
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::ListSpaces(grpc::ServerContext* context,
+    const cedar::meta::ListSpacesRequest* request,
+    cedar::meta::ListSpacesResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    (void)request;
+
+    auto space_names = meta_service_->ListSpaces();
+    for (const auto& name : space_names) {
+        auto space_result = meta_service_->GetSpace(name);
+        if (space_result.ok()) {
+            const auto& space_def = space_result.ValueOrDie();
+            auto* out = response->add_spaces();
+            out->set_name(space_def.name);
+            out->set_partition_num(space_def.partition_num);
+            out->set_replica_factor(space_def.replica_factor);
+            auto created_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                space_def.created_at.time_since_epoch()).count();
+            out->set_created_at_unix(created_ms);
+        }
+    }
+    response->set_success(true);
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::ListLabels(grpc::ServerContext* context,
+    const cedar::meta::ListLabelsRequest* request,
+    cedar::meta::ListLabelsResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+
+    auto schemas = meta_service_->GetSchema(request->space_name(), {});
+    for (const auto& schema : schemas) {
+        auto* out = response->add_labels();
+        out->set_name(schema.name);
+        for (const auto& prop : schema.properties) {
+            auto* out_prop = out->add_properties();
+            out_prop->set_name(prop.name);
+            out_prop->set_type(prop.type);
+            out_prop->set_nullable(prop.nullable);
+            out_prop->set_indexed(prop.indexed);
+        }
+        for (const auto& idx : schema.indexes) {
+            out->add_indexes(idx);
+        }
+    }
+    response->set_success(true);
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::CreateIndex(grpc::ServerContext* context,
+    const cedar::meta::CreateIndexRequest* request,
+    cedar::meta::CreateIndexResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+
+    IndexDef index;
+    index.name = request->index().name();
+    index.label_name = request->index().label_name();
+    index.space_name = request->index().space_name();
+    index.unique = request->index().unique();
+    for (const auto& prop : request->index().properties()) {
+        index.properties.push_back(prop);
+    }
+
+    auto status = meta_service_->CreateIndex(request->space_name(), index);
+    if (!status.ok()) {
+        response->set_success(false);
+        response->set_error_msg(status.ToString());
+    } else {
+        response->set_success(true);
+    }
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::DropIndex(grpc::ServerContext* context,
+    const cedar::meta::DropIndexRequest* request,
+    cedar::meta::DropIndexResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+
+    auto status = meta_service_->DropIndex(request->space_name(), request->index_name());
+    if (!status.ok()) {
+        response->set_success(false);
+        response->set_error_msg(status.ToString());
+    } else {
+        response->set_success(true);
+    }
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::ListIndexes(grpc::ServerContext* context,
+    const cedar::meta::ListIndexesRequest* request,
+    cedar::meta::ListIndexesResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+
+    auto indexes = meta_service_->ListIndexes(request->space_name(), request->label_name());
+    for (const auto& index : indexes) {
+        auto* out = response->add_indexes();
+        out->set_name(index.name);
+        out->set_label_name(index.label_name);
+        out->set_space_name(index.space_name);
+        out->set_unique(index.unique);
+        for (const auto& prop : index.properties) {
+            out->add_properties(prop);
         }
     }
     response->set_success(true);

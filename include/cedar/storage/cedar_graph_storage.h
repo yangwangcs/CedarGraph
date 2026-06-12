@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef FERN_FERN_GRAPH_STORAGE_H_
-#define FERN_FERN_GRAPH_STORAGE_H_
+#ifndef CEDAR_GRAPH_STORAGE_H_
+#define CEDAR_GRAPH_STORAGE_H_
 
 #include <cstdint>
 #include <memory>
@@ -602,4 +602,4 @@ class CedarGraphStorage {
 
 }  // namespace cedar
 
-#endif  // FERN_FERN_GRAPH_STORAGE_H_
+#endif  // CEDAR_GRAPH_STORAGE_H_

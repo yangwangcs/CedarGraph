@@ -70,23 +70,31 @@ void SstReaderCache::SetCapacity(size_t capacity) {
 void SstReaderCache::EvictLRU() {
   if (lru_list_.empty()) return;
   
-  // 从 LRU 列表尾部淘汰（最久未使用）
-  const std::string& evict_path = lru_list_.back();
-  auto it = cache_map_.find(evict_path);
-  
-  if (it != cache_map_.end()) {
-    // 只有引用计数为 0 时才真正淘汰
-    if (it->second.second->ref_count == 0) {
-      cache_map_.erase(it);
-      lru_list_.pop_back();
-      stats_.evictions++;
+  // Try to evict from the back (LRU), skipping pinned entries
+  size_t attempts = lru_list_.size();
+  while (attempts > 0) {
+    const std::string& evict_path = lru_list_.back();
+    auto it = cache_map_.find(evict_path);
+    
+    if (it != cache_map_.end()) {
+      if (it->second.second->ref_count == 0) {
+        cache_map_.erase(it);
+        lru_list_.pop_back();
+        stats_.evictions++;
+        return;
+      } else {
+        // Entry is pinned, move to front and try next
+        lru_list_.pop_back();
+        lru_list_.push_front(evict_path);
+        it->second.first = lru_list_.begin();
+      }
     } else {
-      // 如果引用计数不为 0，移到前面，稍后淘汰
       lru_list_.pop_back();
-      lru_list_.push_front(evict_path);
-      it->second.first = lru_list_.begin();
+      return;
     }
+    --attempts;
   }
+  // All entries are pinned, cannot evict
 }
 
 // OPTIMIZATION: P1 - 标记热数据文件

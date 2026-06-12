@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -117,6 +118,14 @@ class TransactionRecoveryManager : public TimeoutCallback {
   mutable std::mutex mutex_;
   std::queue<dtx::TxnID> recovery_queue_;
   std::condition_variable cv_;
+  
+  // Recursion guard: tracks txn IDs currently being recovered
+  mutable std::mutex recovering_mutex_;
+  std::set<dtx::TxnID> recovering_txns_;
+  
+  // Retry tracking with backoff
+  mutable std::mutex retry_count_mutex_;
+  std::unordered_map<dtx::TxnID, size_t> retry_counts_;
 };
 
 }  // namespace cedar

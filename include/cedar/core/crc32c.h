@@ -57,4 +57,4 @@ inline uint32_t Unmask(uint32_t masked_crc) {
 }  // namespace crc32c
 }  // namespace cedar
 
-#endif  // FERN_CORE_CRC32C_H_
+#endif  // CEDAR_CORE_CRC32C_H_

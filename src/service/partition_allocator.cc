@@ -79,8 +79,38 @@ Status PartitionAllocator::UnregisterNode(NodeID node_id) {
     allocation.followers.erase(it, allocation.followers.end());
   }
   
+  // Reallocate affected partitions to remaining nodes
+  for (PartitionID part_id : affected_partitions) {
+    auto alloc_it = allocations_.find(part_id);
+    if (alloc_it == allocations_.end()) continue;
+    
+    if (nodes_.empty()) {
+      // No nodes available, mark partition as unassigned
+      alloc_it->second.leader_node = 0;
+      continue;
+    }
+    
+    // Select a new leader from available nodes
+    NodeID new_leader = SelectLeaderNode(part_id);
+    if (new_leader != 0) {
+      // Decrement old leader count if it still exists
+      alloc_it->second.leader_node = new_leader;
+      nodes_[new_leader].leader_count++;
+      alloc_it->second.version++;
+      
+      // Re-select followers if needed
+      if (alloc_it->second.followers.size() < replication_factor_ - 1) {
+        auto new_followers = SelectFollowerNodes(part_id, new_leader);
+        alloc_it->second.followers = new_followers;
+        for (uint32_t f : new_followers) {
+          nodes_[f].follower_count++;
+        }
+      }
+    }
+  }
+  
   std::cerr << "[PartitionAllocator] Node " << node_id << " unregistered, "
-            << affected_partitions.size() << " partitions need reallocation" << std::endl;
+            << affected_partitions.size() << " partitions reallocated" << std::endl;
   
   return Status::OK();
 }

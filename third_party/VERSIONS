@@ -1,0 +1,22 @@
+# =============================================================================
+# CedarGraph Third-Party Dependency Versions
+# =============================================================================
+# This file locks the exact versions of third-party dependencies.
+# To update a dependency: change the version here, then run:
+#   ./scripts/setup_deps.sh --force
+# =============================================================================
+
+# Apache brpc - RPC framework
+# https://github.com/apache/brpc
+BRPC_VERSION=1.16.0
+BRPC_REPO=https://github.com/apache/brpc.git
+
+# braft - Raft consensus based on brpc
+# https://github.com/brpc/braft
+BRAFT_VERSION=v1.3.0
+BRAFT_REPO=https://github.com/brpc/braft.git
+
+# Dependency checksums (for verification after download)
+# Run: sha256sum third_party/brpc/CMakeLists.txt third_party/braft/CMakeLists.txt
+BRPC_CMAKE_SHA256=skip  # Set after first verified download
+BRAFT_CMAKE_SHA256=skip  # Set after first verified download

@@ -202,7 +202,11 @@ class AdaptiveThreadPool {
   
   void RemoveWorker() {
     std::lock_guard<std::mutex> lock(workers_mutex_);
-    // 找最空闲的线程
+    RemoveWorkerLocked();
+  }
+  
+  // Internal version: assumes workers_mutex_ is already held
+  void RemoveWorkerLocked() {
     auto it = std::find_if(workers_.begin(), workers_.end(),
         [](const auto& w) { return w->GetState() == Worker::State::IDLE; });
     
@@ -310,7 +314,7 @@ class AdaptiveThreadPool {
                 now - worker->GetLastActiveTime()).count();
             
             if (idle_time > config_.scale_down_idle_seconds) {
-              RemoveWorker();
+              RemoveWorkerLocked();  // Use locked version since we already hold workers_mutex_
               break;
             }
           }
@@ -341,4 +345,4 @@ class AdaptiveThreadPool {
 
 }  // namespace cedar
 
-#endif  // FERN_ADAPTIVE_THREAD_POOL_H_
+#endif  // CEDAR_ADAPTIVE_THREAD_POOL_H_

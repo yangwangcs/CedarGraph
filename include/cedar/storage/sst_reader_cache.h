@@ -115,4 +115,4 @@ class SstReaderCache {
 
 }  // namespace cedar
 
-#endif  // FERN_STORAGE_SST_READER_CACHE_H_
+#endif  // CEDAR_STORAGE_SST_READER_CACHE_H_

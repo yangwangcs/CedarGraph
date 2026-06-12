@@ -87,6 +87,7 @@ class BlobGCManager {
   std::atomic<uint64_t> deleted_count_{0};
   
   mutable std::mutex mutex_;
+  std::condition_variable cv_;  // Wake GC thread on new items or shutdown
   std::vector<BlobGCItem> gc_queue_;
   
   std::unique_ptr<std::thread> bg_thread_;
@@ -94,4 +95,4 @@ class BlobGCManager {
 
 }  // namespace cedar
 
-#endif  // FERN_BLOB_GC_MANAGER_H_
+#endif  // CEDAR_BLOB_GC_MANAGER_H_

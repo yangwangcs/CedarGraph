@@ -314,18 +314,29 @@ size_t VersionChainIndex::GetTotalVersionCount() const {
 }
 
 void VersionChainIndex::RunGC(Timestamp global_safe_ts) {
-  std::unique_lock<std::shared_mutex> lock(index_mutex_);
+  // Collect keys to process, then release index_mutex_ between chains
+  // to avoid blocking reads for the entire GC pass
+  std::vector<std::pair<CedarKey, VersionChainHead*>> chains_to_gc;
+  {
+    std::shared_lock<std::shared_mutex> lock(index_mutex_);
+    for (const auto& [key, head] : index_) {
+      if (head->reader_count.load(std::memory_order_relaxed) == 0) {
+        chains_to_gc.emplace_back(key, head.get());
+      }
+    }
+  }
   
-  for (auto& [key, head] : index_) {
-    // 如果有活跃读取者，跳过（保守策略）
+  // Process each chain individually, releasing locks between chains
+  for (auto& [key, head] : chains_to_gc) {
+    // Skip if readers are active
     if (head->reader_count.load(std::memory_order_relaxed) > 0) {
       continue;
     }
     
-    // 获取链表结构锁，阻止新的读者进入链表遍历
+    // Acquire chain lock for this specific chain
     std::unique_lock<std::shared_mutex> chain_lock(head->chain_mutex_);
     
-    // 双重检查：获取锁后再次确认没有读者
+    // Double-check after acquiring lock
     if (head->reader_count.load(std::memory_order_relaxed) > 0) {
       continue;
     }
@@ -336,14 +347,10 @@ void VersionChainIndex::RunGC(Timestamp global_safe_ts) {
     while (current) {
       VersionChainNode* next = current->next.load(std::memory_order_acquire);
       
-      // 判断是否可以删除
       bool can_delete = false;
       
-      // 条件1: 版本已可见
       if (current->visible.load(std::memory_order_acquire)) {
-        // 条件2: 提交时间早于安全时间戳
         if (current->commit_ts < global_safe_ts) {
-          // 条件3: 不是最新版本
           if (prev != nullptr) {
             can_delete = true;
           }
@@ -351,26 +358,21 @@ void VersionChainIndex::RunGC(Timestamp global_safe_ts) {
       }
       
       if (can_delete) {
-        // 从链中移除
         if (prev) {
           prev->next.store(next, std::memory_order_release);
         }
         
-        // 更新统计
         gc_versions_removed_.fetch_add(1, std::memory_order_relaxed);
         gc_bytes_freed_.fetch_add(sizeof(VersionChainNode) + current->data_size,
                                    std::memory_order_relaxed);
         
-        // 减少链长度
         head->chain_length.fetch_sub(1, std::memory_order_relaxed);
         
-        // 删除节点（现在安全，因为 chain_mutex_ 阻止了读者遍历）
         delete current;
         
         if (prev) {
           current = next;
         } else {
-          // 删除了头节点，更新latest
           head->latest.store(next, std::memory_order_release);
           current = next;
         }

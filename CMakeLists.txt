@@ -124,45 +124,52 @@ else()
 endif()
 
 # =============================================================================
-# Required: braft for production Raft consensus
+# Required: braft + brpc for production Raft consensus and RPC
 # =============================================================================
-# Two options:
-#   1. System-installed braft (default)
-#   2. Vendored brpc+braft from third_party/ (set -DCEDAR_VENDOR_BRAFT=ON)
+# Always uses vendored versions from third_party/ for reproducible builds.
+# Run ./scripts/setup_deps.sh to download dependencies.
 # =============================================================================
-option(CEDAR_VENDOR_BRAFT "Use vendored brpc+braft from third_party/" OFF)
 
-if(CEDAR_VENDOR_BRAFT)
-    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/brpc/CMakeLists.txt
-       AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/braft/CMakeLists.txt)
-        message(STATUS "Using vendored brpc + braft from third_party/")
-        
-        # Build brpc first (braft depends on it)
-        set(WITH_GLOG OFF CACHE BOOL "" FORCE)
-        set(DOWNLOAD_GTEST OFF CACHE BOOL "" FORCE)
-        set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-        set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
-        add_subdirectory(third_party/brpc EXCLUDE_FROM_ALL)
-        
-        # Point braft to our brpc
-        set(brpc_DIR ${CMAKE_BINARY_DIR}/third_party/brpc CACHE PATH "" FORCE)
-        
-        # Build braft
-        set(BRAFT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-        set(BRAFT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-        add_subdirectory(third_party/braft EXCLUDE_FROM_ALL)
-        
-        set(braft_FOUND TRUE)
-    else()
-        message(FATAL_ERROR 
-            "CEDAR_VENDOR_BRAFT is ON but third_party/brpc or third_party/braft not found.\n"
-            "Please run: ./scripts/setup_braft.sh")
-    endif()
-else()
-    find_package(braft REQUIRED)
-    include_directories(${BRAFT_INCLUDE_DIRS})
+# Verify third_party dependencies exist
+if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/brpc/CMakeLists.txt
+   OR NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/braft/CMakeLists.txt)
+    message(FATAL_ERROR 
+        "third_party/brpc or third_party/braft not found.\n"
+        "Please run: ./scripts/setup_deps.sh")
 endif()
+
+# Read expected versions from VERSIONS file
+set(THIRD_PARTY_VERSIONS_FILE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/VERSIONS)
+if(EXISTS ${THIRD_PARTY_VERSIONS_FILE})
+    file(READ ${THIRD_PARTY_VERSIONS_FILE} VERSIONS_CONTENT)
+    # Extract BRPC_VERSION
+    string(REGEX MATCH "BRPC_VERSION=([0-9.]+)" _ ${VERSIONS_CONTENT})
+    set(EXPECTED_BRPC_VERSION ${CMAKE_MATCH_1})
+    # Extract BRAFT_VERSION  
+    string(REGEX MATCH "BRAFT_VERSION=v?([0-9.]+)" _ ${VERSIONS_CONTENT})
+    set(EXPECTED_BRAFT_VERSION ${CMAKE_MATCH_1})
+    message(STATUS "Expected versions - brpc: ${EXPECTED_BRPC_VERSION}, braft: ${EXPECTED_BRAFT_VERSION}")
+endif()
+
+message(STATUS "Using vendored brpc + braft from third_party/")
+
+# Build brpc first (braft depends on it)
+set(WITH_GLOG OFF CACHE BOOL "" FORCE)
+set(DOWNLOAD_GTEST OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/brpc EXCLUDE_FROM_ALL)
+
+# Point braft to our brpc
+set(brpc_DIR ${CMAKE_BINARY_DIR}/third_party/brpc CACHE PATH "" FORCE)
+
+# Build braft
+set(BRAFT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(BRAFT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/braft EXCLUDE_FROM_ALL)
+
+set(braft_FOUND TRUE)
 
 message(STATUS "braft enabled for production Raft consensus")
 add_definitions(-DCEDAR_WITH_BRAFT)
@@ -370,26 +377,21 @@ target_include_directories(cedar PUBLIC ${LZ4_INCLUDE_DIRS})
 target_link_directories(cedar PUBLIC ${LZ4_LIBRARY_DIRS})
 target_compile_definitions(cedar PRIVATE CEDAR_NO_GLOG)
 
-# Link braft (required)
-if(CEDAR_VENDOR_BRAFT)
-    if(TARGET braft-static)
-        target_link_libraries(cedar braft-static)
-    elseif(TARGET braft)
-        target_link_libraries(cedar braft)
-    else()
-        message(FATAL_ERROR "Vendored braft target not found (expected braft-static or braft)")
-    endif()
-    # Add braft and brpc include directories from vendored third_party
-    target_include_directories(cedar PUBLIC 
-        ${CMAKE_SOURCE_DIR}/third_party/braft/include
-        ${CMAKE_BINARY_DIR}/third_party/braft/src
-        ${CMAKE_SOURCE_DIR}/third_party/brpc/src
-        ${CMAKE_BINARY_DIR}/third_party/brpc/src
-    )
+# Link braft (always vendored)
+if(TARGET braft-static)
+    target_link_libraries(cedar braft-static)
+elseif(TARGET braft)
+    target_link_libraries(cedar braft)
 else()
-    target_link_libraries(cedar ${BRAFT_LIBRARIES})
-    target_include_directories(cedar PUBLIC ${BRAFT_INCLUDE_DIRS})
+    message(FATAL_ERROR "braft target not found (expected braft-static or braft)")
 endif()
+# Add braft and brpc include directories from vendored third_party
+target_include_directories(cedar PUBLIC 
+    ${CMAKE_SOURCE_DIR}/third_party/braft/include
+    ${CMAKE_BINARY_DIR}/third_party/braft/src
+    ${CMAKE_SOURCE_DIR}/third_party/brpc/src
+    ${CMAKE_BINARY_DIR}/third_party/brpc/src
+)
 
 # Graph sources
 set(CEDAR_GRAPH_SOURCES

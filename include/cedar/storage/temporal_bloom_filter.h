@@ -835,4 +835,4 @@ inline TemporalBloomFilter::Config RecommendConfig(
 
 }  // namespace cedar
 
-#endif  // FERN_STORAGE_TEMPORAL_BLOOM_FILTER_H_
+#endif  // CEDAR_STORAGE_TEMPORAL_BLOOM_FILTER_H_

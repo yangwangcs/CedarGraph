@@ -457,10 +457,10 @@ double ConfigManager::GetDouble(const std::string& key,
   try {
     return std::stod(str_val);
   } catch (const std::invalid_argument&) {
-    std::cerr << "[ConfigManager] Invalid integer value: '" << str_val << "', using default: " << default_val << std::endl;
+    std::cerr << "[ConfigManager] Invalid double value: '" << str_val << "', using default: " << default_val << std::endl;
     return default_val;
   } catch (const std::out_of_range&) {
-    std::cerr << "[ConfigManager] Out of range integer value: '" << str_val << "', using default: " << default_val << std::endl;
+    std::cerr << "[ConfigManager] Out of range double value: '" << str_val << "', using default: " << default_val << std::endl;
     return default_val;
   }
 }
@@ -627,8 +627,8 @@ Status ConfigManager::ValidateBasic(
 Status ConfigManager::Merge(const ConfigManager& other) {
   std::vector<std::tuple<std::string, std::string, std::string>> notifications;
   {
-    std::lock_guard<std::mutex> lock(impl_->mutex_);
-    std::lock_guard<std::mutex> other_lock(other.impl_->mutex_);
+    // Use scoped_lock to avoid deadlock when two ConfigManagers merge each other simultaneously
+    std::scoped_lock lock(impl_->mutex_, other.impl_->mutex_);
 
     for (const auto& [key, value] : other.impl_->flattened_) {
       std::string old_value;

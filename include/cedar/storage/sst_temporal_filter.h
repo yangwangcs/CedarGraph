@@ -841,4 +841,4 @@ class LsmEngineTemporalFilterExt {
 
 }  // namespace cedar
 
-#endif  // FERN_STORAGE_SST_TEMPORAL_FILTER_H_
+#endif  // CEDAR_STORAGE_SST_TEMPORAL_FILTER_H_

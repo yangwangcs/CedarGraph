@@ -11,6 +11,10 @@ uint32_t DefaultHash(const std::string& key) {
   unsigned int digest_len;
   
   EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+  if (!ctx) {
+    // Fallback to std::hash if OpenSSL allocation fails
+    return static_cast<uint32_t>(std::hash<std::string>{}(key));
+  }
   EVP_DigestInit_ex(ctx, EVP_md5(), nullptr);
   EVP_DigestUpdate(ctx, key.c_str(), key.length());
   EVP_DigestFinal_ex(ctx, digest, &digest_len);

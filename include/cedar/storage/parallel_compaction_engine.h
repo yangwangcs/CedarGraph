@@ -285,4 +285,4 @@ class ParallelCompactionEngine {
 
 }  // namespace cedar
 
-#endif  // FERN_PARALLEL_COMPACTION_ENGINE_H_
+#endif  // CEDAR_PARALLEL_COMPACTION_ENGINE_H_

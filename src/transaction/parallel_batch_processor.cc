@@ -129,64 +129,47 @@ Status ParallelGraphBatchProcessor::ExecuteVertexBatch() {
   size_t total = vertex_items_.size();
   size_t num_batches = (total + batch_size - 1) / batch_size;
   
-  std::vector<std::thread> threads;
-  std::vector<std::shared_ptr<std::promise<Status>>> promises;
+  Status first_error = Status::OK();
   
-  for (size_t b = 0; b < num_batches; ++b) {
-    size_t start = b * batch_size;
-    size_t end = std::min(start + batch_size, total);
+  for (size_t b = 0; b < num_batches; b += num_threads) {
+    std::vector<std::thread> threads;
+    std::vector<std::shared_ptr<std::promise<Status>>> promises;
     
-    auto p = std::make_shared<std::promise<Status>>();
-    promises.push_back(p);
-    threads.emplace_back([this, start, end, p]() {
-      // 创建批量事务执行器
-      BatchTransactionExecutor batch(storage_);
+    size_t chunk_end = std::min(b + num_threads, num_batches);
+    for (size_t batch_idx = b; batch_idx < chunk_end; ++batch_idx) {
+      size_t start = batch_idx * batch_size;
+      size_t end = std::min(start + batch_size, total);
       
-      for (size_t i = start; i < end; ++i) {
-        const auto& item = vertex_items_[i];
-        if (item.type == BatchItem::VERTEX_PUT) {
-          batch.AddPut(item.id, EntityType::Vertex, item.property_id,
-                       item.descriptor, item.timestamp);
-        }
-      }
-      
-      p->set_value(batch.Execute());
-    });
-    
-    // 限制并发数
-    if (threads.size() >= num_threads) {
-      for (auto& p : promises) {
-        Status s = p->get_future().get();
-        if (!s.ok()) {
-          for (auto& t : threads) {
-            if (t.joinable()) t.join();
+      auto p = std::make_shared<std::promise<Status>>();
+      promises.push_back(p);
+      threads.emplace_back([this, start, end, p]() {
+        BatchTransactionExecutor batch(storage_);
+        for (size_t i = start; i < end; ++i) {
+          const auto& item = vertex_items_[i];
+          if (item.type == BatchItem::VERTEX_PUT) {
+            batch.AddPut(item.id, EntityType::Vertex, item.property_id,
+                         item.descriptor, item.timestamp);
           }
-          return s;
         }
+        p->set_value(batch.Execute());
+      });
+    }
+    
+    // Wait for ALL threads to complete (join all before checking results)
+    for (auto& t : threads) {
+      if (t.joinable()) t.join();
+    }
+    
+    // Now check results
+    for (auto& p : promises) {
+      Status s = p->get_future().get();
+      if (!s.ok() && first_error.ok()) {
+        first_error = s;
       }
-      for (auto& t : threads) {
-        if (t.joinable()) t.join();
-      }
-      threads.clear();
-      promises.clear();
     }
   }
   
-  // 等待剩余任务
-  for (auto& p : promises) {
-    Status s = p->get_future().get();
-    if (!s.ok()) {
-      for (auto& t : threads) {
-        if (t.joinable()) t.join();
-      }
-      return s;
-    }
-  }
-  for (auto& t : threads) {
-    if (t.joinable()) t.join();
-  }
-  
-  return Status::OK();
+  return first_error;
 }
 
 Status ParallelGraphBatchProcessor::ExecuteEdgeBatch() {

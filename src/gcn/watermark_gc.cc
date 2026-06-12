@@ -18,6 +18,7 @@ WatermarkGc::~WatermarkGc() {
 }
 
 void WatermarkGc::Start(uint64_t interval_ms) {
+  std::lock_guard<std::mutex> lock(start_stop_mutex_);
   if (thread_.joinable()) {
     return;
   }
@@ -26,13 +27,12 @@ void WatermarkGc::Start(uint64_t interval_ms) {
 }
 
 void WatermarkGc::Stop() {
-  bool expected = false;
-  if (stop_flag_.compare_exchange_strong(expected, true,
-                                         std::memory_order_relaxed)) {
-    if (thread_.joinable()) {
-      thread_.join();
-    }
+  std::lock_guard<std::mutex> lock(start_stop_mutex_);
+  if (!thread_.joinable()) {
+    return;
   }
+  stop_flag_.store(true, std::memory_order_relaxed);
+  thread_.join();
 }
 
 void WatermarkGc::UpdateWatermark(uint64_t watermark) {

@@ -24,8 +24,8 @@
 
 #include "cedar/core/slice.h"
 #include "cedar/core/status.h"
-
 #include "cedar/core/env.h"
+#include "cedar/storage/blob_gc_manager.h"
 
 namespace cedar {
 
@@ -80,6 +80,12 @@ class BlobFileManager {
 
   // 强制同步当前 blob 文件
   Status Sync();
+  
+  // 设置 Blob GC 管理器（用于延迟删除）
+  void SetBlobGCManager(BlobGCManager* gc_mgr) { blob_gc_mgr_ = gc_mgr; }
+  
+  // 标记 SST 对应的 blob 文件为待删除
+  void OnSSTDeleted(uint32_t sst_id);
 
  private:
   explicit BlobFileManager(const Config& config, cedar::Env* env);
@@ -94,6 +100,7 @@ class BlobFileManager {
   cedar::Env* env_;
   
   // 当前写入的 blob 文件
+  std::mutex write_mutex_;  // Protects current_file_ and file creation
   uint32_t current_file_id_;
   WritableFile* current_file_;
   size_t current_file_size_;
@@ -101,8 +108,11 @@ class BlobFileManager {
   static constexpr size_t kFlushThreshold = 64 * 1024;
   
   // 已打开的读取文件缓存
-  mutable std::mutex mutex_;
+  mutable std::mutex read_mutex_;  // Protects read_files_ map
   std::unordered_map<uint32_t, RandomAccessFile*> read_files_;
+  
+  // Blob GC 管理器
+  BlobGCManager* blob_gc_mgr_ = nullptr;
 };
 
 }  // namespace cedar

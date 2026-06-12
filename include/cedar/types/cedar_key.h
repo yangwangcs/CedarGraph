@@ -210,7 +210,7 @@ class alignas(8) CedarKey {
  public:
   // 大小常量
   static constexpr size_t kKeySize = 32;
-  static constexpr size_t kUserKeySize = 27;  // 不含 timestamp_be(8) + sequence(2) + flags(1) + part_id(2) = 13
+  static constexpr size_t kUserKeySize = 19;  // entity_id(8) + entity_type(1) + column_id(2) + target_id(8)
   
   // ==================== 默认构造 ====================
   

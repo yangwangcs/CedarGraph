@@ -118,6 +118,8 @@ class CypherParser {
   std::shared_ptr<MergeClause> ParseMergeClause();
   std::shared_ptr<WithClause> ParseWithClause();
   std::shared_ptr<UnwindClause> ParseUnwindClause();
+  std::shared_ptr<ShowClause> ParseShowClause();
+  std::shared_ptr<UseSpaceClause> ParseUseSpaceClause();
   
   // ==========================================================================
   // Pattern parsers
@@ -165,6 +167,16 @@ class CypherParser {
     {"delete", true},
     {"merge", true},
     {"unwind", true},
+    {"show", true},
+    {"use", true},
+    {"spaces", true},
+    {"tags", true},
+    {"edges", true},
+    {"labels", true},
+    {"parts", true},
+    {"hosts", true},
+    {"indexes", true},
+    {"hotspots", true},
     {"order", true},
     {"by", true},
     {"asc", true},

@@ -37,7 +37,7 @@ namespace {
 grpc::Status CheckAuth(grpc::ServerContext* context,
                        cedar::dtx::security::Permission perm) {
   auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
-  if (!sm || !sm->IsAuthEnabled()) return grpc::Status::OK;
+  if (!sm || !sm->IsAuthEnabled() || !sm->GetAuthenticator()) return grpc::Status::OK;
   auto meta = context->client_metadata();
   auto it = meta.find("authorization");
   if (it == meta.end()) {
@@ -63,6 +63,11 @@ uint64_t ConvertTxnId(const std::string& txn_id_str) {
 void CopyCedarKey(const cedar::dtx::CedarKey& src, cedar::storage::CedarKey* dst) {
   dst->set_entity_id(src.entity_id());
   dst->set_timestamp(src.timestamp());
+  if (src.type_flags() != 0) dst->set_type_flags(src.type_flags());
+  if (src.column_id() != 0) dst->set_column_id(src.column_id());
+  if (src.target_id() != 0) dst->set_target_id(src.target_id());
+  if (src.sequence() != 0) dst->set_sequence(src.sequence());
+  if (src.partition_id() != 0) dst->set_partition_id(src.partition_id());
 }
 
 uint64_t GetCommitTs(const cedar::dtx::PrepareRequest& dtx_req) {

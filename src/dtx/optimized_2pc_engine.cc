@@ -464,6 +464,17 @@ Status Optimized2PCEngine::PersistCommitDecision(const CommitDecision& decision)
   if (::close(fd) != 0) {
     return Status::IOError("Decision log close failed", path);
   }
+  
+  // fsync parent directory to ensure directory entry is durable
+  {
+    std::string parent_dir = decision_log_dir;
+    int dir_fd = ::open(parent_dir.c_str(), O_RDONLY);
+    if (dir_fd >= 0) {
+      ::fsync(dir_fd);
+      ::close(dir_fd);
+    }
+  }
+  
   if (replicated_decision_log_ != nullptr) {
     auto rep_status = replicated_decision_log_->Append(decision);
     if (!rep_status.ok()) {

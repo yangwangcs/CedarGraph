@@ -18,6 +18,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <queue>
 #include <iomanip>
 #include <sstream>
 
@@ -283,6 +284,11 @@ SizeTieredCompactionEngine::SizeTieredCompactionEngine(
   levels_.resize(config_.max_levels);
   for (int i = 0; i < config_.max_levels; ++i) {
     levels_[i].level = i;
+  }
+  
+  // 初始化 I/O 限速器
+  if (config_.compaction_rate_bytes_per_sec > 0) {
+    rate_limiter_ = std::make_unique<RateLimiter>(config_.compaction_rate_bytes_per_sec);
   }
 }
 
@@ -925,6 +931,24 @@ Status SizeTieredCompactionEngine::MergeZones(
     }
   }
   
+  // 使用最小堆替代线性扫描
+  // 比较器：按 current_key 排序，key 小的优先
+  struct HeapEntry {
+    size_t item_idx;
+    CedarKey key;
+    bool operator>(const HeapEntry& other) const {
+      return key > other.key;  // 反转使最小堆
+    }
+  };
+  std::priority_queue<HeapEntry, std::vector<HeapEntry>, std::greater<HeapEntry>> min_heap;
+  
+  // 初始化堆
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (items[i]->valid) {
+      min_heap.push({i, items[i]->current_key});
+    }
+  }
+  
   // 批量写入缓冲区
   const size_t kBatchSize = 65536;
   std::vector<CedarKey> key_buffer;
@@ -933,15 +957,11 @@ Status SizeTieredCompactionEngine::MergeZones(
   value_buffer.reserve(kBatchSize);
   
   // 归并循环
-  while (!items.empty()) {
-    // 找到最小的 Key
-    size_t min_idx = 0;
-    for (size_t i = 1; i < items.size(); ++i) {
-      if (items[i]->current_key < items[min_idx]->current_key) {
-        min_idx = i;
-      }
-    }
+  while (!min_heap.empty()) {
+    auto top = min_heap.top();
+    min_heap.pop();
     
+    size_t min_idx = top.item_idx;
     auto& min_item = items[min_idx];
     CedarKey key = min_item->current_key;
     Descriptor value = min_item->current_value;
@@ -973,8 +993,8 @@ Status SizeTieredCompactionEngine::MergeZones(
     
     // 移动到下一个
     min_item->Next();
-    if (!min_item->valid) {
-      items.erase(items.begin() + min_idx);
+    if (min_item->valid) {
+      min_heap.push({min_idx, min_item->current_key});
     }
   }
   

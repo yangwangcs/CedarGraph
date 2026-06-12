@@ -124,7 +124,7 @@ Status LsmEngine::Open() {
   
   // 启动自动 Compaction 后台线程
   auto_compaction_enabled_.store(true);
-  auto_compaction_thread_ = new std::thread(&LsmEngine::AutoCompactionThread, this);
+  auto_compaction_thread_ = std::make_unique<std::thread>(&LsmEngine::AutoCompactionThread, this);
   
   // 如果存在现有的 SST 文件，迁移到新的 Compaction 引擎
   MigrateExistingSstFiles();
@@ -160,14 +160,12 @@ Status LsmEngine::Close() {
   auto_compaction_enabled_.store(false);
   if (auto_compaction_thread_ && auto_compaction_thread_->joinable()) {
     auto_compaction_thread_->join();
-    delete auto_compaction_thread_;
-    auto_compaction_thread_ = nullptr;
+    auto_compaction_thread_.reset();
   }
 
   if (bg_thread_ && bg_thread_->joinable()) {
     bg_thread_->join();
-    delete bg_thread_;
-    bg_thread_ = nullptr;
+    bg_thread_.reset();
   }
   
   // 首先关闭 Compaction 引擎，防止在 Flush 期间触发新的 Compaction
@@ -483,14 +481,25 @@ std::optional<Descriptor> LsmEngine::Get(const CedarKey& key) {
         continue;
       }
       
-      // 使用 SstReader 查询
-      SstReader reader(file_meta.path);
-      Status open_status = reader.Open();
-      if (!open_status.ok()) {
-        continue;
+      // Use cached SstReader if available, otherwise create a new one
+      std::shared_ptr<SstReader> reader;
+      if (sst_reader_cache_) {
+        reader = sst_reader_cache_->Get(file_meta.path);
+      } else {
+        auto r = std::make_shared<SstReader>(file_meta.path);
+        if (r->Open().ok()) {
+          reader = std::move(r);
+        }
       }
       
-      auto result = reader.Get(key);
+      if (!reader) continue;
+      
+      auto result = reader->Get(key);
+      
+      if (sst_reader_cache_) {
+        sst_reader_cache_->Release(file_meta.path);
+      }
+      
       if (result.has_value()) {
         return result.value();
       }
@@ -546,14 +555,26 @@ std::vector<MemTableEntry> LsmEngine::GetAll(uint64_t entity_id,
         continue;
       }
       
-      SstReader reader(file_meta.path);
-      if (!reader.Open().ok()) {
-        continue;
+      // Use cached SstReader if available
+      std::shared_ptr<SstReader> reader;
+      if (sst_reader_cache_) {
+        reader = sst_reader_cache_->Get(file_meta.path);
+      } else {
+        auto r = std::make_shared<SstReader>(file_meta.path);
+        if (r->Open().ok()) {
+          reader = std::move(r);
+        }
       }
       
+      if (!reader) continue;
+      
       // 获取该 Entity 的所有版本
-      auto range_results = reader.GetRange(entity_id, entity_type, column_id,
+      auto range_results = reader->GetRange(entity_id, entity_type, column_id,
                                            Timestamp(0), Timestamp(UINT64_MAX));
+      
+      if (sst_reader_cache_) {
+        sst_reader_cache_->Release(file_meta.path);
+      }
       
       for (const auto& [key, descriptor, txn_version] : range_results) {
         std::optional<uint64_t> dst_id = (key.target_id() != 0) 
@@ -709,15 +730,26 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
         // 构建文件路径
         std::string filepath = SstFilePath(meta.file_number);
         
-        // 使用 SstReader 查询
-        SstReader reader(filepath);
-        Status open_status = reader.Open();
-        if (!open_status.ok()) {
-          continue;
+        // Use cached SstReader if available
+        std::shared_ptr<SstReader> reader;
+        if (sst_reader_cache_) {
+          reader = sst_reader_cache_->Get(filepath);
+        } else {
+          auto r = std::make_shared<SstReader>(filepath);
+          if (r->Open().ok()) {
+            reader = std::move(r);
+          }
         }
         
-        auto range_results = reader.GetRange(entity_id, entity_type, column_id,
+        if (!reader) continue;
+        
+        auto range_results = reader->GetRange(entity_id, entity_type, column_id,
                                              Timestamp(0), Timestamp(UINT64_MAX));
+        
+        if (sst_reader_cache_) {
+          sst_reader_cache_->Release(filepath);
+        }
+        
         all_entries.insert(all_entries.end(), range_results.begin(), range_results.end());
       }
     }
@@ -1658,6 +1690,7 @@ Status LsmEngine::FlushAccumulated() {
   if (!ls.ok()) {
     return Status::IOError("LsmEngine", ls.ToString());
   }
+  std::unique_ptr<WritableFile> file_guard(file);
   
   // 排序
   std::sort(entries_to_flush.begin(), entries_to_flush.end(),
@@ -1682,7 +1715,7 @@ Status LsmEngine::FlushAccumulated() {
   }
   
   Status s = builder->Finish();
-  delete file;
+  file_guard.reset();  // Close file via RAII
   
   if (!s.ok()) {
     env_->RemoveFile(filepath);
@@ -1783,6 +1816,7 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::tuple<CedarKey, Descriptor,
   if (!ls.ok()) {
     return Status::IOError("LsmEngine", ls.ToString());
   }
+  std::unique_ptr<cedar::WritableFile> file_guard(file);
   
   // 使用 Builder
   auto builder = SstBuilderFactory::Create(file, db_path_);
@@ -1792,7 +1826,7 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::tuple<CedarKey, Descriptor,
   }
   
   Status fs = builder->Finish();
-  delete file;
+  file_guard.reset();  // Close file via RAII
   
   if (!fs.ok()) {
     env_->RemoveFile(filepath);
@@ -1875,7 +1909,57 @@ LsmEngine::Stats LsmEngine::GetStats() const {
       stats.sst_size += meta.file_size;
     }
   }
+  
+  // Calculate disk usage
+  try {
+    auto capacity = GetCapacityInfo();
+    stats.total_disk_bytes = capacity.total_bytes;
+    stats.used_disk_bytes = capacity.used_bytes;
+    stats.db_size_bytes = capacity.db_size_bytes;
+    stats.disk_usage_percent = capacity.usage_percent;
+  } catch (...) {
+    // Ignore errors in disk stats
+  }
+  
   return stats;
+}
+
+LsmEngine::CapacityInfo LsmEngine::GetCapacityInfo() const {
+  CapacityInfo info;
+  
+  // Get disk space info
+  try {
+    auto space = std::filesystem::space(db_path_);
+    info.total_bytes = space.capacity;
+    info.available_bytes = space.available;
+    info.used_bytes = space.capacity - space.available;
+    info.usage_percent = (info.total_bytes > 0) 
+        ? (100.0 * info.used_bytes / info.total_bytes) : 0.0;
+  } catch (const std::exception&) {
+    // If space() fails, use SST size as estimate
+    auto stats = GetStats();
+    info.db_size_bytes = stats.sst_size;
+    return info;
+  }
+  
+  // Calculate database directory size
+  try {
+    uint64_t db_size = 0;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(db_path_)) {
+      if (entry.is_regular_file()) {
+        db_size += entry.file_size();
+      }
+    }
+    info.db_size_bytes = db_size;
+  } catch (...) {
+    // Ignore errors
+  }
+  
+  // Set warning/critical flags
+  info.is_warning = (info.usage_percent >= 80.0);
+  info.is_critical = (info.usage_percent >= 90.0);
+  
+  return info;
 }
 
 void LsmEngine::TrackColumnId(uint64_t entity_id, uint16_t column_id) {
@@ -2415,6 +2499,7 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
   if (!ls.ok()) {
     return Status::IOError("LsmEngine", ls.ToString());
   }
+  std::unique_ptr<cedar::WritableFile> file_guard(file);
   
   // 使用 Zone-Columnar Builder（默认格式）
   auto builder = SstBuilderFactory::Create(file, db_path_);
@@ -2429,7 +2514,7 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
   }
 
   Status fs = builder->Finish();
-  delete file;
+  file_guard.reset();  // Close file via RAII
 
   if (!fs.ok()) {
     env_->RemoveFile(filepath);
@@ -2979,8 +3064,7 @@ Status LsmEngine::CompactAll() {
   auto_compaction_enabled_.store(false);
   if (auto_compaction_thread_ && auto_compaction_thread_->joinable()) {
     auto_compaction_thread_->join();
-    delete auto_compaction_thread_;
-    auto_compaction_thread_ = nullptr;
+    auto_compaction_thread_.reset();
   }
   
   // 执行全量合并
@@ -2988,7 +3072,7 @@ Status LsmEngine::CompactAll() {
   
   // 重新启动自动 Compaction 线程
   auto_compaction_enabled_.store(true);
-  auto_compaction_thread_ = new std::thread(&LsmEngine::AutoCompactionThread, this);
+  auto_compaction_thread_ = std::make_unique<std::thread>(&LsmEngine::AutoCompactionThread, this);
   
   return s;
 }
@@ -3016,10 +3100,11 @@ std::optional<std::vector<MemTableEntry>> LsmEngine::GetFromCrossQueryCache(
   // 检查是否过期
   auto now = std::chrono::steady_clock::now();
   if (now - it->second.timestamp > kCrossQueryCacheTTL) {
+    auto key_copy = key;
     lock.unlock();
     // 过期，移除缓存
     std::unique_lock<std::shared_mutex> write_lock(cross_query_cache_mutex_);
-    cross_query_cache_.erase(it);
+    cross_query_cache_.erase(key_copy);
     return std::nullopt;
   }
   
@@ -3084,6 +3169,34 @@ void LsmEngine::TrackQueryPattern(uint64_t entity_id, EntityType entity_type,
   pattern.last_query = std::chrono::steady_clock::now();
 }
 
+std::vector<LsmEngine::HotSpot> LsmEngine::GetHotSpots(size_t top_n) const {
+  std::shared_lock<std::shared_mutex> lock(query_pattern_mutex_);
+  
+  std::vector<HotSpot> spots;
+  spots.reserve(query_patterns_.size());
+  
+  for (const auto& [key, pattern] : query_patterns_) {
+    if (pattern.count >= kHotDataThreshold) {
+      spots.push_back({key.entity_id, key.column_id, pattern.count, pattern.last_query});
+    }
+  }
+  
+  // Sort by query count descending
+  std::sort(spots.begin(), spots.end(), 
+            [](const HotSpot& a, const HotSpot& b) { return a.query_count > b.query_count; });
+  
+  // Return top-N
+  if (spots.size() > top_n) {
+    spots.resize(top_n);
+  }
+  return spots;
+}
+
+void LsmEngine::ResetQueryPatterns() {
+  std::unique_lock<std::shared_mutex> lock(query_pattern_mutex_);
+  query_patterns_.clear();
+}
+
 void LsmEngine::PrefetchHotData(uint64_t entity_id, EntityType entity_type, 
                                  uint16_t column_id) {
   // 检查是否是热数据
@@ -3128,9 +3241,10 @@ std::optional<std::vector<MemTableEntry>> LsmEngine::GetFromTimeRangeCache(
   // 检查是否过期
   auto now = std::chrono::steady_clock::now();
   if (now - it->second.second > kTimeRangeCacheTTL) {
+    auto key_copy = key;
     lock.unlock();
     std::unique_lock<std::shared_mutex> write_lock(time_range_cache_mutex_);
-    time_range_cache_.erase(it);
+    time_range_cache_.erase(key_copy);
     return std::nullopt;
   }
   

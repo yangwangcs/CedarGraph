@@ -121,4 +121,4 @@ class BlockCacheManager {
 
 }  // namespace cedar
 
-#endif  // FERN_STORAGE_BLOCK_CACHE_H_
+#endif  // CEDAR_STORAGE_BLOCK_CACHE_H_

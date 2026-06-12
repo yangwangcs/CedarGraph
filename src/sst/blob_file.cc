@@ -308,7 +308,18 @@ Status BlobFileReader::ReadHeader() {
     return Status::IOError("BlobFileReader::ReadHeader", strerror(errno));
   }
   
-  return header_.DecodeFrom(Slice(buf));
+  Status s = header_.DecodeFrom(Slice(buf));
+  if (!s.ok()) {
+    return s;
+  }
+  
+  // Verify header checksum
+  uint64_t expected_checksum = ComputeCRC64(buf.data(), 40);
+  if (header_.checksum != 0 && header_.checksum != expected_checksum) {
+    return Status::Corruption("BlobFileReader::ReadHeader", "checksum mismatch");
+  }
+  
+  return Status::OK();
 }
 
 Status BlobFileReader::Read(uint32_t offset, uint32_t size, char* buffer) {

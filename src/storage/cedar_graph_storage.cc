@@ -566,9 +566,8 @@ std::vector<std::tuple<uint64_t, Timestamp, Descriptor>> CedarGraphStorage::Scan
   
   // 转换为 (dst_id, timestamp, descriptor) 格式
   for (const auto& entry : entries) {
-    // Note: 目前返回的 entry 不包含 dst_id，需要进一步优化
-    // 暂时返回 src_id 作为占位
-    results.emplace_back(src_id, entry.timestamp, entry.descriptor);
+    uint64_t dst = entry.dst_id.value_or(0);
+    results.emplace_back(dst, entry.timestamp, entry.descriptor);
   }
   
   return results;

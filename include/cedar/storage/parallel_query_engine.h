@@ -178,4 +178,4 @@ class ParallelQueryEngine {
 
 }  // namespace cedar
 
-#endif  // FERN_PARALLEL_QUERY_ENGINE_H_
+#endif  // CEDAR_PARALLEL_QUERY_ENGINE_H_

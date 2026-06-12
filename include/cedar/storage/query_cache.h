@@ -109,4 +109,4 @@ class QueryCache {
 
 }  // namespace cedar
 
-#endif  // FERN_QUERY_CACHE_H_
+#endif  // CEDAR_QUERY_CACHE_H_

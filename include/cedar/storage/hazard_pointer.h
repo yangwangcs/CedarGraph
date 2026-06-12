@@ -112,4 +112,4 @@ class HazardPointerGuard {
 
 }  // namespace cedar
 
-#endif  // FERN_HAZARD_POINTER_H_
+#endif  // CEDAR_HAZARD_POINTER_H_

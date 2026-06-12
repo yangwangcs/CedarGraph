@@ -187,4 +187,4 @@ class AnchorCache {
 
 }  // namespace cedar
 
-#endif  // FERN_ACTIVE_ENTITY_BITMAP_H_
+#endif  // CEDAR_ACTIVE_ENTITY_BITMAP_H_

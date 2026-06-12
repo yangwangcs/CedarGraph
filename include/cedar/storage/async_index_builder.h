@@ -259,4 +259,4 @@ namespace AsyncIndexBuilderHelper {
 
 }  // namespace cedar
 
-#endif  // FERN_ASYNC_INDEX_BUILDER_H_
+#endif  // CEDAR_ASYNC_INDEX_BUILDER_H_

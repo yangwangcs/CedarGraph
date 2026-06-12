@@ -115,17 +115,16 @@ Status WriteBatch::Iterate(Handler* handler) const {
       CedarKey key = CedarKey::Decode(ptr);
       ptr += 32;
       
-      if (ptr >= end) {
-        return Status::Corruption("WriteBatch", "truncated value type");
+      // Read 8-byte descriptor value (matches Put() format)
+      if (ptr + 8 > end) {
+        return Status::Corruption("WriteBatch", "truncated value");
       }
-      char desc_type = *ptr++;
-      (void)desc_type;
+      uint64_t raw_value;
+      std::memcpy(&raw_value, ptr, sizeof(uint64_t));
+      ptr += 8;
       
-      // Skip value data for now (simplified)
-      ptr += 8;  // Assume fixed 8 bytes for value
-      
-      // Call handler
-      handler->Put(key.Encode(), Slice());
+      Descriptor desc(raw_value);
+      handler->Put(key.Encode(), Slice(reinterpret_cast<const char*>(&raw_value), sizeof(raw_value)));
     } else if (type == 0x02) {
       // CedarKey delete
       if (ptr + 32 > end) {

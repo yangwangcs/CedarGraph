@@ -429,4 +429,4 @@ struct CedarOptionsMVCCExtended : public CedarOptions {
 
 }  // namespace cedar
 
-#endif  // FERN_OPTIONS_H_
+#endif  // CEDAR_OPTIONS_H_

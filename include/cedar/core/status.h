@@ -225,4 +225,4 @@ class StatusOr {
 
 }  // namespace cedar
 
-#endif  // FERN_CORE_STATUS_H_
+#endif  // CEDAR_CORE_STATUS_H_

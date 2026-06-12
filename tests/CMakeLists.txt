@@ -124,6 +124,10 @@ add_executable(test_edge_atomicity storage/test_edge_atomicity.cc)
 target_link_libraries(test_edge_atomicity ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_edge_atomicity)
 
+add_executable(test_batch_neighbor_query test_batch_neighbor_query.cc)
+target_link_libraries(test_batch_neighbor_query ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_batch_neighbor_query)
+
 add_executable(test_temporal_constraint storage/test_temporal_constraint.cc)
 target_link_libraries(test_temporal_constraint ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_temporal_constraint)

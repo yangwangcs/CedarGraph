@@ -309,6 +309,30 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   QueryRouteContext route_ctx;
   route_ctx.query = request->query();
   
+  // Handle SHOW and USE commands directly (they need MetaD access, not storage)
+  {
+    cypher::CypherParser show_parser(request->query());
+    auto show_stmt = show_parser.ParseStatement();
+    if (show_stmt && !show_stmt->clauses.empty()) {
+      if (show_stmt->clauses[0]->clause_type == cypher::ClauseType::SHOW) {
+        auto* show_clause = static_cast<cypher::ShowClause*>(show_stmt->clauses[0].get());
+        return HandleShowCommand(show_clause, response);
+      }
+      if (show_stmt->clauses[0]->clause_type == cypher::ClauseType::USE) {
+        auto* use_clause = static_cast<cypher::UseSpaceClause*>(show_stmt->clauses[0].get());
+        SetSessionSpace(request->session_id(), use_clause->space_name);
+        response->set_success(true);
+        ResultSet result_set;
+        result_set.add_columns("Status");
+        auto* row = result_set.add_rows();
+        auto* val = row->add_values();
+        val->set_string_val("Changed space to " + use_clause->space_name);
+        *response->mutable_result_set() = result_set;
+        return grpc::Status::OK;
+      }
+    }
+  }
+  
   auto parse_status = ParseQueryForRouting(request->query(), &route_ctx);
   if (!parse_status.ok()) {
     stats_.failed_queries++;
@@ -670,6 +694,16 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   stats_.total_latency_us += latency_us;
   RecordLatency(static_cast<uint64_t>(latency_us));
   
+  // Slow query log: log queries exceeding threshold (default 500ms)
+  static constexpr int64_t kSlowQueryThresholdUs = 500 * 1000;  // 500ms
+  if (latency_us > kSlowQueryThresholdUs) {
+    std::cerr << "[SLOW_QUERY] latency=" << latency_us / 1000 << "ms"
+              << " query=\"" << request->query().substr(0, 200) << "\""
+              << " rows=" << result_set.rows_size()
+              << " partitions=" << route_ctx.target_partitions.size()
+              << std::endl;
+  }
+  
   // 将结果放入缓存
   if (!request->explain_only() && query_cache_ != nullptr) {
     cedar::query::CacheKey cache_key;
@@ -899,13 +933,20 @@ grpc::Status GraphServiceRouter::Health(grpc::ServerContext* context,
   auto meta_nodes = meta_client_->GetAliveNodes();
   bool meta_healthy = meta_nodes.ok();
   
-  response->set_healthy(meta_healthy);
-  response->set_status(meta_healthy ? "healthy" : "degraded");
+  // Check storage client health independently
+  bool storage_healthy = false;
+  {
+    std::shared_lock<std::shared_mutex> stubs_lock(stubs_mutex_);
+    storage_healthy = !storage_stubs_.empty();
+  }
+  
+  response->set_healthy(meta_healthy && storage_healthy);
+  response->set_status(meta_healthy && storage_healthy ? "healthy" : "degraded");
   response->set_meta_client_healthy(meta_healthy);
   response->set_parser_healthy(true);
   response->set_planner_healthy(true);
   response->set_executor_healthy(true);
-  response->set_storage_client_healthy(meta_healthy);  // 依赖 MetaD
+  response->set_storage_client_healthy(storage_healthy);
   
   response->set_active_queries(stats_.active_queries.load());
   response->set_queued_queries(0);
@@ -1176,6 +1217,250 @@ grpc::Status GraphServiceRouter::GetSchema(grpc::ServerContext* context,
       out->add_indexes(idx);
     }
   }
+  return grpc::Status::OK;
+}
+
+grpc::Status GraphServiceRouter::HandleShowCommand(
+    const cypher::ShowClause* show_clause,
+    ExecuteQueryResponse* response) {
+  if (!meta_client_) {
+    response->set_success(false);
+    response->set_error_msg("MetaD client not initialized");
+    return grpc::Status::OK;
+  }
+
+  auto stub = meta_client_->GetStub();
+  if (!stub) {
+    response->set_success(false);
+    response->set_error_msg("No MetaD connection");
+    return grpc::Status::OK;
+  }
+
+  ResultSet result_set;
+
+  switch (show_clause->show_type) {
+    case cypher::ShowType::SPACES: {
+      cedar::meta::ListSpacesRequest meta_req;
+      cedar::meta::ListSpacesResponse meta_resp;
+      grpc::ClientContext meta_ctx;
+      meta_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+      auto status = stub->ListSpaces(&meta_ctx, meta_req, &meta_resp);
+      if (!status.ok()) {
+        response->set_success(false);
+        response->set_error_msg("MetaD ListSpaces failed: " + status.error_message());
+        return grpc::Status::OK;
+      }
+
+      // Build result set: | Name | Partition_Num | Replica_Factor |
+      result_set.add_columns("Name");
+      result_set.add_columns("Partition_Num");
+      result_set.add_columns("Replica_Factor");
+
+      for (const auto& space : meta_resp.spaces()) {
+        auto* row = result_set.add_rows();
+        auto* v1 = row->add_values();
+        v1->set_string_val(space.name());
+        auto* v2 = row->add_values();
+        v2->set_int_val(space.partition_num());
+        auto* v3 = row->add_values();
+        v3->set_int_val(space.replica_factor());
+      }
+      break;
+    }
+
+    case cypher::ShowType::TAGS:
+    case cypher::ShowType::EDGES:
+    case cypher::ShowType::LABELS: {
+      cedar::meta::ListLabelsRequest meta_req;
+      meta_req.set_space_name(show_clause->space_name.empty() ? "default" : show_clause->space_name);
+      cedar::meta::ListLabelsResponse meta_resp;
+      grpc::ClientContext meta_ctx;
+      meta_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+      auto status = stub->ListLabels(&meta_ctx, meta_req, &meta_resp);
+      if (!status.ok()) {
+        response->set_success(false);
+        response->set_error_msg("MetaD ListLabels failed: " + status.error_message());
+        return grpc::Status::OK;
+      }
+
+      // Build result set: | Name | Properties |
+      result_set.add_columns("Name");
+      result_set.add_columns("Properties");
+
+      for (const auto& label : meta_resp.labels()) {
+        auto* row = result_set.add_rows();
+        auto* v1 = row->add_values();
+        v1->set_string_val(label.name());
+        std::string props;
+        for (const auto& p : label.properties()) {
+          if (!props.empty()) props += ", ";
+          props += p.name() + ":" + p.type();
+        }
+        auto* v2 = row->add_values();
+        v2->set_string_val(props);
+      }
+      break;
+    }
+
+    case cypher::ShowType::PARTS: {
+      // Show partition assignments for default space
+      cedar::meta::GetSpacePartitionMapRequest meta_req;
+      meta_req.set_space_name(show_clause->space_name.empty() ? "default" : show_clause->space_name);
+      cedar::meta::GetSpacePartitionMapResponse meta_resp;
+      grpc::ClientContext meta_ctx;
+      meta_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+      auto status = stub->GetSpacePartitionMap(&meta_ctx, meta_req, &meta_resp);
+      if (!status.ok()) {
+        response->set_success(false);
+        response->set_error_msg("MetaD GetSpacePartitionMap failed: " + status.error_message());
+        return grpc::Status::OK;
+      }
+
+      // Build result set: | Partition | Leader | Followers | State |
+      result_set.add_columns("Partition");
+      result_set.add_columns("Leader");
+      result_set.add_columns("Followers");
+      result_set.add_columns("State");
+
+      for (const auto& [pid, assignment] : meta_resp.partition_map().assignments()) {
+        auto* row = result_set.add_rows();
+        auto* v1 = row->add_values();
+        v1->set_int_val(pid);
+        auto* v2 = row->add_values();
+        v2->set_int_val(assignment.leader_node());
+        std::string followers;
+        for (uint32_t f : assignment.follower_nodes()) {
+          if (!followers.empty()) followers += ",";
+          followers += std::to_string(f);
+        }
+        auto* v3 = row->add_values();
+        v3->set_string_val(followers);
+        auto* v4 = row->add_values();
+        const char* state_str = "Normal";
+        if (assignment.state() == 1) state_str = "Migrating";
+        else if (assignment.state() == 2) state_str = "Offline";
+        v4->set_string_val(state_str);
+      }
+      break;
+    }
+
+    case cypher::ShowType::HOSTS: {
+      cedar::meta::GetAliveNodesRequest meta_req;
+      cedar::meta::GetAliveNodesResponse meta_resp;
+      grpc::ClientContext meta_ctx;
+      meta_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+      auto status = stub->GetAliveNodes(&meta_ctx, meta_req, &meta_resp);
+      if (!status.ok()) {
+        response->set_success(false);
+        response->set_error_msg("MetaD GetAliveNodes failed: " + status.error_message());
+        return grpc::Status::OK;
+      }
+
+      // Build result set: | ID | Address | State |
+      result_set.add_columns("ID");
+      result_set.add_columns("Address");
+      result_set.add_columns("State");
+
+      for (const auto& node : meta_resp.nodes()) {
+        auto* row = result_set.add_rows();
+        auto* v1 = row->add_values();
+        v1->set_int_val(node.node_id());
+        auto* v2 = row->add_values();
+        v2->set_string_val(node.address());
+        auto* v3 = row->add_values();
+        v3->set_string_val(node.state());
+      }
+      break;
+    }
+
+    case cypher::ShowType::INDEXES: {
+      cedar::meta::ListIndexesRequest meta_req;
+      meta_req.set_space_name(show_clause->space_name.empty() ? "default" : show_clause->space_name);
+      cedar::meta::ListIndexesResponse meta_resp;
+      grpc::ClientContext meta_ctx;
+      meta_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+      auto status = stub->ListIndexes(&meta_ctx, meta_req, &meta_resp);
+      if (!status.ok()) {
+        response->set_success(false);
+        response->set_error_msg("MetaD ListIndexes failed: " + status.error_message());
+        return grpc::Status::OK;
+      }
+
+      // Build result set: | Name | Label | Properties | Unique |
+      result_set.add_columns("Name");
+      result_set.add_columns("Label");
+      result_set.add_columns("Properties");
+      result_set.add_columns("Unique");
+
+      for (const auto& index : meta_resp.indexes()) {
+        auto* row = result_set.add_rows();
+        auto* v1 = row->add_values();
+        v1->set_string_val(index.name());
+        auto* v2 = row->add_values();
+        v2->set_string_val(index.label_name());
+        std::string props;
+        for (const auto& p : index.properties()) {
+          if (!props.empty()) props += ", ";
+          props += p;
+        }
+        auto* v3 = row->add_values();
+        v3->set_string_val(props);
+        auto* v4 = row->add_values();
+        v4->set_bool_val(index.unique());
+      }
+      break;
+    }
+
+    case cypher::ShowType::HOTSPOTS: {
+      // Hot spots are per-StorageD; query each storage node
+      // For prototype, return a message with instructions
+      result_set.add_columns("Entity_ID");
+      result_set.add_columns("Column_ID");
+      result_set.add_columns("Query_Count");
+      result_set.add_columns("Node");
+
+      // Query storage stubs for hot spots
+      {
+        std::shared_lock<std::shared_mutex> stubs_lock(stubs_mutex_);
+        for (const auto& [addr, stub] : storage_stubs_) {
+          cedar::storage::GetHotSpotsRequest hot_req;
+          hot_req.set_top_n(10);
+          cedar::storage::GetHotSpotsResponse hot_resp;
+          grpc::ClientContext hot_ctx;
+          hot_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
+
+          auto status = stub->GetHotSpots(&hot_ctx, hot_req, &hot_resp);
+          if (status.ok() && hot_resp.success()) {
+            for (const auto& spot : hot_resp.hot_spots()) {
+              auto* row = result_set.add_rows();
+              auto* v1 = row->add_values();
+              v1->set_int_val(spot.entity_id());
+              auto* v2 = row->add_values();
+              v2->set_int_val(spot.column_id());
+              auto* v3 = row->add_values();
+              v3->set_int_val(spot.query_count());
+              auto* v4 = row->add_values();
+              v4->set_string_val(addr);
+            }
+          }
+        }
+      }
+      break;
+    }
+
+    default:
+      response->set_success(false);
+      response->set_error_msg("Unsupported SHOW command");
+      return grpc::Status::OK;
+  }
+
+  response->set_success(true);
+  *response->mutable_result_set() = result_set;
   return grpc::Status::OK;
 }
 
@@ -2209,8 +2494,12 @@ grpc::Status GraphServiceRouter::Rollback(grpc::ServerContext* context,
   }
   
   if (txn_state_manager_) {
-    auto txn_id = std::stoull(txn_id_str);
-    txn_state_manager_->UpdateState(txn_id, cedar::TxnState::kAborted);
+    try {
+      auto txn_id = std::stoull(txn_id_str);
+      txn_state_manager_->UpdateState(txn_id, cedar::TxnState::kAborted);
+    } catch (const std::exception& e) {
+      std::cerr << "[GraphD] Failed to parse txn_id for rollback: " << txn_id_str << std::endl;
+    }
   }
   
   response->set_ok(true);
@@ -2240,11 +2529,26 @@ bool GraphServiceRouter::IsWriteQuery(const std::string& query) const {
   // 2. 关键词 fallback（覆盖 MERGE/REMOVE 以及 AST 解析失败的场景）
   std::string lower_query = query;
   std::transform(lower_query.begin(), lower_query.end(), lower_query.begin(), ::tolower);
-  return lower_query.find("create") != std::string::npos ||
-         lower_query.find("delete") != std::string::npos ||
-         lower_query.find("set") != std::string::npos ||
-         lower_query.find("merge") != std::string::npos ||
-         lower_query.find("remove") != std::string::npos;
+  // Use word-boundary-aware matching to avoid false positives
+  // (e.g., "set" in "offset", "create" in "recreate")
+  auto is_word_boundary = [](const std::string& s, size_t pos, size_t len) {
+    bool left_ok = (pos == 0 || !std::isalnum(s[pos - 1]));
+    bool right_ok = (pos + len >= s.size() || !std::isalnum(s[pos + len]));
+    return left_ok && right_ok;
+  };
+  auto contains_keyword = [&](const std::string& keyword) {
+    size_t pos = lower_query.find(keyword);
+    while (pos != std::string::npos) {
+      if (is_word_boundary(lower_query, pos, keyword.size())) return true;
+      pos = lower_query.find(keyword, pos + 1);
+    }
+    return false;
+  };
+  return contains_keyword("create") ||
+         contains_keyword("delete") ||
+         contains_keyword(" set") ||
+         contains_keyword("merge") ||
+         contains_keyword("remove");
 }
 
 Status GraphServiceRouter::ExecuteDistributedWrite(
@@ -2366,6 +2670,15 @@ void GraphServiceRouter::RecordLatency(uint64_t latency_us) {
     latency_history_[latency_history_pos_] = latency_us;
     latency_history_pos_ = (latency_history_pos_ + 1) % kLatencyHistorySize;
   }
+  
+  // Record timestamp for QPS sliding window
+  auto now = std::chrono::steady_clock::now();
+  if (qps_window_.size() < kQPSWindowSize) {
+    qps_window_.push_back(now);
+  } else {
+    qps_window_[qps_window_pos_] = now;
+    qps_window_pos_ = (qps_window_pos_ + 1) % kQPSWindowSize;
+  }
 }
 
 uint64_t GraphServiceRouter::GetP99Latency() const {
@@ -2381,12 +2694,30 @@ uint64_t GraphServiceRouter::GetP99Latency() const {
 
 uint64_t GraphServiceRouter::GetQPS() const {
   std::lock_guard<std::mutex> lock(latency_mutex_);
-  if (latency_history_.empty()) return 0;
+  if (qps_window_.empty()) return 0;
   
-  // Count queries in the last 1 second using recent history
-  // Since we don't store timestamps, approximate by assuming uniform rate
-  // over the measurement window. Use total_queries as a rough proxy.
-  return stats_.total_queries.load() / 60;  // Approximate average QPS over 1 minute
+  auto now = std::chrono::steady_clock::now();
+  auto one_second_ago = now - std::chrono::seconds(1);
+  
+  uint64_t count = 0;
+  for (const auto& ts : qps_window_) {
+    if (ts >= one_second_ago) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+std::string GraphServiceRouter::GetSessionSpace(const std::string& session_id) const {
+  std::lock_guard<std::mutex> lock(session_space_mutex_);
+  auto it = session_spaces_.find(session_id);
+  return (it != session_spaces_.end()) ? it->second : "default";
+}
+
+void GraphServiceRouter::SetSessionSpace(const std::string& session_id,
+                                          const std::string& space_name) {
+  std::lock_guard<std::mutex> lock(session_space_mutex_);
+  session_spaces_[session_id] = space_name;
 }
 
 grpc::Status GraphServiceRouter::CheckAuth(

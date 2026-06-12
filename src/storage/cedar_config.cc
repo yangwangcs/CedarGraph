@@ -912,12 +912,12 @@ Status CedarConfig::LoadFromFile(const std::string& path) {
   // ---------------------------------------------------------------------------
   if (doc.HasMember("limits") && doc["limits"].IsObject()) {
     const auto& lim = doc["limits"];
-    get_size_t(lim, "max_query_length", limits.max_query_length);
-    get_size_t(lim, "max_batch_items", limits.max_batch_items);
-    get_size_t(lim, "max_parameter_count", limits.max_parameter_count);
-    get_size_t(lim, "max_parameter_value_length", limits.max_parameter_value_length);
-    get_uint32(lim, "max_timeout_ms", limits.max_timeout_ms);
-    get_size_t(lim, "max_heartbeat_partitions", limits.max_heartbeat_partitions);
+    limits.max_query_length = get_size_t(lim, "max_query_length", limits.max_query_length);
+    limits.max_batch_items = get_size_t(lim, "max_batch_items", limits.max_batch_items);
+    limits.max_parameter_count = get_size_t(lim, "max_parameter_count", limits.max_parameter_count);
+    limits.max_parameter_value_length = get_size_t(lim, "max_parameter_value_length", limits.max_parameter_value_length);
+    limits.max_timeout_ms = get_uint32(lim, "max_timeout_ms", limits.max_timeout_ms);
+    limits.max_heartbeat_partitions = get_size_t(lim, "max_heartbeat_partitions", limits.max_heartbeat_partitions);
   }
 
   return Status::OK();

@@ -187,7 +187,9 @@ enum class ClauseType {
   DELETE,
   MERGE,
   WITH,
-  UNWIND
+  UNWIND,
+  SHOW,
+  USE
 };
 
 // 查询子句基类
@@ -279,6 +281,31 @@ struct UnwindClause : QueryClause {
   std::shared_ptr<Expression> expression;
   std::string alias;
   UnwindClause() : QueryClause(ClauseType::UNWIND) {}
+};
+
+// SHOW 子句类型
+enum class ShowType {
+  SPACES,
+  TAGS,
+  EDGES,
+  LABELS,
+  PARTS,
+  HOSTS,
+  INDEXES,
+  HOTSPOTS
+};
+
+// SHOW 子句
+struct ShowClause : QueryClause {
+  ShowType show_type;
+  std::string space_name;  // SHOW TAGS/EDGES IN <space>
+  explicit ShowClause(ShowType type) : QueryClause(ClauseType::SHOW), show_type(type) {}
+};
+
+// USE 子句
+struct UseSpaceClause : QueryClause {
+  std::string space_name;
+  explicit UseSpaceClause(std::string name) : QueryClause(ClauseType::USE), space_name(std::move(name)) {}
 };
 
 // 时态修饰符类型

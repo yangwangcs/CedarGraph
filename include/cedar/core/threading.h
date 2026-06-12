@@ -115,4 +115,4 @@ class BackgroundWorker {
 
 }  // namespace cedar
 
-#endif  // FERN_CORE_THREADING_H_
+#endif  // CEDAR_CORE_THREADING_H_

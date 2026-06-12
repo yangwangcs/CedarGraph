@@ -89,6 +89,16 @@ std::shared_ptr<QueryStatement> CypherParser::ParseStatement() {
       if (unwind) {
         stmt->clauses.push_back(unwind);
       }
+    } else if (MatchKeyword("show")) {
+      auto show = ParseShowClause();
+      if (show) {
+        stmt->clauses.push_back(show);
+      }
+    } else if (MatchKeyword("use")) {
+      auto use = ParseUseSpaceClause();
+      if (use) {
+        stmt->clauses.push_back(use);
+      }
     } else {
       // Unknown clause — report error instead of silent truncation
       error_ = "Unexpected token at position " + std::to_string(pos_);
@@ -705,6 +715,52 @@ std::shared_ptr<UnwindClause> CypherParser::ParseUnwindClause() {
   }
 
   return unwind;
+}
+
+std::shared_ptr<ShowClause> CypherParser::ParseShowClause() {
+  SkipWhitespaceAndComments();
+
+  ShowType show_type;
+  if (MatchKeyword("spaces")) {
+    show_type = ShowType::SPACES;
+  } else if (MatchKeyword("tags")) {
+    show_type = ShowType::TAGS;
+  } else if (MatchKeyword("edges")) {
+    show_type = ShowType::EDGES;
+  } else if (MatchKeyword("labels")) {
+    show_type = ShowType::LABELS;
+  } else if (MatchKeyword("parts") || MatchKeyword("partitions")) {
+    show_type = ShowType::PARTS;
+  } else if (MatchKeyword("hosts")) {
+    show_type = ShowType::HOSTS;
+  } else if (MatchKeyword("indexes")) {
+    show_type = ShowType::INDEXES;
+  } else if (MatchKeyword("hotspots")) {
+    show_type = ShowType::HOTSPOTS;
+  } else {
+    error_ = "Expected SPACES, TAGS, EDGES, LABELS, PARTS, HOSTS, INDEXES, or HOTSPOTS after SHOW";
+    return nullptr;
+  }
+
+  auto show = std::make_shared<ShowClause>(show_type);
+
+  // Optional: SHOW TAGS/EDGES IN <space>
+  SkipWhitespaceAndComments();
+  if (MatchKeyword("in") || MatchKeyword("from")) {
+    show->space_name = ParseIdentifier();
+  }
+
+  return show;
+}
+
+std::shared_ptr<UseSpaceClause> CypherParser::ParseUseSpaceClause() {
+  SkipWhitespaceAndComments();
+  std::string space_name = ParseIdentifier();
+  if (space_name.empty()) {
+    error_ = "Expected space name after USE";
+    return nullptr;
+  }
+  return std::make_shared<UseSpaceClause>(std::move(space_name));
 }
 
 // ============================================================================

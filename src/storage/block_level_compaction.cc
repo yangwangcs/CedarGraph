@@ -53,6 +53,10 @@ BlockCompactionTask BlockLevelCompactionEngine::AnalyzeTask(
   task.input_files = inputs;
   task.output_level = output_level;
   
+  if (inputs.empty()) {
+    return task;
+  }
+  
   if (inputs.size() < 2) {
     // 单文件，全部合并
     BlockCompactionTask::MergeRegion region;

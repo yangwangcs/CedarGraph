@@ -162,4 +162,4 @@ class BlockReferenceManager {
 
 }  // namespace cedar
 
-#endif  // FERN_BLOCK_LEVEL_COMPACTION_H_
+#endif  // CEDAR_BLOCK_LEVEL_COMPACTION_H_

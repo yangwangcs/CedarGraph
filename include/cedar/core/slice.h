@@ -41,7 +41,7 @@ class Slice {
   Slice(const std::string& s) : data_(s.data()), size_(s.size()) {}
 
   // Create a slice that refers to s[0,strlen(s)-1]
-  Slice(const char* s) : data_(s), size_(strlen(s)) {}
+  Slice(const char* s) : data_(s ? s : ""), size_(s ? strlen(s) : 0) {}
 
   // Intentionally copyable.
   Slice(const Slice&) = default;
@@ -119,4 +119,4 @@ inline int Slice::compare(const Slice& b) const {
 
 }  // namespace cedar
 
-#endif  // FERN_CORE_SLICE_H_
+#endif  // CEDAR_CORE_SLICE_H_

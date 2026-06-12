@@ -360,14 +360,14 @@ class CedarConfigManager {
   (cedar::CedarConfigManager::Instance()->GetConfig().param)
 
 // 快速访问常用参数
-#define CEDAR_DB(param)      FERN_CONFIG(db.param)
-#define CEDAR_LSM(param)     FERN_CONFIG(lsm.param)
-#define CEDAR_WAL(param)     FERN_CONFIG(wal.param)
-#define CEDAR_MEMTABLE(param) FERN_CONFIG(memtable.param)
-#define CEDAR_MVCC(param)    FERN_CONFIG(mvcc.param)
-#define CEDAR_TXN(param)     FERN_CONFIG(transaction.param)
-#define CEDAR_CACHE(param)   FERN_CONFIG(cache.param)
+#define CEDAR_DB(param)      CEDAR_CONFIG(db.param)
+#define CEDAR_LSM(param)     CEDAR_CONFIG(lsm.param)
+#define CEDAR_WAL(param)     CEDAR_CONFIG(wal.param)
+#define CEDAR_MEMTABLE(param) CEDAR_CONFIG(memtable.param)
+#define CEDAR_MVCC(param)    CEDAR_CONFIG(mvcc.param)
+#define CEDAR_TXN(param)     CEDAR_CONFIG(transaction.param)
+#define CEDAR_CACHE(param)   CEDAR_CONFIG(cache.param)
 
 }  // namespace cedar
 
-#endif  // FERN_FERN_CONFIG_H_
+#endif  // CEDAR_FERN_CONFIG_H_
