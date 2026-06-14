@@ -309,9 +309,45 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   QueryRouteContext route_ctx;
   route_ctx.query = request->query();
   
+  // Detect EXPLAIN/PROFILE prefix in Cypher query
+  std::string effective_query = request->query();
+  bool effective_explain = effective_explain;
+  bool effective_profile = effective_profile;
+  {
+    // Trim leading whitespace
+    size_t start = effective_query.find_first_not_of(" \t\n\r");
+    if (start != std::string::npos) {
+      effective_query = effective_query.substr(start);
+    }
+    // Check for EXPLAIN prefix (case-insensitive)
+    if (effective_query.size() > 8) {
+      std::string prefix = effective_query.substr(0, 8);
+      std::transform(prefix.begin(), prefix.end(), prefix.begin(), ::toupper);
+      if (prefix == "EXPLAIN ") {
+        effective_explain = true;
+        effective_query = effective_query.substr(8);
+        // Trim again after stripping prefix
+        size_t s = effective_query.find_first_not_of(" \t\n\r");
+        if (s != std::string::npos) effective_query = effective_query.substr(s);
+      }
+    }
+    // Check for PROFILE prefix (case-insensitive)
+    if (effective_query.size() > 8) {
+      std::string prefix = effective_query.substr(0, 8);
+      std::transform(prefix.begin(), prefix.end(), prefix.begin(), ::toupper);
+      if (prefix == "PROFILE ") {
+        effective_profile = true;
+        effective_query = effective_query.substr(8);
+        size_t s = effective_query.find_first_not_of(" \t\n\r");
+        if (s != std::string::npos) effective_query = effective_query.substr(s);
+      }
+    }
+    route_ctx.query = effective_query;
+  }
+  
   // Handle SHOW and USE commands directly (they need MetaD access, not storage)
   {
-    cypher::CypherParser show_parser(request->query());
+    cypher::CypherParser show_parser(effective_query);
     auto show_stmt = show_parser.ParseStatement();
     if (show_stmt && !show_stmt->clauses.empty()) {
       if (show_stmt->clauses[0]->clause_type == cypher::ClauseType::SHOW) {
@@ -355,7 +391,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   bool is_transactional = !txn_id_str.empty();
   bool is_write = IsWriteQuery(request->query());
   
-  if (!request->explain_only() && query_cache_ != nullptr && !is_write && !is_transactional) {
+  if (!effective_explain && query_cache_ != nullptr && !is_write && !is_transactional) {
     cedar::query::CacheKey cache_key;
     cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
         request->query(), request->parameters().params(), 0);
@@ -442,7 +478,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
     }
   } else {
     // Merged from QueryD: use DistributedExecutor for parallel execution
-    if (distributed_executor_ && !request->explain_only()) {
+    if (distributed_executor_ && !effective_explain) {
       cedar::queryd::DistributedExecutionContext ctx;
       ctx.timeout_ms = request->timeout_ms() > 0 ? request->timeout_ms() : 30000;
 
@@ -479,7 +515,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
       stats_.total_latency_us += latency_us;
       RecordLatency(static_cast<uint64_t>(latency_us));
 
-      if (!request->explain_only() && query_cache_ != nullptr && !is_write && !is_transactional) {
+      if (!effective_explain && query_cache_ != nullptr && !is_write && !is_transactional) {
         cedar::query::CacheKey cache_key;
         cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
             request->query(), request->parameters().params(), 0);
@@ -754,7 +790,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   }
   
   // 将结果放入缓存
-  if (!request->explain_only() && query_cache_ != nullptr) {
+  if (!effective_explain && query_cache_ != nullptr) {
     cedar::query::CacheKey cache_key;
     cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
         request->query(), request->parameters().params(), 0);
@@ -764,7 +800,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   }
   
   // EXPLAIN mode — build real execution plan and serialize operator tree
-  if (request->explain_only()) {
+  if (effective_explain) {
     // Parse the query into an AST
     cypher::CypherParser parser(request->query());
     auto stmt = parser.ParseStatement();
@@ -783,6 +819,59 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
       }
     }
     response->set_execution_plan(plan.str());
+  }
+  
+  // PROFILE mode — execute query and collect per-operator timing
+  if (effective_profile) {
+    cypher::CypherParser profile_parser(request->query());
+    auto profile_stmt = profile_parser.ParseStatement();
+    
+    if (profile_stmt) {
+      auto physical_plan = cypher::ExecutionPlanBuilder::Build(profile_stmt, nullptr);
+      if (physical_plan) {
+        // Initialize the plan
+        cedar::cypher::ExecutionContext ctx;
+        physical_plan->Init(&ctx);
+        
+        // Execute and collect profile data
+        uint64_t total_rows = 0;
+        auto profile_start = std::chrono::steady_clock::now();
+        
+        physical_plan->ProfileStart();
+        while (auto record = physical_plan->Next()) {
+          physical_plan->ProfileRecordRow();
+          total_rows++;
+        }
+        physical_plan->ProfileEnd();
+        
+        auto profile_end = std::chrono::steady_clock::now();
+        auto total_time_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            profile_end - profile_start).count();
+        
+        // Build profile data
+        auto profile_data = physical_plan->GetProfile();
+        
+        // Set profile response
+        auto* profile_resp = response->mutable_profile_data();
+        profile_resp->set_total_time_us(total_time_us);
+        profile_resp->set_total_rows(total_rows);
+        
+        // Add operator profiles
+        std::function<void(const cypher::PhysicalOperator::ProfileData&, int)> add_operator;
+        add_operator = [&](const cypher::PhysicalOperator::ProfileData& data, int depth) {
+          auto* op = profile_resp->add_operators();
+          op->set_name(data.name);
+          op->set_details(data.details);
+          op->set_time_us(data.time_us);
+          op->set_rows_processed(data.rows_processed);
+          op->set_depth(depth);
+          for (const auto& child : data.children) {
+            add_operator(child, depth + 1);
+          }
+        };
+        add_operator(profile_data, 0);
+      }
+    }
   }
   
   return grpc::Status::OK;

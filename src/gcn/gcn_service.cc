@@ -23,7 +23,7 @@ namespace {
 grpc::Status CheckAuth(grpc::ServerContext* context,
                        cedar::dtx::security::Permission perm) {
   auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
-  if (!sm || !sm->IsAuthEnabled()) return grpc::Status::OK;
+  if (!sm || !sm->IsAuthEnabled() || !sm->GetAuthenticator()) return grpc::Status::OK;
   auto meta = context->client_metadata();
   auto it = meta.find("authorization");
   if (it == meta.end()) {

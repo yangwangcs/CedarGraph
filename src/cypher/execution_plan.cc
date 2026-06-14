@@ -10,6 +10,7 @@
 #include "cedar/core/status.h"
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <sstream>
 
@@ -107,6 +108,23 @@ std::string PhysicalOperator::Explain(int indent) const {
     oss << child->Explain(indent + 1);
   }
   return oss.str();
+}
+
+PhysicalOperator::ProfileData PhysicalOperator::GetProfile() const {
+  ProfileData data;
+  data.name = GetName();
+  data.details = GetDetails();
+  data.time_us = profile_time_us_;
+  data.rows_processed = profile_rows_;
+  data.depth = 0;
+  
+  for (const auto& child : children_) {
+    auto child_profile = child->GetProfile();
+    child_profile.depth = data.depth + 1;
+    data.children.push_back(std::move(child_profile));
+  }
+  
+  return data;
 }
 
 // ============================================================================

@@ -55,6 +55,12 @@ add_executable(test_explain_output
 target_link_libraries(test_explain_output cedar cedar_cypher gtest gtest_main pthread)
 add_test(NAME test_explain_output COMMAND test_explain_output)
 
+add_executable(test_profile_output
+    test_profile_output.cc
+)
+target_link_libraries(test_profile_output cedar cedar_cypher gtest gtest_main pthread)
+add_test(NAME test_profile_output COMMAND test_profile_output)
+
 # Variable-Length Expand Test
 add_executable(test_variable_length_expand
     test_variable_length_expand.cc

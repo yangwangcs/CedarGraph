@@ -63,6 +63,9 @@ message ExecuteQueryRequest {
     
     // 显式事务 ID (用于多语句事务)
     bytes txn_id = 7;
+    
+    // 是否返回执行 profile (PROFILE) — 执行查询并返回每算子统计
+    bool profile = 8;
 }
 
 enum ConsistencyLevel {
@@ -89,6 +92,28 @@ message ExecuteQueryResponse {
     
     // 查询 ID (用于追踪)
     string query_id = 6;
+    
+    // Profile 数据 (如果 profile = true)
+    OperatorProfileData profile_data = 7;
+}
+
+// 算子 Profile 数据
+message OperatorProfileData {
+    // 总执行时间 (微秒)
+    uint64 total_time_us = 1;
+    // 总行数
+    uint64 total_rows = 2;
+    // 每个算子的 profile
+    repeated OperatorProfile operators = 3;
+}
+
+message OperatorProfile {
+    string name = 1;
+    string details = 2;
+    uint64 time_us = 3;
+    uint64 rows_processed = 4;
+    int32 depth = 5;
+    repeated OperatorProfile children = 6;
 }
 
 message ResultSet {

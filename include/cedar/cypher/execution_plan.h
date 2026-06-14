@@ -104,6 +104,30 @@ class PhysicalOperator {
   virtual std::string Explain(int indent = 0) const;
   
   /**
+   * @brief Get profiling data for this operator
+   */
+  struct ProfileData {
+    std::string name;
+    std::string details;
+    uint64_t time_us = 0;
+    uint64_t rows_processed = 0;
+    int depth = 0;
+    std::vector<ProfileData> children;
+  };
+  ProfileData GetProfile() const;
+  
+  // Profile timing support
+  void ProfileStart() { profile_start_ = std::chrono::steady_clock::now(); }
+  void ProfileEnd() { 
+    profile_time_us_ += std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - profile_start_).count();
+  }
+  void ProfileRecordRow() { profile_rows_++; }
+  uint64_t GetProfileTimeUs() const { return profile_time_us_; }
+  uint64_t GetProfileRows() const { return profile_rows_; }
+  void ResetProfile() { profile_time_us_ = 0; profile_rows_ = 0; }
+  
+  /**
    * @brief Clone the operator (deep copy with reset state)
    */
   virtual std::unique_ptr<PhysicalOperator> Clone() const = 0;
@@ -135,6 +159,11 @@ class PhysicalOperator {
  protected:
   ExecutionContext* context_ = nullptr;
   std::vector<std::shared_ptr<PhysicalOperator>> children_;
+  
+  // Profile timing data
+  std::chrono::steady_clock::time_point profile_start_;
+  uint64_t profile_time_us_ = 0;
+  uint64_t profile_rows_ = 0;
 };
 
 // ============================================================================

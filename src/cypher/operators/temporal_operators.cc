@@ -327,10 +327,34 @@ std::string TemporalExpand::GetDetails() const {
 }
 
 bool TemporalExpand::MatchesTemporalConstraint(const Relationship& rel) const {
-  return true;
+  // 根据路径语义检查边的时间有效性
+  switch (path_semantics_) {
+    case TemporalPathSemantics::kSnapshot:
+      // 所有边在查询时间点有效
+      return rel.valid_from <= query_end_ && rel.valid_to > query_start_;
+    case TemporalPathSemantics::kContinuous:
+      // 所有边在共同时间区间内有效
+      return rel.valid_from <= query_start_ && rel.valid_to > query_end_;
+    case TemporalPathSemantics::kPairwise:
+      // 相邻边有时间重叠 (简化: 任何时间重叠即可)
+      return rel.valid_from <= query_end_ && rel.valid_to > query_start_;
+    case TemporalPathSemantics::kSequential:
+      // 只需按时间排序，不做约束
+      return true;
+    default:
+      return true;
+  }
 }
 
 bool TemporalExpand::IsPathContinuous(const std::vector<Relationship>& path) const {
+  if (path.size() < 2) return true;
+  
+  // 检查路径中相邻边是否有时间重叠
+  for (size_t i = 0; i < path.size() - 1; ++i) {
+    if (path[i].valid_to <= path[i + 1].valid_from) {
+      return false;  // 没有重叠
+    }
+  }
   return true;
 }
 
