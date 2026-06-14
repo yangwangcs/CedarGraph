@@ -1420,30 +1420,67 @@ static std::shared_ptr<PhysicalOperator> ApplyPredicatePushdown(
     const std::vector<PushablePredicate>& predicates) {
   // Walk down to find the leaf scan operator
   if (!root) return root;
+  if (predicates.empty()) return root;
 
   // If root is a NodeScan, replace or augment it
   if (auto node_scan = std::dynamic_pointer_cast<NodeScan>(root)) {
-    // For simplicity, pick the first pushable predicate and create an IndexScan.
-    // Additional predicates become properties on the NodeScan (legacy path)
-    // or are left for a Filter on top.
-    const auto& pp = predicates[0];
-    auto index_scan = ExecutionPlanBuilder::BuildPropertyIndex(
-        pp.variable,
-        node_scan->label(),   // preserve the original label constraint
-        pp.property,
-        pp.op,
-        pp.literal);
-    return index_scan;
+    // Pick the best predicate for index scan (equality first, then range)
+    const PushablePredicate* best_eq = nullptr;
+    const PushablePredicate* best_range = nullptr;
+    
+    for (const auto& pp : predicates) {
+      if (pp.op == ComparisonExpr::EQ) {
+        best_eq = &pp;
+        break;  // Equality is always best
+      } else if (!best_range) {
+        best_range = &pp;
+      }
+    }
+    
+    const PushablePredicate* best = best_eq ? best_eq : best_range;
+    if (best) {
+      auto index_scan = ExecutionPlanBuilder::BuildPropertyIndex(
+          best->variable,
+          node_scan->label(),
+          best->property,
+          best->op,
+          best->literal);
+      
+      // If there are remaining predicates, add a Filter on top
+      std::vector<PushablePredicate> remaining;
+      for (const auto& pp : predicates) {
+        if (&pp != best) {
+          remaining.push_back(pp);
+        }
+      }
+      
+      if (!remaining.empty()) {
+        // Build filter expressions for remaining predicates
+        std::shared_ptr<Expression> filter_expr;
+        for (const auto& pp : remaining) {
+          auto prop = std::make_shared<PropertyExpr>(pp.variable, pp.property);
+          auto lit = std::make_shared<LiteralExpr>(pp.literal);
+          auto comp = std::make_shared<ComparisonExpr>(pp.op, prop, lit);
+          if (filter_expr) {
+            filter_expr = std::make_shared<LogicalExpr>(
+                LogicalExpr::Op::AND, filter_expr, comp);
+          } else {
+            filter_expr = comp;
+          }
+        }
+        auto filter = std::make_shared<Filter>(filter_expr);
+        filter->AddChild(index_scan);
+        return filter;
+      }
+      
+      return index_scan;
+    }
   }
 
   // If root has children, try to push into the first child
   auto& children = root->GetChildren();
   if (!children.empty()) {
     auto new_child = ApplyPredicatePushdown(children[0], predicates);
-    // PhysicalOperator::AddChild appends; we need to replace.
-    // The cleanest way is to rebuild the operator tree, but for minimal
-    // change we use a mutable accessor. Since GetChildren() returns const&,
-    // we cast away const (internal implementation detail).
     const_cast<std::vector<std::shared_ptr<PhysicalOperator>>&>(children)[0] = new_child;
   }
 
