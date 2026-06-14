@@ -1146,6 +1146,13 @@ static std::shared_ptr<PhysicalOperator> ApplyPredicatePushdown(
     std::shared_ptr<PhysicalOperator> root,
     const std::vector<PushablePredicate>& predicates);
 
+static std::unordered_set<std::string> ExtractRequiredColumns(
+    const std::vector<std::pair<std::string, std::shared_ptr<Expression>>>& projections);
+
+static std::shared_ptr<PhysicalOperator> ApplyProjectionPushdown(
+    std::shared_ptr<PhysicalOperator> root,
+    const std::unordered_set<std::string>& required_columns);
+
 std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
     std::shared_ptr<QueryStatement> stmt,
     std::shared_ptr<TemporalClause> temporal_clause) {
@@ -1352,6 +1359,12 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
       projections.push_back({col_name, item.expression});
     }
     
+    // Apply projection pushdown to reduce I/O
+    if (root) {
+      auto required_columns = ExtractRequiredColumns(projections);
+      root = ApplyProjectionPushdown(root, required_columns);
+    }
+    
     // Project operator
     if (root) {
       auto project = std::make_shared<Project>(projections);
@@ -1482,6 +1495,62 @@ static std::shared_ptr<PhysicalOperator> ApplyPredicatePushdown(
   if (!children.empty()) {
     auto new_child = ApplyPredicatePushdown(children[0], predicates);
     const_cast<std::vector<std::shared_ptr<PhysicalOperator>>&>(children)[0] = new_child;
+  }
+
+  return root;
+}
+
+// =============================================================================
+// Projection Pushdown
+// =============================================================================
+
+// Extract required columns from expressions
+static std::unordered_set<std::string> ExtractRequiredColumns(
+    const std::vector<std::pair<std::string, std::shared_ptr<Expression>>>& projections) {
+  std::unordered_set<std::string> columns;
+  for (const auto& [name, expr] : projections) {
+    // Extract column references from expression
+    if (expr->expr_type == ExprType::PROPERTY) {
+      auto prop = std::static_pointer_cast<PropertyExpr>(expr);
+      columns.insert(prop->variable + "." + prop->property);
+    }
+  }
+  return columns;
+}
+
+// Apply projection pushdown to reduce I/O
+static std::shared_ptr<PhysicalOperator> ApplyProjectionPushdown(
+    std::shared_ptr<PhysicalOperator> root,
+    const std::unordered_set<std::string>& required_columns) {
+  if (!root) return root;
+  if (required_columns.empty()) return root;
+
+  // If root is a NodeScan, add column hints
+  if (auto node_scan = std::dynamic_pointer_cast<NodeScan>(root)) {
+    // NodeScan doesn't have column filtering yet, but we can add it
+    // For now, just return the node scan as-is
+    // TODO: Add column filtering to NodeScan
+    return root;
+  }
+
+  // If root is an IndexScan, it already only reads the indexed column
+  if (auto index_scan = std::dynamic_pointer_cast<IndexScan>(root)) {
+    return root;
+  }
+
+  // If root is an Expand, we can push down to both sides
+  if (auto expand = std::dynamic_pointer_cast<Expand>(root)) {
+    // TODO: Push required columns to expand's source and target scans
+    return root;
+  }
+
+  // If root has children, try to push into each child
+  auto& children = root->GetChildren();
+  if (!children.empty()) {
+    for (size_t i = 0; i < children.size(); ++i) {
+      auto new_child = ApplyProjectionPushdown(children[i], required_columns);
+      const_cast<std::vector<std::shared_ptr<PhysicalOperator>>&>(children)[i] = new_child;
+    }
   }
 
   return root;
