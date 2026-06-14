@@ -131,7 +131,7 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   }
 
   // 刷新分区映射缓存
-  Status RefreshPartitionMap();
+  Status RefreshPartitionMap(const std::string& space_name = "default");
 
   // ========== gRPC 方法实现 ==========
   

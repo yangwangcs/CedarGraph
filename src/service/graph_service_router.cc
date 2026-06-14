@@ -2315,12 +2315,12 @@ Status GraphServiceRouter::ExecutePartitionQuery(
   return Status::OK();
 }
 
-Status GraphServiceRouter::RefreshPartitionMap() {
+Status GraphServiceRouter::RefreshPartitionMap(const std::string& space_name) {
   if (!meta_client_) {
     return Status::OK();
   }
 
-  auto result = meta_client_->GetSpacePartitionMap("default");
+  auto result = meta_client_->GetSpacePartitionMap(space_name);
   if (!result.ok()) {
     std::cerr << "[GraphServiceRouter] Failed to refresh partition map: "
               << result.status().ToString() << std::endl;

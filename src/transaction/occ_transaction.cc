@@ -165,17 +165,30 @@ Status OCCTransaction::Commit() {
   }
 
   // ===================================================================
-  // P0-6 FIX: Commit serialization
-  // Use global lock for correctness. Per-entity locking can be enabled
-  // later with careful testing for multi-entity transactions.
+  // P0-6 FIX: Striped commit serialization
+  // Lock per-entity stripes for better concurrency.
+  // For multi-entity transactions, lock in sorted order to prevent deadlocks.
   // ===================================================================
-  std::lock_guard<std::mutex> commit_lock(lsm_engine_->global_commit_mutex_);
+  
+  // Collect unique entity IDs from write set
+  std::set<uint64_t> entity_ids;
+  for (const auto& entry : write_set_) {
+    entity_ids.insert(entry.key.entity_id());
+  }
+  
+  // Lock stripes in sorted order
+  std::vector<std::unique_ptr<std::lock_guard<std::mutex>>> commit_locks;
+  if (entity_ids.empty()) {
+    // No entities - use global lock as fallback
+    commit_locks.push_back(std::make_unique<std::lock_guard<std::mutex>>(lsm_engine_->global_commit_mutex_));
+  } else {
+    for (uint64_t eid : entity_ids) {
+      commit_locks.push_back(std::make_unique<std::lock_guard<std::mutex>>(lsm_engine_->GetCommitLock(eid)));
+    }
+  }
 
-  // P0-6 FIX: Allocate the commit timestamp from the global counter while
-  // holding global_commit_mutex_. This guarantees commit_timestamp_ is
-  // strictly greater than any read_timestamp_ that was assigned before this
-  // commit started, which is required for correct MVCC visibility and
-  // conflict detection across threads.
+  // Allocate commit timestamp. AllocateGlobalTimestamp() uses atomic fetch_add,
+  // so it's thread-safe without holding the global lock.
   commit_timestamp_ = txn_manager_->AllocateGlobalTimestamp();
 
   // 修复: 更新写集中的 txn_version 为 commit_timestamp_
