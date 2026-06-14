@@ -178,7 +178,8 @@ class NodeScan : public PhysicalOperator {
  public:
   NodeScan(std::string variable,
           std::optional<std::string> label = std::nullopt,
-          std::map<std::string, std::shared_ptr<Expression>> properties = {});
+          std::map<std::string, std::shared_ptr<Expression>> properties = {},
+          std::unordered_set<std::string> required_columns = {});
   
   bool Init(ExecutionContext* ctx) override;
   std::shared_ptr<Record> Next() override;
@@ -187,11 +188,14 @@ class NodeScan : public PhysicalOperator {
   std::unique_ptr<PhysicalOperator> Clone() const override;
 
   const std::optional<std::string>& label() const { return label_; }
+  const std::string& GetVariable() const { return variable_; }
+  void SetRequiredColumns(const std::unordered_set<std::string>& columns) { required_columns_ = columns; }
 
  private:
   std::string variable_;
   std::optional<std::string> label_;
   std::map<std::string, std::shared_ptr<Expression>> properties_;
+  std::unordered_set<std::string> required_columns_;
   size_t current_index_ = 0;
   std::vector<uint64_t> node_ids_;
 };
@@ -240,7 +244,8 @@ class Expand : public PhysicalOperator {
          std::string rel_variable,
          std::string to_variable,
          Direction direction,
-         std::optional<std::string> rel_type = std::nullopt);
+         std::optional<std::string> rel_type = std::nullopt,
+         std::unordered_set<std::string> required_columns = {});
   
   bool Init(ExecutionContext* ctx) override;
   std::shared_ptr<Record> Next() override;
@@ -250,12 +255,19 @@ class Expand : public PhysicalOperator {
   std::unique_ptr<PhysicalOperator> Clone() const override;
   bool RequiresGraph() const override { return true; }
   
+  void SetRequiredColumns(const std::unordered_set<std::string>& columns) { required_columns_ = columns; }
+  
+  const std::string& GetFromVariable() const { return from_variable_; }
+  const std::string& GetToVariable() const { return to_variable_; }
+  const std::string& GetRelVariable() const { return rel_variable_; }
+  
  private:
   std::string from_variable_;
   std::string rel_variable_;
   std::string to_variable_;
   Direction direction_;
   std::optional<std::string> rel_type_;
+  std::unordered_set<std::string> required_columns_;
   
   std::shared_ptr<Record> current_record_;
   size_t neighbor_index_ = 0;

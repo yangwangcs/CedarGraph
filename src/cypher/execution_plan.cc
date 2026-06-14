@@ -272,8 +272,10 @@ std::unique_ptr<PhysicalOperator> ProduceResults::Clone() const {
 // ============================================================================
 
 NodeScan::NodeScan(std::string variable, std::optional<std::string> label,
-                       std::map<std::string, std::shared_ptr<Expression>> properties)
-    : variable_(variable), label_(label), properties_(std::move(properties)), current_index_(0) {}
+                       std::map<std::string, std::shared_ptr<Expression>> properties,
+                       std::unordered_set<std::string> required_columns)
+    : variable_(variable), label_(label), properties_(std::move(properties)),
+      required_columns_(std::move(required_columns)), current_index_(0) {}
 
 bool NodeScan::Init(ExecutionContext* ctx) {
   context_ = ctx;
@@ -360,6 +362,29 @@ std::shared_ptr<Record> NodeScan::Next() {
     node.labels.push_back("Node");
   }
   node.properties["id"] = Value(static_cast<int64_t>(node_id));
+  
+  // Filter properties based on required_columns
+  // If required_columns is empty, include all properties (no filtering)
+  // If required_columns is set, only include required properties
+  if (!required_columns_.empty()) {
+    // Only include properties that are required
+    // Note: 'id' is always included
+    Node filtered_node;
+    filtered_node.id = node.id;
+    filtered_node.labels = node.labels;
+    filtered_node.properties["id"] = node.properties["id"];
+    
+    // Add required properties from storage
+    // TODO: Read only required columns from storage layer
+    // For now, include all properties from the original node
+    for (const auto& [key, value] : node.properties) {
+      std::string full_key = variable_ + "." + key;
+      if (required_columns_.count(full_key) > 0 || key == "id") {
+        filtered_node.properties[key] = value;
+      }
+    }
+    node = filtered_node;
+  }
   
   // Create record
   auto record = std::make_shared<Record>();
@@ -556,12 +581,14 @@ Expand::Expand(std::string from_variable,
                std::string rel_variable,
                std::string to_variable,
                Direction direction,
-               std::optional<std::string> rel_type)
+               std::optional<std::string> rel_type,
+               std::unordered_set<std::string> required_columns)
     : from_variable_(from_variable),
       rel_variable_(rel_variable),
       to_variable_(to_variable),
       direction_(direction),
       rel_type_(rel_type),
+      required_columns_(std::move(required_columns)),
       neighbor_index_(0) {}
 
 bool Expand::Init(ExecutionContext* ctx) {
@@ -695,6 +722,24 @@ std::shared_ptr<Record> Expand::Next() {
     to_node.id = target_id;
     to_node.labels.push_back("Node");
     to_node.properties["id"] = Value(static_cast<int64_t>(target_id));
+    
+    // Filter properties based on required_columns
+    if (!required_columns_.empty()) {
+      Node filtered_node;
+      filtered_node.id = to_node.id;
+      filtered_node.labels = to_node.labels;
+      filtered_node.properties["id"] = to_node.properties["id"];
+      
+      // Only include required properties
+      for (const auto& [key, value] : to_node.properties) {
+        std::string full_key = to_variable_ + "." + key;
+        if (required_columns_.count(full_key) > 0 || key == "id") {
+          filtered_node.properties[key] = value;
+        }
+      }
+      to_node = filtered_node;
+    }
+    
     record->Set(to_variable_, Value(to_node));
     
     neighbor_index_++;
@@ -1527,9 +1572,21 @@ static std::shared_ptr<PhysicalOperator> ApplyProjectionPushdown(
 
   // If root is a NodeScan, add column hints
   if (auto node_scan = std::dynamic_pointer_cast<NodeScan>(root)) {
-    // NodeScan doesn't have column filtering yet, but we can add it
-    // For now, just return the node scan as-is
-    // TODO: Add column filtering to NodeScan
+    // Filter required columns for this specific node variable
+    std::unordered_set<std::string> node_columns;
+    for (const auto& col : required_columns) {
+      // Extract variable name from "variable.property" format
+      size_t dot_pos = col.find('.');
+      if (dot_pos != std::string::npos) {
+        std::string var_name = col.substr(0, dot_pos);
+        if (var_name == node_scan->GetVariable()) {
+          node_columns.insert(col);
+        }
+      }
+    }
+    if (!node_columns.empty()) {
+      node_scan->SetRequiredColumns(node_columns);
+    }
     return root;
   }
 
@@ -1540,7 +1597,22 @@ static std::shared_ptr<PhysicalOperator> ApplyProjectionPushdown(
 
   // If root is an Expand, we can push down to both sides
   if (auto expand = std::dynamic_pointer_cast<Expand>(root)) {
-    // TODO: Push required columns to expand's source and target scans
+    // Filter required columns for source and target variables
+    std::unordered_set<std::string> expand_columns;
+    for (const auto& col : required_columns) {
+      size_t dot_pos = col.find('.');
+      if (dot_pos != std::string::npos) {
+        std::string var_name = col.substr(0, dot_pos);
+        if (var_name == expand->GetFromVariable() || 
+            var_name == expand->GetToVariable() ||
+            var_name == expand->GetRelVariable()) {
+          expand_columns.insert(col);
+        }
+      }
+    }
+    if (!expand_columns.empty()) {
+      expand->SetRequiredColumns(expand_columns);
+    }
     return root;
   }
 
