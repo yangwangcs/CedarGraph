@@ -17,6 +17,7 @@
 #include "cedar/cypher/ast.h"
 #include "cedar/cypher/temporal_dialect.h"
 #include "cedar/cypher/value.h"
+#include "cedar/cypher/cost_optimizer.h"
 #include "cedar/graph/cedar_graph.h"
 
 namespace cedar {

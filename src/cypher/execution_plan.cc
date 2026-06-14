@@ -1378,6 +1378,15 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
     root = produce;
   }
   
+  // Apply CBO optimization if we have a valid plan
+  if (root) {
+    CostOptimizer optimizer;
+    auto optimized = optimizer.Optimize(root);
+    if (optimized) {
+      root = optimized;
+    }
+  }
+  
   return root;
 }
 
