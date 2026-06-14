@@ -143,6 +143,7 @@ message PrepareRequest {
     repeated CedarKey write_set = 3;
     uint64 commit_ts = 4;
     map<uint64, Descriptor> write_descriptors = 5;  // key hash -> descriptor
+    uint64 read_timestamp = 6;  // Snapshot timestamp for read-set validation
 }
 
 message PrepareResponse {

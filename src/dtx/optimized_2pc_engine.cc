@@ -197,10 +197,11 @@ void Optimized2PCEngine::Shutdown() noexcept {
 Status Optimized2PCEngine::Execute2PC(TxnID txn_id,
                                        const std::vector<::cedar::CedarKey>& read_set,
                                        const std::vector<::cedar::CedarKey>& write_set,
-                                       Timestamp commit_ts) {
+                                       Timestamp commit_ts,
+                                       Timestamp read_timestamp) {
   TXN_METRICS_START(txn_id, TxnType::kCrossTemporalRange);
   auto ctx = std::make_shared<TransactionContext>(
-      txn_id, read_set, write_set, commit_ts);
+      txn_id, read_set, write_set, commit_ts, read_timestamp);
   
   // Register transaction with timeout manager
   struct TimeoutGuard {
@@ -548,12 +549,14 @@ Status Optimized2PCEngine::ExecuteSequential2PC(
         ctx->txn_id,
         ctx->read_set,
         ctx->write_set,
-        ctx->commit_ts);
+        ctx->commit_ts,
+        ctx->read_timestamp);
 
     if (result.ok() && result.ValueOrDie()) {
       ctx->prepare_acks.fetch_add(1);
     } else {
       ctx->prepare_nacks.fetch_add(1);
+      break;  // Stop on first failure — no point preparing remaining participants
     }
   }
 
@@ -568,9 +571,10 @@ Status Optimized2PCEngine::ExecuteSequential2PC(
   if (!prepare_success) {
     ctx->state.store(TransactionContext::State::kAborting);
 
-    // Abort participants that prepared
-    for (auto& client : participants) {
-      auto abort_status = client->Abort(ctx->txn_id);
+    // Abort only participants that were actually prepared (not all participants)
+    int prepared_count = ctx->prepare_acks.load();
+    for (int i = 0; i < prepared_count && i < static_cast<int>(participants.size()); ++i) {
+      auto abort_status = participants[i]->Abort(ctx->txn_id);
       if (abort_status.ok()) {
         ctx->abort_acks.fetch_add(1);
       }
@@ -656,31 +660,33 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   auto prepare_start = std::chrono::steady_clock::now();
 
   // Phase 1: Prepare (parallel RPC via thread pool)
-  std::vector<std::promise<bool>> prepare_promises(participants.size());
+  // Use shared_ptr to prevent UAF if lambda outlives the function
+  auto prepare_promises = std::make_shared<std::vector<std::promise<bool>>>(participants.size());
   std::vector<std::future<bool>> prepare_futures;
   prepare_futures.reserve(participants.size());
-  for (auto& p : prepare_promises) {
+  for (auto& p : *prepare_promises) {
     prepare_futures.push_back(p.get_future());
   }
   for (size_t i = 0; i < participants.size(); ++i) {
-    thread_pool_->Schedule([client = participants[i], ctx, &prepare_promises, i]() {
+    thread_pool_->Schedule([client = participants[i], ctx, prepare_promises, i]() {
       try {
         auto result = client->Prepare(
             ctx->txn_id,
             ctx->read_set,
             ctx->write_set,
-            ctx->commit_ts);
+            ctx->commit_ts,
+            ctx->read_timestamp);
         if (result.ok() && result.ValueOrDie()) {
           ctx->prepare_acks.fetch_add(1);
-          prepare_promises[i].set_value(true);
+          (*prepare_promises)[i].set_value(true);
         } else {
           ctx->prepare_nacks.fetch_add(1);
-          prepare_promises[i].set_value(false);
+          (*prepare_promises)[i].set_value(false);
         }
       } catch (...) {
         std::cerr << "[2PC] Prepare RPC exception for txn_id=" << ctx->txn_id << std::endl;
         ctx->prepare_nacks.fetch_add(1);
-        prepare_promises[i].set_value(false);
+        (*prepare_promises)[i].set_value(false);
       }
     });
   }
@@ -763,25 +769,26 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   auto commit_start = std::chrono::steady_clock::now();
 
   // Phase 2: Commit (parallel RPC via thread pool)
-  std::vector<std::promise<bool>> commit_promises(participants.size());
+  // Use shared_ptr to prevent UAF if lambda outlives the function
+  auto commit_promises = std::make_shared<std::vector<std::promise<bool>>>(participants.size());
   std::vector<std::future<bool>> commit_futures;
   commit_futures.reserve(participants.size());
-  for (auto& p : commit_promises) {
+  for (auto& p : *commit_promises) {
     commit_futures.push_back(p.get_future());
   }
   for (size_t i = 0; i < participants.size(); ++i) {
-    thread_pool_->Schedule([client = participants[i], ctx, &commit_promises, i]() {
+    thread_pool_->Schedule([client = participants[i], ctx, commit_promises, i]() {
       try {
         auto status = client->Commit(ctx->txn_id, ctx->commit_ts);
         if (status.ok()) {
           ctx->commit_acks.fetch_add(1);
-          commit_promises[i].set_value(true);
+          (*commit_promises)[i].set_value(true);
         } else {
-          commit_promises[i].set_value(false);
+          (*commit_promises)[i].set_value(false);
         }
       } catch (...) {
         std::cerr << "[2PC] Commit RPC exception for txn_id=" << ctx->txn_id << std::endl;
-        commit_promises[i].set_value(false);
+        (*commit_promises)[i].set_value(false);
       }
     });
   }
@@ -800,10 +807,12 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   }
 
   if (all_committed) {
-    ctx->state.store(TransactionContext::State::kCommitted);
+    // Persist state FIRST, then update in-memory state
+    // This ensures crash recovery sees the correct state
     if (state_manager_) {
       state_manager_->UpdateState(ctx->txn_id, TxnState::kCommitted);
     }
+    ctx->state.store(TransactionContext::State::kCommitted);
     stats_.committed_transactions++;
     stats_.total_transactions++;
     
@@ -942,7 +951,7 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
         for (size_t i = 0; i < participants.size(); ++i) {
           thread_pool_->Schedule([client = participants[i], ctx, &prepare_promises, i]() {
             try {
-              auto result = client->Prepare(ctx->txn_id, ctx->read_set, ctx->write_set, ctx->commit_ts);
+              auto result = client->Prepare(ctx->txn_id, ctx->read_set, ctx->write_set, ctx->commit_ts, ctx->read_timestamp);
               if (result.ok() && result.ValueOrDie()) {
                 ctx->prepare_acks.fetch_add(1);
                 prepare_promises[i].set_value(true);
@@ -1191,19 +1200,19 @@ std::vector<std::shared_ptr<StorageClient>> Optimized2PCEngine::GetParticipants(
       return participants;
     }
     
-    // Hash-based participant selection using part_id
-    std::unordered_set<std::shared_ptr<StorageClient>> selected;
+    // Deduplicate by partition ID, not by pointer
+    std::unordered_set<PartitionID> seen_partitions;
     for (const auto& key : keys) {
       PartitionID pid = key.part_id();
       if (pid == 0) {
         // Default partition: use entity_id hash
         pid = static_cast<PartitionID>(key.entity_id() % std::max<size_t>(1, clients_.size()));
       }
-      size_t client_idx = pid % clients_.size();
-      selected.insert(clients_[client_idx]);
+      if (seen_partitions.insert(pid).second) {
+        size_t client_idx = pid % clients_.size();
+        participants.push_back(clients_[client_idx]);
+      }
     }
-    
-    participants.assign(selected.begin(), selected.end());
   }
   
   return participants;

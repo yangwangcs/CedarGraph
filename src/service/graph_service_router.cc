@@ -316,6 +316,10 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
     if (show_stmt && !show_stmt->clauses.empty()) {
       if (show_stmt->clauses[0]->clause_type == cypher::ClauseType::SHOW) {
         auto* show_clause = static_cast<cypher::ShowClause*>(show_stmt->clauses[0].get());
+        // Use session space if SHOW command doesn't specify one
+        if (show_clause->space_name.empty()) {
+          show_clause->space_name = GetSessionSpace(request->session_id());
+        }
         return HandleShowCommand(show_clause, response);
       }
       if (show_stmt->clauses[0]->clause_type == cypher::ClauseType::USE) {
@@ -346,7 +350,12 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   response->set_query_id(std::to_string(++query_counter));
   
   // 构建缓存键（在 ParseQueryForRouting 之后，使用 entity_id 区分点查查询）
-  if (!request->explain_only() && query_cache_ != nullptr) {
+  // Skip cache for write queries and explicit transactions
+  std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
+  bool is_transactional = !txn_id_str.empty();
+  bool is_write = IsWriteQuery(request->query());
+  
+  if (!request->explain_only() && query_cache_ != nullptr && !is_write && !is_transactional) {
     cedar::query::CacheKey cache_key;
     cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
         request->query(), request->parameters().params(), 0);
@@ -387,8 +396,9 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
     // 构建简化的 write_set（使用 route_ctx 中的 entity_ids）
     std::vector<::cedar::CedarKey> read_set;
     std::vector<::cedar::CedarKey> write_set;
+    // Use system_clock for globally meaningful timestamps (steady_clock is monotonic but not synchronized)
     auto now_ts = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::chrono::system_clock::now().time_since_epoch()).count();
     for (uint64_t entity_id : route_ctx.entity_ids) {
       write_set.emplace_back(entity_id, ::cedar::EntityType::Vertex, 0,
                              ::cedar::Timestamp(now_ts), 0, 0, 0,
@@ -413,8 +423,10 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
     } else {
       // 自动事务模式（autocommit）：立即执行 2PC
       auto txn_id = next_txn_id_.fetch_add(1);
+      // Use current time as read_timestamp for autocommit
+      auto read_ts = ::cedar::Timestamp(now_ts);
       auto write_status = two_pc_engine_->Execute2PC(txn_id, read_set, write_set,
-                                                      ::cedar::Timestamp(now_ts));
+                                                       ::cedar::Timestamp(now_ts), read_ts);
       if (!write_status.ok()) {
         stats_.failed_queries++;
         response->set_success(false);
@@ -467,7 +479,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
       stats_.total_latency_us += latency_us;
       RecordLatency(static_cast<uint64_t>(latency_us));
 
-      if (!request->explain_only() && query_cache_ != nullptr) {
+      if (!request->explain_only() && query_cache_ != nullptr && !is_write && !is_transactional) {
         cedar::query::CacheKey cache_key;
         cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
             request->query(), request->parameters().params(), 0);
@@ -495,10 +507,25 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
         // 无已知分区，返回空结果
         result_set.set_total_rows(0);
       } else {
+        // Collect actual read keys from partition queries
+        std::vector<::cedar::CedarKey> actual_read_keys;
+        ::cedar::Timestamp read_ts(0);
+        
+        // Get transaction's read timestamp for snapshot isolation
+        std::string txn_id_check(request->txn_id().begin(), request->txn_id().end());
+        if (!txn_id_check.empty()) {
+          std::lock_guard<std::mutex> lock(active_txns_mutex_);
+          auto txn_it = active_transactions_.find(txn_id_check);
+          if (txn_it != active_transactions_.end()) {
+            read_ts = txn_it->second.read_timestamp;
+          }
+        }
+        
         bool any_partition_failed = false;
         std::string first_error;
         for (uint32_t part_id : route_ctx.target_partitions) {
-          auto part_status = ExecutePartitionQuery(request->query(), part_id, route_ctx, &result_set);
+          auto part_status = ExecutePartitionQuery(request->query(), part_id, route_ctx, 
+                                                   &result_set, &actual_read_keys, read_ts);
           if (!part_status.ok()) {
             any_partition_failed = true;
             if (first_error.empty()) {
@@ -506,6 +533,17 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
             }
           }
         }
+        
+        // Accumulate actual read keys into transaction's read_set
+        if (!txn_id_check.empty() && !actual_read_keys.empty()) {
+          std::lock_guard<std::mutex> lock(active_txns_mutex_);
+          auto txn_it = active_transactions_.find(txn_id_check);
+          if (txn_it != active_transactions_.end()) {
+            txn_it->second.read_set.insert(txn_it->second.read_set.end(),
+                                            actual_read_keys.begin(), actual_read_keys.end());
+          }
+        }
+        
         if (any_partition_failed) {
           stats_.failed_queries++;
           response->set_success(false);
@@ -515,10 +553,23 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
       }
     } else {
       // 执行分区查询并聚合结果
+      std::vector<::cedar::CedarKey> actual_read_keys;
+      ::cedar::Timestamp read_ts(0);
+      
+      std::string txn_id_check(request->txn_id().begin(), request->txn_id().end());
+      if (!txn_id_check.empty()) {
+        std::lock_guard<std::mutex> lock(active_txns_mutex_);
+        auto txn_it = active_transactions_.find(txn_id_check);
+        if (txn_it != active_transactions_.end()) {
+          read_ts = txn_it->second.read_timestamp;
+        }
+      }
+      
       bool any_partition_failed = false;
       std::string first_error;
       for (uint32_t part_id : route_ctx.target_partitions) {
-        auto part_status = ExecutePartitionQuery(request->query(), part_id, route_ctx, &result_set);
+        auto part_status = ExecutePartitionQuery(request->query(), part_id, route_ctx, 
+                                                 &result_set, &actual_read_keys, read_ts);
         if (!part_status.ok()) {
           any_partition_failed = true;
           if (first_error.empty()) {
@@ -526,6 +577,17 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
           }
         }
       }
+      
+      // Accumulate actual read keys into transaction's read_set
+      if (!txn_id_check.empty() && !actual_read_keys.empty()) {
+        std::lock_guard<std::mutex> lock(active_txns_mutex_);
+        auto txn_it = active_transactions_.find(txn_id_check);
+        if (txn_it != active_transactions_.end()) {
+          txn_it->second.read_set.insert(txn_it->second.read_set.end(),
+                                          actual_read_keys.begin(), actual_read_keys.end());
+        }
+      }
+      
       if (any_partition_failed) {
         stats_.failed_queries++;
         response->set_success(false);
@@ -534,21 +596,8 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
       }
     }
     
-    // 读查询 read_set 累积（显式事务模式）
-    std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
-    if (!txn_id_str.empty() && !route_ctx.entity_ids.empty()) {
-      std::lock_guard<std::mutex> lock(active_txns_mutex_);
-      auto it = active_transactions_.find(txn_id_str);
-      if (it != active_transactions_.end()) {
-        auto now_ts = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-        for (uint64_t entity_id : route_ctx.entity_ids) {
-          it->second.read_set.emplace_back(entity_id, ::cedar::EntityType::Vertex, 0,
-                                           ::cedar::Timestamp(now_ts), 0, 0, 0,
-                                           CalculatePartition(entity_id));
-        }
-      }
-    }
+    // Note: read_set is now accumulated during query execution (actual read keys)
+    // No need for separate accumulation here
   }
   
   // ========================================================================
@@ -1174,7 +1223,9 @@ grpc::Status GraphServiceRouter::GetSchema(grpc::ServerContext* context,
   }
 
   cedar::meta::GetSchemaRequest meta_req;
-  meta_req.set_space_name("default");  // TODO(#graph-001): multi-space support
+  // Use session space if available
+  std::string space = GetSessionSpace(request->session_id());
+  meta_req.set_space_name(space.empty() ? "default" : space);
   for (const auto& label : request->labels()) {
     meta_req.add_labels(label);
   }
@@ -1957,7 +2008,9 @@ Status GraphServiceRouter::ExecutePartitionQuery(
     const std::string& query,
     uint32_t partition_id,
     const QueryRouteContext& route_ctx,
-    cedar::query::ResultSet* result) {
+    cedar::query::ResultSet* result,
+    std::vector<::cedar::CedarKey>* read_keys,
+    ::cedar::Timestamp read_timestamp) {
   // Get partition route
   auto route_result = GetPartitionRoute(partition_id);
   if (!route_result.ok()) {
@@ -1991,7 +2044,8 @@ Status GraphServiceRouter::ExecutePartitionQuery(
         auto* key = get_req.mutable_key();
         key->set_entity_id(entity_id);
         key->set_partition_id(partition_id);
-        key->set_timestamp(UINT64_MAX);
+        // Use snapshot timestamp if available, otherwise use Max for latest
+        key->set_timestamp(read_timestamp.value() > 0 ? read_timestamp.value() : UINT64_MAX);
 
         cedar::storage::GetResponse get_resp;
         grpc::ClientContext ctx;
@@ -2000,6 +2054,13 @@ Status GraphServiceRouter::ExecutePartitionQuery(
 
         if (!grpc_status.ok() || !get_resp.success() || !get_resp.found()) {
           continue;
+        }
+
+        // Track the key that was actually read
+        if (read_keys) {
+          read_keys->emplace_back(entity_id, ::cedar::EntityType::Vertex, 0,
+                                  ::cedar::Timestamp(get_req.key().timestamp()),
+                                  0, 0, 0, partition_id);
         }
 
         auto* row = result->add_rows();
@@ -2400,6 +2461,10 @@ grpc::Status GraphServiceRouter::BeginTransaction(grpc::ServerContext* context,
     std::lock_guard<std::mutex> lock(active_txns_mutex_);
     ActiveTransaction txn_ctx;
     txn_ctx.txn_id = txn_id;
+    // Set snapshot timestamp for all reads in this transaction
+    txn_ctx.read_timestamp = ::cedar::Timestamp(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
     active_transactions_[txn_id_str] = std::move(txn_ctx);
   }
   
@@ -2448,10 +2513,11 @@ grpc::Status GraphServiceRouter::Commit(grpc::ServerContext* context,
     std::shared_lock<std::shared_mutex> lock(engine_mutex_);
     if (two_pc_engine_ && txn_ctx.has_writes) {
       auto now_ts = std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::steady_clock::now().time_since_epoch()).count();
+          std::chrono::system_clock::now().time_since_epoch()).count();
       auto s = two_pc_engine_->Execute2PC(txn_ctx.txn_id, txn_ctx.read_set,
-                                           txn_ctx.write_set,
-                                           ::cedar::Timestamp(now_ts));
+                                            txn_ctx.write_set,
+                                            ::cedar::Timestamp(now_ts),
+                                            txn_ctx.read_timestamp);
       if (!s.ok()) {
         response->set_ok(false);
         response->set_message("2PC commit failed: " + s.ToString());
@@ -2482,6 +2548,7 @@ grpc::Status GraphServiceRouter::Rollback(grpc::ServerContext* context,
   
   std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
   
+  ActiveTransaction txn_ctx;
   {
     std::lock_guard<std::mutex> lock(active_txns_mutex_);
     auto it = active_transactions_.find(txn_id_str);
@@ -2490,7 +2557,22 @@ grpc::Status GraphServiceRouter::Rollback(grpc::ServerContext* context,
       response->set_message("Transaction not found: " + txn_id_str);
       return grpc::Status::OK;
     }
+    txn_ctx = it->second;
     active_transactions_.erase(it);
+  }
+  
+  // Send Abort to StorageD via 2PC engine if there are pending writes
+  {
+    std::shared_lock<std::shared_mutex> lock(engine_mutex_);
+    if (two_pc_engine_ && txn_ctx.has_writes) {
+      // Abort only sends abort RPCs to participants that have the transaction
+      // Use the 2PC engine's abort mechanism which tracks participants
+      auto abort_status = two_pc_engine_->Execute2PC(
+          txn_ctx.txn_id, txn_ctx.read_set, txn_ctx.write_set,
+          ::cedar::Timestamp(0), txn_ctx.read_timestamp);
+      // Ignore abort status - best effort
+      (void)abort_status;
+    }
   }
   
   if (txn_state_manager_) {

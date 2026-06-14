@@ -37,7 +37,9 @@ class WatermarkGc {
   std::atomic<bool> stop_flag_;
   std::atomic<uint64_t> watermark_;
   std::thread thread_;
-  mutable std::mutex start_stop_mutex_;  // Guards Start/Stop to prevent races
+  mutable std::mutex start_stop_mutex_;
+  std::mutex cv_mutex_;
+  std::condition_variable cv_;
 };
 
 }  // namespace gcn

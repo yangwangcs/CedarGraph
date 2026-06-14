@@ -117,7 +117,8 @@ StatusOr<Descriptor> PartitionStorage::Get(const CedarKey& key, Timestamp read_t
 Status PartitionStorage::Prepare(TxnID txn_id, const std::vector<CedarKey>& reads,
                                  const std::vector<CedarKey>& writes,
                                  const std::unordered_map<uint64_t, Descriptor>& write_descriptors,
-                                 Timestamp commit_ts) {
+                                 Timestamp commit_ts,
+                                 Timestamp read_timestamp) {
   if (!shared_storage_) {
     return Status::IOError("Storage not initialized");
   }
@@ -147,11 +148,9 @@ Status PartitionStorage::Prepare(TxnID txn_id, const std::vector<CedarKey>& read
   }
   
   // Validate read-set: check that no key in reads has been modified
-  // after the commit_ts (i.e., by a later committed transaction).
-  // We check the LSM memtables where txn_version is preserved.
-  // SST files currently do not store txn_version in a retrievable way,
-  // so this is a best-effort check that catches recent conflicts.
-  if (shared_storage_) {
+  // after the transaction's read_timestamp (snapshot isolation).
+  // If read_timestamp is 0, skip validation (backward compatibility).
+  if (shared_storage_ && read_timestamp.value() > 0) {
     auto* lsm_engine = shared_storage_->GetLsmEngine();
     if (lsm_engine) {
       for (const auto& read_key : reads) {
@@ -165,7 +164,8 @@ Status PartitionStorage::Prepare(TxnID txn_id, const std::vector<CedarKey>& read
           if (entry.txn_version == Timestamp(0)) {
             continue;
           }
-          if (entry.txn_version > commit_ts) {
+          // If a version was committed after our read_timestamp, it's a conflict
+          if (entry.txn_version > read_timestamp) {
             return Status::Busy("Read-write conflict: key modified after read timestamp");
           }
         }

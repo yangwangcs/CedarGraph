@@ -57,6 +57,7 @@ struct TransactionContext {
   std::vector<::cedar::CedarKey> read_set;
   std::vector<::cedar::CedarKey> write_set;
   Timestamp commit_ts;
+  Timestamp read_timestamp;  // Snapshot timestamp for read-set validation
   
   // 2PC state
   enum class State {
@@ -87,8 +88,9 @@ struct TransactionContext {
   std::chrono::steady_clock::time_point prepare_complete_time;
   
   TransactionContext(TxnID id, const std::vector<::cedar::CedarKey>& reads,
-                     const std::vector<::cedar::CedarKey>& writes, Timestamp ts)
-      : txn_id(id), read_set(reads), write_set(writes), commit_ts(ts) {
+                     const std::vector<::cedar::CedarKey>& writes, Timestamp ts,
+                     Timestamp read_ts = Timestamp(0))
+      : txn_id(id), read_set(reads), write_set(writes), commit_ts(ts), read_timestamp(read_ts) {
     start_time = std::chrono::steady_clock::now();
   }
 };
@@ -183,7 +185,8 @@ class Optimized2PCEngine {
   
   // Synchronous 2PC - blocks until complete
   Status Execute2PC(TxnID txn_id, const std::vector<::cedar::CedarKey>& read_set,
-                    const std::vector<::cedar::CedarKey>& write_set, Timestamp commit_ts);
+                    const std::vector<::cedar::CedarKey>& write_set, Timestamp commit_ts,
+                    Timestamp read_timestamp = Timestamp(0));
   
   // Asynchronous 2PC - returns immediately, callback on completion
   void Execute2PCAsync(TxnID txn_id, const std::vector<::cedar::CedarKey>& read_set,

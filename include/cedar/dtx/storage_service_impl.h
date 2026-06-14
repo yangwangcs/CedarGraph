@@ -134,7 +134,8 @@ class PartitionStorage {
   Status Prepare(TxnID txn_id, const std::vector<CedarKey>& reads,
                  const std::vector<CedarKey>& writes,
                  const std::unordered_map<uint64_t, Descriptor>& write_descriptors,
-                 Timestamp commit_ts);
+                 Timestamp commit_ts,
+                 Timestamp read_timestamp = Timestamp(0));
   Status Commit(TxnID txn_id, Timestamp commit_ts);
   Status Abort(TxnID txn_id);
   Status Inquire(TxnID txn_id, DistributedTxnState* state);
@@ -403,7 +404,8 @@ class StorageClient {
 
   // 2PC coordinator support
   StatusOr<bool> Prepare(TxnID txn_id, const std::vector<CedarKey>& reads,
-                         const std::vector<CedarKey>& writes, Timestamp commit_ts);
+                         const std::vector<CedarKey>& writes, Timestamp commit_ts,
+                         Timestamp read_timestamp = Timestamp(0));
   Status Commit(TxnID txn_id, Timestamp commit_ts);
   Status Abort(TxnID txn_id);
   Status Inquire(TxnID txn_id, ParticipantState::State* state);

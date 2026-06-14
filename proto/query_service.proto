@@ -333,6 +333,8 @@ message BatchQueryResponse {
 message GetSchemaRequest {
     // 空表示获取所有 schema
     repeated string labels = 1;
+    // Session ID for space context
+    string session_id = 2;
 }
 
 message GetSchemaResponse {

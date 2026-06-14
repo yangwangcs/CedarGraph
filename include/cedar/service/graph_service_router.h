@@ -224,7 +224,9 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   Status ExecutePartitionQuery(const std::string& query,
                                uint32_t partition_id,
                                const QueryRouteContext& route_ctx,
-                               cedar::query::ResultSet* result);
+                               cedar::query::ResultSet* result,
+                               std::vector<::cedar::CedarKey>* read_keys = nullptr,
+                               ::cedar::Timestamp read_timestamp = ::cedar::Timestamp(0));
   
   // 后台刷新线程
   void PartitionMapRefreshLoop();
@@ -328,6 +330,7 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
   // 活跃显式事务上下文（用于多语句事务）
   struct ActiveTransaction {
     uint64_t txn_id;
+    ::cedar::Timestamp read_timestamp;  // Snapshot timestamp for all reads in this transaction
     std::vector<::cedar::CedarKey> read_set;
     std::vector<::cedar::CedarKey> write_set;
     bool has_writes = false;

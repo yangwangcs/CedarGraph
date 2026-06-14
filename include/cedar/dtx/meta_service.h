@@ -460,6 +460,8 @@ private:
     
     // 通知客户端
     void NotifyPartitionChange(const PartitionMapChange& change);
+    void NotifyPartitionLeaderChange(const std::string& space_name, PartitionID pid,
+                                      NodeID old_leader, NodeID new_leader, uint64_t version);
     void NotifyNodeChange(const NodeChange& change);
     
     MetaServiceConfig config_;
@@ -475,6 +477,8 @@ private:
     // 心跳检查
     std::atomic<bool> running_{false};
     std::thread heartbeat_thread_;
+    std::mutex shutdown_mutex_;
+    std::condition_variable shutdown_cv_;
     
     // Heartbeat rate limiting (token bucket per node)
     mutable std::mutex heartbeat_tokens_mutex_;

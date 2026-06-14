@@ -24,14 +24,13 @@
 
 #include "cedar/core/status.h"
 #include "cedar/coordinator/location_table.h"
-#include "cedar/core/status.h"
+#include "meta_service.grpc.pb.h"
 
 namespace cedar {
 namespace gcn {
 
 // CoordinatorClient is the GCN-side client to the Coordinator (metad) for
-// cache location lookups.  For now all methods are stubs that return
-// hard-coded values; real gRPC calls will be wired in a later task.
+// cache location lookups.
 class CoordinatorClient {
  public:
   explicit CoordinatorClient(std::shared_ptr<grpc::Channel> channel);
@@ -51,6 +50,7 @@ class CoordinatorClient {
 
  private:
   std::shared_ptr<grpc::Channel> channel_;
+  std::unique_ptr<cedar::meta::MetaService::Stub> stub_;  // Cached stub
   uint32_t gcn_node_id_ = 0;
 };
 

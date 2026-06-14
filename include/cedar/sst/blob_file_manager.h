@@ -96,6 +96,14 @@ class BlobFileManager {
   // 获取 blob 文件路径
   std::string GetBlobFilePath(uint32_t file_id) const;
 
+  // Pending write entry for visibility before flush
+  struct PendingEntry {
+    uint32_t file_id;
+    uint32_t offset;
+    std::string data;
+    uint32_t checksum;
+  };
+
   Config config_;
   cedar::Env* env_;
   
@@ -110,6 +118,10 @@ class BlobFileManager {
   // 已打开的读取文件缓存
   mutable std::mutex read_mutex_;  // Protects read_files_ map
   std::unordered_map<uint32_t, RandomAccessFile*> read_files_;
+  
+  // Pending writes buffer for visibility before flush
+  mutable std::mutex pending_mutex_;  // Protects pending_writes_
+  std::unordered_map<uint64_t, PendingEntry> pending_writes_;  // key = file_id << 32 | offset
   
   // Blob GC 管理器
   BlobGCManager* blob_gc_mgr_ = nullptr;

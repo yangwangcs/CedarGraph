@@ -32,6 +32,7 @@ void WatermarkGc::Stop() {
     return;
   }
   stop_flag_.store(true, std::memory_order_relaxed);
+  cv_.notify_all();
   thread_.join();
 }
 
@@ -45,7 +46,9 @@ void WatermarkGc::RunLoop(uint64_t interval_ms) {
     if (watermark > 0 && engine_ != nullptr) {
       engine_->DropBelowWatermark(watermark);
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+    std::unique_lock<std::mutex> lock(cv_mutex_);
+    cv_.wait_for(lock, std::chrono::milliseconds(interval_ms),
+                 [this]() { return stop_flag_.load(std::memory_order_relaxed); });
   }
 }
 

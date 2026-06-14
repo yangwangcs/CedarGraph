@@ -955,7 +955,8 @@ grpc::Status StorageServiceImpl::Prepare(grpc::ServerContext* context,
     }
     
     // Direct path (no replication or single-node mode)
-    auto status = partition->Prepare(txn_id, read_set, write_set, write_descriptors, commit_ts);
+    Timestamp read_ts(request->read_timestamp());
+    auto status = partition->Prepare(txn_id, read_set, write_set, write_descriptors, commit_ts, read_ts);
     if (!status.ok()) {
       all_prepared = false;
       last_error = status.ToString();

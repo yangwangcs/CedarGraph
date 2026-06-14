@@ -727,7 +727,7 @@ std::string MetadataService::MetadataStateMachine::Serialize() const {
     std::string result;
     // Magic + version
     result.append("CMSN", 4);  // Cedar Meta Snapshot
-    uint32_t version = 2;
+    uint32_t version = 3;  // Added indexes serialization
     result.append(reinterpret_cast<const char*>(&version), sizeof(version));
     
     // spaces
@@ -779,6 +779,28 @@ std::string MetadataService::MetadataStateMachine::Serialize() const {
         }
     }
     
+    // indexes (added in snapshot version 3)
+    uint32_t index_space_count = static_cast<uint32_t>(indexes_.size());
+    result.append(reinterpret_cast<const char*>(&index_space_count), sizeof(index_space_count));
+    for (const auto& [space_name, index_map] : indexes_) {
+        AppendString(result, space_name);
+        uint32_t index_count = static_cast<uint32_t>(index_map.size());
+        result.append(reinterpret_cast<const char*>(&index_count), sizeof(index_count));
+        for (const auto& [name, index] : index_map) {
+            // Serialize IndexDef manually
+            AppendString(result, index.name);
+            AppendString(result, index.label_name);
+            uint32_t prop_count = static_cast<uint32_t>(index.properties.size());
+            result.append(reinterpret_cast<const char*>(&prop_count), sizeof(prop_count));
+            for (const auto& prop : index.properties) {
+                AppendString(result, prop);
+            }
+            AppendString(result, index.space_name);
+            uint8_t unique = index.unique ? 1 : 0;
+            result.append(reinterpret_cast<const char*>(&unique), sizeof(unique));
+        }
+    }
+    
     return result;
 }
 
@@ -803,7 +825,7 @@ Status MetadataService::MetadataStateMachine::Deserialize(const std::string& dat
     uint32_t version;
     std::memcpy(&version, &data[pos], sizeof(version));
     pos += sizeof(version);
-    if (version != 2) {
+    if (version < 2 || version > 3) {
         return Status::InvalidArgument("Unsupported snapshot version");
     }
     
@@ -884,6 +906,56 @@ Status MetadataService::MetadataStateMachine::Deserialize(const std::string& dat
         }
     }
     
+    // indexes (only in snapshot version 3+)
+    if (version >= 3 && pos + sizeof(uint32_t) <= data.size()) {
+        uint32_t index_space_count;
+        std::memcpy(&index_space_count, &data[pos], sizeof(index_space_count));
+        pos += sizeof(uint32_t);
+        for (uint32_t s = 0; s < index_space_count; ++s) {
+            auto space_name_data = ReadString(data, pos);
+            if (!space_name_data.ok()) return Status::InvalidArgument("Corrupt index space name");
+            std::string space_name = space_name_data.value();
+            
+            if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt index count");
+            uint32_t index_count;
+            std::memcpy(&index_count, &data[pos], sizeof(index_count));
+            pos += sizeof(uint32_t);
+            
+            for (uint32_t j = 0; j < index_count; ++j) {
+                IndexDef index;
+                auto name_result = ReadString(data, pos);
+                if (!name_result.ok()) return Status::InvalidArgument("Corrupt index name");
+                index.name = name_result.value();
+                
+                auto label_result = ReadString(data, pos);
+                if (!label_result.ok()) return Status::InvalidArgument("Corrupt index label");
+                index.label_name = label_result.value();
+                
+                if (pos + sizeof(uint32_t) > data.size()) return Status::InvalidArgument("Corrupt index prop count");
+                uint32_t prop_count;
+                std::memcpy(&prop_count, &data[pos], sizeof(prop_count));
+                pos += sizeof(uint32_t);
+                for (uint32_t p = 0; p < prop_count; ++p) {
+                    auto prop_result = ReadString(data, pos);
+                    if (!prop_result.ok()) return Status::InvalidArgument("Corrupt index property");
+                    index.properties.push_back(prop_result.value());
+                }
+                
+                auto space_result = ReadString(data, pos);
+                if (!space_result.ok()) return Status::InvalidArgument("Corrupt index space");
+                index.space_name = space_result.value();
+                
+                if (pos + sizeof(uint8_t) > data.size()) return Status::InvalidArgument("Corrupt index unique");
+                uint8_t unique;
+                std::memcpy(&unique, &data[pos], sizeof(unique));
+                pos += sizeof(unique);
+                index.unique = (unique != 0);
+                
+                indexes_[space_name][index.name] = index;
+            }
+        }
+    }
+    
     return Status::OK();
 }
 
@@ -939,6 +1011,7 @@ Status MetadataService::Shutdown() {
     if (!initialized_) return Status::OK();
     
     running_ = false;
+    shutdown_cv_.notify_all();  // Wake up HeartbeatCheckLoop
     if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
     
     if (raft_node_) raft_node_->Shutdown();
@@ -1007,15 +1080,7 @@ Status MetadataService::UpdatePartitionLeader(const std::string& space_name,
     if (config_.test_mode) {
         auto [version, old_leader] = state_machine_.ApplyUpdatePartitionLeader(space_name, partition_id, new_leader);
         if (version > 0) {
-            PartitionMapChange change;
-            change.space_name = space_name;
-            change.partition_id = partition_id;
-            change.change_type = PartitionChangeType::kLeaderChanged;
-            change.old_leader = old_leader;
-            change.new_leader = new_leader;
-            change.version = version;
-            change.timestamp = std::chrono::system_clock::now();
-            NotifyPartitionChange(change);
+            NotifyPartitionLeaderChange(space_name, partition_id, old_leader, new_leader, version);
         }
         return Status::OK();
     }
@@ -1031,15 +1096,8 @@ Status MetadataService::UpdatePartitionAssignment(const PartitionAssignment& ass
     if (config_.test_mode) {
         auto [version, old_leader] = state_machine_.ApplyUpdatePartitionAssignment(assignment);
         if (version > 0) {
-            PartitionMapChange change;
-            change.space_name = assignment.space_name;
-            change.partition_id = assignment.partition_id;
-            change.change_type = PartitionChangeType::kLeaderChanged;
-            change.old_leader = old_leader;
-            change.new_leader = assignment.leader_node;
-            change.version = version;
-            change.timestamp = std::chrono::system_clock::now();
-            NotifyPartitionChange(change);
+            NotifyPartitionLeaderChange(assignment.space_name, assignment.partition_id,
+                                        old_leader, assignment.leader_node, version);
         }
         return Status::OK();
     }
@@ -1235,7 +1293,7 @@ void MetadataService::OnStepDown() {
 }
 
 void MetadataService::HeartbeatCheckLoop() {
-    while (running_) {
+    while (running_.load()) {
         try {
             // Check for node timeouts
             auto failed_nodes = state_machine_.CheckNodeHeartbeats(config_.heartbeat_timeout_sec);
@@ -1272,21 +1330,49 @@ void MetadataService::HeartbeatCheckLoop() {
             std::cerr << "[MetaD] HeartbeatCheckLoop unknown exception" << std::endl;
         }
 
-        std::this_thread::sleep_for(std::chrono::seconds(config_.heartbeat_check_interval_sec));
+        // Use condition_variable for responsive shutdown
+        {
+            std::unique_lock<std::mutex> lock(shutdown_mutex_);
+            shutdown_cv_.wait_for(lock, std::chrono::seconds(config_.heartbeat_check_interval_sec),
+                                  [this]() { return !running_.load(); });
+        }
     }
 }
 
 void MetadataService::NotifyPartitionChange(const PartitionMapChange& change) {
-    std::lock_guard<std::mutex> lock(callbacks_mutex_);
-    for (const auto& [space_name, callback] : partition_callbacks_) {
-        if (space_name.empty() || space_name == change.space_name) {
-            try {
-                callback(change);
-            } catch (...) {
-                std::cerr << "[MetaD] Partition change callback exception" << std::endl;
+    // Copy callbacks under lock, then call without lock to prevent deadlock
+    std::vector<PartitionChangeCallback> callbacks_copy;
+    {
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        for (const auto& [space_name, callback] : partition_callbacks_) {
+            if (space_name.empty() || space_name == change.space_name) {
+                callbacks_copy.push_back(callback);
             }
         }
     }
+    for (const auto& callback : callbacks_copy) {
+        try {
+            callback(change);
+        } catch (...) {
+            std::cerr << "[MetaD] Partition change callback exception" << std::endl;
+        }
+    }
+}
+
+void MetadataService::NotifyPartitionLeaderChange(const std::string& space_name,
+                                                    PartitionID pid,
+                                                    NodeID old_leader,
+                                                    NodeID new_leader,
+                                                    uint64_t version) {
+    PartitionMapChange change;
+    change.space_name = space_name;
+    change.partition_id = pid;
+    change.change_type = PartitionChangeType::kLeaderChanged;
+    change.old_leader = old_leader;
+    change.new_leader = new_leader;
+    change.version = version;
+    change.timestamp = std::chrono::system_clock::now();
+    NotifyPartitionChange(change);
 }
 
 void MetadataService::NotifyNodeChange(const NodeChange& change) {

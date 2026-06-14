@@ -177,6 +177,8 @@ class ConfigManagerImpl {
   std::atomic<bool> hot_reload_enabled_{false};
   int hot_reload_interval_ms_ = 5000;
   time_t hot_reload_last_mtime_{0};
+  std::mutex hot_reload_mutex_;
+  std::condition_variable hot_reload_cv_;
 
   // Flattened config for fast lookups
   std::map<std::string, std::string> flattened_;
@@ -762,8 +764,13 @@ Status ConfigManager::EnableHotReload(const std::string& filepath,
 
   impl_->hot_reload_thread_ = std::make_unique<std::thread>([this]() {
     while (impl_->hot_reload_enabled_) {
-      std::this_thread::sleep_for(
-          std::chrono::milliseconds(impl_->hot_reload_interval_ms_));
+      // Use condition_variable for responsive shutdown
+      {
+        std::unique_lock<std::mutex> lock(impl_->hot_reload_mutex_);
+        impl_->hot_reload_cv_.wait_for(lock,
+            std::chrono::milliseconds(impl_->hot_reload_interval_ms_),
+            [this]() { return !impl_->hot_reload_enabled_.load(); });
+      }
       if (!impl_->hot_reload_enabled_) {
         break;
       }
@@ -784,6 +791,7 @@ Status ConfigManager::EnableHotReload(const std::string& filepath,
 
 void ConfigManager::DisableHotReload() {
   impl_->hot_reload_enabled_ = false;
+  impl_->hot_reload_cv_.notify_all();  // Wake up hot reload thread
 
   if (impl_->hot_reload_thread_ && impl_->hot_reload_thread_->joinable()) {
     impl_->hot_reload_thread_->join();

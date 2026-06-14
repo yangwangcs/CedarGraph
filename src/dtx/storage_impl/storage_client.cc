@@ -362,7 +362,8 @@ Status StorageClient::ScanEdgeV2(uint64_t node_id, uint16_t edge_type,
 }
 
 StatusOr<bool> StorageClient::Prepare(TxnID txn_id, const std::vector<CedarKey>& reads,
-                                      const std::vector<CedarKey>& writes, Timestamp commit_ts) {
+                                      const std::vector<CedarKey>& writes, Timestamp commit_ts,
+                                      Timestamp read_timestamp) {
   if (!connected_.load()) {
     return Status::IOError("Client not connected");
   }
@@ -370,6 +371,7 @@ StatusOr<bool> StorageClient::Prepare(TxnID txn_id, const std::vector<CedarKey>&
   cedar::storage::PrepareRequest request;
   request.set_txn_id(txn_id);
   request.set_commit_ts(commit_ts.value());
+  request.set_read_timestamp(read_timestamp.value());
   
   // Convert reads to proto
   for (const auto& key : reads) {

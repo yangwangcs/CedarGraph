@@ -209,14 +209,34 @@ Status BlobFileManager::WriteBlob(const Slice& data,
   *offset = static_cast<uint32_t>(current_file_size_ - 12);  // 减去文件头
   *size = entry_header.size;  // 返回实际数据大小，不是总大小
   
-  current_file_size_ += entry_total_size;
-  
-  // Flush to ensure data is visible to concurrent readers
-  cedar::Status flush_status = current_file_->Flush();
-  if (!flush_status.ok()) {
-    return Status::IOError("BlobFileManager", flush_status.ToString());
+  // Add to pending writes for visibility before flush
+  {
+    std::lock_guard<std::mutex> plock(pending_mutex_);
+    uint64_t key = (static_cast<uint64_t>(*file_id) << 32) | *offset;
+    PendingEntry entry;
+    entry.file_id = *file_id;
+    entry.offset = *offset;
+    entry.data.assign(data.data(), data.size());
+    entry.checksum = entry_header.checksum;
+    pending_writes_[key] = std::move(entry);
   }
+  
+  current_file_size_ += entry_total_size;
   bytes_since_flush_ += entry_total_size;
+
+  // Batch flush: only flush when accumulated enough data
+  if (bytes_since_flush_ >= kFlushThreshold) {
+    cedar::Status flush_status = current_file_->Flush();
+    if (!flush_status.ok()) {
+      return Status::IOError("BlobFileManager", flush_status.ToString());
+    }
+    // Clear pending writes after successful flush
+    {
+      std::lock_guard<std::mutex> plock(pending_mutex_);
+      pending_writes_.clear();
+    }
+    bytes_since_flush_ = 0;
+  }
 
   return Status::OK();
 }
@@ -225,6 +245,25 @@ Status BlobFileManager::ReadBlob(uint32_t file_id,
                                  uint32_t offset, 
                                  uint32_t size,
                                  std::string* data) {
+  // Check pending writes first (for unflushed data)
+  {
+    std::lock_guard<std::mutex> plock(pending_mutex_);
+    uint64_t key = (static_cast<uint64_t>(file_id) << 32) | offset;
+    auto it = pending_writes_.find(key);
+    if (it != pending_writes_.end()) {
+      // Found in pending buffer - return directly
+      uint32_t to_copy = std::min(size, static_cast<uint32_t>(it->second.data.size()));
+      data->assign(it->second.data.data(), to_copy);
+      
+      // Verify checksum
+      uint32_t actual_checksum = cedar::crc32c::Value(data->data(), data->size());
+      if (actual_checksum != it->second.checksum) {
+        return Status::Corruption("BlobFileManager", "pending blob checksum mismatch");
+      }
+      return Status::OK();
+    }
+  }
+  
   RandomAccessFile* file = nullptr;
   
   // 获取或打开 blob 文件（仅在此阶段持有锁）
@@ -300,10 +339,28 @@ size_t BlobFileManager::GetCurrentBlobSize() const {
 
 Status BlobFileManager::Sync() {
   if (current_file_) {
+    // Flush pending writes first
+    {
+      std::lock_guard<std::mutex> lock(write_mutex_);
+      if (current_file_) {
+        cedar::Status s = current_file_->Flush();
+        if (!s.ok()) {
+          return Status::IOError("BlobFileManager", s.ToString());
+        }
+      }
+    }
+    
     cedar::Status s = current_file_->Sync();
     if (!s.ok()) {
       return Status::IOError("BlobFileManager", s.ToString());
     }
+    
+    // Clear pending writes after successful sync
+    {
+      std::lock_guard<std::mutex> plock(pending_mutex_);
+      pending_writes_.clear();
+    }
+    bytes_since_flush_ = 0;
   }
   return Status::OK();
 }
