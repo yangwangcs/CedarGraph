@@ -267,15 +267,7 @@ class DistributedExecutor {
   // Access the underlying storage client for routing setup
   QueryStorageClient* GetStorageClient() const { return storage_client_; }
 
- private:
-  QueryStorageClient* storage_client_;
-  QueryMetaClient* meta_client_;
-  std::unique_ptr<PartitionRouter> router_;
-  std::unique_ptr<ParallelExecutor> parallel_executor_;
-  std::unique_ptr<ResultMerger> result_merger_;
-  std::unique_ptr<cypher::QueryValidator> validator_;
-  GraphSchema schema_;
-
+ protected:
   // Label-partition cache: label → set of partition IDs containing entities with this label
   std::unordered_map<std::string, std::unordered_set<uint32_t>> label_partition_cache_;
   std::mutex label_cache_mutex_;
@@ -288,6 +280,15 @@ class DistributedExecutor {
 
   // Get partitions known to contain entities with the given label
   std::unordered_set<uint32_t> GetPartitionsForLabel(const std::string& label);
+
+ private:
+  QueryStorageClient* storage_client_;
+  QueryMetaClient* meta_client_;
+  std::unique_ptr<PartitionRouter> router_;
+  std::unique_ptr<ParallelExecutor> parallel_executor_;
+  std::unique_ptr<ResultMerger> result_merger_;
+  std::unique_ptr<cypher::QueryValidator> validator_;
+  GraphSchema schema_;
 
   // Analyze query to determine if it's single-partition
   bool IsSinglePartitionQuery(

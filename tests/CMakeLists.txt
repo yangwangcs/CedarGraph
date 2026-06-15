@@ -765,6 +765,10 @@ add_executable(test_queryd_critical queryd/test_queryd_critical.cc)
 target_link_libraries(test_queryd_critical ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_queryd_critical)
 
+add_executable(test_match_optimization queryd/test_match_optimization.cc)
+target_link_libraries(test_match_optimization ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_match_optimization)
+
 add_executable(test_query_dispatcher gcn/test_query_dispatcher.cc)
 target_link_directories(test_query_dispatcher PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_query_dispatcher cedar_gcn ${GTEST_MAIN_TARGET})
@@ -939,3 +943,12 @@ gtest_discover_tests(test_async_query_benchmark)
 add_executable(test_stress test_stress.cc)
 target_link_libraries(test_stress cedar cedar_cypher gtest gtest_main pthread)
 gtest_discover_tests(test_stress)
+
+# Query Functionality Test
+add_executable(test_query_functionality test_query_functionality.cc)
+target_link_libraries(test_query_functionality cedar cedar_cypher gtest gtest_main pthread)
+gtest_discover_tests(test_query_functionality)
+
+# Query Client Test
+add_executable(test_query_client ../tools/test_query_client.cc)
+target_link_libraries(test_query_client cedar cedar_cypher cedar_queryd gRPC::grpc++ protobuf::libprotobuf gtest gtest_main pthread)
