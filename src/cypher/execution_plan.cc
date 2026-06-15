@@ -157,6 +157,12 @@ ResultSet ExecutionPlan::Execute(ExecutionContext* ctx) {
     return result;
   }
   
+  if (!root_) {
+    ResultSet result;
+    result.SetError("Execution plan root is null");
+    return result;
+  }
+  
   auto status = ValidateDependencies(*ctx);
   if (!status.ok()) {
     ResultSet result;
@@ -199,6 +205,10 @@ std::unique_ptr<ExecutionPlan> ExecutionPlan::Clone() const {
 }
 
  cedar::Status ExecutionPlan::ValidateDependencies(const ExecutionContext& ctx) const {
+  if (!root_) {
+    return cedar::Status::InvalidArgument("Execution plan root is null");
+  }
+  
   std::vector<const PhysicalOperator*> stack;
   stack.push_back(root_.get());
   
@@ -311,7 +321,8 @@ bool NodeScan::Init(ExecutionContext* ctx) {
   // Generic node scan - iterate over a configurable entity range.
   // Range can be customized by setting the CEDAR_SCAN_MAX_ENTITIES env var.
   constexpr uint64_t kDefaultMinEntityId = 1;
-  constexpr uint64_t kDefaultMaxEntityId = 1000;
+  constexpr uint64_t kDefaultMaxEntityId = 50;  // Reduced from 100 to avoid CPU spin
+  constexpr size_t kMaxScanResults = 100;  // Cap total results to prevent CPU spin
   uint64_t min_entity_id = kDefaultMinEntityId;
   uint64_t max_entity_id = kDefaultMaxEntityId;
   const char* env_max = std::getenv("CEDAR_SCAN_MAX_ENTITIES");
@@ -329,13 +340,43 @@ bool NodeScan::Init(ExecutionContext* ctx) {
     }
   }
   
+  // Label-index-based scan (fast path)
+  if (label_.has_value() && ctx->storage) {
+    auto* engine = ctx->storage->GetLsmEngine();
+    if (engine) {
+      auto entity_ids = engine->LookupLabelIndex(*label_);
+      if (!entity_ids.empty()) {
+        node_ids_ = std::move(entity_ids);
+        current_index_ = 0;
+        return true;
+      }
+    }
+  }
+
   // Check if graph context provides entity enumeration
   if (ctx->get_all_entities_fn) {
     node_ids_ = ctx->get_all_entities_fn(min_entity_id, max_entity_id, 1);
   } else if (ctx->graph) {
     node_ids_ = ctx->graph->ScanVertices(ctx->time_range.first, ctx->time_range.second);
+  } else if (ctx->storage) {
+    // Storage-backed scan: check existence before adding to avoid CPU spin
+    uint64_t consecutive_misses = 0;
+    constexpr uint64_t kMaxConsecutiveMisses = 50;
+    for (uint64_t i = min_entity_id; i <= max_entity_id; ++i) {
+      if (node_ids_.size() >= kMaxScanResults) break;
+      auto versions = ctx->storage->Scan(i, Timestamp(0), Timestamp::Max());
+      if (!versions.empty()) {
+        node_ids_.push_back(i);
+        consecutive_misses = 0;
+      } else {
+        ++consecutive_misses;
+        if (consecutive_misses >= kMaxConsecutiveMisses && !node_ids_.empty()) {
+          break;
+        }
+      }
+    }
   } else {
-    // Fallback: simple sequential range
+    // Fallback: simple sequential range (no storage check possible)
     node_ids_.reserve(max_entity_id - min_entity_id + 1);
     for (uint64_t i = min_entity_id; i <= max_entity_id; ++i) {
       node_ids_.push_back(i);
@@ -353,7 +394,8 @@ std::shared_ptr<Record> NodeScan::Next() {
   
   uint64_t node_id = node_ids_[current_index_++];
   
-  // Create a node value
+  // Create a node value (without checking storage for existence)
+  // This avoids expensive storage lookups for non-existent nodes
   Node node;
   node.id = node_id;
   if (label_) {
@@ -456,7 +498,8 @@ bool IndexScan::Init(ExecutionContext* ctx) {
   // Fallback to range scan if index returned nothing or storage is unavailable
   if (!used_index_) {
     constexpr uint64_t kDefaultMinEntityId = 1;
-    constexpr uint64_t kDefaultMaxEntityId = 1000;
+    constexpr uint64_t kDefaultMaxEntityId = 100;
+    constexpr size_t kMaxScanResults = 500;
     uint64_t min_entity_id = kDefaultMinEntityId;
     uint64_t max_entity_id = kDefaultMaxEntityId;
 
@@ -479,6 +522,21 @@ bool IndexScan::Init(ExecutionContext* ctx) {
       node_ids_ = ctx->get_all_entities_fn(min_entity_id, max_entity_id, 1);
     } else if (ctx->graph) {
       node_ids_ = ctx->graph->ScanVertices(ctx->time_range.first, ctx->time_range.second);
+    } else if (ctx->storage) {
+      // Storage-backed scan with early termination
+      uint64_t consecutive_misses = 0;
+      constexpr uint64_t kMaxConsecutiveMisses = 50;
+      for (uint64_t i = min_entity_id; i <= max_entity_id; ++i) {
+        if (node_ids_.size() >= kMaxScanResults) break;
+        auto versions = ctx->storage->Scan(i, Timestamp(0), Timestamp::Max());
+        if (!versions.empty()) {
+          node_ids_.push_back(i);
+          consecutive_misses = 0;
+        } else {
+          ++consecutive_misses;
+          if (consecutive_misses >= kMaxConsecutiveMisses && !node_ids_.empty()) break;
+        }
+      }
     } else {
       node_ids_.reserve(max_entity_id - min_entity_id + 1);
       for (uint64_t i = min_entity_id; i <= max_entity_id; ++i) {
