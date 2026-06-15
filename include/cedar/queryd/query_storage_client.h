@@ -132,6 +132,14 @@ class QueryStorageClient {
   // 创建 CedarScan 用于快照读取
   std::unique_ptr<CedarScan> CreateScan(Timestamp snapshot_ts);
 
+  // Label-based batch entity scan (replaces per-entity probing for MATCH)
+  Status ScanLabel(const std::string& space_name,
+                   const std::string& label,
+                   uint64_t min_id,
+                   uint64_t max_id,
+                   uint64_t limit,
+                   std::vector<uint64_t>* entity_ids);
+
   // ========== Partition Node Client (used by DistributedExecutor) ==========
   
   class NodeClient {

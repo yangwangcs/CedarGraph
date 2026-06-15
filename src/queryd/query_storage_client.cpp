@@ -393,6 +393,56 @@ std::unique_ptr<CedarScan> QueryStorageClient::CreateScan(Timestamp snapshot_ts)
   return nullptr;
 }
 
+Status QueryStorageClient::ScanLabel(const std::string& space_name,
+                                      const std::string& label,
+                                      uint64_t min_id,
+                                      uint64_t max_id,
+                                      uint64_t limit,
+                                      std::vector<uint64_t>* entity_ids) {
+  if (use_base_client_ && base_client_) {
+    return Status::NotSupported(
+        "ScanLabel not available via base_client_, use independent mode");
+  }
+
+  // Route to any registered partition (label index is global per node)
+  std::shared_ptr<grpc::Channel> channel;
+  {
+    std::shared_lock<std::shared_mutex> lock(nodes_mutex_);
+    if (!partition_routing_.empty()) {
+      channel = GetOrCreateChannel(partition_routing_.begin()->first);
+    }
+  }
+  if (!channel) {
+    return Status::NotFound("No storage node registered for ScanLabel");
+  }
+
+  auto stub = cedar::storage::StorageService::NewStub(channel);
+  cedar::storage::ScanLabelRequest request;
+  request.set_space_name(space_name);
+  request.set_label(label);
+  request.set_min_id(min_id);
+  request.set_max_id(max_id);
+  request.set_limit(limit);
+
+  cedar::storage::ScanLabelResponse response;
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
+
+  grpc::Status status = stub->ScanLabel(&context, request, &response);
+  if (!status.ok()) {
+    return Status::IOError("ScanLabel RPC failed: " + status.error_message());
+  }
+  if (!response.success()) {
+    return Status::IOError("ScanLabel failed: " + response.error_message());
+  }
+
+  entity_ids->clear();
+  for (uint64_t id : response.entity_ids()) {
+    entity_ids->push_back(id);
+  }
+  return Status::OK();
+}
+
 // ============================================================================
 // NodeClient implementation
 // ============================================================================

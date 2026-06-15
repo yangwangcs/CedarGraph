@@ -338,6 +338,9 @@ service StorageService {
 
     // 存储容量监控
     rpc GetStorageCapacity(GetStorageCapacityRequest) returns (GetStorageCapacityResponse);
+
+    // Label-based batch entity scan
+    rpc ScanLabel(ScanLabelRequest) returns (ScanLabelResponse);
 }
 
 // Flush 请求/响应
@@ -480,6 +483,24 @@ message GetHotSpotsResponse {
 message ResetHotSpotStatsRequest {}
 message ResetHotSpotStatsResponse {
     bool success = 1;
+}
+
+// ============================================================================
+// Label-based batch entity scan
+// ============================================================================
+
+message ScanLabelRequest {
+    string space_name = 1;
+    string label = 2;
+    uint64 min_id = 3;
+    uint64 max_id = 4;
+    uint64 limit = 5;
+}
+
+message ScanLabelResponse {
+    bool success = 1;
+    string error_message = 2;
+    repeated uint64 entity_ids = 3;
 }
 
 // ============================================================================

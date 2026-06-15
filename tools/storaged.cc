@@ -16,6 +16,7 @@
 #include <atomic>
 #include <memory>
 #include <filesystem>
+#include <execinfo.h>
 
 #include <grpcpp/grpcpp.h>
 
@@ -68,6 +69,26 @@ static volatile sig_atomic_t g_shutdown_requested = 0;
 void SignalHandler(int sig) {
   (void)sig;
   g_shutdown_requested = 1;
+}
+
+// Signal handler for crash detection
+void CrashSignalHandler(int sig) {
+  // Print backtrace
+  void* array[100];
+  size_t size = backtrace(array, 100);
+  
+  std::cerr << "\n=== CRASH DETECTED ===" << std::endl;
+  std::cerr << "Signal: " << sig << " (" << 
+    (sig == SIGSEGV ? "SIGSEGV" : 
+     sig == SIGABRT ? "SIGABRT" : 
+     sig == SIGBUS ? "SIGBUS" : "UNKNOWN") << ")" << std::endl;
+  std::cerr << "Backtrace:" << std::endl;
+  backtrace_symbols_fd(array, size, STDERR_FILENO);
+  std::cerr << "========================\n" << std::endl;
+  
+  // Re-raise the signal to get core dump
+  signal(sig, SIG_DFL);
+  raise(sig);
 }
 
 void PrintBanner() {
@@ -161,8 +182,8 @@ Config ParseArgs(int argc, char* argv[]) {
 class StorageServiceImpl final : public cedar::storage::StorageService::Service {
  public:
   explicit StorageServiceImpl(cedar::CedarGraphStorage* storage,
-                              cedar::dtx::PartitionRaftManager* raft_manager = nullptr,
-                              const std::string& data_dir = "") 
+                               cedar::dtx::PartitionRaftManager* raft_manager = nullptr,
+                               const std::string& data_dir = "") 
       : storage_(storage), raft_manager_(raft_manager), data_dir_(data_dir) {
     if (storage_) {
       cypher_engine_ = std::make_unique<cedar::cypher::CypherEngine>(storage_);
@@ -170,6 +191,13 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
         data_dir_ = storage_->GetDbPath();
       }
     }
+  }
+
+  ~StorageServiceImpl() override {
+    // Ensure proper cleanup
+    storage_ = nullptr;
+    raft_manager_ = nullptr;
+    cypher_engine_.reset();
   }
 
   grpc::Status Prepare(grpc::ServerContext* context,
@@ -595,7 +623,11 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status ExecuteSubQuery(grpc::ServerContext* context,
                                const cedar::storage::ExecuteSubQueryRequest* request,
                                grpc::ServerWriter<cedar::storage::SubQueryResultBatch>* writer) override {
-    (void)context;
+    // Check if client is still connected
+    if (context->IsCancelled()) {
+      return grpc::Status(grpc::StatusCode::CANCELLED, "Client disconnected");
+    }
+    
     cedar::storage::SubQueryResultBatch batch;
     if (!cypher_engine_) {
       batch.set_is_last(true);
@@ -626,9 +658,17 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       }
     }
 
-    auto result = cypher_engine_->Execute(request->query_fragment(), params);
+    cedar::cypher::ResultSet result;
+    {
+      std::lock_guard<std::mutex> lock(cypher_mutex_);
+      std::cerr << "[StorageD] Executing query: " << request->query_fragment() << std::endl;
+      result = cypher_engine_->Execute(request->query_fragment(), params);
+      std::cerr << "[StorageD] Query completed, records: " << result.records.size() 
+                << ", columns: " << result.columns.size() << std::endl;
+    }
 
     if (result.HasError()) {
+      std::cerr << "[StorageD] Query error: " << result.error.value_or("unknown") << std::endl;
       batch.set_is_last(true);
       writer->Write(batch);
       return grpc::Status::OK;
@@ -668,7 +708,8 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     }
 
     batch.set_is_last(true);
-    writer->Write(batch);
+    bool write_ok = writer->Write(batch);
+    std::cerr << "[StorageD] Result written: " << (write_ok ? "success" : "failed") << std::endl;
     return grpc::Status::OK;
   }
 
@@ -909,6 +950,31 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     return grpc::Status::OK;
   }
 
+  grpc::Status ScanLabel(grpc::ServerContext* context,
+                         const cedar::storage::ScanLabelRequest* request,
+                         cedar::storage::ScanLabelResponse* response) override {
+    (void)context;
+    auto* engine = storage_->GetLsmEngine();
+    if (!engine) {
+      response->set_success(false);
+      response->set_error_message("LSM engine not available");
+      return grpc::Status::OK;
+    }
+
+    auto entity_ids = engine->LookupLabelIndex(request->label());
+
+    response->set_success(true);
+    uint64_t count = 0;
+    for (uint64_t id : entity_ids) {
+      if (id < request->min_id() || id > request->max_id()) continue;
+      if (count >= request->limit()) break;
+      response->add_entity_ids(id);
+      count++;
+    }
+
+    return grpc::Status::OK;
+  }
+
  private:
   // 根据 entity_id 计算分区 ID (简化: 取模)
   uint32_t GetPartitionId(uint64_t entity_id) const {
@@ -966,6 +1032,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   std::unique_ptr<cedar::cypher::CypherEngine> cypher_engine_;
   std::string data_dir_;
   std::mutex txn_mutex_;
+  std::mutex cypher_mutex_;  // Protect CypherEngine execution
   std::unordered_map<uint64_t, TxnContext> txn_states_;
 };
 
@@ -1078,6 +1145,11 @@ int main(int argc, char* argv[]) {
   sa.sa_handler = SignalHandler;
   sigaction(SIGINT, &sa, nullptr);
   sigaction(SIGTERM, &sa, nullptr);
+  
+  // Register crash signal handlers
+  signal(SIGSEGV, CrashSignalHandler);
+  signal(SIGABRT, CrashSignalHandler);
+  signal(SIGBUS, CrashSignalHandler);
 
   // 1. 初始化存储引擎（单机模式，分布式协调由 MetaD 处理）
   cedar::CedarOptions options;
@@ -1144,8 +1216,8 @@ int main(int argc, char* argv[]) {
   // 4. 启动心跳线程
   std::thread heartbeat_thread(HeartbeatLoop, &meta_client, config.heartbeat_interval_sec);
 
-  // 5. 创建 gRPC 服务
-  StorageServiceImpl service_impl(storage, &raft_manager, config.data_dir);
+  // 5. 创建 gRPC 服务 (heap allocation to avoid lifetime issues)
+  auto service_impl = std::make_unique<StorageServiceImpl>(storage, &raft_manager, config.data_dir);
   
   // 6. 启动 gRPC 服务器
   std::string server_address = config.bind_address + ":" + std::to_string(config.port);
@@ -1157,7 +1229,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   builder.AddListeningPort(server_address, creds_result.ValueOrDie());
-  builder.RegisterService(&service_impl);
+  builder.RegisterService(service_impl.get());
   
   g_grpc_server = builder.BuildAndStart();
   if (!g_grpc_server) {
@@ -1275,6 +1347,7 @@ int main(int argc, char* argv[]) {
   health_checker.StopHttpEndpoint();
   metrics_collector.Shutdown();
   alert_mgr->Shutdown();
+  service_impl.reset();  // Destroy service before storage
   delete storage;
   std::cout << "[StorageD] Stopped." << std::endl;
 
