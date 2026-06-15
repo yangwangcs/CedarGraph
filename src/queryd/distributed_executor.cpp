@@ -1067,6 +1067,13 @@ Status DistributedExecutor::SplitQuery(
   // Extract label from query for partition pruning
   std::string label = ExtractMatchLabel(query);
 
+  // Auto-populate label cache so pruning has data to work with
+  if (!label.empty() && GetPartitionsForLabel(label).empty()) {
+    for (const auto& partition : state.partitions) {
+      UpdateLabelPartitionCache(label, partition.partition_id);
+    }
+  }
+
   // Determine candidate partitions: prune by label if cache has data
   std::vector<PartitionInfo> candidate_partitions;
   if (!label.empty()) {
@@ -1111,6 +1118,10 @@ Status DistributedExecutor::SplitQuery(
     task.sequence = seq++;
     tasks->push_back(std::move(task));
     partition_count++;
+  }
+
+  if (tasks->empty() && !candidate_partitions.empty()) {
+    return Status::Unavailable("No healthy partitions available for query");
   }
 
   return Status::OK();
