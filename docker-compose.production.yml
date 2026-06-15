@@ -1,0 +1,323 @@
+# CedarGraph Production Docker Compose
+# 版本: 1.0.0
+# 日期: 2026-06-14
+
+version: '3.8'
+
+x-cedar-base: &cedar-base
+  image: cedargraph/cedar:${CEDAR_VERSION:-latest}
+  restart: unless-stopped
+  networks:
+    - cedar-net
+  logging:
+    driver: json-file
+    options:
+      max-size: "100m"
+      max-file: "3"
+
+services:
+  # ============================================================================
+  # Meta Service - 元数据服务 (3节点HA)
+  # ============================================================================
+  metad0:
+    <<: *cedar-base
+    container_name: cedar-metad-0
+    hostname: metad0
+    environment:
+      - NODE_ROLE=metad
+      - NODE_ID=0
+      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/meta
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ${DATA_DIR:-./data}/meta0:/data/meta
+      - ${LOG_DIR:-./logs}/meta0:/logs
+    ports:
+      - "${META_PORT:-9559}:9559"
+    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9559 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+  metad1:
+    <<: *cedar-base
+    container_name: cedar-metad-1
+    hostname: metad1
+    environment:
+      - NODE_ROLE=metad
+      - NODE_ID=1
+      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/meta
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ${DATA_DIR:-./data}/meta1:/data/meta
+      - ${LOG_DIR:-./logs}/meta1:/logs
+    depends_on:
+      metad0:
+        condition: service_healthy
+    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9559 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+  metad2:
+    <<: *cedar-base
+    container_name: cedar-metad-2
+    hostname: metad2
+    environment:
+      - NODE_ROLE=metad
+      - NODE_ID=2
+      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/meta
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ${DATA_DIR:-./data}/meta2:/data/meta
+      - ${LOG_DIR:-./logs}/meta2:/logs
+    depends_on:
+      metad0:
+        condition: service_healthy
+    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9559 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+  # ============================================================================
+  # Storage Service - 存储服务
+  # ============================================================================
+  storaged0:
+    <<: *cedar-base
+    container_name: cedar-storaged-0
+    hostname: storaged0
+    environment:
+      - NODE_ROLE=storaged
+      - NODE_ID=0
+      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/storage
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TTL_ENABLED=${TTL_ENABLED:-true}
+      - TTL_RETENTION_DAYS=${TTL_RETENTION_DAYS:-30}
+    volumes:
+      - ${DATA_DIR:-./data}/storage0:/data/storage
+      - ${LOG_DIR:-./logs}/storage0:/logs
+    ports:
+      - "${STORAGE_PORT:-9779}:9779"
+    depends_on:
+      metad0:
+        condition: service_healthy
+      metad1:
+        condition: service_healthy
+      metad2:
+        condition: service_healthy
+    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9779 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+
+  storaged1:
+    <<: *cedar-base
+    container_name: cedar-storaged-1
+    hostname: storaged1
+    environment:
+      - NODE_ROLE=storaged
+      - NODE_ID=1
+      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/storage
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TTL_ENABLED=${TTL_ENABLED:-true}
+      - TTL_RETENTION_DAYS=${TTL_RETENTION_DAYS:-30}
+    volumes:
+      - ${DATA_DIR:-./data}/storage1:/data/storage
+      - ${LOG_DIR:-./logs}/storage1:/logs
+    depends_on:
+      storaged0:
+        condition: service_healthy
+    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9779 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+
+  storaged2:
+    <<: *cedar-base
+    container_name: cedar-storaged-2
+    hostname: storaged2
+    environment:
+      - NODE_ROLE=storaged
+      - NODE_ID=2
+      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - DATA_DIR=/data/storage
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TTL_ENABLED=${TTL_ENABLED:-true}
+      - TTL_RETENTION_DAYS=${TTL_RETENTION_DAYS:-30}
+    volumes:
+      - ${DATA_DIR:-./data}/storage2:/data/storage
+      - ${LOG_DIR:-./logs}/storage2:/logs
+    depends_on:
+      storaged0:
+        condition: service_healthy
+    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9779 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+
+  # ============================================================================
+  # Graph Service - 查询服务
+  # ============================================================================
+  graphd:
+    <<: *cedar-base
+    container_name: cedar-graphd
+    hostname: graphd
+    environment:
+      - NODE_ROLE=graphd
+      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - AUTO_DISCOVERY=true
+      - QUERY_PORT=9669
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ${LOG_DIR:-./logs}/graphd:/logs
+    ports:
+      - "${GRAPH_PORT:-9669}:9669"
+    depends_on:
+      storaged0:
+        condition: service_healthy
+      storaged1:
+        condition: service_healthy
+      storaged2:
+        condition: service_healthy
+    command: ["cedar-graphd", "--bind=0.0.0.0:9669", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9669 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+
+  # ============================================================================
+  # Monitoring - 监控服务
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cedar-prometheus
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ${DATA_DIR:-./data}/prometheus:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - cedar-net
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cedar-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - ${DATA_DIR:-./data}/grafana:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    networks:
+      - cedar-net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # ============================================================================
+  # AlertManager - 告警管理
+  # ============================================================================
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: cedar-alertmanager
+    volumes:
+      - ./config/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    networks:
+      - cedar-net
+    restart: unless-stopped
+
+networks:
+  cedar-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
