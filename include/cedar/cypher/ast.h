@@ -18,6 +18,8 @@ namespace cedar::cypher {
 struct AstNode;
 struct Expression;
 struct QueryClause;
+struct Pattern;
+struct QueryStatement;
 
 // 关系方向（在ast.h中定义以避免循环依赖）
 enum class Direction {
@@ -200,8 +202,9 @@ struct QueryClause : AstNode {
 
 // MATCH 子句
 struct MatchClause : QueryClause {
-  bool optional = false;
   std::vector<PathPattern> patterns;
+  bool optional = false;  // OPTIONAL MATCH
+  
   MatchClause() : QueryClause(ClauseType::MATCH) {}
 };
 
@@ -306,6 +309,34 @@ struct ShowClause : QueryClause {
 struct UseSpaceClause : QueryClause {
   std::string space_name;
   explicit UseSpaceClause(std::string name) : QueryClause(ClauseType::USE), space_name(std::move(name)) {}
+};
+
+// ALTER TAG/EDGE clause
+struct AlterClause : QueryClause {
+  enum class AlterType { ADD_PROPERTY, DROP_PROPERTY, RENAME_PROPERTY, MODIFY_PROPERTY };
+  
+  AlterType alter_type;
+  std::string target_name;  // TAG or EDGE name
+  std::string property_name;
+  std::string new_property_name;  // For RENAME
+  std::string property_type;  // For ADD/MODIFY
+  
+  AlterClause() : QueryClause(ClauseType::CREATE) {}  // Reuse CREATE type for now
+};
+
+// UNION clause
+struct UnionClause : QueryClause {
+  bool all = false;  // UNION ALL vs UNION
+  std::shared_ptr<QueryStatement> right_query;
+  
+  UnionClause() : QueryClause(ClauseType::RETURN) {}  // Reuse RETURN type for now
+};
+
+// Subquery clause
+struct SubqueryClause : QueryClause {
+  std::shared_ptr<QueryStatement> subquery;
+  
+  SubqueryClause() : QueryClause(ClauseType::RETURN) {}  // Reuse RETURN type for now
 };
 
 // 时态修饰符类型

@@ -581,6 +581,22 @@ class LsmEngine {
                            const std::vector<MemTableEntry>& data);
   void CleanupTimeRangeCache();
   
+  // TTL Data Expiration
+  // Configures automatic data expiration based on timestamp
+  void SetTTLConfig(uint64_t retention_period_us, bool enable_auto_cleanup = true);
+  uint64_t GetTTLConfig() const;
+  bool IsTTLEnabled() const;
+  
+  // Expire data older than retention period
+  int64_t ExpireOldData();
+  
+  // Background cleanup thread
+  void StartTTLCleanupThread(int interval_seconds = 3600);
+  void StopTTLCleanupThread();
+  
+  // Get expired data count
+  int64_t GetExpiredDataCount() const;
+  
   // SST Reader cache for better read performance
   std::unique_ptr<SstReaderCache> sst_reader_cache_;
   
@@ -603,6 +619,14 @@ class LsmEngine {
   std::map<std::string, std::vector<uint64_t>> label_index_;
   std::map<std::pair<uint16_t, std::string>, std::vector<uint64_t>> property_index_;
   mutable std::shared_mutex index_mutex_;
+
+  // TTL Configuration
+  uint64_t ttl_retention_period_us_ = 0;  // 0 = disabled
+  bool ttl_auto_cleanup_enabled_ = false;
+  std::thread ttl_cleanup_thread_;
+  std::atomic<bool> ttl_running_{false};
+  std::atomic<int64_t> expired_data_count_{0};
+  mutable std::mutex ttl_mutex_;
 
   // Internal helpers
   void UpdatePropertyIndex(uint64_t entity_id, uint16_t column_id,

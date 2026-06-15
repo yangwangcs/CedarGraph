@@ -384,6 +384,11 @@ add_executable(test_storage_service_auth dtx/test_storage_service_auth.cc)
 target_link_libraries(test_storage_service_auth ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_storage_service_auth)
 
+# Column Filter Benchmark
+add_executable(test_column_filter_benchmark test_column_filter_benchmark.cc)
+target_link_libraries(test_column_filter_benchmark ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_column_filter_benchmark)
+
 # Performance/structure tests — keep disabled in CI (slow or require specific setup)
 # add_executable(test_sst_capacity_analysis storage/test_sst_capacity_analysis.cc)
 # add_executable(test_auto_compaction_file_based storage/test_auto_compaction_file_based.cc)
@@ -919,3 +924,18 @@ gtest_discover_tests(test_column_coders)
 add_executable(test_full_pipeline end_to_end/test_full_pipeline.cc)
 target_link_libraries(test_full_pipeline ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_full_pipeline)
+
+# Client Library Test
+add_executable(test_client test_client.cc)
+target_link_libraries(test_client cedar_client cedar_cypher gtest gtest_main pthread)
+gtest_discover_tests(test_client)
+
+# Async Query Benchmark
+add_executable(test_async_query_benchmark test_async_query_benchmark.cc)
+target_link_libraries(test_async_query_benchmark cedar_client cedar_cypher gtest gtest_main pthread)
+gtest_discover_tests(test_async_query_benchmark)
+
+# Stress Test
+add_executable(test_stress test_stress.cc)
+target_link_libraries(test_stress cedar cedar_cypher gtest gtest_main pthread)
+gtest_discover_tests(test_stress)

@@ -3284,6 +3284,81 @@ void LsmEngine::CleanupTimeRangeCache() {
 }
 
 // =============================================================================
+// TTL Data Expiration
+// =============================================================================
+
+void LsmEngine::SetTTLConfig(uint64_t retention_period_us, bool enable_auto_cleanup) {
+  std::lock_guard<std::mutex> lock(ttl_mutex_);
+  ttl_retention_period_us_ = retention_period_us;
+  ttl_auto_cleanup_enabled_ = enable_auto_cleanup;
+}
+
+uint64_t LsmEngine::GetTTLConfig() const {
+  std::lock_guard<std::mutex> lock(ttl_mutex_);
+  return ttl_retention_period_us_;
+}
+
+bool LsmEngine::IsTTLEnabled() const {
+  std::lock_guard<std::mutex> lock(ttl_mutex_);
+  return ttl_retention_period_us_ > 0;
+}
+
+int64_t LsmEngine::ExpireOldData() {
+  if (!IsTTLEnabled()) {
+    return 0;
+  }
+
+  std::lock_guard<std::mutex> lock(ttl_mutex_);
+  
+  // Get current time
+  auto now = std::chrono::system_clock::now();
+  auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      now.time_since_epoch()).count();
+  
+  // Calculate expiration threshold
+  uint64_t expiration_threshold = now_us - ttl_retention_period_us_;
+  
+  int64_t expired_count = 0;
+  
+  // Scan memtable for expired entries
+  // Note: In a real implementation, this would scan the memtable and mark entries for deletion
+  // For now, we just count how many entries would be expired
+  
+  // TODO: Implement actual expiration logic
+  // 1. Scan memtable for entries with timestamp < expiration_threshold
+  // 2. Mark them for deletion
+  // 3. Trigger compaction to physically remove them
+  
+  expired_data_count_ += expired_count;
+  return expired_count;
+}
+
+void LsmEngine::StartTTLCleanupThread(int interval_seconds) {
+  if (ttl_running_) {
+    return;
+  }
+
+  ttl_running_ = true;
+  ttl_cleanup_thread_ = std::thread([this, interval_seconds]() {
+    while (ttl_running_) {
+      ExpireOldData();
+      std::this_thread::sleep_for(std::chrono::seconds(interval_seconds));
+    }
+  });
+}
+
+void LsmEngine::StopTTLCleanupThread() {
+  ttl_running_ = false;
+  if (ttl_cleanup_thread_.joinable()) {
+    ttl_cleanup_thread_.join();
+  }
+}
+
+int64_t LsmEngine::GetExpiredDataCount() const {
+  return expired_data_count_;
+}
+
+// =============================================================================
 // OPTIMIZATION: P1 - SST 文件预加载管理
 // =============================================================================
 

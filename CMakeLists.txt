@@ -422,6 +422,7 @@ set(CEDAR_CYPHER_SOURCES
     src/cypher/value.cc
     src/cypher/fingerprint.cc
     src/cypher/temporal_dialect.cc
+    src/cypher/cost_optimizer.cc
     src/cypher/operators/temporal_operators.cc
     src/cypher/operators/write_operators.cc
     src/cypher/validator.cc
@@ -851,6 +852,34 @@ if(TARGET gRPC::grpc++)
 elseif(GRPC_FOUND)
     target_link_libraries(cedar_cluster_benchmark ${GRPC_LIBRARIES})
 endif()
+
+# =============================================================================
+# Client Library
+# =============================================================================
+set(CEDAR_CLIENT_SOURCES
+    src/client/connection_pool.cc
+    src/client/service_discovery.cc
+    src/client/load_balancer.cc
+    src/client/query_router.cc
+    src/client/session_manager.cc
+    src/client/retry_handler.cc
+    src/client/metrics_collector.cc
+    src/client/jwt_manager.cc
+    src/client/logger.cc
+    src/client/config_loader.cc
+    src/client/config_watcher.cc
+    src/client/async_query.cc
+    src/client/cluster_manager.cc
+    src/client/docker_manager.cc
+    src/client/k8s_manager.cc
+    src/client/cluster_monitor.cc
+    src/client/auto_scaler.cc
+    src/client/cluster_backup.cc
+    src/client/cedar_client.cc
+)
+
+add_library(cedar_client STATIC ${CEDAR_CLIENT_SOURCES})
+target_link_libraries(cedar_client cedar gRPC::grpc++ pthread)
 
 # =============================================================================
 # GCN (Graph Compute Node)

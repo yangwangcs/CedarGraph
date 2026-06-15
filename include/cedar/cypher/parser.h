@@ -120,6 +120,7 @@ class CypherParser {
   std::shared_ptr<UnwindClause> ParseUnwindClause();
   std::shared_ptr<ShowClause> ParseShowClause();
   std::shared_ptr<UseSpaceClause> ParseUseSpaceClause();
+  std::shared_ptr<AlterClause> ParseAlterClause();
   
   // ==========================================================================
   // Pattern parsers

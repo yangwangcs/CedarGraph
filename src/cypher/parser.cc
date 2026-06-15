@@ -30,6 +30,18 @@ std::shared_ptr<QueryStatement> CypherParser::ParseStatement() {
       if (match) {
         stmt->clauses.push_back(match);
       }
+    } else if (MatchKeyword("optional")) {
+      // OPTIONAL MATCH
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("match")) {
+        error_ = "Expected MATCH after OPTIONAL";
+        break;
+      }
+      auto match = ParseMatchClause();
+      if (match) {
+        match->optional = true;
+        stmt->clauses.push_back(match);
+      }
     } else if (MatchKeyword("where")) {
       auto where = ParseWhereClause();
       if (where) {
@@ -98,6 +110,39 @@ std::shared_ptr<QueryStatement> CypherParser::ParseStatement() {
       auto use = ParseUseSpaceClause();
       if (use) {
         stmt->clauses.push_back(use);
+      }
+    } else if (MatchKeyword("alter")) {
+      auto alter = ParseAlterClause();
+      if (alter) {
+        stmt->clauses.push_back(alter);
+      }
+    } else if (MatchKeyword("union")) {
+      // UNION or UNION ALL
+      auto union_clause = std::make_shared<UnionClause>();
+      SkipWhitespaceAndComments();
+      if (MatchKeyword("all")) {
+        union_clause->all = true;
+      }
+      // Parse the right side of the union
+      auto right_stmt = ParseStatement();
+      if (right_stmt) {
+        union_clause->right_query = right_stmt;
+        stmt->clauses.push_back(union_clause);
+      }
+    } else if (MatchKeyword("call")) {
+      // Subquery: CALL { ... }
+      SkipWhitespaceAndComments();
+      if (MatchSymbol('{')) {
+        auto subquery_clause = std::make_shared<SubqueryClause>();
+        auto subquery = ParseStatement();
+        if (subquery) {
+          subquery_clause->subquery = subquery;
+          stmt->clauses.push_back(subquery_clause);
+        }
+        if (!MatchSymbol('}')) {
+          error_ = "Expected } after subquery";
+          break;
+        }
       }
     } else {
       // Unknown clause — report error instead of silent truncation
@@ -761,6 +806,146 @@ std::shared_ptr<UseSpaceClause> CypherParser::ParseUseSpaceClause() {
     return nullptr;
   }
   return std::make_shared<UseSpaceClause>(std::move(space_name));
+}
+
+std::shared_ptr<AlterClause> CypherParser::ParseAlterClause() {
+  SkipWhitespaceAndComments();
+  
+  auto alter = std::make_shared<AlterClause>();
+  
+  // Parse TAG or EDGE
+  if (MatchKeyword("tag")) {
+    // ALTER TAG <name> ADD PROPERTY <property_name> <type>
+    // ALTER TAG <name> DROP PROPERTY <property_name>
+    // ALTER TAG <name> RENAME PROPERTY <old_name> TO <new_name>
+    // ALTER TAG <name> MODIFY PROPERTY <property_name> <new_type>
+    
+    SkipWhitespaceAndComments();
+    alter->target_name = ParseIdentifier();
+    if (alter->target_name.empty()) {
+      error_ = "Expected tag name after ALTER TAG";
+      return nullptr;
+    }
+    
+    SkipWhitespaceAndComments();
+    if (MatchKeyword("add")) {
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("property")) {
+        error_ = "Expected PROPERTY after ADD";
+        return nullptr;
+      }
+      SkipWhitespaceAndComments();
+      alter->property_name = ParseIdentifier();
+      SkipWhitespaceAndComments();
+      alter->property_type = ParseIdentifier();
+      alter->alter_type = AlterClause::AlterType::ADD_PROPERTY;
+    } else if (MatchKeyword("drop")) {
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("property")) {
+        error_ = "Expected PROPERTY after DROP";
+        return nullptr;
+      }
+      SkipWhitespaceAndComments();
+      alter->property_name = ParseIdentifier();
+      alter->alter_type = AlterClause::AlterType::DROP_PROPERTY;
+    } else if (MatchKeyword("rename")) {
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("property")) {
+        error_ = "Expected PROPERTY after RENAME";
+        return nullptr;
+      }
+      SkipWhitespaceAndComments();
+      alter->property_name = ParseIdentifier();
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("to")) {
+        error_ = "Expected TO after property name";
+        return nullptr;
+      }
+      SkipWhitespaceAndComments();
+      alter->new_property_name = ParseIdentifier();
+      alter->alter_type = AlterClause::AlterType::RENAME_PROPERTY;
+    } else if (MatchKeyword("modify")) {
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("property")) {
+        error_ = "Expected PROPERTY after MODIFY";
+        return nullptr;
+      }
+      SkipWhitespaceAndComments();
+      alter->property_name = ParseIdentifier();
+      SkipWhitespaceAndComments();
+      alter->property_type = ParseIdentifier();
+      alter->alter_type = AlterClause::AlterType::MODIFY_PROPERTY;
+    } else {
+      error_ = "Expected ADD, DROP, RENAME, or MODIFY after tag name";
+      return nullptr;
+    }
+  } else if (MatchKeyword("edge")) {
+    // Similar to TAG but for EDGE
+    SkipWhitespaceAndComments();
+    alter->target_name = ParseIdentifier();
+    if (alter->target_name.empty()) {
+      error_ = "Expected edge name after ALTER EDGE";
+      return nullptr;
+    }
+    
+    SkipWhitespaceAndComments();
+    if (MatchKeyword("add")) {
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("property")) {
+        error_ = "Expected PROPERTY after ADD";
+        return nullptr;
+      }
+      SkipWhitespaceAndComments();
+      alter->property_name = ParseIdentifier();
+      SkipWhitespaceAndComments();
+      alter->property_type = ParseIdentifier();
+      alter->alter_type = AlterClause::AlterType::ADD_PROPERTY;
+    } else if (MatchKeyword("drop")) {
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("property")) {
+        error_ = "Expected PROPERTY after DROP";
+        return nullptr;
+      }
+      SkipWhitespaceAndComments();
+      alter->property_name = ParseIdentifier();
+      alter->alter_type = AlterClause::AlterType::DROP_PROPERTY;
+    } else if (MatchKeyword("rename")) {
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("property")) {
+        error_ = "Expected PROPERTY after RENAME";
+        return nullptr;
+      }
+      SkipWhitespaceAndComments();
+      alter->property_name = ParseIdentifier();
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("to")) {
+        error_ = "Expected TO after property name";
+        return nullptr;
+      }
+      SkipWhitespaceAndComments();
+      alter->new_property_name = ParseIdentifier();
+      alter->alter_type = AlterClause::AlterType::RENAME_PROPERTY;
+    } else if (MatchKeyword("modify")) {
+      SkipWhitespaceAndComments();
+      if (!MatchKeyword("property")) {
+        error_ = "Expected PROPERTY after MODIFY";
+        return nullptr;
+      }
+      SkipWhitespaceAndComments();
+      alter->property_name = ParseIdentifier();
+      SkipWhitespaceAndComments();
+      alter->property_type = ParseIdentifier();
+      alter->alter_type = AlterClause::AlterType::MODIFY_PROPERTY;
+    } else {
+      error_ = "Expected ADD, DROP, RENAME, or MODIFY after edge name";
+      return nullptr;
+    }
+  } else {
+    error_ = "Expected TAG or EDGE after ALTER";
+    return nullptr;
+  }
+  
+  return alter;
 }
 
 // ============================================================================

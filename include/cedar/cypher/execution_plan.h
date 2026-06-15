@@ -476,7 +476,14 @@ class Distinct : public PhysicalOperator {
 class Aggregate : public PhysicalOperator {
  public:
   enum class AggregationFunc {
-    kCount, kSum, kAvg, kMin, kMax, kCollect
+    kCount, kSum, kAvg, kMin, kMax, kCollect,
+    kTemporalAvg,      // Time-weighted average: avg(r.weight) OVER (BETWEEN...)
+    kDuration,         // Duration calculation: duration(r)
+    kTemporalCount,    // Temporal count: count(DISTINCT m) OVER TIME
+    kDistinctCount,    // Distinct count: count(DISTINCT m)
+    kWindowAvg,        // Sliding window average: avg(r.weight) WINDOW 7d SLIDE 1d
+    kWindowSum,        // Sliding window sum
+    kWindowCount       // Sliding window count
   };
   
   struct AggregationItem {

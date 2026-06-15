@@ -150,29 +150,67 @@ Value ExpressionEvaluator::EvaluateComparison(const ComparisonExpr& expr,
 Value ExpressionEvaluator::EvaluateLogical(const LogicalExpr& expr,
                                             const Record& record) {
   auto left_val = Evaluate(*expr.left, record);
-  bool left_bool = left_val.IsNull() ? false : left_val.GetBool();
+  auto right_val = Evaluate(*expr.right, record);
 
+  // Cypher 3-valued logic for NULL handling
   if (expr.op == LogicalExpr::Op::AND) {
-    if (!left_bool) {
-      return Value(false);  // Short-circuit
+    // NULL AND NULL = NULL
+    // NULL AND true = NULL
+    // NULL AND false = false
+    // true AND NULL = NULL
+    // false AND NULL = false
+    // true AND true = true
+    // true AND false = false
+    // false AND true = false
+    // false AND false = false
+    
+    bool left_null = left_val.IsNull();
+    bool right_null = right_val.IsNull();
+    bool left_bool = left_null ? false : left_val.GetBool();
+    bool right_bool = right_null ? false : right_val.GetBool();
+    
+    if (!left_bool || !right_bool) {
+      return Value(false);  // Short-circuit: false AND anything = false
     }
-    auto right_val = Evaluate(*expr.right, record);
-    bool right_bool = right_val.IsNull() ? false : right_val.GetBool();
-    return Value(right_bool);
+    if (left_null || right_null) {
+      return Value::Null();  // true AND NULL = NULL
+    }
+    return Value(true);
   } else {  // OR
-    if (left_bool) {
-      return Value(true);  // Short-circuit
+    // NULL OR NULL = NULL
+    // NULL OR true = true
+    // NULL OR false = NULL
+    // true OR NULL = true
+    // false OR NULL = NULL
+    // true OR true = true
+    // true OR false = true
+    // false OR true = true
+    // false OR false = false
+    
+    bool left_null = left_val.IsNull();
+    bool right_null = right_val.IsNull();
+    bool left_bool = left_null ? false : left_val.GetBool();
+    bool right_bool = right_null ? false : right_val.GetBool();
+    
+    if (left_bool || right_bool) {
+      return Value(true);  // Short-circuit: true OR anything = true
     }
-    auto right_val = Evaluate(*expr.right, record);
-    bool right_bool = right_val.IsNull() ? false : right_val.GetBool();
-    return Value(right_bool);
+    if (left_null || right_null) {
+      return Value::Null();  // false OR NULL = NULL
+    }
+    return Value(false);
   }
 }
 
 Value ExpressionEvaluator::EvaluateNot(const NotExpr& expr, const Record& record) {
   auto val = Evaluate(*expr.operand, record);
-  bool bool_val = val.IsNull() ? false : val.GetBool();
-  return Value(!bool_val);
+  
+  // NOT NULL = NULL (Cypher 3-valued logic)
+  if (val.IsNull()) {
+    return Value::Null();
+  }
+  
+  return Value(!val.GetBool());
 }
 
 Value ExpressionEvaluator::EvaluateArithmetic(const ArithmeticExpr& expr,

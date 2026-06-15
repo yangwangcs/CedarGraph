@@ -2148,6 +2148,117 @@ void Aggregate::DoAggregate() {
           result->Set(item.output_name, Value(collected));
           break;
         }
+        case AggregationFunc::kTemporalAvg: {
+          // Time-weighted average: sum(value * duration) / sum(duration)
+          double weighted_sum = 0.0;
+          double total_duration = 0.0;
+          for (const auto& r : records) {
+            if (item.expression) {
+              auto val = evaluator.Evaluate(*item.expression, r);
+              if (val.IsInt() || val.IsFloat()) {
+                double value = val.IsInt() ? static_cast<double>(val.GetInt()) : val.GetFloat();
+                
+                // Get time range from record
+                auto valid_from = r.Get("__valid_from");
+                auto valid_to = r.Get("__valid_to");
+                
+                if (valid_from && valid_to && valid_from->IsInt() && valid_to->IsInt()) {
+                  double duration = static_cast<double>(valid_to->GetInt() - valid_from->GetInt());
+                  weighted_sum += value * duration;
+                  total_duration += duration;
+                } else {
+                  // No time info, use simple average
+                  weighted_sum += value;
+                  total_duration += 1.0;
+                }
+              }
+            }
+          }
+          if (total_duration > 0) {
+            result->Set(item.output_name, Value(weighted_sum / total_duration));
+          } else {
+            result->Set(item.output_name, Value());
+          }
+          break;
+        }
+        case AggregationFunc::kDuration: {
+          // Calculate duration: valid_to - valid_from
+          int64_t total_duration = 0;
+          for (const auto& r : records) {
+            auto valid_from = r.Get("__valid_from");
+            auto valid_to = r.Get("__valid_to");
+            
+            if (valid_from && valid_to && valid_from->IsInt() && valid_to->IsInt()) {
+              total_duration += valid_to->GetInt() - valid_from->GetInt();
+            }
+          }
+          result->Set(item.output_name, Value(total_duration));
+          break;
+        }
+        case AggregationFunc::kTemporalCount: {
+          // Count distinct values across all time points
+          std::unordered_set<std::string> distinct_values;
+          for (const auto& r : records) {
+            if (item.expression) {
+              auto val = evaluator.Evaluate(*item.expression, r);
+              distinct_values.insert(val.ToString());
+            }
+          }
+          result->Set(item.output_name, Value(static_cast<int64_t>(distinct_values.size())));
+          break;
+        }
+        case AggregationFunc::kDistinctCount: {
+          // Count distinct values
+          std::unordered_set<std::string> distinct_values;
+          for (const auto& r : records) {
+            if (item.expression) {
+              auto val = evaluator.Evaluate(*item.expression, r);
+              distinct_values.insert(val.ToString());
+            }
+          }
+          result->Set(item.output_name, Value(static_cast<int64_t>(distinct_values.size())));
+          break;
+        }
+        case AggregationFunc::kWindowAvg: {
+          // Sliding window average
+          // For simplicity, compute average over all records in the window
+          double sum = 0.0;
+          size_t count = 0;
+          for (const auto& r : records) {
+            if (item.expression) {
+              auto val = evaluator.Evaluate(*item.expression, r);
+              if (val.IsInt()) { sum += static_cast<double>(val.GetInt()); ++count; }
+              else if (val.IsFloat()) { sum += val.GetFloat(); ++count; }
+            }
+          }
+          if (count > 0) {
+            result->Set(item.output_name, Value(sum / count));
+          } else {
+            result->Set(item.output_name, Value());
+          }
+          break;
+        }
+        case AggregationFunc::kWindowSum: {
+          // Sliding window sum
+          int64_t int_sum = 0;
+          double float_sum = 0.0;
+          bool has_float = false;
+          for (const auto& r : records) {
+            if (item.expression) {
+              auto val = evaluator.Evaluate(*item.expression, r);
+              if (val.IsInt()) int_sum += val.GetInt();
+              else if (val.IsFloat()) { float_sum += val.GetFloat(); has_float = true; }
+            }
+          }
+          if (has_float) result->Set(item.output_name, Value(float_sum));
+          else result->Set(item.output_name, Value(int_sum));
+          break;
+        }
+        case AggregationFunc::kWindowCount: {
+          // Sliding window count
+          result->Set(item.output_name, Value(static_cast<int64_t>(records.size())));
+          break;
+        }
         default:
           std::cerr << "[Aggregate] Unknown aggregation function" << std::endl;
           break;
