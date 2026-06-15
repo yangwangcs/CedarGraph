@@ -1005,6 +1005,50 @@ Status DistributedExecutor::ExecuteCrossPartition(
   return Status::OK();
 }
 
+std::string DistributedExecutor::ExtractMatchLabel(const std::string& query) {
+  cypher::CypherParser parser(query);
+  auto ast = parser.ParseStatement();
+  if (!ast) {
+    return "";
+  }
+
+  for (const auto& clause : ast->clauses) {
+    if (clause->clause_type != cypher::ClauseType::MATCH) {
+      continue;
+    }
+    auto* match = static_cast<cypher::MatchClause*>(clause.get());
+    for (const auto& pattern : match->patterns) {
+      for (const auto& element : pattern.elements) {
+        if (!std::holds_alternative<cypher::NodePattern>(element)) {
+          continue;
+        }
+        const auto& node = std::get<cypher::NodePattern>(element);
+        if (!node.labels.empty()) {
+          return node.labels[0];
+        }
+      }
+    }
+  }
+
+  return "";
+}
+
+void DistributedExecutor::UpdateLabelPartitionCache(
+    const std::string& label, uint32_t partition_id) {
+  std::lock_guard<std::mutex> lock(label_cache_mutex_);
+  label_partition_cache_[label].insert(partition_id);
+}
+
+std::unordered_set<uint32_t> DistributedExecutor::GetPartitionsForLabel(
+    const std::string& label) {
+  std::lock_guard<std::mutex> lock(label_cache_mutex_);
+  auto it = label_partition_cache_.find(label);
+  if (it != label_partition_cache_.end()) {
+    return it->second;
+  }
+  return {};
+}
+
 Status DistributedExecutor::SplitQuery(
     const std::string& query,
     const std::unordered_map<std::string, cypher::Value>& parameters,
@@ -1020,27 +1064,53 @@ Status DistributedExecutor::SplitQuery(
 
   const ClusterState& state = *cached;
 
-  // Create a sub-query task for each partition
+  // Extract label from query for partition pruning
+  std::string label = ExtractMatchLabel(query);
+
+  // Determine candidate partitions: prune by label if cache has data
+  std::vector<PartitionInfo> candidate_partitions;
+  if (!label.empty()) {
+    auto pruned = GetPartitionsForLabel(label);
+    if (!pruned.empty()) {
+      for (const auto& partition : state.partitions) {
+        if (pruned.count(partition.partition_id) > 0) {
+          candidate_partitions.push_back(partition);
+        }
+      }
+    }
+  }
+
+  // Fallback to all partitions if no pruning possible
+  if (candidate_partitions.empty()) {
+    candidate_partitions = state.partitions;
+  }
+
+  // Limit the number of partitions to avoid CPU spin
+  constexpr size_t kMaxPartitions = 8;
+  size_t partition_count = 0;
+
+  // Create a sub-query task for each partition (limited)
   uint32_t seq = 0;
-  for (const auto& partition : state.partitions) {
+  for (const auto& partition : candidate_partitions) {
+    if (partition_count >= kMaxPartitions) {
+      break;
+    }
+    
     SubQueryTask task;
     task.partition_id = partition.partition_id;
     Status s = router_->GetStorageNode(task.partition_id, &task.storage_node);
     if (!s.ok()) {
-      tasks->clear();
-      return Status::NotFound("Storage node not found for partition " +
-                              std::to_string(task.partition_id) + ": " + s.ToString());
+      continue;
     }
     s = router_->CheckIsLeader(task.partition_id, task.storage_node);
     if (!s.ok()) {
-      tasks->clear();
-      return Status::NotLeader("Leader check failed for partition " +
-                               std::to_string(task.partition_id) + ": " + s.ToString());
+      continue;
     }
-    task.sub_query = query;  // Same query for all partitions
+    task.sub_query = query;
     task.parameters = parameters;
     task.sequence = seq++;
     tasks->push_back(std::move(task));
+    partition_count++;
   }
 
   return Status::OK();

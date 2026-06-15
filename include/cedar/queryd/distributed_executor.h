@@ -14,6 +14,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "cedar/core/status.h"
@@ -274,7 +275,20 @@ class DistributedExecutor {
   std::unique_ptr<ResultMerger> result_merger_;
   std::unique_ptr<cypher::QueryValidator> validator_;
   GraphSchema schema_;
+
+  // Label-partition cache: label → set of partition IDs containing entities with this label
+  std::unordered_map<std::string, std::unordered_set<uint32_t>> label_partition_cache_;
+  std::mutex label_cache_mutex_;
   
+  // Extract the first label from a MATCH clause for partition pruning
+  std::string ExtractMatchLabel(const std::string& query);
+
+  // Update label-partition mapping cache
+  void UpdateLabelPartitionCache(const std::string& label, uint32_t partition_id);
+
+  // Get partitions known to contain entities with the given label
+  std::unordered_set<uint32_t> GetPartitionsForLabel(const std::string& label);
+
   // Analyze query to determine if it's single-partition
   bool IsSinglePartitionQuery(
       const std::string& query,
