@@ -270,9 +270,14 @@ class DistributedExecutor {
  private:
   friend class TestableDistributedExecutor;
 
-  // Label-partition cache: label → set of partition IDs containing entities with this label
-  std::unordered_map<std::string, std::unordered_set<uint32_t>> label_partition_cache_;
+  // Label-partition cache with TTL
+  struct LabelCacheEntry {
+    std::unordered_set<uint32_t> partition_ids;
+    std::chrono::steady_clock::time_point discovered_at;
+  };
+  std::unordered_map<std::string, LabelCacheEntry> label_partition_cache_;
   std::mutex label_cache_mutex_;
+  std::chrono::seconds cache_ttl_{300};
   
   // Extract the first label from a MATCH clause for partition pruning
   std::string ExtractMatchLabel(const std::string& query);
@@ -282,6 +287,10 @@ class DistributedExecutor {
 
   // Get partitions known to contain entities with the given label
   std::unordered_set<uint32_t> GetPartitionsForLabel(const std::string& label);
+
+  // Discover which partitions actually contain entities with the given label
+  // by querying the label index and mapping entity IDs to partitions
+  void DiscoverLabelPartitions(const std::string& label);
   QueryStorageClient* storage_client_;
   QueryMetaClient* meta_client_;
   std::unique_ptr<PartitionRouter> router_;

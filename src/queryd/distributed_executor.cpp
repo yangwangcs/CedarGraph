@@ -1036,7 +1036,9 @@ std::string DistributedExecutor::ExtractMatchLabel(const std::string& query) {
 void DistributedExecutor::UpdateLabelPartitionCache(
     const std::string& label, uint32_t partition_id) {
   std::lock_guard<std::mutex> lock(label_cache_mutex_);
-  label_partition_cache_[label].insert(partition_id);
+  auto& entry = label_partition_cache_[label];
+  entry.partition_ids.insert(partition_id);
+  entry.discovered_at = steady_clock::now();
 }
 
 std::unordered_set<uint32_t> DistributedExecutor::GetPartitionsForLabel(
@@ -1044,9 +1046,26 @@ std::unordered_set<uint32_t> DistributedExecutor::GetPartitionsForLabel(
   std::lock_guard<std::mutex> lock(label_cache_mutex_);
   auto it = label_partition_cache_.find(label);
   if (it != label_partition_cache_.end()) {
-    return it->second;
+    if (steady_clock::now() - it->second.discovered_at < cache_ttl_) {
+      return it->second.partition_ids;
+    }
+    label_partition_cache_.erase(it);
   }
   return {};
+}
+
+void DistributedExecutor::DiscoverLabelPartitions(const std::string& label) {
+  // ScanLabel is global per engine — one call discovers all entity IDs for
+  // this label, then we map each ID to its partition via the router.
+  std::vector<uint64_t> entity_ids;
+  Status s = storage_client_->ScanLabel("", label, 0, UINT64_MAX, 1000,
+                                        &entity_ids);
+  if (!s.ok() || entity_ids.empty()) return;
+
+  for (uint64_t eid : entity_ids) {
+    uint32_t pid = router_->GetPartitionId(eid);
+    UpdateLabelPartitionCache(label, pid);
+  }
 }
 
 Status DistributedExecutor::SplitQuery(
@@ -1067,11 +1086,9 @@ Status DistributedExecutor::SplitQuery(
   // Extract label from query for partition pruning
   std::string label = ExtractMatchLabel(query);
 
-  // Auto-populate label cache so pruning has data to work with
+  // Discover which partitions actually have entities with this label
   if (!label.empty() && GetPartitionsForLabel(label).empty()) {
-    for (const auto& partition : state.partitions) {
-      UpdateLabelPartitionCache(label, partition.partition_id);
-    }
+    DiscoverLabelPartitions(label);
   }
 
   // Determine candidate partitions: prune by label if cache has data
