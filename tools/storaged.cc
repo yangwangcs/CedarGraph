@@ -961,14 +961,16 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       return grpc::Status::OK;
     }
 
+    // Note: space_name is currently ignored because LookupLabelIndex is global
+    // per engine. Reserved for future multi-space support.
     auto entity_ids = engine->LookupLabelIndex(request->label());
 
     response->set_success(true);
+    auto it = std::lower_bound(entity_ids.begin(), entity_ids.end(), request->min_id());
     uint64_t count = 0;
-    for (uint64_t id : entity_ids) {
-      if (id < request->min_id() || id > request->max_id()) continue;
-      if (count >= request->limit()) break;
-      response->add_entity_ids(id);
+    for (; it != entity_ids.end() && count < request->limit(); ++it) {
+      if (*it > request->max_id()) break;
+      response->add_entity_ids(*it);
       count++;
     }
 
