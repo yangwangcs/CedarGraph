@@ -7,6 +7,7 @@
 #include <future>
 #include <iostream>
 #include <thread>
+#include <unordered_set>
 
 // 包含 dtx StorageClient 头文件
 #include "cedar/dtx/storage_service_impl.h"
@@ -404,43 +405,54 @@ Status QueryStorageClient::ScanLabel(const std::string& space_name,
         "ScanLabel not available via base_client_, use independent mode");
   }
 
-  // Route to any registered partition (label index is global per node)
-  std::shared_ptr<grpc::Channel> channel;
+  entity_ids->clear();
+  std::unordered_set<uint64_t> seen;
+
+  // Collect all partition IDs to query
+  std::vector<uint32_t> partition_ids;
   {
     std::shared_lock<std::shared_mutex> lock(nodes_mutex_);
-    if (!partition_routing_.empty()) {
-      channel = GetOrCreateChannel(partition_routing_.begin()->first);
+    if (partition_routing_.empty()) {
+      return Status::NotFound("No storage node registered for ScanLabel");
+    }
+    for (const auto& [pid, _] : partition_routing_) {
+      partition_ids.push_back(pid);
     }
   }
-  if (!channel) {
-    return Status::NotFound("No storage node registered for ScanLabel");
+
+  for (uint32_t pid : partition_ids) {
+    auto channel = GetOrCreateChannel(pid);
+    if (!channel) continue;
+
+    auto stub = cedar::storage::StorageService::NewStub(channel);
+    cedar::storage::ScanLabelRequest request;
+    request.set_space_name(space_name);
+    request.set_label(label);
+    request.set_min_id(min_id);
+    request.set_max_id(max_id);
+    request.set_limit(limit);
+
+    cedar::storage::ScanLabelResponse response;
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
+
+    grpc::Status status = stub->ScanLabel(&context, request, &response);
+    if (!status.ok() || !response.success()) {
+      continue;
+    }
+
+    for (uint64_t id : response.entity_ids()) {
+      if (seen.insert(id).second) {
+        entity_ids->push_back(id);
+      }
+    }
+
+    if (entity_ids->size() >= limit) {
+      break;
+    }
   }
 
-  auto stub = cedar::storage::StorageService::NewStub(channel);
-  cedar::storage::ScanLabelRequest request;
-  request.set_space_name(space_name);
-  request.set_label(label);
-  request.set_min_id(min_id);
-  request.set_max_id(max_id);
-  request.set_limit(limit);
-
-  cedar::storage::ScanLabelResponse response;
-  grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
-
-  grpc::Status status = stub->ScanLabel(&context, request, &response);
-  if (!status.ok()) {
-    return Status::IOError("ScanLabel RPC failed: " + status.error_message());
-  }
-  if (!response.success()) {
-    return Status::IOError("ScanLabel failed: " + response.error_message());
-  }
-
-  entity_ids->clear();
-  for (uint64_t id : response.entity_ids()) {
-    entity_ids->push_back(id);
-  }
-  return Status::OK();
+  return entity_ids->empty() ? Status::NotFound("No entities found for label") : Status::OK();
 }
 
 // ============================================================================
