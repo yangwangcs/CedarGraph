@@ -305,11 +305,12 @@ void LsmEngine::RemoveFromIndexes(uint64_t entity_id) {
   RemoveEntityFromPropertyIndex(entity_id);
 }
 
-std::vector<uint64_t> LsmEngine::LookupLabelIndex(const std::string& label) const {
+const std::vector<uint64_t>& LsmEngine::LookupLabelIndex(const std::string& label) const {
+  static const std::vector<uint64_t> kEmpty;
   std::shared_lock<std::shared_mutex> lock(index_mutex_);
   auto it = label_index_.find(label);
   if (it != label_index_.end()) return it->second;
-  return {};
+  return kEmpty;
 }
 
 std::vector<uint64_t> LsmEngine::LookupPropertyIndex(uint16_t column_id,

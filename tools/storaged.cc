@@ -963,7 +963,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
 
     // Note: space_name is currently ignored because LookupLabelIndex is global
     // per engine. Reserved for future multi-space support.
-    auto entity_ids = engine->LookupLabelIndex(request->label());
+    const auto& entity_ids = engine->LookupLabelIndex(request->label());
 
     response->set_success(true);
     auto it = std::lower_bound(entity_ids.begin(), entity_ids.end(), request->min_id());

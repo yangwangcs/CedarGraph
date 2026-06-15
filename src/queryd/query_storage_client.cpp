@@ -479,8 +479,21 @@ class NodeClientImpl : public QueryStorageClient::NodeClient {
       return Status::InvalidArgument("Plan build failed");
     }
 
-    // Create storage-backed execution context
-    StorageBackedExecutionContext ctx(client_, partition_id_);
+    // Extract label from query for label-aware scanning
+    std::string label;
+    size_t match_pos = query_fragment.find("MATCH");
+    if (match_pos != std::string::npos) {
+      size_t colon_pos = query_fragment.find(":", match_pos);
+      size_t close_pos = query_fragment.find(")", colon_pos);
+      if (colon_pos != std::string::npos && close_pos != std::string::npos) {
+        label = query_fragment.substr(colon_pos + 1, close_pos - colon_pos - 1);
+        label.erase(0, label.find_first_not_of(" \t\n"));
+        label.erase(label.find_last_not_of(" \t\n") + 1);
+      }
+    }
+
+    // Create storage-backed execution context with extracted label
+    StorageBackedExecutionContext ctx(client_, partition_id_, "default", label);
     ctx.variables.reserve(parameters.size());
     for (const auto& [name, val] : parameters) {
       ctx.SetVariable(name, val);

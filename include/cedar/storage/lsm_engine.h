@@ -372,7 +372,7 @@ class LsmEngine {
   void RemoveFromIndexes(uint64_t entity_id);
 
   // Lookup entity IDs by exact label match
-  std::vector<uint64_t> LookupLabelIndex(const std::string& label) const;
+  const std::vector<uint64_t>& LookupLabelIndex(const std::string& label) const;
 
   // Lookup entity IDs by exact (column_id, value_string) match
   std::vector<uint64_t> LookupPropertyIndex(uint16_t column_id,
