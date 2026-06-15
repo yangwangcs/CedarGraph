@@ -321,7 +321,7 @@ bool NodeScan::Init(ExecutionContext* ctx) {
   // Generic node scan - iterate over a configurable entity range.
   // Range can be customized by setting the CEDAR_SCAN_MAX_ENTITIES env var.
   constexpr uint64_t kDefaultMinEntityId = 1;
-  constexpr uint64_t kDefaultMaxEntityId = 50;  // Reduced from 100 to avoid CPU spin
+  constexpr uint64_t kDefaultMaxEntityId = 50;  // Reduced from 1000 to avoid CPU spin
   constexpr size_t kMaxScanResults = 100;  // Cap total results to prevent CPU spin
   uint64_t min_entity_id = kDefaultMinEntityId;
   uint64_t max_entity_id = kDefaultMaxEntityId;
