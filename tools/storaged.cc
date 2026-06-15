@@ -661,14 +661,10 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     cedar::cypher::ResultSet result;
     {
       std::lock_guard<std::mutex> lock(cypher_mutex_);
-      std::cerr << "[StorageD] Executing query: " << request->query_fragment() << std::endl;
       result = cypher_engine_->Execute(request->query_fragment(), params);
-      std::cerr << "[StorageD] Query completed, records: " << result.records.size() 
-                << ", columns: " << result.columns.size() << std::endl;
     }
 
     if (result.HasError()) {
-      std::cerr << "[StorageD] Query error: " << result.error.value_or("unknown") << std::endl;
       batch.set_is_last(true);
       writer->Write(batch);
       return grpc::Status::OK;
@@ -708,8 +704,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     }
 
     batch.set_is_last(true);
-    bool write_ok = writer->Write(batch);
-    std::cerr << "[StorageD] Result written: " << (write_ok ? "success" : "failed") << std::endl;
+    writer->Write(batch);
     return grpc::Status::OK;
   }
 
