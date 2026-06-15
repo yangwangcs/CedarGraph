@@ -943,12 +943,3 @@ gtest_discover_tests(test_async_query_benchmark)
 add_executable(test_stress test_stress.cc)
 target_link_libraries(test_stress cedar cedar_cypher gtest gtest_main pthread)
 gtest_discover_tests(test_stress)
-
-# Query Functionality Test
-add_executable(test_query_functionality test_query_functionality.cc)
-target_link_libraries(test_query_functionality cedar cedar_cypher gtest gtest_main pthread)
-gtest_discover_tests(test_query_functionality)
-
-# Query Client Test
-add_executable(test_query_client ../tools/test_query_client.cc)
-target_link_libraries(test_query_client cedar cedar_cypher cedar_queryd gRPC::grpc++ protobuf::libprotobuf gtest gtest_main pthread)

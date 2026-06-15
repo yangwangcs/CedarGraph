@@ -267,7 +267,9 @@ class DistributedExecutor {
   // Access the underlying storage client for routing setup
   QueryStorageClient* GetStorageClient() const { return storage_client_; }
 
- protected:
+ private:
+  friend class TestableDistributedExecutor;
+
   // Label-partition cache: label → set of partition IDs containing entities with this label
   std::unordered_map<std::string, std::unordered_set<uint32_t>> label_partition_cache_;
   std::mutex label_cache_mutex_;
@@ -280,8 +282,6 @@ class DistributedExecutor {
 
   // Get partitions known to contain entities with the given label
   std::unordered_set<uint32_t> GetPartitionsForLabel(const std::string& label);
-
- private:
   QueryStorageClient* storage_client_;
   QueryMetaClient* meta_client_;
   std::unique_ptr<PartitionRouter> router_;

@@ -129,6 +129,10 @@ TEST_F(MatchOptimizationTest, LabelIndexDifferentLabelsIsolated) {
 // StorageBackedExecutionContext label filtering tests
 // ============================================================================
 
+// NOTE: These tests verify that StorageBackedExecutionContext doesn't crash
+// when constructed with various parameters. Full entity-return validation requires
+// a running storage server, which is tested in integration tests.
+
 TEST_F(MatchOptimizationTest, StorageBackedContextWithLabel) {
   QueryStorageClient client;
 
