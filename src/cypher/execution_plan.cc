@@ -428,6 +428,13 @@ std::shared_ptr<Record> NodeScan::Next() {
       if (col_id == 0 || col_id == LsmEngine::kLabelColumnId || col_id == 0xFFE) {
         continue;
       }
+      // Skip blob reference auxiliary columns (base_col+1000, base_col+2000)
+      if (col_id >= 1000 && col_id < 2000) {
+        continue;  // blob_hi_col
+      }
+      if (col_id >= 2000 && col_id < 3000) {
+        continue;  // blob_lo_col
+      }
       // Use reverse mapping from storage (column_id -> property_name)
       std::string matched_name = context_->storage->GetPropertyName(col_id);
       
@@ -441,23 +448,23 @@ std::shared_ptr<Record> NodeScan::Next() {
           }
         }
       }
-      auto int_val = desc.AsInlineInt();
-      if (int_val.has_value()) {
-        fprintf(stderr, "[DEBUG NodeScan::Next] setting %s = int %d\n", matched_name.c_str(), *int_val);
-        node.properties[matched_name] = Value(*int_val);
+      
+      // Try GetString first (handles blob storage for long strings)
+      auto stored_str = context_->storage->GetString(node_id, col_id);
+      if (stored_str.has_value() && !stored_str->empty()) {
+        node.properties[matched_name] = Value(*stored_str);
       } else {
-        auto float_val = desc.AsInlineFloat();
-        if (float_val.has_value()) {
-          node.properties[matched_name] = Value(*float_val);
+        auto int_val = desc.AsInlineInt();
+        if (int_val.has_value()) {
+          node.properties[matched_name] = Value(*int_val);
         } else {
-          auto str_val = desc.AsInlineShortStr();
-          if (!str_val.empty()) {
-            node.properties[matched_name] = Value(str_val);
-          } else if (desc.IsExternal()) {
-            // Long strings stored via PutString — retrieve via GetString
-            auto stored_str = context_->storage->GetString(node_id, col_id);
-            if (stored_str.has_value()) {
-              node.properties[matched_name] = Value(*stored_str);
+          auto float_val = desc.AsInlineFloat();
+          if (float_val.has_value()) {
+            node.properties[matched_name] = Value(*float_val);
+          } else {
+            auto str_val = desc.AsInlineShortStr();
+            if (!str_val.empty()) {
+              node.properties[matched_name] = Value(str_val);
             }
           }
         }
@@ -643,6 +650,13 @@ std::shared_ptr<Record> IndexScan::Next() {
         if (col_id == 0 || col_id == LsmEngine::kLabelColumnId || col_id == 0xFFE) {
           continue;
         }
+        // Skip blob reference auxiliary columns (base_col+1000, base_col+2000)
+        if (col_id >= 1000 && col_id < 2000) {
+          continue;  // blob_hi_col
+        }
+        if (col_id >= 2000 && col_id < 3000) {
+          continue;  // blob_lo_col
+        }
         // Use reverse mapping from storage (column_id -> property_name)
         std::string matched_name = context_->storage->GetPropertyName(col_id);
         
@@ -655,22 +669,23 @@ std::shared_ptr<Record> IndexScan::Next() {
             }
           }
         }
-        auto int_val = desc.AsInlineInt();
-        if (int_val.has_value()) {
-          node.properties[matched_name] = Value(*int_val);
+        
+        // Try GetString first (handles blob storage for long strings)
+        auto stored_str = context_->storage->GetString(node_id, col_id);
+        if (stored_str.has_value() && !stored_str->empty()) {
+          node.properties[matched_name] = Value(*stored_str);
         } else {
-          auto float_val = desc.AsInlineFloat();
-          if (float_val.has_value()) {
-            node.properties[matched_name] = Value(*float_val);
+          auto int_val = desc.AsInlineInt();
+          if (int_val.has_value()) {
+            node.properties[matched_name] = Value(*int_val);
           } else {
-            auto str_val = desc.AsInlineShortStr();
-            if (!str_val.empty()) {
-              node.properties[matched_name] = Value(str_val);
-            } else if (desc.IsExternal()) {
-              // Long strings stored via PutString — retrieve via GetString
-              auto stored_str = context_->storage->GetString(node_id, col_id);
-              if (stored_str.has_value()) {
-                node.properties[matched_name] = Value(*stored_str);
+            auto float_val = desc.AsInlineFloat();
+            if (float_val.has_value()) {
+              node.properties[matched_name] = Value(*float_val);
+            } else {
+              auto str_val = desc.AsInlineShortStr();
+              if (!str_val.empty()) {
+                node.properties[matched_name] = Value(str_val);
               }
             }
           }
