@@ -333,6 +333,11 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                                const cedar::storage::ExecuteSubQueryRequest* request,
                                grpc::ServerWriter<cedar::storage::SubQueryResultBatch>* writer) override;
 
+  // Label index scan
+  grpc::Status ScanLabel(grpc::ServerContext* context,
+                         const cedar::storage::ScanLabelRequest* request,
+                         cedar::storage::ScanLabelResponse* response) override;
+
   // Helper methods for proto conversion
   static CedarKey ProtoToCedarKey(const cedar::storage::CedarKey& proto_key);
   static cedar::storage::CedarKey CedarKeyToProto(const CedarKey& key);

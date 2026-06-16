@@ -38,9 +38,12 @@ static Descriptor ValueToDescriptor(const Value& value, uint16_t col_id) {
       auto opt = Descriptor::InlineShortStr(col_id, Slice(s));
       if (opt) return *opt;
     }
-    // Long strings fall through to ExternalRef/Tombstone placeholder.
-    // Full blob support is out of scope for this sub-plan.
-    return Descriptor::InlineInt(col_id, 0);
+    // For strings > 4 bytes, store as ExternalRef with inline hash
+    // The full string will be stored via PutString/PutBinary if available
+    // For now, store a hash of the string as the payload
+    uint32_t hash = static_cast<uint32_t>(std::hash<std::string>{}(s));
+    return Descriptor(EntryKind::ExternalRef, col_id, hash, 
+                      static_cast<uint8_t>(std::min(s.size(), size_t(255))));
   }
   if (value.IsBool()) {
     return Descriptor::InlineInt(col_id, value.GetBool() ? 1 : 0);
@@ -124,18 +127,28 @@ std::shared_ptr<Record> CreateOperator::Next() {
     return cedar::Status::InvalidArgument("No storage available for CREATE");
   }
   
-  uint64_t node_id = GenerateId();
+  // If 'id' property is specified, use it as the entity_id
+  uint64_t node_id = 0;
+  ExpressionEvaluator evaluator(context_);
+  Record dummy_record;
+  
+  auto id_it = node.properties.find("id");
+  if (id_it != node.properties.end() && id_it->second) {
+    Value id_val = evaluator.Evaluate(*id_it->second, dummy_record);
+    if (id_val.IsInt() && id_val.GetInt() > 0) {
+      node_id = static_cast<uint64_t>(id_val.GetInt());
+    }
+  }
+  if (node_id == 0) {
+    node_id = GenerateId();
+  }
   
   // Build node value for the result record
   Node created_node;
   created_node.id = node_id;
   created_node.labels = node.labels;
   
-  // Collect properties into BatchWriteItem vector
-  std::vector<CedarGraphStorage::BatchWriteItem> items;
-  ExpressionEvaluator evaluator(context_);
-  Record dummy_record;  // For evaluating literals (they don't depend on record state)
-  
+  // Write each property directly via PutStaticVertex (bypasses OCC validation)
   for (const auto& [prop_name, expr] : node.properties) {
     Value prop_value = Value::Null();
     if (expr) {
@@ -145,32 +158,22 @@ std::shared_ptr<Record> CreateOperator::Next() {
     
     uint16_t col_id = PropertyNameToColumnId(prop_name);
     Descriptor desc = ValueToDescriptor(prop_value, col_id);
-    items.emplace_back(node_id, EntityType::Vertex, col_id, desc, Timestamp::Static(), 0);
+    auto s = context_->storage->PutStaticVertex(node_id, col_id, desc);
+    if (!s.ok()) return s;
+    
+    context_->storage->RegisterPropertyName(col_id, prop_name);
   }
 
-  // Persist labels using the reserved label column so LsmEngine can index them
+  // Persist labels
   for (const auto& label : node.labels) {
     auto desc_opt = Descriptor::InlineShortStr(LsmEngine::kLabelColumnId, Slice(label));
     if (desc_opt.has_value()) {
-      items.emplace_back(node_id, EntityType::Vertex,
-                         LsmEngine::kLabelColumnId,
-                         *desc_opt, Timestamp::Static(), 0);
+      auto s = context_->storage->PutStaticVertex(node_id, LsmEngine::kLabelColumnId, *desc_opt);
+      if (!s.ok()) return s;
     }
   }
-  
-  // Always write at least a placeholder property so the node exists in storage
-  if (items.empty()) {
-    items.emplace_back(node_id, EntityType::Vertex, 0,
-                       Descriptor::InlineInt(0, 0), Timestamp::Static(), 0);
-  }
-  
-  auto status = context_->storage->BatchWrite(items);
-  if (!status.ok()) {
-    return status;
-  }
 
-  // Update the in-memory label index immediately (BatchWrite goes through
-  // OCCTransaction/MemTable, so LsmEngine::Put is not invoked synchronously)
+  // Update the in-memory label index
   if (auto* engine = context_->storage->GetLsmEngine()) {
     for (const auto& label : node.labels) {
       engine->IndexLabel(node_id, label);
@@ -228,7 +231,7 @@ cedar::Status CreateOperator::CreateEdge(const RelationshipPattern& rel,
     try {
       edge_type = static_cast<uint16_t>(std::stoi(rel.types[0]));
     } catch (...) {
-      edge_type = static_cast<uint16_t>(std::hash<std::string>{}(rel.types[0]) & 0xFFFF);
+      edge_type = static_cast<uint16_t>(std::hash<std::string>{}(rel.types[0]) & 0x0FFF);
     }
   }
   
@@ -368,6 +371,9 @@ cedar::Status SetOperator::ApplySetItem(const SetClause::SetItem& item,
         Descriptor desc = ValueToDescriptor(new_value, col_id);
         auto s = context_->storage->PutStaticVertex(node.id, col_id, desc);
         if (!s.ok()) return s;
+        
+        // Register property name to column ID mapping for reverse lookup
+        context_->storage->RegisterPropertyName(col_id, prop_name);
       }
     } else if (var_val->IsRelationship()) {
       Relationship rel = var_val->GetRelationship();
@@ -604,6 +610,9 @@ cedar::Status MergeOperator::MergeNode(const NodePattern& node, Record* record) 
     uint16_t col_id = PropertyNameToColumnId(prop_name);
     Descriptor desc = ValueToDescriptor(prop_value, col_id);
     items.emplace_back(node_id, EntityType::Vertex, col_id, desc, Timestamp::Static(), 0);
+    
+    // Register property name to column ID mapping for reverse lookup
+    context_->storage->RegisterPropertyName(col_id, prop_name);
   }
 
   if (items.empty()) {
@@ -648,7 +657,7 @@ cedar::Status MergeOperator::MergeEdge(const RelationshipPattern& rel,
     try {
       edge_type = static_cast<uint16_t>(std::stoi(rel.types[0]));
     } catch (...) {
-      edge_type = static_cast<uint16_t>(std::hash<std::string>{}(rel.types[0]) & 0xFFFF);
+      edge_type = static_cast<uint16_t>(std::hash<std::string>{}(rel.types[0]) & 0x0FFF);
     }
   }
 

@@ -1652,5 +1652,65 @@ grpc::Status StorageServiceImpl::ExecuteSubQuery(
   writer->Write(batch);
   return grpc::Status::OK;
 }
+
+grpc::Status StorageServiceImpl::ScanLabel(
+    grpc::ServerContext* context,
+    const cedar::storage::ScanLabelRequest* request,
+    cedar::storage::ScanLabelResponse* response) {
+  if (context->IsCancelled()) {
+    return grpc::Status::CANCELLED;
+  }
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
+
+  if (!partition_manager_) {
+    response->set_success(false);
+    response->set_error_message("Partition manager not initialized");
+    return grpc::Status::OK;
+  }
+
+  auto* storage = partition_manager_->GetSharedStorage();
+  if (!storage) {
+    response->set_success(false);
+    response->set_error_message("Storage not initialized");
+    return grpc::Status::OK;
+  }
+
+  auto* engine = storage->GetLsmEngine();
+  if (!engine) {
+    response->set_success(false);
+    response->set_error_message("LSM engine not available");
+    return grpc::Status::OK;
+  }
+
+  const std::string& label = request->label();
+  uint64_t min_id = request->min_id();
+  uint64_t max_id = request->max_id();
+  uint64_t limit = request->limit();
+
+  // Use the label index to find entity IDs
+  std::vector<uint64_t> entity_ids = engine->LookupLabelIndex(label);
+  
+  // Filter by min_id and max_id
+  std::vector<uint64_t> filtered;
+  for (uint64_t id : entity_ids) {
+    if (id >= min_id && id <= max_id) {
+      filtered.push_back(id);
+      if (filtered.size() >= limit) {
+        break;
+      }
+    }
+  }
+
+  response->set_success(true);
+  for (uint64_t id : filtered) {
+    response->add_entity_ids(id);
+  }
+
+  return grpc::Status::OK;
+}
+
 }  // namespace dtx
 }  // namespace cedar

@@ -219,6 +219,7 @@ set(CEDAR_STORAGE_SOURCES
     src/storage/arena_pool.cc
     src/storage/async_io.cc
     src/storage/cedar_update.cc
+    src/storage/cross_partition_edge_writer.cc
 )
 
 # Query sources (CedarScan - snapshot-based temporal scan engine)
@@ -568,6 +569,42 @@ add_executable(test_debug_storage
     tests/test_debug_storage.cpp
 )
 target_link_libraries(test_debug_storage cedar)
+
+# Property mapping test
+add_executable(test_property_mapping
+    tests/test_property_mapping.cpp
+)
+target_link_libraries(test_property_mapping cedar)
+
+# Kind field test
+add_executable(test_kind_field
+    tests/test_kind_field.cpp
+)
+target_link_libraries(test_kind_field cedar)
+
+# End-to-end property test
+add_executable(test_e2e_property
+    tests/test_e2e_property.cpp
+)
+target_link_libraries(test_e2e_property cedar)
+
+# End-to-end flush test
+add_executable(test_e2e_flush
+    tests/test_e2e_flush.cpp
+)
+target_link_libraries(test_e2e_flush cedar)
+
+# Cross-partition ScanLabel test
+add_executable(test_scanlabel_cross_partition
+    tests/test_scanlabel_cross_partition.cpp
+)
+target_link_libraries(test_scanlabel_cross_partition cedar)
+
+# Cross-partition edge scan test
+add_executable(test_edge_cross_partition
+    tests/test_edge_cross_partition.cpp
+)
+target_link_libraries(test_edge_cross_partition cedar)
 
 # Flush 结果测试
 add_executable(test_flush_result

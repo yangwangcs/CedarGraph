@@ -24,6 +24,7 @@
 #include "cedar/storage/lsm_engine.h"
 #include "cedar/storage/auto_blob_storage.h"
 #include "cedar/core/env.h"
+#include "cedar/core/logging.h"
 #include "cedar/transaction/occ_transaction.h"
 
 // DTX layer includes for distributed mode
@@ -93,6 +94,10 @@ struct CedarGraphStorage::Rep {
   // Health monitoring
   std::shared_ptr<storage::StorageHealthMonitor> health_monitor_;
   bool health_monitoring_enabled_ = false;
+  
+  // Reverse mapping: column_id -> property_name
+  // Used to convert column IDs back to property names when reading
+  std::unordered_map<uint16_t, std::string> column_id_to_name;
   
   // Thread-safety: protect all public operations
   mutable std::shared_mutex mutex_;
@@ -389,20 +394,15 @@ Status CedarGraphStorage::Delete(const WriteOptions& options,
 }
 
 std::optional<Descriptor> CedarGraphStorage::Get(uint64_t entity_id, uint64_t tx_time) {
-  // Try different column_ids (0-10 should cover most cases)
-  for (uint16_t col = 0; col < 10; col++) {
+  // Use GetEntityColumnIds to find which columns have data (like ScanLimit does)
+  // This avoids the bug where Get() only checked columns 0-10 but properties
+  // are stored at hash-based column IDs (0-4095)
+  auto column_ids = rep_->engine->GetEntityColumnIds(entity_id, EntityType::Vertex);
+  
+  for (uint16_t col : column_ids) {
     auto result = Get(entity_id, EntityType::Vertex, col, Timestamp(tx_time));
     if (result.has_value()) {
       return result;
-    }
-    // Get() returns std::nullopt for both "no data" and "tombstone".
-    // If a tombstone exists at this column, we must stop searching to avoid
-    // returning stale data from a different column.
-    if (!rep_->is_distributed && rep_->engine) {
-      auto record = rep_->engine->GetRecordAtTime(entity_id, EntityType::Vertex, col, Timestamp(tx_time));
-      if (record.has_value() && record->second.IsTombstone()) {
-        return std::nullopt;
-      }
     }
   }
   return std::nullopt;
@@ -501,10 +501,12 @@ Status CedarGraphStorage::PutEdge(const WriteOptions& options,
   }
 
   // 2. EdgeIn (dst <- src) — reverse index
-  Descriptor empty_desc = Descriptor::InlineInt(edge_type, 0);
+  // 存储与 EdgeOut 相同格式的 Descriptor，确保一致性
+  // 反向索引用于快速查询入边，需要保留边的属性信息
+  Descriptor edge_in_desc = edge_desc;
 
   s = txn->Put(dst_id, EntityType::EdgeIn, edge_type,
-               empty_desc, timestamp, src_id);
+               edge_in_desc, timestamp, src_id);
   if (!s.ok()) {
     txn->Abort();
     return s;
@@ -684,11 +686,10 @@ std::vector<std::pair<Timestamp, Descriptor>> CedarGraphStorage::ScanLimit(
   // Default to Vertex type for backward compatibility
   auto column_ids = rep_->engine->GetEntityColumnIds(entity_id, EntityType::Vertex);
   
-  // If no tracked columns, fall back to trying common column IDs
+  // If no tracked columns, entity doesn't exist — return empty immediately
+  // This avoids wasted LSM lookups for non-existent entities
   if (column_ids.empty()) {
-    for (uint16_t col = 0; col < 10 && results.size() < max_results; col++) {
-      column_ids.push_back(col);
-    }
+    return results;
   }
   
   // Query only the columns that have data
@@ -737,8 +738,16 @@ std::vector<std::pair<Timestamp, Descriptor>> CedarGraphStorage::ScanMemTableOnl
     return results;
   }
   
-  // Try different column_ids
-  for (uint16_t col = 0; col < 10 && results.size() < max_results; col++) {
+  // Get only column IDs that have data for this entity
+  auto column_ids = rep_->engine->GetEntityColumnIds(entity_id, EntityType::Vertex);
+  
+  // If no tracked columns, try only column 0 to avoid CPU spin
+  if (column_ids.empty()) {
+    column_ids.push_back(0);
+  }
+  
+  for (uint16_t col : column_ids) {
+    if (results.size() >= max_results) break;
     auto entries = memtable->GetRange(entity_id, EntityType::Vertex, col, start_time, end_time);
     
     for (const auto& entry : entries) {
@@ -1008,6 +1017,23 @@ Status CedarGraphStorage::PutStaticVertex(uint64_t vertex_id,
   static_desc.SetColumnId(property_id);
   
   return rep_->engine->Put(key, static_desc, Timestamp::Now());
+}
+
+void CedarGraphStorage::RegisterPropertyName(uint16_t column_id, const std::string& name) {
+  std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
+  rep_->column_id_to_name[column_id] = name;
+  CEDAR_LOG_INFO() << "RegisterPropertyName: col_id=" << column_id << " name=" << name;
+}
+
+std::string CedarGraphStorage::GetPropertyName(uint16_t column_id) const {
+  std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
+  auto it = rep_->column_id_to_name.find(column_id);
+  if (it != rep_->column_id_to_name.end()) {
+    CEDAR_LOG_INFO() << "GetPropertyName: col_id=" << column_id << " -> " << it->second;
+    return it->second;
+  }
+  CEDAR_LOG_INFO() << "GetPropertyName: col_id=" << column_id << " -> not found, using fallback";
+  return "col_" + std::to_string(column_id);
 }
 
 std::optional<Descriptor> CedarGraphStorage::GetStaticVertex(uint64_t vertex_id,

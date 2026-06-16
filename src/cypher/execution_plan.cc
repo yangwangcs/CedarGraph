@@ -394,8 +394,20 @@ std::shared_ptr<Record> NodeScan::Next() {
   
   uint64_t node_id = node_ids_[current_index_++];
   
-  // Create a node value (without checking storage for existence)
-  // This avoids expensive storage lookups for non-existent nodes
+  // Build set of known property names from required_columns_
+  std::set<std::string> known_props;
+  for (const auto& col : required_columns_) {
+    size_t dot = col.find('.');
+    if (dot != std::string::npos) {
+      known_props.insert(col.substr(dot + 1));
+    }
+  }
+  
+  fprintf(stderr, "[DEBUG NodeScan::Next] node_id=%lu, required_columns_.size=%lu, known_props={", node_id, required_columns_.size());
+  for (const auto& p : known_props) fprintf(stderr, "%s,", p.c_str());
+  fprintf(stderr, "}\n");
+  
+  // Create a node value
   Node node;
   node.id = node_id;
   if (label_) {
@@ -405,20 +417,64 @@ std::shared_ptr<Record> NodeScan::Next() {
   }
   node.properties["id"] = Value(static_cast<int64_t>(node_id));
   
+  // Fetch properties from storage if available
+  if (context_ && context_->storage) {
+    auto versions = context_->storage->ScanLimit(
+        node_id, Timestamp(0), Timestamp::Max(), 100);
+    fprintf(stderr, "[DEBUG NodeScan::Next] ScanLimit returned %lu versions\n", versions.size());
+    for (const auto& [ts, desc] : versions) {
+      uint16_t col_id = desc.GetColumnId();
+      fprintf(stderr, "[DEBUG NodeScan::Next] desc col_id=%d, kind=%d\n", col_id, (int)desc.GetKind());
+      if (col_id == 0 || col_id == LsmEngine::kLabelColumnId || col_id == 0xFFE) {
+        continue;
+      }
+      // Use reverse mapping from storage (column_id -> property_name)
+      std::string matched_name = context_->storage->GetPropertyName(col_id);
+      
+      // If reverse mapping returns fallback "col_<id>", try forward-match
+      if (matched_name.substr(0, 4) == "col_") {
+        for (const auto& prop : known_props) {
+          uint16_t computed = PropertyNameToColumnId(prop);
+          if (computed == col_id) {
+            matched_name = prop;
+            break;
+          }
+        }
+      }
+      auto int_val = desc.AsInlineInt();
+      if (int_val.has_value()) {
+        fprintf(stderr, "[DEBUG NodeScan::Next] setting %s = int %d\n", matched_name.c_str(), *int_val);
+        node.properties[matched_name] = Value(*int_val);
+      } else {
+        auto float_val = desc.AsInlineFloat();
+        if (float_val.has_value()) {
+          node.properties[matched_name] = Value(*float_val);
+        } else {
+          auto str_val = desc.AsInlineShortStr();
+          if (!str_val.empty()) {
+            node.properties[matched_name] = Value(str_val);
+          }
+        }
+      }
+    }
+  } else {
+    fprintf(stderr, "[DEBUG NodeScan::Next] context_=%p, storage=%p\n", (void*)context_, context_ ? (void*)context_->storage : nullptr);
+  }
+  
+  fprintf(stderr, "[DEBUG NodeScan::Next] final node.properties has %lu entries\n", node.properties.size());
+  for (const auto& [k, v] : node.properties) {
+    fprintf(stderr, "[DEBUG NodeScan::Next]   prop '%s' = %s\n", k.c_str(), v.ToString().c_str());
+  }
+  
   // Filter properties based on required_columns
   // If required_columns is empty, include all properties (no filtering)
   // If required_columns is set, only include required properties
   if (!required_columns_.empty()) {
-    // Only include properties that are required
-    // Note: 'id' is always included
     Node filtered_node;
     filtered_node.id = node.id;
     filtered_node.labels = node.labels;
     filtered_node.properties["id"] = node.properties["id"];
     
-    // Add required properties from storage
-    // TODO: Read only required columns from storage layer
-    // For now, include all properties from the original node
     for (const auto& [key, value] : node.properties) {
       std::string full_key = variable_ + "." + key;
       if (required_columns_.count(full_key) > 0 || key == "id") {
@@ -550,6 +606,16 @@ bool IndexScan::Init(ExecutionContext* ctx) {
 }
 
 std::shared_ptr<Record> IndexScan::Next() {
+  // Build set of known property names from required_columns_ and filter property
+  std::set<std::string> known_props;
+  known_props.insert(property_);
+  for (const auto& col : required_columns_) {
+    size_t dot = col.find('.');
+    if (dot != std::string::npos) {
+      known_props.insert(col.substr(dot + 1));
+    }
+  }
+
   while (current_index_ < node_ids_.size()) {
     uint64_t node_id = node_ids_[current_index_++];
 
@@ -562,11 +628,42 @@ std::shared_ptr<Record> IndexScan::Next() {
     }
     node.properties["id"] = Value(static_cast<int64_t>(node_id));
 
-    // If a graph/storage is available, try to fetch the real property value
-    // so the predicate is evaluated against actual data.
-    if (context_->graph) {
-      // CedarGraph doesn't expose property fetch by id directly in the public
-      // header used here, so we rely on the mock / test path or fallback.
+    // Fetch properties from storage if available
+    if (context_ && context_->storage) {
+      auto versions = context_->storage->ScanLimit(
+          node_id, Timestamp(0), Timestamp::Max(), 100);
+      for (const auto& [ts, desc] : versions) {
+        uint16_t col_id = desc.GetColumnId();
+        if (col_id == 0 || col_id == LsmEngine::kLabelColumnId || col_id == 0xFFE) {
+          continue;
+        }
+        // Use reverse mapping from storage (column_id -> property_name)
+        std::string matched_name = context_->storage->GetPropertyName(col_id);
+        
+        // If reverse mapping returns fallback "col_<id>", try forward-match
+        if (matched_name.substr(0, 4) == "col_") {
+          for (const auto& prop : known_props) {
+            if (PropertyNameToColumnId(prop) == col_id) {
+              matched_name = prop;
+              break;
+            }
+          }
+        }
+        auto int_val = desc.AsInlineInt();
+        if (int_val.has_value()) {
+          node.properties[matched_name] = Value(*int_val);
+        } else {
+          auto float_val = desc.AsInlineFloat();
+          if (float_val.has_value()) {
+            node.properties[matched_name] = Value(*float_val);
+          } else {
+            auto str_val = desc.AsInlineShortStr();
+            if (!str_val.empty()) {
+              node.properties[matched_name] = Value(str_val);
+            }
+          }
+        }
+      }
     }
 
     if (!used_index_ && !MatchesPredicate(node)) {
@@ -1648,8 +1745,21 @@ static std::shared_ptr<PhysicalOperator> ApplyProjectionPushdown(
     return root;
   }
 
-  // If root is an IndexScan, it already only reads the indexed column
+  // If root is an IndexScan, push required columns down
   if (auto index_scan = std::dynamic_pointer_cast<IndexScan>(root)) {
+    std::unordered_set<std::string> index_columns;
+    for (const auto& col : required_columns) {
+      size_t dot_pos = col.find('.');
+      if (dot_pos != std::string::npos) {
+        std::string var_name = col.substr(0, dot_pos);
+        if (var_name == index_scan->GetVariable()) {
+          index_columns.insert(col);
+        }
+      }
+    }
+    if (!index_columns.empty()) {
+      index_scan->SetRequiredColumns(index_columns);
+    }
     return root;
   }
 

@@ -77,7 +77,7 @@ Status StorageInterface::InsertEdge(const Edge& edge, cedar::Timestamp txn_versi
       if (opt.has_value()) desc = opt.value();
     }
   }
-  uint16_t edge_type = static_cast<uint16_t>(std::hash<std::string>{}(edge.type) & 0xFFFF);
+  uint16_t edge_type = static_cast<uint16_t>(std::hash<std::string>{}(edge.type) & 0x0FFF);
   Status s = storage_->PutEdge(edge.src_id, edge.dst_id, edge_type, txn_version, desc, txn_version);
   return s;
 }
@@ -88,7 +88,7 @@ Status StorageInterface::GetEdge(uint64_t src_id, uint64_t dst_id,
                                  Descriptor* descriptor, bool* found) {
   (void)type;
   if (!storage_) return Status::IOError("Storage not initialized");
-  uint16_t edge_type = static_cast<uint16_t>(std::hash<std::string>{}(type) & 0xFFFF);
+  uint16_t edge_type = static_cast<uint16_t>(std::hash<std::string>{}(type) & 0x0FFF);
   auto result = storage_->GetEdge(src_id, dst_id, edge_type, as_of_time);
   *found = result.has_value();
   if (*found) *descriptor = result.value();

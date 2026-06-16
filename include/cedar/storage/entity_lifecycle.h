@@ -16,8 +16,8 @@ namespace cedar {
 
 // 系统保留的 column_id（用户属性使用 0-4092，系统使用 4093-4095）
 // 注意：Descriptor 只支持 12 位 column_id (0-4095)
-constexpr uint16_t kLifecycleColumnId = 0xFFF;       // 4095 - 原始生命周期事件
-constexpr uint16_t kStateAnchorColumnId = 0xFFE;     // 4094 - 状态锚点（最新状态快照）
+constexpr uint16_t kLifecycleColumnId = 0xFFE;       // 4094 - 生命周期事件（避免与 kLabelColumnId=0xFFF 冲突）
+constexpr uint16_t kStateAnchorColumnId = 0xFFC;     // 4092 - 状态锚点（最新状态快照）
 constexpr uint16_t kIntervalAnchorColumnId = 0xFFD;  // 4093 - 区间锚点（存活时间段）
 
 // 生命周期事件类型

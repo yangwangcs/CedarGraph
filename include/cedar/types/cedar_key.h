@@ -140,6 +140,8 @@ struct VertexColumnId {
 };
 
 /// 边的类型ID - 仅用于 Edge
+/// 注意：由于 Descriptor 的 column_id 只有 12bit，edge_type 必须限制在 0-4095 范围内
+/// hash 计算时应使用 & 0x0FFF 而非 & 0xFFFF
 struct EdgeTypeId {
   uint16_t value;
   explicit constexpr EdgeTypeId(uint16_t v) : value(v) {}
