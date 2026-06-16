@@ -49,10 +49,12 @@ void CompactionMerger::InitHeap() {
 
 bool CompactionMerger::IsDuplicate(const CedarKey& a, const CedarKey& b) const {
   // 判断是否是同一实体的同一版本
-  // 考虑 entity_id, timestamp, target_id
+  // 必须检查 entity_id, entity_type, column_id, target_id, timestamp
   if (a.entity_id() != b.entity_id()) return false;
-  if (a.timestamp().value() != b.timestamp().value()) return false;
+  if (a.entity_type() != b.entity_type()) return false;
+  if (a.column_id() != b.column_id()) return false;
   if (a.target_id() != b.target_id()) return false;
+  if (a.timestamp().value() != b.timestamp().value()) return false;
   return true;
 }
 

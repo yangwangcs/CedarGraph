@@ -174,11 +174,21 @@ class CompactionMergerV2::Impl {
   }
   
   bool ShouldFilter(const CedarKey& key, const Descriptor& desc) {
-    // Tombstone filtering requires:
-    // 1. Tombstone detection (desc.GetKind() == EntryKind::Tombstone)
-    // 2. Version retention policy check
-    // 3. Expiration check
-    (void)key; (void)desc;
+    // Tombstone filtering:
+    // 1. Check if descriptor is a tombstone
+    // 2. Check if key has physical tombstone marker (bit 7)
+    // 3. Only remove if we're at a deep enough level (L3+)
+    
+    // Physical tombstone (bit 7) - set by compaction for cleanup
+    if (key.IsTombstone()) {
+      return options_.remove_tombstones;
+    }
+    
+    // Descriptor tombstone - business DELETE
+    if (desc.IsTombstone()) {
+      return options_.remove_tombstones;
+    }
+    
     return false;
   }
   
