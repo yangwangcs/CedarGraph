@@ -585,6 +585,36 @@ Status DistributedExecutor::Execute(
     return s;
   }
 
+  // Single-node optimization: if all partitions map to the same storage node,
+  // send a single query instead of multiple sub-queries that would be
+  // serialized by cypher_mutex_ on the storage side.
+  // Only applies to non-point-lookup queries (MATCH without specific id).
+  {
+    const ClusterState* cached = meta_client_->GetCachedClusterState();
+    if (cached && !cached->partitions.empty()) {
+      std::string first_node;
+      bool single_node = true;
+      for (const auto& p : cached->partitions) {
+        std::string node;
+        if (router_->GetStorageNode(p.partition_id, &node).ok()) {
+          if (first_node.empty()) {
+            first_node = node;
+          } else if (node != first_node) {
+            single_node = false;
+            break;
+          }
+        }
+      }
+      if (single_node && !first_node.empty()) {
+        // All partitions on same node — send single query to partition 0
+        auto s = ExecuteSinglePartition(query, parameters, 0, ctx, result);
+        ctx->stats.execution_time_us =
+            duration_cast<microseconds>(steady_clock::now() - start).count();
+        return s;
+      }
+    }
+  }
+
   if (ctx->is_cancelled && ctx->is_cancelled()) {
     return Status::Cancelled("Query cancelled before cross-partition execution");
   }
