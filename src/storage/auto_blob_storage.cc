@@ -77,33 +77,22 @@ Status AutoBlobStorage::PutBlobString(uint64_t entity_id, uint16_t col_id, const
         return PutInlineString(entity_id, col_id, value);
     }
     
-    // 存储Blob位置到辅助列
-    uint16_t blob_hi_col = GetBlobHiCol(col_id);
-    uint16_t blob_lo_col = GetBlobLoCol(col_id);
-    
-    CedarKey key_hi = CedarKey::Vertex(entity_id, blob_hi_col, Timestamp(0));
-    Descriptor desc_hi = Descriptor::InlineInt(blob_hi_col, static_cast<int32_t>(file_id));
-    Status put_s = engine_->Put(key_hi, desc_hi, Timestamp(0));
-    if (!put_s.ok()) {
-      return Status::IOError("AutoBlobStorage", "Failed to write blob file_id: " + put_s.ToString());
+    // 编码 file_id + offset 到 32-bit payload
+    // file_id 占高 4 位 (支持 16 个 blob 文件), offset 占低 28 位 (每文件 256MB)
+    constexpr uint32_t kMaxFileId = 0x0F;
+    constexpr uint32_t kMaxOffset = 0x0FFFFFFF;
+    if (file_id > kMaxFileId || offset > kMaxOffset) {
+        return PutInlineString(entity_id, col_id, value);
     }
+    uint32_t packed = (file_id << 28) | offset;
     
-    CedarKey key_lo = CedarKey::Vertex(entity_id, blob_lo_col, Timestamp(0));
-    Descriptor desc_lo = Descriptor::InlineInt(blob_lo_col, static_cast<int32_t>(offset));
-    put_s = engine_->Put(key_lo, desc_lo, Timestamp(0));
-    if (!put_s.ok()) {
-      engine_->Delete(key_hi, Timestamp(0));
-      return Status::IOError("AutoBlobStorage", "Failed to write blob offset: " + put_s.ToString());
-    }
-    
-    // 在主列存储原始大小（用于读取）
+    // 存储单个 ExternalRef Descriptor 到主列
+    uint8_t len = static_cast<uint8_t>(std::min(size, static_cast<uint32_t>(255)));
     CedarKey key = CedarKey::Vertex(entity_id, col_id, Timestamp(0));
-    Descriptor desc = Descriptor::InlineInt(col_id, static_cast<int32_t>(size));
-    put_s = engine_->Put(key, desc, Timestamp(0));
+    Descriptor desc(EntryKind::ExternalRef, col_id, packed, len);
+    Status put_s = engine_->Put(key, desc, Timestamp(0));
     if (!put_s.ok()) {
-      engine_->Delete(key_hi, Timestamp(0));
-      engine_->Delete(key_lo, Timestamp(0));
-      return Status::IOError("AutoBlobStorage", "Failed to write blob size: " + put_s.ToString());
+        return Status::IOError("AutoBlobStorage", "Failed to write ExternalRef: " + put_s.ToString());
     }
     
     stats_.blob_stores++;
@@ -152,52 +141,89 @@ std::optional<std::string> AutoBlobStorage::GetInlineString(uint64_t entity_id, 
 }
 
 std::optional<std::string> AutoBlobStorage::GetBlobString(uint64_t entity_id, uint16_t col_id) {
-    if (!blob_mgr_) {
+    if (!blob_mgr_ || !engine_) {
         return std::nullopt;
     }
     
-    uint16_t blob_hi_col = GetBlobHiCol(col_id);
-    uint16_t blob_lo_col = GetBlobLoCol(col_id);
-    
-    // 读取Blob位置
-    auto hi_versions = engine_->GetAll(entity_id, EntityType::Vertex, blob_hi_col);
-    auto lo_versions = engine_->GetAll(entity_id, EntityType::Vertex, blob_lo_col);
-    
-    if (hi_versions.empty() || lo_versions.empty()) {
-        return std::nullopt;  // 不是Blob存储
-    }
-    
-    auto hi_val = hi_versions[0].descriptor.AsInlineInt();
-    auto lo_val = lo_versions[0].descriptor.AsInlineInt();
-    
-    if (!hi_val || !lo_val) {
-        // 尝试直接作为内联读取
+    // 读取主列 Descriptor
+    auto versions = engine_->GetAll(entity_id, EntityType::Vertex, col_id);
+    if (versions.empty()) {
         return std::nullopt;
     }
     
-    uint32_t file_id = static_cast<uint32_t>(*hi_val);
-    uint32_t offset = static_cast<uint32_t>(*lo_val);
+    const auto& desc = versions[0].descriptor;
     
-    // 读取原始列获取size
-    auto orig_versions = engine_->GetAll(entity_id, EntityType::Vertex, col_id);
-    if (orig_versions.empty()) {
+    // 新格式: ExternalRef — payload 编码了 (file_id<<28 | offset)
+    if (desc.GetKind() == EntryKind::ExternalRef) {
+        uint32_t packed = desc.GetPayload();
+        uint32_t file_id = packed >> 28;
+        uint32_t offset = packed & 0x0FFFFFFF;
+        
+        // 从 blob header 读取实际大小
+        std::string data;
+        // 先尝试用 length 字段读取
+        uint8_t hdr_len = desc.GetLength();
+        if (hdr_len > 0) {
+            Status s = blob_mgr_->ReadBlob(file_id, offset, hdr_len, &data);
+            if (s.ok()) {
+                stats_.blob_reads++;
+                return data;
+            }
+        }
+        // length=0 或读取失败，尝试读取 blob header 获取真实 size
+        // BlobEntryHeader::kHeaderSize = 12, size 在前 4 字节
+        std::string header;
+        Status s = blob_mgr_->ReadBlob(file_id, offset, 12, &header);
+        if (s.ok() && header.size() >= 4) {
+            uint32_t real_size;
+            memcpy(&real_size, header.data(), 4);
+            if (real_size > 0 && real_size < 100 * 1024 * 1024) {  // 合理性检查 <100MB
+                data.clear();
+                s = blob_mgr_->ReadBlob(file_id, offset, real_size, &data);
+                if (s.ok()) {
+                    stats_.blob_reads++;
+                    return data;
+                }
+            }
+        }
         return std::nullopt;
     }
     
-    auto size_val = orig_versions[0].descriptor.AsInlineInt();
-    if (!size_val || *size_val <= 0) {
-        return std::nullopt;
+    // 旧格式兼容: InlineInt 存 size，辅助列存 file_id/offset
+    if (desc.GetKind() == EntryKind::InlineInt) {
+        auto size_val = desc.AsInlineInt();
+        if (!size_val || *size_val <= 0) {
+            return std::nullopt;
+        }
+        
+        uint16_t blob_hi_col = GetBlobHiCol(col_id);
+        uint16_t blob_lo_col = GetBlobLoCol(col_id);
+        
+        auto hi_versions = engine_->GetAll(entity_id, EntityType::Vertex, blob_hi_col);
+        auto lo_versions = engine_->GetAll(entity_id, EntityType::Vertex, blob_lo_col);
+        
+        if (hi_versions.empty() || lo_versions.empty()) {
+            return std::nullopt;
+        }
+        
+        auto hi_val = hi_versions[0].descriptor.AsInlineInt();
+        auto lo_val = lo_versions[0].descriptor.AsInlineInt();
+        if (!hi_val || !lo_val) {
+            return std::nullopt;
+        }
+        
+        uint32_t file_id = static_cast<uint32_t>(*hi_val);
+        uint32_t offset = static_cast<uint32_t>(*lo_val);
+        
+        std::string data;
+        Status s = blob_mgr_->ReadBlob(file_id, offset, *size_val, &data);
+        if (s.ok()) {
+            stats_.blob_reads++;
+            return data;
+        }
     }
     
-    // 从Blob读取
-    std::string data;
-    Status s = blob_mgr_->ReadBlob(file_id, offset, *size_val, &data);
-    if (!s.ok()) {
-        return std::nullopt;
-    }
-    
-    stats_.blob_reads++;
-    return data;
+    return std::nullopt;
 }
 
 Status AutoBlobStorage::PutBinary(uint64_t entity_id, uint16_t col_id, const void* data, size_t size) {

@@ -403,10 +403,6 @@ std::shared_ptr<Record> NodeScan::Next() {
     }
   }
   
-  fprintf(stderr, "[DEBUG NodeScan::Next] node_id=%lu, required_columns_.size=%lu, known_props={", node_id, required_columns_.size());
-  for (const auto& p : known_props) fprintf(stderr, "%s,", p.c_str());
-  fprintf(stderr, "}\n");
-  
   // Create a node value
   Node node;
   node.id = node_id;
@@ -421,10 +417,8 @@ std::shared_ptr<Record> NodeScan::Next() {
   if (context_ && context_->storage) {
     auto versions = context_->storage->ScanLimit(
         node_id, Timestamp(0), Timestamp::Max(), 100);
-    fprintf(stderr, "[DEBUG NodeScan::Next] ScanLimit returned %lu versions\n", versions.size());
     for (const auto& [ts, desc] : versions) {
       uint16_t col_id = desc.GetColumnId();
-      fprintf(stderr, "[DEBUG NodeScan::Next] desc col_id=%d, kind=%d\n", col_id, (int)desc.GetKind());
       if (col_id == 0 || col_id == LsmEngine::kLabelColumnId || col_id == 0xFFE) {
         continue;
       }
@@ -470,13 +464,6 @@ std::shared_ptr<Record> NodeScan::Next() {
         }
       }
     }
-  } else {
-    fprintf(stderr, "[DEBUG NodeScan::Next] context_=%p, storage=%p\n", (void*)context_, context_ ? (void*)context_->storage : nullptr);
-  }
-  
-  fprintf(stderr, "[DEBUG NodeScan::Next] final node.properties has %lu entries\n", node.properties.size());
-  for (const auto& [k, v] : node.properties) {
-    fprintf(stderr, "[DEBUG NodeScan::Next]   prop '%s' = %s\n", k.c_str(), v.ToString().c_str());
   }
   
   // Filter properties based on required_columns
