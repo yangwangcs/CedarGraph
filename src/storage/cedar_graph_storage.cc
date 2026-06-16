@@ -211,6 +211,13 @@ Status CedarGraphStorage::Open() {
     rep_->engine->SetAutoBlobStorage(rep_->auto_blob.get());
   }
   
+  // Load persisted property name mappings
+  Status load_status = LoadPropertyNames();
+  if (!load_status.ok()) {
+    CEDAR_LOG_WARN() << "Failed to load property names: " << load_status.ToString();
+    // Non-fatal: continue with empty mappings
+  }
+  
   rep_->is_connected = true;
   return Status::OK();
 }
@@ -1023,6 +1030,10 @@ void CedarGraphStorage::RegisterPropertyName(uint16_t column_id, const std::stri
   std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
   rep_->column_id_to_name[column_id] = name;
   CEDAR_LOG_INFO() << "RegisterPropertyName: col_id=" << column_id << " name=" << name;
+  
+  // Persist to disk (unlock first to avoid deadlock)
+  lock.unlock();
+  SavePropertyNames();
 }
 
 std::string CedarGraphStorage::GetPropertyName(uint16_t column_id) const {
@@ -1913,6 +1924,76 @@ Status CedarGraphStorage::EnableHealthMonitoring(
   }
   
   rep_->health_monitoring_enabled_ = true;
+  return Status::OK();
+}
+
+// ============================================================================
+// Property Name Persistence
+// ============================================================================
+
+Status CedarGraphStorage::SavePropertyNames() {
+  std::string filepath = rep_->db_path + "/property_names.meta";
+  
+  // Create directory if it doesn't exist
+  std::filesystem::path dir(rep_->db_path);
+  if (!std::filesystem::exists(dir)) {
+    std::filesystem::create_directories(dir);
+  }
+  
+  std::ofstream file(filepath, std::ios::trunc);
+  if (!file) {
+    CEDAR_LOG_WARN() << "SavePropertyNames: Cannot open file for writing: " << filepath;
+    return Status::IOError("CedarGraphStorage", "Cannot open property names file for writing");
+  }
+  
+  std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
+  for (const auto& [col_id, name] : rep_->column_id_to_name) {
+    file << col_id << ":" << name << "\n";
+  }
+  
+  CEDAR_LOG_INFO() << "SavePropertyNames: Saved " << rep_->column_id_to_name.size() 
+                   << " mappings to " << filepath;
+  
+  return file.good() ? Status::OK() : Status::IOError("CedarGraphStorage", "Write failed");
+}
+
+Status CedarGraphStorage::LoadPropertyNames() {
+  std::string filepath = rep_->db_path + "/property_names.meta";
+  
+  if (!std::filesystem::exists(filepath)) {
+    CEDAR_LOG_INFO() << "LoadPropertyNames: No property names file found at " << filepath;
+    return Status::OK();  // Not an error, just no saved mappings yet
+  }
+  
+  std::ifstream file(filepath);
+  if (!file) {
+    CEDAR_LOG_WARN() << "LoadPropertyNames: Cannot open file: " << filepath;
+    return Status::IOError("CedarGraphStorage", "Cannot open property names file");
+  }
+  
+  std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
+  rep_->column_id_to_name.clear();
+  
+  std::string line;
+  size_t count = 0;
+  while (std::getline(file, line)) {
+    size_t colon_pos = line.find(':');
+    if (colon_pos == std::string::npos) {
+      continue;  // Skip malformed lines
+    }
+    
+    try {
+      uint16_t col_id = static_cast<uint16_t>(std::stoi(line.substr(0, colon_pos)));
+      std::string name = line.substr(colon_pos + 1);
+      rep_->column_id_to_name[col_id] = name;
+      count++;
+    } catch (const std::exception& e) {
+      CEDAR_LOG_WARN() << "LoadPropertyNames: Skipping malformed line: " << line;
+    }
+  }
+  
+  CEDAR_LOG_INFO() << "LoadPropertyNames: Loaded " << count << " mappings from " << filepath;
+  
   return Status::OK();
 }
 

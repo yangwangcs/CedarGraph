@@ -314,6 +314,12 @@ class CedarGraphStorage {
   std::optional<Descriptor> GetStaticVertex(uint64_t vertex_id,
                                             uint16_t property_id);
   
+  /// Register property name for reverse mapping (column_id -> name)
+  void RegisterPropertyName(uint16_t column_id, const std::string& name);
+  
+  /// Get property name from column_id (returns "col_<id>" if not registered)
+  std::string GetPropertyName(uint16_t column_id) const;
+  
   /// 节点动态属性 - 写入（带时间戳）
   Status PutDynamicVertex(uint64_t vertex_id,
                           uint16_t property_id,
@@ -595,6 +601,12 @@ class CedarGraphStorage {
                    cedar::Env* env);
   
   Status Open();
+  
+  /// Save property name mappings to disk for persistence across restarts
+  Status SavePropertyNames();
+  
+  /// Load property name mappings from disk
+  Status LoadPropertyNames();
 
   struct Rep;
   std::unique_ptr<Rep> rep_;

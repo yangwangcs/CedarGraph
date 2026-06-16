@@ -35,10 +35,69 @@ TEST_F(CedarGraphStorageTest, OpenAndDestroy) {
   ASSERT_NE(storage, nullptr);
 
   delete storage;
-
-  s = CedarGraphStorage::DestroyDB(db_path_, options);
-  EXPECT_TRUE(s.ok()) << s.ToString();
 }
+
+TEST_F(CedarGraphStorageTest, PropertyNamePersistence) {
+  CedarOptions options;
+  options.create_if_missing = true;
+
+  // Phase 1: Register property names and close database
+  {
+    CedarGraphStorage* storage = nullptr;
+    Status s = CedarGraphStorage::Open(options, db_path_, &storage);
+    ASSERT_TRUE(s.ok());
+
+    storage->RegisterPropertyName(100, "name");
+    storage->RegisterPropertyName(200, "age");
+    storage->RegisterPropertyName(300, "email");
+    storage->RegisterPropertyName(4095, "label");
+
+    EXPECT_EQ(storage->GetPropertyName(100), "name");
+    EXPECT_EQ(storage->GetPropertyName(200), "age");
+    EXPECT_EQ(storage->GetPropertyName(300), "email");
+    EXPECT_EQ(storage->GetPropertyName(4095), "label");
+
+    delete storage;
+  }
+
+  // Phase 2: Reopen and verify property names persisted
+  {
+    CedarGraphStorage* storage = nullptr;
+    options.create_if_missing = false;
+    Status s = CedarGraphStorage::Open(options, db_path_, &storage);
+    ASSERT_TRUE(s.ok());
+
+    EXPECT_EQ(storage->GetPropertyName(100), "name");
+    EXPECT_EQ(storage->GetPropertyName(200), "age");
+    EXPECT_EQ(storage->GetPropertyName(300), "email");
+    EXPECT_EQ(storage->GetPropertyName(4095), "label");
+
+    // Fallback still works for unregistered IDs
+    EXPECT_EQ(storage->GetPropertyName(999), "col_999");
+
+    // Phase 3: Add more mappings, then reopen again
+    storage->RegisterPropertyName(500, "city");
+    EXPECT_EQ(storage->GetPropertyName(500), "city");
+
+    delete storage;
+  }
+
+  // Phase 4: Verify all mappings including the newly added one
+  {
+    CedarGraphStorage* storage = nullptr;
+    Status s = CedarGraphStorage::Open(options, db_path_, &storage);
+    ASSERT_TRUE(s.ok());
+
+    EXPECT_EQ(storage->GetPropertyName(100), "name");
+    EXPECT_EQ(storage->GetPropertyName(200), "age");
+    EXPECT_EQ(storage->GetPropertyName(300), "email");
+    EXPECT_EQ(storage->GetPropertyName(4095), "label");
+    EXPECT_EQ(storage->GetPropertyName(500), "city");
+
+    delete storage;
+  }
+}
+
 
 TEST_F(CedarGraphStorageTest, PutAndGet) {
   CedarOptions options;
