@@ -30,7 +30,7 @@ endif()
 macro(add_cedar_test TEST_NAME)
     add_executable(${TEST_NAME} ${TEST_NAME}.cc)
     target_link_libraries(${TEST_NAME} ${CEDAR_TEST_LIBS})
-    gtest_discover_tests(${TEST_NAME})
+    gtest_discover_tests(${TEST_NAME} DISCOVERY_TIMEOUT 60)
 endmacro()
 
 # Cypher tests
@@ -154,7 +154,7 @@ add_cedar_test(test_cedar_update_simple_e2e)
 add_cedar_test(test_cedar_update_persistence)
 add_executable(test_cedar_basic_persistence storage/test_cedar_basic_persistence.cc)
 target_link_libraries(test_cedar_basic_persistence ${CEDAR_TEST_LIBS})
-gtest_discover_tests(test_cedar_basic_persistence)
+gtest_discover_tests(test_cedar_basic_persistence DISCOVERY_TIMEOUT 60)
 add_cedar_test(test_cedar_key_roundtrip)
 
 # Security blocker tests
@@ -943,3 +943,7 @@ gtest_discover_tests(test_async_query_benchmark)
 add_executable(test_stress test_stress.cc)
 target_link_libraries(test_stress cedar cedar_cypher gtest gtest_main pthread)
 gtest_discover_tests(test_stress)
+
+# Data Insert Test
+add_executable(test_data_insert ../tools/test_data_insert.cc)
+target_link_libraries(test_data_insert cedar cedar_cypher cedar_queryd gRPC::grpc++ protobuf::libprotobuf gtest gtest_main pthread)
