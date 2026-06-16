@@ -453,6 +453,12 @@ std::shared_ptr<Record> NodeScan::Next() {
           auto str_val = desc.AsInlineShortStr();
           if (!str_val.empty()) {
             node.properties[matched_name] = Value(str_val);
+          } else if (desc.IsExternal()) {
+            // Long strings stored via PutString — retrieve via GetString
+            auto stored_str = context_->storage->GetString(node_id, col_id);
+            if (stored_str.has_value()) {
+              node.properties[matched_name] = Value(*stored_str);
+            }
           }
         }
       }
@@ -660,6 +666,12 @@ std::shared_ptr<Record> IndexScan::Next() {
             auto str_val = desc.AsInlineShortStr();
             if (!str_val.empty()) {
               node.properties[matched_name] = Value(str_val);
+            } else if (desc.IsExternal()) {
+              // Long strings stored via PutString — retrieve via GetString
+              auto stored_str = context_->storage->GetString(node_id, col_id);
+              if (stored_str.has_value()) {
+                node.properties[matched_name] = Value(*stored_str);
+              }
             }
           }
         }

@@ -157,9 +157,16 @@ std::shared_ptr<Record> CreateOperator::Next() {
     created_node.properties[prop_name] = prop_value;
     
     uint16_t col_id = PropertyNameToColumnId(prop_name);
-    Descriptor desc = ValueToDescriptor(prop_value, col_id);
-    auto s = context_->storage->PutStaticVertex(node_id, col_id, desc);
-    if (!s.ok()) return s;
+    
+    // For long strings, use PutString which handles blob storage properly
+    if (prop_value.IsString() && prop_value.GetString().size() > 4) {
+      auto s = context_->storage->PutString(node_id, col_id, prop_value.GetString());
+      if (!s.ok()) return s;
+    } else {
+      Descriptor desc = ValueToDescriptor(prop_value, col_id);
+      auto s = context_->storage->PutStaticVertex(node_id, col_id, desc);
+      if (!s.ok()) return s;
+    }
     
     context_->storage->RegisterPropertyName(col_id, prop_name);
   }
@@ -368,9 +375,16 @@ cedar::Status SetOperator::ApplySetItem(const SetClause::SetItem& item,
       // Persist to storage
       if (context_ && context_->storage) {
         uint16_t col_id = PropertyNameToColumnId(prop_name);
-        Descriptor desc = ValueToDescriptor(new_value, col_id);
-        auto s = context_->storage->PutStaticVertex(node.id, col_id, desc);
-        if (!s.ok()) return s;
+        
+        // For long strings, use PutString which handles blob storage properly
+        if (new_value.IsString() && new_value.GetString().size() > 4) {
+          auto s = context_->storage->PutString(node.id, col_id, new_value.GetString());
+          if (!s.ok()) return s;
+        } else {
+          Descriptor desc = ValueToDescriptor(new_value, col_id);
+          auto s = context_->storage->PutStaticVertex(node.id, col_id, desc);
+          if (!s.ok()) return s;
+        }
         
         // Register property name to column ID mapping for reverse lookup
         context_->storage->RegisterPropertyName(col_id, prop_name);
@@ -608,11 +622,19 @@ cedar::Status MergeOperator::MergeNode(const NodePattern& node, Record* record) 
     }
     created_node.properties[prop_name] = prop_value;
     uint16_t col_id = PropertyNameToColumnId(prop_name);
-    Descriptor desc = ValueToDescriptor(prop_value, col_id);
-    items.emplace_back(node_id, EntityType::Vertex, col_id, desc, Timestamp::Static(), 0);
     
     // Register property name to column ID mapping for reverse lookup
     context_->storage->RegisterPropertyName(col_id, prop_name);
+    
+    // For long strings, use PutString after batch write
+    if (prop_value.IsString() && prop_value.GetString().size() > 4) {
+      // Store a placeholder in batch, will overwrite with PutString below
+      items.emplace_back(node_id, EntityType::Vertex, col_id,
+                         Descriptor::InlineInt(col_id, 0), Timestamp::Static(), 0);
+    } else {
+      Descriptor desc = ValueToDescriptor(prop_value, col_id);
+      items.emplace_back(node_id, EntityType::Vertex, col_id, desc, Timestamp::Static(), 0);
+    }
   }
 
   if (items.empty()) {
@@ -623,6 +645,19 @@ cedar::Status MergeOperator::MergeNode(const NodePattern& node, Record* record) 
   auto status = context_->storage->BatchWrite(items);
   if (!status.ok()) {
     return status;
+  }
+  
+  // Write long strings via PutString (after batch write)
+  for (const auto& [prop_name, expr] : node.properties) {
+    Value prop_value = Value::Null();
+    if (expr) {
+      prop_value = evaluator.Evaluate(*expr, dummy_record);
+    }
+    if (prop_value.IsString() && prop_value.GetString().size() > 4) {
+      uint16_t col_id = PropertyNameToColumnId(prop_name);
+      auto s = context_->storage->PutString(node_id, col_id, prop_value.GetString());
+      if (!s.ok()) return s;
+    }
   }
 
   context_->storage->MarkEntityCreated(node_id, EntityType::Vertex, Timestamp::Now());

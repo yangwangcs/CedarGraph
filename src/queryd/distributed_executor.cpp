@@ -841,30 +841,49 @@ bool DistributedExecutor::IsSinglePartitionQuery(
   // Extract entity IDs from MATCH ... (n {id: X}) patterns
   std::vector<uint64_t> entity_ids;
   for (const auto& clause : ast->clauses) {
-    if (clause->clause_type != cypher::ClauseType::MATCH) {
-      continue;
-    }
-    auto* match = static_cast<cypher::MatchClause*>(clause.get());
-    for (const auto& pattern : match->patterns) {
-      for (const auto& element : pattern.elements) {
-        if (!std::holds_alternative<cypher::NodePattern>(element)) {
-          continue;
-        }
-        const auto& node = std::get<cypher::NodePattern>(element);
-        auto it = node.properties.find("id");
-        if (it == node.properties.end()) {
-          continue;
-        }
-        if (it->second->expr_type == cypher::ExprType::LITERAL) {
-          auto* literal = static_cast<cypher::LiteralExpr*>(it->second.get());
-          if (literal->value.IsInt()) {
-            entity_ids.push_back(static_cast<uint64_t>(literal->value.GetInt()));
+    if (clause->clause_type == cypher::ClauseType::MATCH) {
+      auto* match = static_cast<cypher::MatchClause*>(clause.get());
+      for (const auto& pattern : match->patterns) {
+        for (const auto& element : pattern.elements) {
+          if (!std::holds_alternative<cypher::NodePattern>(element)) {
+            continue;
           }
-        } else if (it->second->expr_type == cypher::ExprType::PARAMETER) {
-          auto* param = static_cast<cypher::ParameterExpr*>(it->second.get());
-          auto p_it = parameters.find(param->name);
-          if (p_it != parameters.end() && p_it->second.IsInt()) {
-            entity_ids.push_back(static_cast<uint64_t>(p_it->second.GetInt()));
+          const auto& node = std::get<cypher::NodePattern>(element);
+          auto it = node.properties.find("id");
+          if (it == node.properties.end()) {
+            continue;
+          }
+          if (it->second->expr_type == cypher::ExprType::LITERAL) {
+            auto* literal = static_cast<cypher::LiteralExpr*>(it->second.get());
+            if (literal->value.IsInt()) {
+              entity_ids.push_back(static_cast<uint64_t>(literal->value.GetInt()));
+            }
+          } else if (it->second->expr_type == cypher::ExprType::PARAMETER) {
+            auto* param = static_cast<cypher::ParameterExpr*>(it->second.get());
+            auto p_it = parameters.find(param->name);
+            if (p_it != parameters.end() && p_it->second.IsInt()) {
+              entity_ids.push_back(static_cast<uint64_t>(p_it->second.GetInt()));
+            }
+          }
+        }
+      }
+    } else if (clause->clause_type == cypher::ClauseType::CREATE) {
+      auto* create = static_cast<cypher::CreateClause*>(clause.get());
+      for (const auto& pattern : create->patterns) {
+        for (const auto& element : pattern.elements) {
+          if (!std::holds_alternative<cypher::NodePattern>(element)) {
+            continue;
+          }
+          const auto& node = std::get<cypher::NodePattern>(element);
+          auto it = node.properties.find("id");
+          if (it == node.properties.end()) {
+            continue;
+          }
+          if (it->second->expr_type == cypher::ExprType::LITERAL) {
+            auto* literal = static_cast<cypher::LiteralExpr*>(it->second.get());
+            if (literal->value.IsInt()) {
+              entity_ids.push_back(static_cast<uint64_t>(literal->value.GetInt()));
+            }
           }
         }
       }
