@@ -43,8 +43,8 @@
 #include "cedar/core/env.h"
 #include "cedar/types/cedar_types.h"
 #include "cedar/types/descriptor.h"
-#include "cedar/sst/zone_columnar_format.h"
-#include "cedar/sst/zone_columnar_builder.h"
+#include "cedar/sst/zone_columnar_format_v2.h"
+#include "cedar/sst/zone_columnar_builder_v2.h"
 #include "cedar/sst/zone_columnar_reader.h"
 #include "cedar/storage/rate_limiter.h"
 
@@ -107,6 +107,9 @@ struct ZoneSstMeta {
   // Blob 文件关联
   uint64_t blob_file_number = 0;
   uint64_t blob_file_size = 0;
+  
+  // AutoBlobStorage blob 文件引用集合 (ExternalRef 指向的 blob file_id)
+  std::unordered_set<uint32_t> referenced_blob_files;
   
   // 统计信息
   uint64_t creation_time = 0;

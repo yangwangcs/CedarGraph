@@ -383,6 +383,12 @@ Status SizeTieredCompactionEngine::AddSSTFile(const ZoneSstMeta& meta) {
       blob_manager_.AddReference(meta.blob_file_number, meta.file_number);
     }
     
+    // 注册 AutoBlobStorage blob 文件引用 (ExternalRef 指向的)
+    for (uint32_t blob_file_id : meta.referenced_blob_files) {
+      blob_manager_.RegisterBlobFile(blob_file_id, 0);
+      blob_manager_.AddReference(blob_file_id, meta.file_number);
+    }
+    
     // 检查是否需要立即触发合并（在锁内检查，确保一致性）
     if (meta.level == 0 && config_.enable_background_compaction) {
       needs_compact = levels_[0].needs_compaction(config_);
@@ -407,6 +413,7 @@ Status SizeTieredCompactionEngine::AddSSTFile(const ZoneSstMeta& meta) {
 Status SizeTieredCompactionEngine::RemoveSSTFile(uint64_t file_number) {
   std::string sst_path;
   std::string blob_path;
+  std::vector<uint32_t> orphaned_blob_files;
   
   {
     std::lock_guard<std::mutex> lock(levels_mutex_);
@@ -418,6 +425,14 @@ Status SizeTieredCompactionEngine::RemoveSSTFile(uint64_t file_number) {
           // 移除 Blob 引用
           if (it->blob_file_number != 0) {
             blob_manager_.RemoveReference(it->blob_file_number, file_number);
+          }
+          
+          // 移除 AutoBlobStorage blob 文件引用，检查是否有孤儿文件
+          for (uint32_t blob_file_id : it->referenced_blob_files) {
+            blob_manager_.RemoveReference(blob_file_id, file_number);
+            if (blob_manager_.CanDeleteBlob(blob_file_id)) {
+              orphaned_blob_files.push_back(blob_file_id);
+            }
           }
           
           // 保存路径用于后续删除
@@ -776,16 +791,12 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
   }
   
   // 创建输出 Builder
-  SstBuilder::Options builder_options;
-  builder_options.db_path = db_path_;
-  SstBuilder builder(builder_options, writable_file.get());
-  builder.SetLevel(task.output_level);
-  builder.SetFileNumber(output_file_number);
+  ZoneColumnarSstBuilder::Options builder_options;
+  ZoneColumnarSstBuilder builder(builder_options, writable_file.get());
   
   // 执行多路归并
   s = MergeZones(task.input_files, &builder);
   if (!s.ok()) {
-    builder.Abandon();
     return s;
   }
   
@@ -985,7 +996,7 @@ Status SizeTieredCompactionEngine::MergeZones(
     // 批量写入
     if (key_buffer.size() >= kBatchSize) {
       for (size_t i = 0; i < key_buffer.size(); ++i) {
-        output->Add(key_buffer[i], value_buffer[i]);
+        output->Add(key_buffer[i], value_buffer[i], Timestamp(0));
       }
       key_buffer.clear();
       value_buffer.clear();
@@ -1001,7 +1012,7 @@ Status SizeTieredCompactionEngine::MergeZones(
   // 刷盘剩余数据
   if (!key_buffer.empty()) {
     for (size_t i = 0; i < key_buffer.size(); ++i) {
-      output->Add(key_buffer[i], value_buffer[i]);
+      output->Add(key_buffer[i], value_buffer[i], Timestamp(0));
     }
   }
   
@@ -1199,6 +1210,13 @@ Status SizeTieredCompactionEngine::SaveManifest() {
       file.write(reinterpret_cast<const char*>(&f.blob_file_number), sizeof(f.blob_file_number));
       file.write(reinterpret_cast<const char*>(&f.blob_file_size), sizeof(f.blob_file_size));
       
+      // 写入 AutoBlobStorage blob 文件引用
+      uint32_t ref_count = static_cast<uint32_t>(f.referenced_blob_files.size());
+      file.write(reinterpret_cast<const char*>(&ref_count), sizeof(ref_count));
+      for (uint32_t blob_id : f.referenced_blob_files) {
+        file.write(reinterpret_cast<const char*>(&blob_id), sizeof(blob_id));
+      }
+      
       // 写入路径
       uint32_t path_len = static_cast<uint32_t>(f.path.size());
       file.write(reinterpret_cast<const char*>(&path_len), sizeof(path_len));
@@ -1274,6 +1292,15 @@ Status SizeTieredCompactionEngine::LoadManifest() {
       file.read(reinterpret_cast<char*>(&meta.blob_file_number), sizeof(meta.blob_file_number));
       file.read(reinterpret_cast<char*>(&meta.blob_file_size), sizeof(meta.blob_file_size));
       
+      // 读取 AutoBlobStorage blob 文件引用
+      uint32_t ref_count = 0;
+      file.read(reinterpret_cast<char*>(&ref_count), sizeof(ref_count));
+      for (uint32_t j = 0; j < ref_count; ++j) {
+        uint32_t blob_id;
+        file.read(reinterpret_cast<char*>(&blob_id), sizeof(blob_id));
+        meta.referenced_blob_files.insert(blob_id);
+      }
+      
       // 读取路径
       uint32_t path_len;
       file.read(reinterpret_cast<char*>(&path_len), sizeof(path_len));
@@ -1286,6 +1313,12 @@ Status SizeTieredCompactionEngine::LoadManifest() {
       if (meta.blob_file_number != 0) {
         blob_manager_.RegisterBlobFile(meta.blob_file_number, meta.blob_file_size);
         blob_manager_.AddReference(meta.blob_file_number, meta.file_number);
+      }
+      
+      // 注册 AutoBlobStorage blob 文件引用
+      for (uint32_t blob_file_id : meta.referenced_blob_files) {
+        blob_manager_.RegisterBlobFile(blob_file_id, 0);
+        blob_manager_.AddReference(blob_file_id, meta.file_number);
       }
     }
   }

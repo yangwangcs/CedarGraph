@@ -5,9 +5,9 @@
 #include "cedar/storage/compaction_merger.h"
 #include "cedar/storage/temporal_bloom_filter.h"
 #include "cedar/storage/auto_blob_storage.h"
-#include "cedar/sst/zone_columnar_format.h"
+#include "cedar/sst/zone_columnar_format_v2.h"
 #include "cedar/sst/zone_columnar_reader.h"
-#include "cedar/sst/zone_columnar_builder.h"
+#include "cedar/sst/zone_columnar_builder_v2.h"
 #include "cedar/sst/sst_builder_factory.h"
 #include "cedar/transaction/batch_api.h"
 #include "cedar/transaction/wal.h"
@@ -1707,12 +1707,22 @@ Status LsmEngine::FlushAccumulated() {
   uint64_t min_ts = UINT64_MAX;
   uint64_t max_ts = 0;
   
+  // 扫描 ExternalRef 描述符，收集引用的 blob 文件 ID
+  std::unordered_set<uint32_t> referenced_blob_files;
+  
   for (const auto& [key, desc, txn_version] : entries_to_flush) {
     builder->Add(key, desc, txn_version);
     min_entity_id = std::min(min_entity_id, key.entity_id());
     max_entity_id = std::max(max_entity_id, key.entity_id());
     min_ts = std::min(min_ts, key.timestamp().value());
     max_ts = std::max(max_ts, key.timestamp().value());
+    if (desc.GetKind() == EntryKind::ExternalRef) {
+      uint32_t packed = desc.GetPayload();
+      uint32_t file_id = packed >> 28;
+      if (file_id > 0) {
+        referenced_blob_files.insert(file_id);
+      }
+    }
   }
   
   Status s = builder->Finish();
@@ -1765,6 +1775,7 @@ Status LsmEngine::FlushAccumulated() {
     zone_meta.path = filepath;
     zone_meta.blob_path = db_path_ + "/sst_" + std::to_string(file_number) + ".blob";
     zone_meta.temporal_filter_metadata = builder->GetTemporalFilterData();
+    zone_meta.referenced_blob_files = referenced_blob_files;
     
     compaction_engine_->AddSSTFile(zone_meta);
     compaction_engine_->ScheduleCompaction();
@@ -1795,12 +1806,22 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::tuple<CedarKey, Descriptor,
   uint64_t min_tx_time = UINT64_MAX;
   uint64_t max_tx_time = 0;
   
+  // 扫描 ExternalRef 描述符，收集引用的 blob 文件 ID
+  std::unordered_set<uint32_t> referenced_blob_files;
+  
   for (const auto& [key, desc, txn_version] : entries) {
     (void)txn_version;
     min_entity_id = std::min(min_entity_id, key.entity_id());
     max_entity_id = std::max(max_entity_id, key.entity_id());
     min_tx_time = std::min(min_tx_time, key.timestamp().value());
     max_tx_time = std::max(max_tx_time, key.timestamp().value());
+    if (desc.GetKind() == EntryKind::ExternalRef) {
+      uint32_t packed = desc.GetPayload();
+      uint32_t file_id = packed >> 28;
+      if (file_id > 0) {
+        referenced_blob_files.insert(file_id);
+      }
+    }
   }
   
   // 排序（全局有序）
@@ -1875,6 +1896,7 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::tuple<CedarKey, Descriptor,
     zone_meta.entity_type = 0;
     zone_meta.path = filepath;
     zone_meta.blob_path = db_path_ + "/sst_" + std::to_string(file_number) + ".blob";
+    zone_meta.referenced_blob_files = referenced_blob_files;
     
     Status cs = compaction_engine_->AddSSTFile(zone_meta);
     if (!cs.ok()) {
@@ -2424,8 +2446,19 @@ Status LsmEngine::FlushMemTable(VSLMemTable* mem) {
   std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> all_entries;
   all_entries.reserve(mem->size());
   
+  // 同时收集 ExternalRef 引用的 blob 文件 ID
+  std::unordered_set<uint32_t> referenced_blob_files;
+  
   mem->Traverse([&](const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version) -> bool {
     all_entries.emplace_back(key, descriptor, txn_version);
+    // 扫描 ExternalRef 描述符，提取 blob 文件 ID
+    if (descriptor.GetKind() == EntryKind::ExternalRef) {
+      uint32_t packed = descriptor.GetPayload();
+      uint32_t file_id = packed >> 28;
+      if (file_id > 0) {
+        referenced_blob_files.insert(file_id);
+      }
+    }
     return true;
   });
   
@@ -2489,6 +2522,9 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
   uint64_t min_tx_time = UINT64_MAX;
   uint64_t max_tx_time = 0;
   
+  // 扫描 ExternalRef 描述符，收集引用的 blob 文件 ID
+  std::unordered_set<uint32_t> referenced_blob_files;
+  
   // 复制条目并排序（使用 CompareForSorting，timestamp 降序）
   auto sorted_entries = entries;
   std::sort(sorted_entries.begin(), sorted_entries.end(),
@@ -2512,6 +2548,13 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
     max_entity_id = std::max(max_entity_id, key.entity_id());
     min_tx_time = std::min(min_tx_time, key.timestamp().value());
     max_tx_time = std::max(max_tx_time, key.timestamp().value());
+    if (descriptor.GetKind() == EntryKind::ExternalRef) {
+      uint32_t packed = descriptor.GetPayload();
+      uint32_t file_id = packed >> 28;
+      if (file_id > 0) {
+        referenced_blob_files.insert(file_id);
+      }
+    }
   }
 
   Status fs = builder->Finish();
@@ -2562,6 +2605,7 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
     zone_meta.path = filepath;
     zone_meta.blob_path = db_path_ + "/sst_" + std::to_string(file_number) + ".blob";
     zone_meta.temporal_filter_metadata = builder->GetTemporalFilterData();
+    zone_meta.referenced_blob_files = referenced_blob_files;
     
     Status cs = compaction_engine_->AddSSTFile(zone_meta);
     if (!cs.ok()) {
@@ -2600,37 +2644,27 @@ Status LsmEngine::DoCompaction(int level, const std::vector<SSTFileMeta>& inputs
     }
   }
   
-  // 打开所有输入 SST
-  std::vector<std::shared_ptr<SstReader>> readers;
-  readers.reserve(inputs.size());
+  // 收集输入文件路径
+  std::vector<std::string> input_paths;
+  input_paths.reserve(inputs.size());
   for (const auto& input : inputs) {
-    std::string input_path = SstFilePath(input.file_number);
-    auto reader = std::make_shared<SstReader>(input_path);
-    Status s = reader->Open();
-    if (!s.ok()) {
-      return s;
-    }
-    readers.push_back(reader);
+    input_paths.push_back(SstFilePath(input.file_number));
   }
   
-  // 准备 reader 指针向量
-  std::vector<SstReader*> reader_ptrs;
-  reader_ptrs.reserve(readers.size());
-  for (auto& r : readers) {
-    reader_ptrs.push_back(r.get());
-  }
-  
-  // 创建输出文件
+  // 创建输出文件路径
   uint64_t file_number = next_file_number_.fetch_add(1);
   std::string output_path = SstFilePath(file_number);
   int output_level = level + 1;
   
-  // 执行归并
-  CompactionMerger merger(reader_ptrs, entity_type, column_id);
-  auto output_meta = merger.Run(output_path, db_path_);
+  // 使用 V2 CompactionMerger
+  CompactionOptions compaction_options;
+  compaction_options.remove_tombstones = (output_level >= 3);
+  
+  CompactionMergerV2 merger(compaction_options, input_paths, output_path, env_);
+  auto output_meta = merger.Run();
   
   if (!output_meta) {
-    return Status::IOError("DoCompaction", "merger failed");
+    return Status::IOError("DoCompaction", "V2 merger failed");
   }
   
   // 设置文件号
