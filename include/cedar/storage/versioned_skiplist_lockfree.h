@@ -61,6 +61,7 @@ class LFNode {
   bool IsMarked() const;
   
  private:
+  std::atomic<bool> deleted_{false};  // Atomic deletion marker
   uint64_t entity_id_;
   uint64_t timestamp_;        // 业务时间戳 (用于 Key 排序和时序查询)
   uint64_t txn_version_;      // 事务版本号 (用于 MVCC 隔离)

@@ -106,4 +106,4 @@ class WriteBatch::Handler {
 
 }  // namespace cedar
 
-#endif  // FERN_WRITE_BATCH_H_
+#endif  // CEDAR_WRITE_BATCH_H_

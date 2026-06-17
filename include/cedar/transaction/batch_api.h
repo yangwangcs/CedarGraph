@@ -351,4 +351,4 @@ class GroupCommitManager {
 
 }  // namespace cedar
 
-#endif  // FERN_BATCH_API_H_
+#endif  // CEDAR_BATCH_API_H_

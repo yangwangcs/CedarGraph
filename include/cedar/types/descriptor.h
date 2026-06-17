@@ -358,4 +358,4 @@ class Descriptor {
 
 }  // namespace cedar
 
-#endif  // FERN_DESCRIPTOR_H_
+#endif  // CEDAR_DESCRIPTOR_H_

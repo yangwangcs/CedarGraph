@@ -36,13 +36,13 @@ print_error() {
 }
 
 # Check if binaries exist
-if [ ! -f build/metad_server ]; then
+if [ ! -f build/cedar-metad ]; then
     print_info "Building metad_server..."
     cd build && make metad_server -j4
     cd ..
 fi
 
-if [ ! -f build/storaged ]; then
+if [ ! -f build/cedar-storaged ]; then
     print_info "Building storaged..."
     cd build && make storaged -j4
     cd ..
@@ -114,21 +114,21 @@ echo ""
 
 # Start MetaD Node 1
 print_info "Starting MetaD Node 1 on 127.0.0.1:6001..."
-./build/metad_server --config scripts/cluster_node1.conf > /tmp/cedar/cluster/metad_node1.log 2>&1 &
+./build/cedar-metad --config scripts/cluster_node1.conf > /tmp/cedar/cluster/metad_node1.log 2>&1 &
 METAD1_PID=$!
 METAD_PIDS="$METAD_PIDS $METAD1_PID"
 sleep 2
 
 # Start MetaD Node 2
 print_info "Starting MetaD Node 2 on 127.0.0.1:6002..."
-./build/metad_server --config scripts/cluster_node2.conf > /tmp/cedar/cluster/metad_node2.log 2>&1 &
+./build/cedar-metad --config scripts/cluster_node2.conf > /tmp/cedar/cluster/metad_node2.log 2>&1 &
 METAD2_PID=$!
 METAD_PIDS="$METAD_PIDS $METAD2_PID"
 sleep 1
 
 # Start MetaD Node 3
 print_info "Starting MetaD Node 3 on 127.0.0.1:6003..."
-./build/metad_server --config scripts/cluster_node3.conf > /tmp/cedar/cluster/metad_node3.log 2>&1 &
+./build/cedar-metad --config scripts/cluster_node3.conf > /tmp/cedar/cluster/metad_node3.log 2>&1 &
 METAD3_PID=$!
 METAD_PIDS="$METAD_PIDS $METAD3_PID"
 sleep 1
@@ -189,21 +189,21 @@ EOF
 
 # Start StorageD Node 1
 print_info "Starting StorageD Node 1 on 127.0.0.1:7001..."
-./build/storaged --config /tmp/cedar/cluster/storage_node1.conf > /tmp/cedar/cluster/storage_node1.log 2>&1 &
+./build/cedar-storaged --config /tmp/cedar/cluster/storage_node1.conf > /tmp/cedar/cluster/storage_node1.log 2>&1 &
 STORAGE1_PID=$!
 STORAGE_PIDS="$STORAGE_PIDS $STORAGE1_PID"
 sleep 1
 
 # Start StorageD Node 2
 print_info "Starting StorageD Node 2 on 127.0.0.1:7002..."
-./build/storaged --config /tmp/cedar/cluster/storage_node2.conf > /tmp/cedar/cluster/storage_node2.log 2>&1 &
+./build/cedar-storaged --config /tmp/cedar/cluster/storage_node2.conf > /tmp/cedar/cluster/storage_node2.log 2>&1 &
 STORAGE2_PID=$!
 STORAGE_PIDS="$STORAGE_PIDS $STORAGE2_PID"
 sleep 1
 
 # Start StorageD Node 3
 print_info "Starting StorageD Node 3 on 127.0.0.1:7003..."
-./build/storaged --config /tmp/cedar/cluster/storage_node3.conf > /tmp/cedar/cluster/storage_node3.log 2>&1 &
+./build/cedar-storaged --config /tmp/cedar/cluster/storage_node3.conf > /tmp/cedar/cluster/storage_node3.log 2>&1 &
 STORAGE3_PID=$!
 STORAGE_PIDS="$STORAGE_PIDS $STORAGE3_PID"
 sleep 1

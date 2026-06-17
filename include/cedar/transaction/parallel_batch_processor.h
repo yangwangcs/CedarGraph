@@ -226,4 +226,4 @@ Status ParallelBatchProcessor::ProcessWithConflictDetection(
 
 }  // namespace cedar
 
-#endif  // FERN_PARALLEL_BATCH_PROCESSOR_H_
+#endif  // CEDAR_PARALLEL_BATCH_PROCESSOR_H_

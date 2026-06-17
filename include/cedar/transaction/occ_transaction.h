@@ -413,4 +413,4 @@ class TransactionRetryWrapper {
 
 }  // namespace cedar
 
-#endif  // FERN_OCC_TRANSACTION_H_
+#endif  // CEDAR_OCC_TRANSACTION_H_

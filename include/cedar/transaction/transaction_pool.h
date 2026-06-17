@@ -91,4 +91,4 @@ class PooledTransaction {
 
 }  // namespace cedar
 
-#endif  // FERN_TRANSACTION_POOL_H_
+#endif  // CEDAR_TRANSACTION_POOL_H_

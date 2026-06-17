@@ -159,4 +159,4 @@ class TransactionWalBatch {
 
 }  // namespace cedar
 
-#endif  // FERN_WAL_BATCH_WRITER_H_
+#endif  // CEDAR_WAL_BATCH_WRITER_H_

@@ -128,4 +128,4 @@ class ShardedTxnIdAllocator {
 
 }  // namespace cedar
 
-#endif  // FERN_SHARDED_TIMESTAMP_ALLOCATOR_H_
+#endif  // CEDAR_SHARDED_TIMESTAMP_ALLOCATOR_H_

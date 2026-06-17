@@ -67,8 +67,8 @@ void LFNode::SetOlderVersion(LFNode* node) {
   older_version_.store(node, std::memory_order_release);
 }
 
-bool LFNode::MarkDeleted() { return true; }
-bool LFNode::IsMarked() const { return false; }
+bool LFNode::MarkDeleted() { return deleted_.exchange(true); }
+bool LFNode::IsMarked() const { return deleted_.load(std::memory_order_acquire); }
 
 // ═══════════════════════════════════════════════════════════════════
 // LockedVSL 实现
