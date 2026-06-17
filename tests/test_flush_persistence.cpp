@@ -42,6 +42,9 @@ int main() {
   }
   std::cout << "  Written 100 entries" << std::endl;
   
+  // Wait for background compaction to settle
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  
   // Check SST files before flush
   int sst_count_before = 0;
   for (const auto& entry : std::filesystem::directory_iterator(db_path)) {
@@ -59,6 +62,9 @@ int main() {
   } else {
     std::cout << "  ForceFlush OK" << std::endl;
   }
+  
+  // Wait for background compaction to settle
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
   
   // Check SST files after flush
   int sst_count_after = 0;

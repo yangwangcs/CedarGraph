@@ -60,17 +60,17 @@ struct BlobStorageConfig {
 // Size-Tiered Compaction configuration for Zone-Columnar SST
 // 生产级默认配置：256KB Block，稀疏索引，大 SST 文件
 struct SizeTieredCompactionConfig {
-  // L0 容量阈值（默认 64MB）
-  uint64_t l0_max_size = 64 * 1024 * 1024;
+  // L0 容量阈值（默认 256MB = 4 × memtable）
+  uint64_t l0_max_size = 256 * 1024 * 1024;
   
   // 单个 SST 文件大小目标（默认 64MB）
   uint64_t l0_file_size = 64 * 1024 * 1024;
   
-  // L0 最大文件数，超过触发合并（默认 8）
-  size_t l0_max_files = 8;
+  // L0 最大文件数，超过触发合并（默认 4，RocksDB 默认）
+  size_t l0_max_files = 4;
   
-  // Level size ratio multiplier (default: 4)
-  double size_ratio = 4.0;
+  // Level size ratio multiplier (default: 10, RocksDB default)
+  double size_ratio = 10.0;
   
   // Maximum levels (default: 7, i.e., L0-L6)
   int max_levels = 7;
@@ -78,8 +78,8 @@ struct SizeTieredCompactionConfig {
   // Trigger ratio (current_size / threshold > ratio triggers compaction)
   double level_size_trigger_ratio = 1.2;
   
-  // Maximum merge width per compaction (default: 32)
-  size_t max_merge_width = 32;
+  // Maximum merge width per compaction (default: 10, RocksDB default)
+  size_t max_merge_width = 10;
   
   // Number of background compaction threads (default: 2)
   int compaction_threads = 2;
