@@ -732,54 +732,88 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
   // Phase 2: SST reads WITHOUT engine lock (SST files are immutable)
   // GetFilesForEntity has its own shared_lock on levels_mutex_
   // SstReaderCache has its own internal locking
-  // 8 threads can now read SST files in parallel!
+  // Multiple threads can now read SST files in parallel!
   std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> all_entries;
   
   if (compaction_engine_) {
     auto files = compaction_engine_->GetFilesForEntity(
         entity_id, column_id, static_cast<uint8_t>(entity_type));
     
+    // Filter files by range and temporal bloom filter first (fast, serial)
+    struct SstQueryTask {
+      std::string path;
+      std::string temporal_filter;
+    };
+    std::vector<SstQueryTask> tasks;
     for (const auto& file_meta : files) {
       if (entity_id < file_meta.min_entity_id || 
-          entity_id > file_meta.max_entity_id) {
-        continue;
-      }
+          entity_id > file_meta.max_entity_id) continue;
       
-      // Temporal Bloom Filter 检查
       if (!file_meta.temporal_filter_metadata.empty()) {
         auto filter_opt = TemporalBloomFilter::Deserialize(file_meta.temporal_filter_metadata);
-        if (filter_opt.has_value() && 
-            !filter_opt.value().MayContain(entity_id)) {
-          continue;
-        }
+        if (filter_opt.has_value() && !filter_opt.value().MayContain(entity_id)) continue;
+      }
+      tasks.push_back({file_meta.path, file_meta.temporal_filter_metadata});
+    }
+    
+    // Parallel SST reads: launch async tasks for each qualifying file
+    if (tasks.size() > 1) {
+      std::vector<std::future<std::vector<std::tuple<CedarKey, Descriptor, Timestamp>>>> futures;
+      futures.reserve(tasks.size());
+      
+      for (const auto& task : tasks) {
+        futures.push_back(std::async(std::launch::async, [this, &task, entity_id, entity_type, column_id]() {
+          std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> results;
+          
+          std::shared_ptr<SstReader> reader;
+          if (sst_reader_cache_) {
+            reader = sst_reader_cache_->Get(task.path);
+          }
+          if (!reader) {
+            reader = std::make_shared<SstReader>(task.path);
+            if (!reader->Open().ok()) return results;
+          }
+          
+          if (!reader->MayContainEntity(entity_id)) {
+            if (sst_reader_cache_) sst_reader_cache_->Release(task.path);
+            return results;
+          }
+          
+          results = reader->GetRange(entity_id, entity_type, column_id,
+                                     Timestamp(0), Timestamp(UINT64_MAX));
+          
+          if (sst_reader_cache_) sst_reader_cache_->Release(task.path);
+          return results;
+        }));
       }
       
-      // 使用缓存的 Reader（SstReaderCache 有自己的锁）
-      std::shared_ptr<SstReader> reader;
-      if (sst_reader_cache_) {
-        reader = sst_reader_cache_->Get(file_meta.path);
+      // Merge results from all parallel tasks
+      for (auto& f : futures) {
+        auto results = f.get();
+        all_entries.insert(all_entries.end(), results.begin(), results.end());
       }
-      if (!reader) {
-        reader = std::make_shared<SstReader>(file_meta.path);
-        if (!reader->Open().ok()) {
-          continue;
-        }
-      }
-      
-      // Bloom filter 快速跳过
-      if (!reader->MayContainEntity(entity_id)) {
+    } else {
+      // Single file: no need for async overhead
+      for (const auto& task : tasks) {
+        std::shared_ptr<SstReader> reader;
         if (sst_reader_cache_) {
-          sst_reader_cache_->Release(file_meta.path);
+          reader = sst_reader_cache_->Get(task.path);
         }
-        continue;
-      }
-      
-      auto range_results = reader->GetRange(entity_id, entity_type, column_id,
-                                            Timestamp(0), Timestamp(UINT64_MAX));
-      all_entries.insert(all_entries.end(), range_results.begin(), range_results.end());
-      
-      if (sst_reader_cache_) {
-        sst_reader_cache_->Release(file_meta.path);
+        if (!reader) {
+          reader = std::make_shared<SstReader>(task.path);
+          if (!reader->Open().ok()) continue;
+        }
+        
+        if (!reader->MayContainEntity(entity_id)) {
+          if (sst_reader_cache_) sst_reader_cache_->Release(task.path);
+          continue;
+        }
+        
+        auto range_results = reader->GetRange(entity_id, entity_type, column_id,
+                                             Timestamp(0), Timestamp(UINT64_MAX));
+        all_entries.insert(all_entries.end(), range_results.begin(), range_results.end());
+        
+        if (sst_reader_cache_) sst_reader_cache_->Release(task.path);
       }
     }
   }

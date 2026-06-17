@@ -374,8 +374,8 @@ class ZoneColumnarSstReader {
   
   // Block 缓存（LRU，可配置大小）
   mutable std::unordered_map<uint32_t, std::shared_ptr<BlockCacheEntry>> block_cache_;
-  mutable std::shared_mutex block_cache_mutex_;  // Changed from std::mutex for read concurrency
-  static constexpr size_t kMaxCachedBlocks = 256;  // Increased from 16 for better cache hit rate
+  mutable std::shared_mutex block_cache_mutex_;
+  static constexpr size_t kMaxCachedBlocks = 2048;  // 256MB effective cache (128KB blocks)
   
   // 内存缓冲区模式（用于测试）
   const char* buffer_data_ = nullptr;

@@ -143,9 +143,10 @@ void ZoneColumnarFooter::EncodeTo(std::string* dst) const {
   u32[1] = footer_magic;
   u32[2] = temporal_filter_offset;
   u32[3] = temporal_filter_size;
-  u32[4] = reserved;
+  u32[4] = entity_index_offset;
+  u32[5] = entity_index_size;
   
-  u64 = reinterpret_cast<uint64_t*>(buf + 44);
+  u64 = reinterpret_cast<uint64_t*>(buf + 48);
   u64[0] = data_checksum;
   
   dst->append(buf, kEncodedSize);
@@ -171,9 +172,10 @@ Status ZoneColumnarFooter::DecodeFrom(Slice* input) {
   footer_magic = u32[1];
   temporal_filter_offset = u32[2];
   temporal_filter_size = u32[3];
-  reserved = u32[4];
+  entity_index_offset = u32[4];
+  entity_index_size = u32[5];
   
-  u64 = reinterpret_cast<const uint64_t*>(buf + 44);
+  u64 = reinterpret_cast<const uint64_t*>(buf + 48);
   data_checksum = u64[0];
   
   if (footer_magic != kFooterMagic) {

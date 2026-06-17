@@ -167,6 +167,34 @@ Status ZoneColumnarSstReader::LoadMetadata() {
     CEDAR_RETURN_IF_ERROR(s);
     temporal_filter_data_.assign(tf_result.data(), tf_result.size());
   }
+  
+  // 加载 Entity Hash Index (if present)
+  if (footer_.entity_index_size > 0 && footer_.entity_index_offset > 0) {
+    std::string ei_buf;
+    ei_buf.resize(footer_.entity_index_size);
+    Slice ei_result;
+    s = file_->Read(footer_.entity_index_offset, footer_.entity_index_size, &ei_result, &ei_buf[0]);
+    if (s.ok() && ei_result.size() >= 4) {
+      const char* p = ei_result.data();
+      uint32_t entry_count;
+      std::memcpy(&entry_count, p, sizeof(entry_count));
+      p += 4;
+      const char* end = ei_result.data() + ei_result.size();
+      for (uint32_t i = 0; i < entry_count && p + 10 <= end; ++i) {
+        uint64_t eid;
+        std::memcpy(&eid, p, sizeof(eid)); p += 8;
+        uint16_t bc;
+        std::memcpy(&bc, p, sizeof(bc)); p += 2;
+        auto& block_ids = entity_index_[eid];
+        for (uint16_t j = 0; j < bc && p + 2 <= end; ++j) {
+          uint16_t bid;
+          std::memcpy(&bid, p, sizeof(bid)); p += 2;
+          block_ids.push_back(bid);
+        }
+      }
+      has_entity_index_ = !entity_index_.empty();
+    }
+  }
 
   // 验证 data_checksum: header 之后到 footer 之前的所有数据
   size_t data_start = ZoneColumnarHeader::kEncodedSize;
@@ -289,50 +317,67 @@ std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> ZoneColumnarSstReader::
   
   if (!opened_) return results;
   
-  // 使用二分查找定位可能包含该 entity 的 Block
-  auto it = std::lower_bound(block_index_.begin(), block_index_.end(), entity_id,
-    [](const BlockIndexEntry& entry, uint64_t eid) {
-      return entry.max_entity_id < eid;
-    });
-  
-  // 从找到的位置向前扫描
-  for (size_t block_idx = (it != block_index_.begin() ? 
-                           std::distance(block_index_.begin(), it - 1) : 0); 
-       block_idx < block_index_.size(); ++block_idx) {
-    const auto& entry = block_index_[block_idx];
+  // O(1) block lookup via Entity Hash Index
+  if (has_entity_index_) {
+    auto it = entity_index_.find(entity_id);
+    if (it == entity_index_.end()) return results;  // entity definitely not in this SST
     
-    if (entity_id < entry.min_entity_id) {
-      break;  // 后面的 block 都不会包含这个 entity
-    }
-    if (entity_id > entry.max_entity_id) {
-      continue;
-    }
-    
-    // Skip if timestamp not in range
-    if (end.value() < entry.min_timestamp || start.value() > entry.max_timestamp) {
-      continue;
-    }
-    
-    // Load block
-    auto block = LoadBlock(block_idx);
-    if (!block) continue;
-    
-    // Scan block for matching entries
-    for (uint32_t row = 0; row < entry.row_count; ++row) {
-      CedarKey key = ReconstructKeyFromBlock(*block, row);
+    for (uint32_t block_idx : it->second) {
+      if (block_idx >= block_index_.size()) continue;
+      const auto& entry = block_index_[block_idx];
       
-      if (key.entity_id() != entity_id) continue;
-      // Entity type 检查: 如果查询指定了特定类型，始终过滤
-      if (static_cast<uint8_t>(entity_type) != 0 &&
-          static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
-      // Column ID 检查: 如果查询指定了特定 column_id，始终过滤（即使 SST 是跨列存储）
-      if (column_id != UINT16_MAX && key.column_id() != column_id) continue;
-      if (key.timestamp().value() < start.value() || key.timestamp().value() > end.value()) continue;
+      if (end.value() < entry.min_timestamp || start.value() > entry.max_timestamp) continue;
       
-      auto desc = GetValueByRow(*block, row);
-      if (desc.has_value()) {
-        Timestamp txn_version = GetTxnVersionFromBlock(*block, row);
-        results.emplace_back(key, desc.value(), txn_version);
+      auto block = LoadBlock(block_idx);
+      if (!block) continue;
+      
+      for (uint32_t row = 0; row < entry.row_count; ++row) {
+        CedarKey key = ReconstructKeyFromBlock(*block, row);
+        if (key.entity_id() != entity_id) continue;
+        if (static_cast<uint8_t>(entity_type) != 0 &&
+            static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
+        if (column_id != UINT16_MAX && key.column_id() != column_id) continue;
+        if (key.timestamp().value() < start.value() || key.timestamp().value() > end.value()) continue;
+        
+        auto desc = GetValueByRow(*block, row);
+        if (desc.has_value()) {
+          Timestamp txn_version = GetTxnVersionFromBlock(*block, row);
+          results.emplace_back(key, desc.value(), txn_version);
+        }
+      }
+    }
+  } else {
+    // Fallback: binary search on block index
+    auto it = std::lower_bound(block_index_.begin(), block_index_.end(), entity_id,
+      [](const BlockIndexEntry& entry, uint64_t eid) {
+        return entry.max_entity_id < eid;
+      });
+    
+    for (size_t block_idx = (it != block_index_.begin() ? 
+                             std::distance(block_index_.begin(), it - 1) : 0); 
+         block_idx < block_index_.size(); ++block_idx) {
+      const auto& entry = block_index_[block_idx];
+      
+      if (entity_id < entry.min_entity_id) break;
+      if (entity_id > entry.max_entity_id) continue;
+      if (end.value() < entry.min_timestamp || start.value() > entry.max_timestamp) continue;
+      
+      auto block = LoadBlock(block_idx);
+      if (!block) continue;
+      
+      for (uint32_t row = 0; row < entry.row_count; ++row) {
+        CedarKey key = ReconstructKeyFromBlock(*block, row);
+        if (key.entity_id() != entity_id) continue;
+        if (static_cast<uint8_t>(entity_type) != 0 &&
+            static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
+        if (column_id != UINT16_MAX && key.column_id() != column_id) continue;
+        if (key.timestamp().value() < start.value() || key.timestamp().value() > end.value()) continue;
+        
+        auto desc = GetValueByRow(*block, row);
+        if (desc.has_value()) {
+          Timestamp txn_version = GetTxnVersionFromBlock(*block, row);
+          results.emplace_back(key, desc.value(), txn_version);
+        }
       }
     }
   }

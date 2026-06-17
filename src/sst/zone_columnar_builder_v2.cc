@@ -30,6 +30,7 @@
 #include "cedar/sst/bloom_filter.h"
 #include "cedar/sst/zone_encoder.h"
 #include "cedar/storage/sst_temporal_filter.h"
+#include "cedar/common/logging.h"
 
 #include <algorithm>
 #include <cstring>
@@ -179,7 +180,10 @@ void ZoneColumnarSstBuilder::Add(const CedarKey& key, const Descriptor& desc,
 
   // 收集 key 用于构建 TemporalBloomFilter
   all_keys_.push_back(key);
-
+  
+  // 跟踪 entity_id → block 映射 (当前 block 还在 buffer 中，索引 = blocks_.size())
+  entity_blocks_[key.entity_id()].push_back(static_cast<uint32_t>(blocks_.size()));
+  
   // 检查是否需要切割 Block
   if (ShouldCutBlock()) {
     status_ = FlushBlock();
@@ -398,6 +402,34 @@ Status ZoneColumnarSstBuilder::WriteFile() {
     }
   }
 
+  // 3.7 Entity Hash Index (entity_id → block_ids, O(1) lookup)
+  size_t entity_index_offset = 0;
+  size_t entity_index_size = 0;
+  if (!entity_blocks_.empty()) {
+    // Deduplicate block_ids per entity (same entity may appear in same block multiple times)
+    for (auto& [eid, block_ids] : entity_blocks_) {
+      std::sort(block_ids.begin(), block_ids.end());
+      block_ids.erase(std::unique(block_ids.begin(), block_ids.end()), block_ids.end());
+    }
+    // Serialize: [entry_count:4] [(entity_id:8, block_count:2, block_ids:2*block_count) ...]
+    std::string idx_data;
+    uint32_t entry_count = static_cast<uint32_t>(entity_blocks_.size());
+    idx_data.append(reinterpret_cast<const char*>(&entry_count), sizeof(entry_count));
+    for (const auto& [eid, block_ids] : entity_blocks_) {
+      idx_data.append(reinterpret_cast<const char*>(&eid), sizeof(eid));
+      uint16_t bc = static_cast<uint16_t>(block_ids.size());
+      idx_data.append(reinterpret_cast<const char*>(&bc), sizeof(bc));
+      for (uint32_t bid : block_ids) {
+        uint16_t bid16 = static_cast<uint16_t>(bid);
+        idx_data.append(reinterpret_cast<const char*>(&bid16), sizeof(bid16));
+      }
+    }
+    entity_index_data_ = std::move(idx_data);
+    entity_index_offset = file_data.size();
+    file_data.append(entity_index_data_);
+    entity_index_size = entity_index_data_.size();
+  }
+
   // 4. Footer
   ZoneColumnarFooter footer;
   footer.block_index_offset = static_cast<uint32_t>(index_offset);
@@ -409,7 +441,8 @@ Status ZoneColumnarSstBuilder::WriteFile() {
   footer.footer_magic = ZoneColumnarFooter::kFooterMagic;
   footer.temporal_filter_offset = static_cast<uint32_t>(temporal_filter_offset);
   footer.temporal_filter_size = static_cast<uint32_t>(temporal_filter_size);
-  footer.reserved = 0;
+  footer.entity_index_offset = static_cast<uint32_t>(entity_index_offset);
+  footer.entity_index_size = static_cast<uint32_t>(entity_index_size);
 
   // 计算 data_checksum: header 之后到 footer 之前的所有数据
   size_t data_start = ZoneColumnarHeader::kEncodedSize;
