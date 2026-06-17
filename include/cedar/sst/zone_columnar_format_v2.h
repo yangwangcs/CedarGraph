@@ -97,7 +97,7 @@ struct ZoneColumnarFooter {
   void EncodeTo(std::string* dst) const;
   Status DecodeFrom(Slice* input);
   
-  static constexpr size_t kEncodedSize = 64;  // 52 bytes payload + 12 bytes padding
+  static constexpr size_t kEncodedSize = 64;  // 56 bytes payload + 8 bytes padding
   static constexpr uint32_t kFooterMagic = 0x464F4F54;  // "FOOT"
 };
 

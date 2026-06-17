@@ -216,10 +216,24 @@ UnifiedMetaClient::CacheStats UnifiedMetaClient::GetCacheStats() const {
 }
 
 void UnifiedMetaClient::RefreshLoop() {
+  int consecutive_failures = 0;
   while (running_) {
     std::this_thread::sleep_for(options_.refresh_interval);
     if (!running_) break;
-    FetchPartitionMapFromMeta();
+    Status s = FetchPartitionMapFromMeta();
+    if (!s.ok()) {
+      consecutive_failures++;
+      LOG(WARNING) << "Partition map refresh failed (attempt " << consecutive_failures
+                   << "): " << s.ToString();
+      // Exponential backoff: double sleep on consecutive failures, max 5 minutes
+      if (consecutive_failures > 1) {
+        auto backoff = std::min(options_.refresh_interval * (1 << std::min(consecutive_failures - 1, 6)),
+                                std::chrono::seconds(300));
+        std::this_thread::sleep_for(backoff);
+      }
+    } else {
+      consecutive_failures = 0;
+    }
   }
 }
 
@@ -319,10 +333,10 @@ Status UnifiedMetaClient::FetchPartitionMapFromMeta() {
     if (it != addresses.end()) {
       info.leader_address = it->second;
     } else {
-      return Status::Unavailable(
-          "Partition " + std::to_string(info.partition_id) +
-          " references unknown leader node " +
-          std::to_string(info.leader_node));
+      LOG(WARNING) << "Partition " << info.partition_id
+                   << " references unknown leader node " << info.leader_node
+                   << ", skipping";
+      continue;
     }
 
     for (int i = 0; i < assign.follower_nodes_size(); ++i) {
@@ -388,6 +402,12 @@ void UnifiedMetaClient::ApplyPartitionChange(const PartitionMapChange& change) {
           it->second.leader_address = addr_it->second;
           it->second.version = change.version;
           it->second.updated_at = steady_clock::now();
+        } else {
+          // New leader address unknown — invalidate so next read refreshes
+          partition_map_.erase(it);
+          LOG(WARNING) << "Leader changed for partition " << change.partition_id
+                       << " but new leader " << change.new_leader
+                       << " not in address map, invalidating";
         }
       }
       break;

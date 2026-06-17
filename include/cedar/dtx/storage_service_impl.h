@@ -373,6 +373,12 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   // so the client retries on leader.
   grpc::Status CheckFollowerReadLag(PartitionID pid);
 
+  // Combined read consistency check: handles both follower lag and leader check.
+  // Returns OK if the read can proceed, or UNAVAILABLE with leader_hint for redirect.
+  grpc::Status CheckReadConsistency(grpc::ServerContext* context,
+                                    PartitionID pid,
+                                    std::string* leader_hint = nullptr);
+
   std::unique_ptr<cedar::storage::StorageInterface> storage_interface_;
   std::unique_ptr<cedar::cypher::CypherEngine> cypher_engine_;
   std::vector<cedar::storage::PropertyPredicateItem> ConvertPredicates(
@@ -540,6 +546,7 @@ class StorageClient {
   // gRPC resources
   std::shared_ptr<grpc::Channel> channel_;
   std::unique_ptr<cedar::storage::StorageService::Stub> stub_;
+  std::mutex leader_switch_mutex_;  // Protects channel_/stub_ during ConnectToLeader
 
   // Leader-switch support (optional, for partition-aware clients)
   MetaClientInterface* meta_client_ = nullptr;

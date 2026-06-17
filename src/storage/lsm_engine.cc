@@ -3018,6 +3018,8 @@ Status LsmEngine::LoadSstFiles() {
       
       // 清理 0 字节或过小的无效 SST 文件（compaction 失败残留）
       if (entry.file_size() < 64) {
+        CEDAR_LOG_INFO() << "Removing small SST file: " << filename
+                         << " (" << entry.file_size() << " bytes)";
         std::error_code ec;
         std::filesystem::remove(entry.path(), ec);
         cleaned_count++;

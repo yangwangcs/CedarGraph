@@ -496,16 +496,18 @@ std::optional<CompactionTask> SizeTieredCompactionEngine::PickNextCompaction() {
   // 当 L0 有多个文件时，合并所有 L0 文件 + L1 重叠文件 → L1
   if (levels_[0].files.size() > 1) {
     // 检查是否有文件正在被合并
+    bool l0_files_busy = false;
     {
       std::lock_guard<std::mutex> compact_lock(compacting_mutex_);
       for (const auto& f : levels_[0].files) {
         if (compacting_files_.count(f.file_number) > 0) {
-          goto try_higher_levels;  // 有文件在合并中，跳过
+          l0_files_busy = true;
+          break;
         }
       }
     }
     
-    {
+    if (!l0_files_busy) {
       CompactionTask task;
       task.input_level = 0;
       task.output_level = 1;  // L0 → L1
@@ -559,7 +561,6 @@ std::optional<CompactionTask> SizeTieredCompactionEngine::PickNextCompaction() {
     }
   }
   
-try_higher_levels:
   // ========== 常规合并流程 ==========
   // 优先级：L1 > L2 > L3 > ... （L0 已在上面处理）
   for (int level = 1; level < config_.max_levels - 1; ++level) {

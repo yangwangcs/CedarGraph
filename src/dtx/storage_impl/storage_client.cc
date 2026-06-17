@@ -645,6 +645,7 @@ Status StorageClient::ConnectToLeader(const std::string& leader_address) {
   if (leader_address.empty() || leader_address == config_.server_address) {
     return Status::OK();
   }
+  std::lock_guard<std::mutex> lock(leader_switch_mutex_);
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
   if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
   if (!creds.ok()) {

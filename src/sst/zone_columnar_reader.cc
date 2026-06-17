@@ -409,7 +409,16 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
     std::shared_lock<std::shared_mutex> lock(block_cache_mutex_);
     auto it = block_cache_.find(block_id);
     if (it != block_cache_.end()) {
-      return it->second;
+      // Move to front of LRU list (upgrade to unique_lock for modification)
+      lock.unlock();
+      std::unique_lock<std::shared_mutex> wlock(block_cache_mutex_);
+      auto lit = block_cache_.find(block_id);
+      if (lit != block_cache_.end()) {
+        block_lru_list_.remove(block_id);
+        block_lru_list_.push_front(block_id);
+        lit->second->access_time = std::chrono::steady_clock::now();
+        return lit->second;
+      }
     }
   }
   
@@ -536,16 +545,13 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
       return it->second;  // Already loaded by another thread
     }
     if (block_cache_.size() >= kMaxCachedBlocks) {
-      // Evict oldest entry (by access time) instead of arbitrary begin()
-      auto oldest = block_cache_.begin();
-      for (auto it = block_cache_.begin(); it != block_cache_.end(); ++it) {
-        if (it->second->access_time < oldest->second->access_time) {
-          oldest = it;
-        }
-      }
-      block_cache_.erase(oldest);
+      // Evict LRU entry (back of list)
+      uint32_t evict_id = block_lru_list_.back();
+      block_lru_list_.pop_back();
+      block_cache_.erase(evict_id);
     }
     block_cache_[block_id] = cache_entry;
+    block_lru_list_.push_front(block_id);
   }
   
   return cache_entry;

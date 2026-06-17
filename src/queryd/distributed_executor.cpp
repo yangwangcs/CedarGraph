@@ -845,6 +845,10 @@ Status DistributedExecutor::TemporalQuery(
                             std::to_string(partition_id));
   }
   
+  if (consistency == DistributedExecutionContext::Consistency::kEventual) {
+    node_client->SetReadConsistency(true);
+  }
+  
   // Scan entity versions
   std::vector<std::pair<Timestamp, Descriptor>> results;
   Status s = node_client->ScanEntity(entity_id, entity_type, 0, 

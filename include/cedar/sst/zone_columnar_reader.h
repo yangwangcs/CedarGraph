@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <list>
 #include <memory>
 #include <functional>
 #include <optional>
@@ -53,14 +54,15 @@
 #include "cedar/sst/zone_columnar_format_v2.h"
 #include "cedar/sst/bloom_filter.h"
 
-// V2 Block Header (44 bytes)
+// V2 Block Header (44 bytes base, 50 bytes with compression types)
 struct BlockHeader {
   uint32_t row_count;              // 行数
   uint32_t zone_sizes[6];          // 6 个 Zone 的大小
   uint64_t min_entity_id;          // 本 Block 最小 Entity
   uint64_t max_entity_id;          // 本 Block 最大 Entity
   
-  static constexpr size_t kSize = 4 + 24 + 8 + 8;  // 44 bytes
+  static constexpr size_t kSize = 4 + 24 + 8 + 8;      // 44 bytes (legacy)
+  static constexpr size_t kSizeV2 = 44 + 6;             // 50 bytes (with compression types)
 };
 #include "cedar/sst/zone_encoder.h"
 
@@ -377,6 +379,7 @@ class ZoneColumnarSstReader {
   
   // Block 缓存（LRU，可配置大小）
   mutable std::unordered_map<uint32_t, std::shared_ptr<BlockCacheEntry>> block_cache_;
+  mutable std::list<uint32_t> block_lru_list_;  // front = most recent
   mutable std::shared_mutex block_cache_mutex_;
   static constexpr size_t kMaxCachedBlocks = 2048;  // 256MB effective cache (128KB blocks)
   
