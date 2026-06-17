@@ -119,32 +119,43 @@ Status Compression::Decompress(CedarCompressionType type,
   
 #if FERN_HAS_LZ4
   if (type == CedarCompressionType::LZ4) {
-    output->resize(uncompressed_size);
+    // Use generous bound: LZ4 compressBound gives max compressed size for given input,
+    // but for decompression we need the actual output size. Use 4x compressed as estimate.
+    size_t alloc_size = std::max(uncompressed_size, input.size() * 4);
+    output->resize(alloc_size);
     int result = LZ4_decompress_safe(
         input.data(),
         &(*output)[0],
         static_cast<int>(input.size()),
-        static_cast<int>(uncompressed_size));
+        static_cast<int>(alloc_size));
     
-    if (result < 0 || static_cast<size_t>(result) != uncompressed_size) {
+    if (result < 0) {
       return Status::Corruption("Compression", "LZ4 decompress failed");
     }
-    
+    output->resize(static_cast<size_t>(result));
     return Status::OK();
   }
 #endif
   
 #if FERN_HAS_ZSTD
   if (type == CedarCompressionType::Zstd) {
-    output->resize(uncompressed_size);
+    // Get actual uncompressed size from Zstd frame header
+    unsigned long long frame_size = ZSTD_getFrameContentSize(input.data(), input.size());
+    size_t actual_size;
+    if (frame_size != ZSTD_CONTENTSIZE_UNKNOWN && frame_size != ZSTD_CONTENTSIZE_ERROR) {
+      actual_size = static_cast<size_t>(frame_size);
+    } else {
+      actual_size = std::max(uncompressed_size, input.size() * 4);
+    }
+    output->resize(actual_size);
     size_t result = ZSTD_decompress(
-        &(*output)[0], uncompressed_size,
+        &(*output)[0], actual_size,
         input.data(), input.size());
     
-    if (ZSTD_isError(result) || result != uncompressed_size) {
+    if (ZSTD_isError(result)) {
       return Status::Corruption("Compression", "Zstd decompress failed");
     }
-    
+    output->resize(result);
     return Status::OK();
   }
 #endif

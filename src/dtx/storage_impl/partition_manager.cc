@@ -213,16 +213,14 @@ size_t StoragePartitionManager::GetPartitionCount() const {
 }
 
 size_t StoragePartitionManager::GetTotalDiskUsage() const {
-  std::shared_lock<std::shared_mutex> lock(partitions_mutex_);
-  
-  if (!shared_storage_) {
-    return 0;
+  if (backend_) {
+    return backend_->GetTotalDiskUsage();
   }
-  
-  // Get total storage size (shared across all partitions)
-  // Return total SST size as approximation
-  auto stats = shared_storage_->GetStats();
-  return stats.sst_size + stats.memtable_size + stats.imm_memtable_size;
+  if (shared_storage_) {
+    auto stats = shared_storage_->GetStats();
+    return stats.sst_size + stats.memtable_size + stats.imm_memtable_size;
+  }
+  return 0;
 }
 
 Status StoragePartitionManager::FlushAll() {

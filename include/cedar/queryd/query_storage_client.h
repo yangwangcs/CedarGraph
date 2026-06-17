@@ -162,6 +162,9 @@ class QueryStorageClient {
   };
   
   std::shared_ptr<NodeClient> GetNodeClient(uint32_t partition_id);
+  // Create a node client targeting a specific address (for follower reads)
+  std::shared_ptr<NodeClient> GetNodeClient(uint32_t partition_id,
+                                            const std::string& address);
 
   // Check if a partition is hosted locally (short-circuit path).
   bool IsLocalPartition(uint32_t partition_id) const;

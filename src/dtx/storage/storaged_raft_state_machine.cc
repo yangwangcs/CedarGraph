@@ -108,8 +108,7 @@ void StorageRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
       }
     }
 
-    // Step 4: Resume compaction
-    storage_->ResumeCompaction();
+    // Step 4: Resume compaction (moved to after catch for exception safety)
 
     // Register data files with snapshot writer
     for (const auto& entry :
@@ -155,6 +154,8 @@ void StorageRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
       done->status().set_error(EIO, "Snapshot save failed: %s", e.what());
     }
   }
+  // Always resume compaction, even on exception
+  storage_->ResumeCompaction();
 }
 
 int StorageRaftStateMachine::on_snapshot_load(braft::SnapshotReader* reader) {

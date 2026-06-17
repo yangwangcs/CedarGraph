@@ -22,6 +22,7 @@
 #include <gflags/gflags.h>
 
 #include <cstring>
+#include <chrono>
 #include <filesystem>
 
 DEFINE_int64(raft_propose_timeout_ms, 5000, "Raft proposal timeout");
@@ -433,7 +434,7 @@ void StoragePartitionStateMachine::on_apply(braft::Iterator& iter) {
 
     last_term_ = iter.term();
     
-    // Update GC safe point for multi-replica tombstone safety
+    // Update GC safe point: use wall-clock time for tombstone retention
     if (storage_) {
       auto* shared = storage_->GetSharedStorage();
       if (shared) {
@@ -441,7 +442,9 @@ void StoragePartitionStateMachine::on_apply(braft::Iterator& iter) {
         if (engine) {
           auto* compaction = engine->GetCompactionEngine();
           if (compaction) {
-            compaction->SetGCSafePoint(iter.index());
+            uint64_t now_usec = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            compaction->SetGCSafePoint(now_usec);
           }
         }
       }
@@ -578,9 +581,19 @@ int StoragePartitionStateMachine::on_snapshot_load(
   
   std::string snapshot_path = reader->get_path();
   std::string data_root = storage_->GetDataRoot();
-  
-  // Step 1: Remove stale SST/blob/MANIFEST files not present in snapshot
   std::string snapshot_data_dir = snapshot_path + "/data";
+  
+  // Step 1: Pause compaction and close engine before touching files
+  auto* shared_storage = storage_->GetSharedStorage();
+  if (shared_storage) {
+    shared_storage->PauseCompaction();
+    auto* engine = shared_storage->GetLsmEngine();
+    if (engine) {
+      engine->Close();
+    }
+  }
+  
+  // Step 2: Remove stale SST/blob/MANIFEST files
   if (std::filesystem::exists(data_root)) {
     for (const auto& entry : std::filesystem::directory_iterator(data_root)) {
       if (entry.is_regular_file()) {
@@ -590,16 +603,20 @@ int StoragePartitionStateMachine::on_snapshot_load(
             filename.find("MANIFEST") != std::string::npos) {
           std::error_code ec;
           std::filesystem::remove(entry.path(), ec);
+          if (ec) {
+            LOG(WARNING) << "Failed to remove stale file " << filename << ": " << ec.message();
+          }
         }
       }
     }
   }
   
-  // Step 2: Restore data files from snapshot to storage data_root
+  // Step 3: Restore data files from snapshot
   if (std::filesystem::exists(snapshot_data_dir)) {
     auto copy_result = CopySnapshotFiles(snapshot_data_dir, data_root);
     if (!copy_result.ok()) {
       LOG(ERROR) << "Failed to restore snapshot files: " << copy_result.status().ToString();
+      if (shared_storage) shared_storage->ResumeCompaction();
       return -1;
     }
     auto copied_files = std::move(copy_result.value());
@@ -607,19 +624,28 @@ int StoragePartitionStateMachine::on_snapshot_load(
               << " for partition " << storage_->GetPartitionId();
   }
   
-  // Step 3: Reload compaction engine manifest if available
-  auto* shared_storage = storage_->GetSharedStorage();
+  // Step 4: Reopen engine and reload manifest
   if (shared_storage) {
     auto* engine = shared_storage->GetLsmEngine();
     if (engine) {
+      Status s = engine->Open();
+      if (!s.ok()) {
+        LOG(ERROR) << "Failed to reopen engine after snapshot load: " << s.ToString();
+        shared_storage->ResumeCompaction();
+        return -1;
+      }
       auto* compaction = engine->GetCompactionEngine();
       if (compaction) {
-        compaction->LoadManifest();
+        s = compaction->LoadManifest();
+        if (!s.ok()) {
+          LOG(ERROR) << "Failed to load manifest after snapshot: " << s.ToString();
+        }
       }
     }
+    shared_storage->ResumeCompaction();
   }
   
-  // Step 4: Restore prepared transaction state (2PC)
+  // Step 5: Restore prepared transaction state (2PC)
   std::string txn_state_path = snapshot_path + "/txn_state";
   if (std::filesystem::exists(txn_state_path)) {
     auto status = storage_->LoadPreparedTxns(txn_state_path);

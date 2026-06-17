@@ -69,6 +69,11 @@ class QueryCache {
   // Check if key is in cache (hit or cached negative)
   bool Has(uint64_t entity_id, uint16_t column_id, uint64_t timestamp) const;
   
+  // Atomic Get: returns {true, result} on cache hit, {false, nullopt} on miss.
+  // Eliminates the Has+Get race condition.
+  std::pair<bool, std::optional<Descriptor>> TryGet(
+      uint64_t entity_id, uint16_t column_id, uint64_t timestamp);
+  
   // Put result into cache
   void Put(uint64_t entity_id, uint16_t column_id, uint64_t timestamp, 
            const std::optional<Descriptor>& result);

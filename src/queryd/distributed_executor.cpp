@@ -225,7 +225,7 @@ std::vector<SubQueryResult> ParallelExecutor::ExecuteParallel(
         r.partition_id = t.partition_id;
         r.sequence = t.sequence;
 
-        auto node_client = storage_client->GetNodeClient(t.partition_id);
+        auto node_client = storage_client->GetNodeClient(t.partition_id, t.storage_node);
         if (!node_client) {
             r.status = Status::NotFound("Storage node not found for partition " +
                                         std::to_string(t.partition_id));
@@ -291,7 +291,7 @@ void ParallelExecutor::ExecuteParallelStreaming(
       r.partition_id = task.partition_id;
       r.sequence = task.sequence;
 
-      auto node_client = storage_client->GetNodeClient(task.partition_id);
+      auto node_client = storage_client->GetNodeClient(task.partition_id, task.storage_node);
       if (!node_client) {
         r.status = Status::IOError("No node client for partition " +
                                     std::to_string(task.partition_id));
@@ -839,7 +839,7 @@ Status DistributedExecutor::TemporalQuery(
   }
   
   // Get storage node client
-  auto node_client = storage_client_->GetNodeClient(partition_id);
+  auto node_client = storage_client_->GetNodeClient(partition_id, storage_address);
   if (!node_client) {
     return Status::NotFound("Storage node not found for partition " +
                             std::to_string(partition_id));
@@ -884,7 +884,7 @@ Status DistributedExecutor::GetEntityAtTime(
   // Scan entity versions around the timestamp
   // Since CedarKey stores timestamps in descending order,
   // we can use binary search for O(log N) lookup
-  auto node_client = storage_client_->GetNodeClient(partition_id);
+  auto node_client = storage_client_->GetNodeClient(partition_id, leader_address);
   if (!node_client) {
     return Status::NotFound("Storage node not found for partition " +
                             std::to_string(partition_id));
@@ -1047,7 +1047,7 @@ Status DistributedExecutor::ExecuteSinglePartition(
   }
 
   // Send query to specific storage node
-  auto node_client = storage_client_->GetNodeClient(partition_id);
+  auto node_client = storage_client_->GetNodeClient(partition_id, storage_address);
   if (!node_client) {
     return Status::NotFound("Storage node not found");
   }

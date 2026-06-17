@@ -514,9 +514,7 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
           cache_entry->zone_sizes[i] = decompressed.size();
           rebuilt_data.append(decompressed);
         } else {
-          // Decompression failed, keep raw data
-          cache_entry->zone_offsets[i] = rebuilt_data.size();
-          rebuilt_data.append(zone_data + zone_off, zone_sizes[i]);
+          return nullptr;
         }
       } else {
         // Uncompressed zone, copy as-is

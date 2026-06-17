@@ -67,10 +67,9 @@ Status SharedStorageBackend::SaveSnapshot(PartitionID /*pid*/, const std::string
   std::string data_root = storage_->GetDbPath();
 
   storage_->PauseCompaction();
-  storage_->ForceFlush();
-
   Status result = Status::OK();
   try {
+    storage_->ForceFlush();
     for (const auto& entry : std::filesystem::recursive_directory_iterator(data_root)) {
       if (entry.is_regular_file()) {
         std::string relative = std::filesystem::relative(entry.path(), data_root).string();
@@ -83,7 +82,6 @@ Status SharedStorageBackend::SaveSnapshot(PartitionID /*pid*/, const std::string
   } catch (const std::exception& e) {
     result = Status::IOError("SharedStorageBackend", std::string("Snapshot save failed: ") + e.what());
   }
-
   storage_->ResumeCompaction();
   return result;
 }
@@ -252,13 +250,11 @@ Status PartitionedStorageBackend::SaveSnapshot(PartitionID pid, const std::strin
   }
 
   storage->PauseCompaction();
-  storage->ForceFlush();
-
   std::filesystem::create_directories(snapshot_path);
   std::string data_dir = GetPartitionDataDir(pid);
-
   Status result = Status::OK();
   try {
+    storage->ForceFlush();
     for (const auto& entry : std::filesystem::recursive_directory_iterator(data_dir)) {
       if (entry.is_regular_file()) {
         std::string relative = std::filesystem::relative(entry.path(), data_dir).string();
@@ -272,7 +268,6 @@ Status PartitionedStorageBackend::SaveSnapshot(PartitionID pid, const std::strin
     result = Status::IOError("PartitionedStorageBackend",
                              std::string("Snapshot save failed: ") + e.what());
   }
-
   storage->ResumeCompaction();
   return result;
 }

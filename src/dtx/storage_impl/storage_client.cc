@@ -451,6 +451,14 @@ StatusOr<bool> StorageClient::Prepare(TxnID txn_id, const std::vector<CedarKey>&
       if (status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
         return Status::IOError("StorageClient::Prepare", "Operation timeout");
       }
+      // Idempotent retry: "already prepared" means the first Prepare succeeded
+      std::string msg = status.error_message();
+      std::string lower;
+      lower.reserve(msg.size());
+      for (char c : msg) lower.push_back(std::tolower(c));
+      if (lower.find("already prepared") != std::string::npos) {
+        return true;
+      }
       return Status::IOError("StorageClient::Prepare", status.error_message());
     }
 
@@ -611,7 +619,7 @@ bool StorageClient::IsNotLeaderGrpcStatus(const grpc::Status& s) {
     lower.reserve(msg.size());
     for (char c : msg) lower.push_back(std::tolower(c));
     if (lower.find("not leader") != std::string::npos) return true;
-    if (lower.find("leader") != std::string::npos) return true;
+    if (lower.find("redirect to:") != std::string::npos) return true;
   }
   return false;
 }
@@ -637,14 +645,19 @@ Status StorageClient::ConnectToLeader(const std::string& leader_address) {
   if (leader_address.empty() || leader_address == config_.server_address) {
     return Status::OK();
   }
-  config_.server_address = leader_address;
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
   if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
   if (!creds.ok()) {
     return Status::IOError("Failed to create TLS credentials for leader switch");
   }
-  channel_ = grpc::CreateChannel(leader_address, creds.ValueOrDie());
+  auto new_channel = grpc::CreateChannel(leader_address, creds.ValueOrDie());
+  auto deadline = std::chrono::system_clock::now() + config_.operation_timeout;
+  if (!new_channel->WaitForConnected(deadline)) {
+    return Status::IOError("Failed to connect to new leader: " + leader_address);
+  }
+  channel_ = new_channel;
   stub_ = cedar::storage::StorageService::NewStub(channel_);
+  config_.server_address = leader_address;
   return Status::OK();
 }
 

@@ -683,9 +683,10 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     return std::nullopt;
   }
 
-  // 0. Row Cache: check before acquiring shared_lock (cache has its own mutex)
-  if (query_cache_ && query_cache_->Has(entity_id, column_id, timestamp.value())) {
-    return query_cache_->Get(entity_id, column_id, timestamp.value());
+  // 0. Row Cache: atomic check+get to avoid Has+Get race condition
+  if (query_cache_) {
+    auto [hit, cached] = query_cache_->TryGet(entity_id, column_id, timestamp.value());
+    if (hit) return cached;
   }
 
   // Phase 1: Check MemTable under shared_lock (memtable needs engine lock)

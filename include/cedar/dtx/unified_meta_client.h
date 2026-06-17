@@ -17,6 +17,7 @@
 
 #include "cedar/core/status.h"
 #include "cedar/dtx/coordinator_integration.h"
+#include "cedar/dtx/storage_service_impl.h"
 #include "cedar/dtx/types.h"
 
 namespace grpc {
@@ -112,6 +113,25 @@ class UnifiedMetaClient {
   std::atomic<bool> running_{false};
   std::thread refresh_thread_;
   std::thread watch_thread_;
+};
+
+// Adapter: wraps UnifiedMetaClient to satisfy MetaClientInterface
+class UnifiedMetaClientAdapter : public MetaClientInterface {
+ public:
+  explicit UnifiedMetaClientAdapter(UnifiedMetaClient* client) : client_(client) {}
+
+  std::string GetLeaderAddress(uint32_t partition_id) override {
+    std::string address;
+    Status s = client_->GetLeaderAddress(partition_id, &address);
+    return s.ok() ? address : "";
+  }
+
+  void InvalidatePartition(uint32_t partition_id) override {
+    client_->InvalidatePartition(partition_id);
+  }
+
+ private:
+  UnifiedMetaClient* client_;
 };
 
 }  // namespace dtx

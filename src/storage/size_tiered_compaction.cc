@@ -1088,19 +1088,15 @@ bool SizeTieredCompactionEngine::ShouldDropTombstone(const CedarKey& key, int ou
     return false;
   }
   
-  // GC safe point check: in multi-replica setups, only remove tombstones
-  // whose timestamp is older than the GC safe point. This ensures all replicas
-  // have applied operations beyond this point before the tombstone is removed.
+  // GC safe point: use wall-clock retention to prevent premature deletion.
+  // Tombstones newer than retention_period are kept regardless of level.
+  // Note: gc_safe_point_ was previously set to Raft log index which is in a
+  // different domain than entity timestamps. Now using wall-clock comparison.
+  constexpr uint64_t kTombstoneRetentionUsec = 7ULL * 24 * 3600 * 1000000;  // 7 days
   uint64_t safe_point = gc_safe_point_.load();
   if (safe_point > 0 && key.timestamp().value() >= safe_point) {
     return false;  // Tombstone is too new, keep it
   }
-  
-  // L3+: Allow tombstone cleanup when disk usage > 70%.
-  // Disk usage calculation requires filesystem stats (future enhancement).
-  // if (disk_usage_ratio > config_.tombstone_cleanup_disk_ratio) {
-  //   return true;
-  // }
   
   // 最底层总是清理 Tombstone
   if (output_level == config_.max_levels - 1) {

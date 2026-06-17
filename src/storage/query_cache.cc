@@ -36,6 +36,21 @@ bool QueryCache::Has(uint64_t entity_id, uint16_t column_id, uint64_t timestamp)
   return cache_.count(key) > 0;
 }
 
+std::pair<bool, std::optional<Descriptor>> QueryCache::TryGet(
+    uint64_t entity_id, uint16_t column_id, uint64_t timestamp) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  QueryCacheKey key{entity_id, column_id, timestamp};
+  auto it = cache_.find(key);
+  if (it != cache_.end()) {
+    hits_.fetch_add(1, std::memory_order_relaxed);
+    lru_list_.splice(lru_list_.begin(), lru_list_, it->second.first);
+    it->second.second.access_time = std::chrono::steady_clock::now();
+    return {true, it->second.second.result};
+  }
+  misses_.fetch_add(1, std::memory_order_relaxed);
+  return {false, std::nullopt};
+}
+
 void QueryCache::Put(uint64_t entity_id, uint16_t column_id, uint64_t timestamp,
                      const std::optional<Descriptor>& result) {
   std::lock_guard<std::mutex> lock(mutex_);

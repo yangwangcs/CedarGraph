@@ -746,6 +746,24 @@ std::shared_ptr<QueryStorageClient::NodeClient> QueryStorageClient::GetNodeClien
       this, address, std::move(inner));
 }
 
+std::shared_ptr<QueryStorageClient::NodeClient> QueryStorageClient::GetNodeClient(
+    uint32_t partition_id, const std::string& address) {
+  if (address.empty()) {
+    return GetNodeClient(partition_id);
+  }
+  if (CheckCircuitBreaker(address)) {
+    return std::make_shared<UnavailableNodeClient>(address);
+  }
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok()) {
+    return GetNodeClient(partition_id);
+  }
+  auto channel = grpc::CreateChannel(address, creds.ValueOrDie());
+  auto inner = std::make_shared<RemoteRPCNodeClient>(channel, partition_id);
+  return std::make_shared<CircuitBreakerTrackingNodeClient>(
+      this, address, std::move(inner));
+}
+
 Status QueryStorageClient::HealthCheck() {
   if (!use_base_client_ || !base_client_) {
     return Status::IOError("Storage client not initialized");
