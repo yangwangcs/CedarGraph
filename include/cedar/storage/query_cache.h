@@ -59,8 +59,15 @@ class QueryCache {
   
   ~QueryCache() = default;
   
-  // Get cached result
+  // Get cached result. Returns:
+  //   - std::nullopt: cache miss (not in cache, need full lookup)
+  //   - std::optional<Descriptor>(std::nullopt): cached negative result (entity doesn't exist)
+  //   - std::optional<Descriptor>(value): cached positive result
+  // Use Has() to distinguish cache hit from miss.
   std::optional<Descriptor> Get(uint64_t entity_id, uint16_t column_id, uint64_t timestamp);
+  
+  // Check if key is in cache (hit or cached negative)
+  bool Has(uint64_t entity_id, uint16_t column_id, uint64_t timestamp) const;
   
   // Put result into cache
   void Put(uint64_t entity_id, uint16_t column_id, uint64_t timestamp, 
@@ -97,6 +104,9 @@ class QueryCache {
   std::unordered_map<QueryCacheKey, 
                      std::pair<std::list<QueryCacheKey>::iterator, QueryCacheEntry>,
                      QueryCacheKeyHash> cache_;
+  
+  // Entity ID → cache keys index (for O(1) invalidation)
+  std::unordered_map<uint64_t, std::vector<QueryCacheKey>> entity_index_;
   
   // Statistics
   mutable std::atomic<uint64_t> hits_{0};
