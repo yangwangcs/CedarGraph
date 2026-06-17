@@ -244,6 +244,10 @@ private:
     std::shared_ptr<grpc::Channel> channel_;
     std::shared_ptr<cedar::meta::MetaService::Stub> stub_;
     mutable std::shared_mutex stub_mutex_;
+    
+    // Local partition cache for RefreshCache
+    std::mutex cache_mutex_;
+    std::unordered_map<std::string, SpacePartitionMap> partition_cache_;
 };
 
 } // namespace dtx

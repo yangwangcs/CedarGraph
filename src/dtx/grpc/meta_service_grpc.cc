@@ -759,10 +759,12 @@ StatusOr<NodeID> MetaServiceGrpcClient::GetRouteForKey(const std::string& space_
 }
 
 void MetaServiceGrpcClient::RefreshCache(const std::string& space_name) {
-    // Refresh partition map from MetaD. Caching requires adding a local
-    // partition_cache_ member to MetaServiceGrpcClient.
     auto map = GetSpacePartitionMap(space_name);
-    (void)map;  // In production: update local cache with map.value()
+    if (map.ok()) {
+        // Store in local cache for future lookups
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        partition_cache_[space_name] = std::move(map.value());
+    }
 }
 
 StatusOr<PartitionAssignment> MetaServiceGrpcClient::GetPartitionAssignment(
