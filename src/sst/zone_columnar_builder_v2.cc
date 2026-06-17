@@ -298,9 +298,12 @@ Status ZoneColumnarSstBuilder::FlushBlock() {
   memcpy(&block.zone5_data[0], buffer_.txn_versions.data(),
          block.zone5_data.size());
 
-  // 分级压缩: L0=不压缩, L1+=LZ4 (Zstd 暂未实现，L3+ 也用 LZ4)
+  // 分级压缩: L0=不压缩, L1-2=LZ4, L3+=Zstd
   if (options_.enable_compression && options_.output_level > 0) {
     CedarCompressionType compress_type = CedarCompressionType::LZ4;
+    if (options_.output_level >= 3 && Compression::IsSupported(CedarCompressionType::Zstd)) {
+      compress_type = CedarCompressionType::Zstd;
+    }
     
     std::string* zones[] = {&block.zone0_data, &block.zone1_data, &block.zone2_data,
                             &block.zone3_data, &block.zone4_data, &block.zone5_data};

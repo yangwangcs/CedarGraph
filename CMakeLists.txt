@@ -110,6 +110,10 @@ add_custom_target(generate_proto ALL
 # Find required packages
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LZ4 REQUIRED liblz4)
+pkg_check_modules(ZSTD libzstd)
+if(NOT ZSTD_FOUND)
+  message(STATUS "Zstd not found, L3+ will use LZ4 fallback")
+endif()
 find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -371,7 +375,7 @@ add_library(cedar STATIC
     ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc
 )
 
-target_link_libraries(cedar ${LZ4_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf gRPC::grpc++ yaml-cpp::yaml-cpp)
+target_link_libraries(cedar ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf gRPC::grpc++ yaml-cpp::yaml-cpp)
 target_include_directories(cedar PUBLIC ${LZ4_INCLUDE_DIRS})
 target_link_directories(cedar PUBLIC ${LZ4_LIBRARY_DIRS})
 target_compile_definitions(cedar PRIVATE CEDAR_NO_GLOG)

@@ -16,15 +16,21 @@
 
 #include <cstring>
 
-// 使用内置的 LZ4 实现，避免外部依赖
-// 如果系统有 LZ4，优先使用系统的；否则使用内置简化版
+// LZ4
 #if __has_include(<lz4.h>)
   #include <lz4.h>
   #define FERN_HAS_LZ4 1
 #else
   #define FERN_HAS_LZ4 0
-  // 简化版 LZ4 占位实现
   #warning "LZ4 not found, compression will be disabled"
+#endif
+
+// Zstd
+#if __has_include(<zstd.h>)
+  #include <zstd.h>
+  #define FERN_HAS_ZSTD 1
+#else
+  #define FERN_HAS_ZSTD 0
 #endif
 
 namespace cedar {
@@ -71,6 +77,31 @@ Status Compression::Compress(CedarCompressionType type,
   }
 #endif
   
+#if FERN_HAS_ZSTD
+  if (type == CedarCompressionType::Zstd) {
+    size_t max_compressed = ZSTD_compressBound(input.size());
+    output->resize(max_compressed);
+    size_t compressed_size = ZSTD_compress(
+        &(*output)[0], max_compressed,
+        input.data(), input.size(),
+        1);  // Level 1 = fast mode (~780 MB/s)
+    
+    if (ZSTD_isError(compressed_size)) {
+      return Status::Corruption("Compression", "Zstd compress failed");
+    }
+    
+    if (compressed_size >= input.size()) {
+      output->assign(input.data(), input.size());
+      *actual_type = CedarCompressionType::None;
+    } else {
+      output->resize(compressed_size);
+      *actual_type = CedarCompressionType::Zstd;
+    }
+    
+    return Status::OK();
+  }
+#endif
+  
   // 不支持的其他压缩类型，返回未压缩
   output->assign(input.data(), input.size());
   *actual_type = CedarCompressionType::None;
@@ -103,6 +134,21 @@ Status Compression::Decompress(CedarCompressionType type,
   }
 #endif
   
+#if FERN_HAS_ZSTD
+  if (type == CedarCompressionType::Zstd) {
+    output->resize(uncompressed_size);
+    size_t result = ZSTD_decompress(
+        &(*output)[0], uncompressed_size,
+        input.data(), input.size());
+    
+    if (ZSTD_isError(result) || result != uncompressed_size) {
+      return Status::Corruption("Compression", "Zstd decompress failed");
+    }
+    
+    return Status::OK();
+  }
+#endif
+  
   return Status::NotSupported("Compression", "unsupported compression type");
 }
 
@@ -125,6 +171,11 @@ size_t Compression::MaxCompressedSize(CedarCompressionType type, size_t uncompre
     return LZ4_compressBound(static_cast<int>(uncompressed_size));
   }
 #endif
+#if FERN_HAS_ZSTD
+  if (type == CedarCompressionType::Zstd) {
+    return ZSTD_compressBound(uncompressed_size);
+  }
+#endif
   return uncompressed_size;
 }
 
@@ -139,7 +190,11 @@ bool Compression::IsSupported(CedarCompressionType type) {
       return false;
 #endif
     case CedarCompressionType::Zstd:
-      return false;  // 预留
+#if FERN_HAS_ZSTD
+      return true;
+#else
+      return false;
+#endif
     default:
       return false;
   }
