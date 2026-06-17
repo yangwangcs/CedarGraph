@@ -688,21 +688,12 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     return query_cache_->Get(entity_id, column_id, timestamp.value());
   }
 
-  std::shared_lock<std::shared_mutex> lock(mutex_);
+  // Phase 1: Check MemTable under shared_lock (memtable needs engine lock)
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
 
-  // 1. Query MemTable (hot data)
-  auto desc = mem_->GetAtTime(entity_id, entity_type, column_id, timestamp);
-  if (desc.has_value()) {
-    lock.unlock();
-    if (query_cache_) {
-      query_cache_->Put(entity_id, column_id, timestamp.value(), desc);
-    }
-    return desc;
-  }
-
-  // 2. Query Immutable MemTable
-  if (imm_) {
-    desc = imm_->GetAtTime(entity_id, entity_type, column_id, timestamp);
+    // 1. Query MemTable (hot data)
+    auto desc = mem_->GetAtTime(entity_id, entity_type, column_id, timestamp);
     if (desc.has_value()) {
       lock.unlock();
       if (query_cache_) {
@@ -710,29 +701,45 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
       }
       return desc;
     }
-  }
-  
-  // 3. Query Accumulated Buffer (for accumulated flush mode)
-  auto accumulated = QueryAccumulatedBuffer(entity_id, entity_type, column_id, timestamp);
-  if (accumulated.has_value()) {
-    lock.unlock();
-    if (query_cache_) {
-      query_cache_->Put(entity_id, column_id, timestamp.value(), accumulated->second);
+
+    // 2. Query Immutable MemTable
+    if (imm_) {
+      desc = imm_->GetAtTime(entity_id, entity_type, column_id, timestamp);
+      if (desc.has_value()) {
+        lock.unlock();
+        if (query_cache_) {
+          query_cache_->Put(entity_id, column_id, timestamp.value(), desc);
+        }
+        return desc;
+      }
     }
-    return accumulated->second;
+    
+    // 3. Query Accumulated Buffer (for accumulated flush mode)
+    auto accumulated = QueryAccumulatedBuffer(entity_id, entity_type, column_id, timestamp);
+    if (accumulated.has_value()) {
+      lock.unlock();
+      if (query_cache_) {
+        query_cache_->Put(entity_id, column_id, timestamp.value(), accumulated->second);
+      }
+      return accumulated->second;
+    }
+    
+    // All memtable paths missed — release lock before SST reads.
+    // SST files are immutable and SstReaderCache uses reference counting,
+    // so SST reads are safe without the engine lock.
   }
-  
-  // 4. Query SST files
-  // 收集所有匹配的条目
+
+  // Phase 2: SST reads WITHOUT engine lock (SST files are immutable)
+  // GetFilesForEntity has its own shared_lock on levels_mutex_
+  // SstReaderCache has its own internal locking
+  // 8 threads can now read SST files in parallel!
   std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> all_entries;
   
-  // 从 Compaction Engine 获取文件列表（如果可用）
   if (compaction_engine_) {
     auto files = compaction_engine_->GetFilesForEntity(
         entity_id, column_id, static_cast<uint8_t>(entity_type));
     
     for (const auto& file_meta : files) {
-      // 快速范围检查
       if (entity_id < file_meta.min_entity_id || 
           entity_id > file_meta.max_entity_id) {
         continue;
@@ -747,20 +754,19 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
         }
       }
       
-      // 使用缓存的 Reader
+      // 使用缓存的 Reader（SstReaderCache 有自己的锁）
       std::shared_ptr<SstReader> reader;
       if (sst_reader_cache_) {
         reader = sst_reader_cache_->Get(file_meta.path);
       }
       if (!reader) {
-        // 缓存未命中，创建新的
         reader = std::make_shared<SstReader>(file_meta.path);
         if (!reader->Open().ok()) {
           continue;
         }
       }
       
-      // Bloom filter 快速跳过：如果 SST 文件不包含该 entity_id，直接跳过
+      // Bloom filter 快速跳过
       if (!reader->MayContainEntity(entity_id)) {
         if (sst_reader_cache_) {
           sst_reader_cache_->Release(file_meta.path);
@@ -768,41 +774,31 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
         continue;
       }
       
-      // 使用 GetRange 获取该 Entity 的所有版本
       auto range_results = reader->GetRange(entity_id, entity_type, column_id,
-                                           Timestamp(0), Timestamp(UINT64_MAX));
+                                            Timestamp(0), Timestamp(UINT64_MAX));
       all_entries.insert(all_entries.end(), range_results.begin(), range_results.end());
       
-      // 释放 Reader（减少引用计数）
       if (sst_reader_cache_) {
         sst_reader_cache_->Release(file_meta.path);
       }
     }
   }
   
-  // 从本地 levels_ 获取文件列表（当 compaction_engine_ 不可用时）
+  // Fallback: 从本地 levels_ 获取文件列表（当 compaction_engine_ 不可用时）
   if (all_entries.empty()) {
-    // mutex_ is already locked by the outer shared_lock at line 457
+    // Need shared_lock to read levels_ (it's part of engine state)
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     for (const auto& level : levels_) {
       for (const auto& meta : level) {
-        // 支持跨列存储的文件
         bool column_match = (meta.column_id == column_id) || (meta.column_id == UINT16_MAX);
         bool type_match = (meta.entity_type == static_cast<uint8_t>(entity_type)) || 
                          (meta.entity_type == 0);
         
-        if (!column_match || !type_match) {
-          continue;
-        }
+        if (!column_match || !type_match) continue;
+        if (entity_id < meta.min_entity_id || entity_id > meta.max_entity_id) continue;
         
-        // 范围检查
-        if (entity_id < meta.min_entity_id || entity_id > meta.max_entity_id) {
-          continue;
-        }
-        
-        // 构建文件路径
         std::string filepath = SstFilePath(meta.file_number);
         
-        // Use cached SstReader if available
         std::shared_ptr<SstReader> reader;
         if (sst_reader_cache_) {
           reader = sst_reader_cache_->Get(filepath);
@@ -815,7 +811,6 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
         
         if (!reader) continue;
         
-        // Bloom filter 快速跳过
         if (!reader->MayContainEntity(entity_id)) {
           if (sst_reader_cache_) {
             sst_reader_cache_->Release(filepath);
@@ -835,8 +830,8 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     }
   }
   
+  // Phase 3: Select best result and cache (no lock needed)
   if (!all_entries.empty()) {
-    // 增量处理：直接遍历找最佳匹配，避免全量排序
     std::optional<Descriptor> best_descriptor;
     uint64_t best_ts = 0;
     
@@ -850,7 +845,6 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     }
     
     if (best_descriptor.has_value()) {
-      lock.unlock();
       if (query_cache_) {
         query_cache_->Put(entity_id, column_id, timestamp.value(), best_descriptor);
       }
@@ -858,8 +852,7 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     }
   }
   
-  // Cache the negative result to avoid repeated SST scans
-  lock.unlock();
+  // Cache negative result
   if (query_cache_) {
     query_cache_->Put(entity_id, column_id, timestamp.value(), std::nullopt);
   }

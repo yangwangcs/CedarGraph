@@ -149,12 +149,31 @@ int main() {
   double rps_hot = TestMTRead(db, 100000, nthreads, 10000);
   std::cout << "  " << std::fixed << std::setprecision(0) << rps_hot << " ops/sec" << std::endl;
   
+  // Flush + compact to create multiple SST files
   db->ForceFlush();
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
   
-  // Read cold data (in SST files, keys that EXIST)
-  std::cout << std::endl << "[2b] MT read COLD data (existing keys, " << nthreads << "T)..." << std::endl;
-  double rps_cold = TestMTRead(db, 100000, nthreads, 100000);
+  // Write more data and flush again to create multiple SST files
+  for (int batch = 0; batch < 5; ++batch) {
+    int base = 100000 + batch * 20000;
+    for (int i = 0; i < 20000; i += 1000) {
+      std::vector<CedarGraphStorage::WriteBatchEntry> b;
+      b.reserve(1000);
+      for (int j = 0; j < 1000 && i + j < 20000; ++j) {
+        int idx = base + i + j;
+        b.push_back({(uint64_t)idx, (uint64_t)(1000000 + idx),
+                     Descriptor::InlineInt(1, idx % 1000), Timestamp(1)});
+      }
+      db->WriteBatch(b);
+    }
+    db->ForceFlush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  std::cout << "  Created multiple SST files" << std::endl;
+  
+  // Read cold data (spread across multiple SST files)
+  std::cout << std::endl << "[2b] MT read COLD data (multi-SST, " << nthreads << "T)..." << std::endl;
+  double rps_cold = TestMTRead(db, 100000, nthreads, 200000);
   std::cout << "  " << std::fixed << std::setprecision(0) << rps_cold << " ops/sec" << std::endl;
   
   // Read cold data with NON-EXISTENT keys (bloom filter should help)
