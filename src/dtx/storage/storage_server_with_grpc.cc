@@ -1064,7 +1064,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   
-  CEDAR_LOG_ERROR() << "[1/3] Partition manager initialized" << std::endl;
+  CEDAR_LOG_INFO() << "[1/3] Partition manager initialized" << std::endl;
   
   // Create and start gRPC server
   StorageServiceImpl grpc_service(partition_manager.get());
@@ -1087,8 +1087,8 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   
-  CEDAR_LOG_ERROR() << "[2/3] gRPC server listening on " << config.bind_address << std::endl;
-  CEDAR_LOG_ERROR() << "[3/3] Running..." << std::endl;
+      CEDAR_LOG_INFO() << "[2/3] gRPC server listening on " << config.bind_address << std::endl;
+      CEDAR_LOG_INFO() << "[3/3] Running..." << std::endl;
   std::cerr << std::endl;
   
   // Monitor and print stats, with periodic flush

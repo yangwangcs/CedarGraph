@@ -104,11 +104,37 @@ Status PartitionRouter::GetFollowerNode(uint32_t partition_id,
                                std::to_string(partition_id));
   }
 
-  // Pick a random healthy follower
+  // Pick a random follower
   static thread_local std::mt19937 rng(std::random_device{}());
   std::uniform_int_distribution<size_t> dist(0, info.follower_addresses.size() - 1);
   *address = info.follower_addresses[dist(rng)];
   return Status::OK();
+}
+
+Status PartitionRouter::GetFollowerNode(uint32_t partition_id,
+                                        std::string* address,
+                                        const std::string& exclude_address) {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  auto it = partition_info_cache_.find(partition_id);
+  if (it == partition_info_cache_.end()) {
+    return Status::NotFound("Partition not found");
+  }
+
+  const auto& info = it->second;
+  if (info.follower_addresses.empty()) {
+    return Status::Unavailable("No followers available");
+  }
+
+  // Try to find a different follower than exclude_address
+  for (const auto& addr : info.follower_addresses) {
+    if (addr != exclude_address) {
+      *address = addr;
+      return Status::OK();
+    }
+  }
+
+  // All followers are the excluded address (only 1 follower)
+  return Status::Unavailable("No alternative follower available");
 }
 
 std::vector<uint32_t> PartitionRouter::GetPartitionsForRange(

@@ -57,7 +57,7 @@ double TestMTRead(CedarGraphStorage* db, int total, int num_threads, int max_ent
       std::mt19937 rng(t * 1000 + 42);
       std::uniform_int_distribution<int> dist(0, max_entity - 1);
       int per_thread = total / num_threads;
-      volatile int found = 0;
+      [[maybe_unused]] int found = 0;
       for (int i = 0; i < per_thread; ++i) {
         int key = dist(rng);
         auto r = db->Get(key, (uint64_t)(1000000 + key));
@@ -79,7 +79,7 @@ double TestMTMixedRW(CedarGraphStorage* db, int total, int num_threads, int max_
       std::mt19937 rng(t * 1000 + 42);
       std::uniform_int_distribution<int> op_dist(0, 99), key_dist(0, max_entity - 1);
       int per_thread = total / num_threads;
-      volatile int found = 0;
+      [[maybe_unused]] int found = 0;
       std::vector<CedarGraphStorage::WriteBatchEntry> pending;
       for (int i = 0; i < per_thread; ++i) {
         int key = key_dist(rng);
@@ -185,7 +185,7 @@ int main() {
     for (int t = 0; t < nthreads; ++t) {
       threads2.emplace_back([&, t]() {
         int per_thread = 100000 / nthreads;
-        volatile int found = 0;
+        [[maybe_unused]] int found = 0;
         for (int i = 0; i < per_thread; ++i) {
           // Use entity_ids in range 500000-599999 (NOT in the database)
           int key = 500000 + (t * per_thread + i) % 100000;

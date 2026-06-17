@@ -478,8 +478,8 @@ class LsmEngine {
   std::unique_ptr<std::thread> bg_thread_;
   std::atomic<bool> compaction_scheduled_;
 
-  // File number generator
-  std::atomic<uint64_t> next_file_number_;
+  // File number generator (shared with compaction engine)
+  std::shared_ptr<std::atomic<uint64_t>> next_file_number_;
 
   // State
   bool opened_ = false;

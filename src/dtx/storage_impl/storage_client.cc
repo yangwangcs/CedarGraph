@@ -148,7 +148,7 @@ Status StorageClient::Put(const CedarKey& key, const Descriptor& descriptor,
     request.mutable_txn_version()->set_value(static_cast<uint64_t>(txn_version));
     request.set_txn_id(txn_id);
 
-    grpc::Status status = stub_->Put(&context, request, &response);
+    grpc::Status status = GetStub()->Put(&context, request, &response);
 
     if (IsNotLeaderGrpcStatus(status)) {
       std::string hint = ExtractLeaderHint(status, response.error_msg());
@@ -191,7 +191,7 @@ StatusOr<Descriptor> StorageClient::Get(const CedarKey& key, Timestamp read_time
     pb_key->set_type_flags(key.flags());
     pb_key->set_partition_id(key.part_id());
     
-    grpc::Status status = stub_->Get(&context, request, &response);
+    grpc::Status status = GetStub()->Get(&context, request, &response);
     
     if (IsNotLeaderGrpcStatus(status)) {
       std::string hint = ExtractLeaderHint(status, response.error_msg());
@@ -248,7 +248,7 @@ Status StorageClient::Delete(const CedarKey& key, Timestamp txn_version, TxnID t
     request.mutable_txn_version()->set_value(static_cast<uint64_t>(txn_version));
     request.set_txn_id(txn_id);
 
-    grpc::Status status = stub_->Delete(&context, request, &response);
+    grpc::Status status = GetStub()->Delete(&context, request, &response);
 
     if (IsNotLeaderGrpcStatus(status)) {
       std::string hint = ExtractLeaderHint(status, response.error_msg());
@@ -309,7 +309,7 @@ Status StorageClient::ScanNodeV2(uint64_t node_id, Timestamp start_time, Timesta
     grpc::ClientContext context;
     context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
 
-    auto grpc_status = stub_->ScanNodeV2(&context, request, &response);
+    auto grpc_status = GetStub()->ScanNodeV2(&context, request, &response);
     if (IsNotLeaderGrpcStatus(grpc_status)) {
       std::string hint = ExtractLeaderHint(grpc_status, response.error_msg());
       return Status::NotLeader("Not leader: " + hint);
@@ -360,7 +360,7 @@ Status StorageClient::ScanEdgeV2(uint64_t node_id, uint16_t edge_type,
     grpc::ClientContext context;
     context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
 
-    auto grpc_status = stub_->ScanEdgeV2(&context, request, &response);
+    auto grpc_status = GetStub()->ScanEdgeV2(&context, request, &response);
     if (IsNotLeaderGrpcStatus(grpc_status)) {
       std::string hint = ExtractLeaderHint(grpc_status, response.error_msg());
       return Status::NotLeader("Not leader: " + hint);
@@ -432,7 +432,7 @@ StatusOr<bool> StorageClient::Prepare(TxnID txn_id, const std::vector<CedarKey>&
     grpc::ClientContext context;
     context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
 
-    grpc::Status status = stub_->Prepare(&context, request, &response);
+    grpc::Status status = GetStub()->Prepare(&context, request, &response);
 
     if (IsNotLeaderGrpcStatus(status) ||
         (!status.ok() && IsNotLeaderError(Status::IOError(status.error_message()))) ||
@@ -487,7 +487,7 @@ Status StorageClient::Commit(TxnID txn_id, Timestamp commit_ts) {
   auto deadline = std::chrono::system_clock::now() + config_.operation_timeout;
   context.set_deadline(deadline);
   
-  grpc::Status status = stub_->Commit(&context, request, &response);
+  grpc::Status status = GetStub()->Commit(&context, request, &response);
   
   if (!status.ok()) {
     if (status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
@@ -517,7 +517,7 @@ Status StorageClient::Abort(TxnID txn_id) {
   auto deadline = std::chrono::system_clock::now() + config_.operation_timeout;
   context.set_deadline(deadline);
   
-  grpc::Status status = stub_->Abort(&context, request, &response);
+  grpc::Status status = GetStub()->Abort(&context, request, &response);
   
   if (!status.ok()) {
     if (status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
@@ -547,7 +547,7 @@ Status StorageClient::Inquire(TxnID txn_id, ParticipantState::State* state) {
   auto deadline = std::chrono::system_clock::now() + config_.operation_timeout;
   context.set_deadline(deadline);
   
-  grpc::Status status = stub_->Inquire(&context, request, &response);
+  grpc::Status status = GetStub()->Inquire(&context, request, &response);
   
   if (!status.ok()) {
     if (status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
@@ -645,7 +645,7 @@ Status StorageClient::ConnectToLeader(const std::string& leader_address) {
   if (leader_address.empty() || leader_address == config_.server_address) {
     return Status::OK();
   }
-  std::lock_guard<std::mutex> lock(leader_switch_mutex_);
+  std::unique_lock<std::shared_mutex> lock(stub_mutex_);
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
   if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
   if (!creds.ok()) {

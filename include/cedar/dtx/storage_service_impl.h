@@ -546,7 +546,13 @@ class StorageClient {
   // gRPC resources
   std::shared_ptr<grpc::Channel> channel_;
   std::unique_ptr<cedar::storage::StorageService::Stub> stub_;
-  std::mutex leader_switch_mutex_;  // Protects channel_/stub_ during ConnectToLeader
+  mutable std::shared_mutex stub_mutex_;  // Protects channel_/stub_
+
+  // Get current stub under shared lock (for RPC calls)
+  cedar::storage::StorageService::Stub* GetStub() const {
+    std::shared_lock<std::shared_mutex> lock(stub_mutex_);
+    return stub_.get();
+  }
 
   // Leader-switch support (optional, for partition-aware clients)
   MetaClientInterface* meta_client_ = nullptr;

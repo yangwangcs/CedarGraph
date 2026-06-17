@@ -57,6 +57,9 @@ struct DistributedExecutionContext {
   uint64_t timeout_ms;
   
   // Consistency level
+  // kReadYourWrites: Route to leader (default, linearizable)
+  // kEventual: Route to follower (eventual consistency, lower latency)
+  // kStrong: Route to leader with lease check (strict linearizable, same as kReadYourWrites)
   enum class Consistency {
     kReadYourWrites,
     kEventual,
@@ -96,6 +99,8 @@ class PartitionRouter {
   Status GetStorageNode(uint32_t partition_id, std::string* address,
                         DistributedExecutionContext::Consistency consistency);
   Status GetFollowerNode(uint32_t partition_id, std::string* address);
+  Status GetFollowerNode(uint32_t partition_id, std::string* address,
+                         const std::string& exclude_address);
   Status GetPartitionInfo(uint32_t partition_id, PartitionInfo* info);
   Status CheckIsLeader(uint32_t partition_id, const std::string& address);
   std::vector<uint32_t> GetPartitionsForRange(uint64_t start_id, uint64_t end_id);

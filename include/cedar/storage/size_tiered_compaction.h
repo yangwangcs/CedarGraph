@@ -430,10 +430,8 @@ class SizeTieredCompactionEngine {
   }
   
   // 设置共享文件号计数器（避免与 LsmEngine 文件号冲突）
-  // Lifetime: caller must ensure counter outlives this compaction engine.
-  // In practice, LsmEngine owns both and destroys compaction engine first.
-  void SetSharedFileNumber(std::atomic<uint64_t>* counter) {
-    shared_file_number_ = counter;
+  void SetSharedFileNumber(std::shared_ptr<std::atomic<uint64_t>> counter) {
+    shared_file_number_ = std::move(counter);
   }
 
  private:
@@ -492,7 +490,7 @@ class SizeTieredCompactionEngine {
   
   // 文件编号生成器
   std::atomic<uint64_t> next_file_number_{1};
-  std::atomic<uint64_t>* shared_file_number_ = nullptr;
+  std::shared_ptr<std::atomic<uint64_t>> shared_file_number_;
   
   // 后台线程控制
   std::atomic<bool> shutdown_{false};

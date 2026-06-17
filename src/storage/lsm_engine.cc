@@ -33,7 +33,7 @@ LsmEngine::LsmEngine(const std::string& db_path,
       env_(env ? env : cedar::Env::Default()),
       mem_(std::make_unique<VSLMemTable>()),
       opened_(false),
-      next_file_number_(1),
+      next_file_number_(std::make_shared<std::atomic<uint64_t>>(1)),
       shutdown_(false),
       bg_thread_(nullptr),
       query_cache_(std::make_unique<QueryCache>(128 * 1024 * 1024)),  // 128MB row cache
@@ -120,7 +120,7 @@ Status LsmEngine::Open() {
   }
   
   // 共享文件号计数器，避免 compaction 输出与 flush 输出文件号冲突
-  compaction_engine_->SetSharedFileNumber(&next_file_number_);
+  compaction_engine_->SetSharedFileNumber(next_file_number_);
   
   // 启动自动 Compaction 后台线程
   auto_compaction_enabled_.store(true);
@@ -1794,7 +1794,7 @@ Status LsmEngine::FlushAccumulated() {
   // Flushing accumulated entries
   
   // 创建单个 SST 文件
-  uint64_t file_number = next_file_number_.fetch_add(1);
+  uint64_t file_number = next_file_number_->fetch_add(1);
   std::string filepath = SstFilePath(file_number);
   
   WritableFile* file = nullptr;
@@ -1940,7 +1940,7 @@ Status LsmEngine::FlushEntriesToSST(std::vector<std::tuple<CedarKey, Descriptor,
     [](const auto& a, const auto& b) { return std::get<0>(a).LessForSorting(std::get<0>(b)); });
   
   // 创建单个 SST 文件
-  uint64_t file_number = next_file_number_.fetch_add(1);
+  uint64_t file_number = next_file_number_->fetch_add(1);
   std::string filepath = SstFilePath(file_number);
   std::cerr << "[FlushEntriesToSST] Creating SST file: " << filepath << " with " << entries.size() << " entries" << std::endl;
   
@@ -2628,7 +2628,7 @@ Status LsmEngine::FlushEntityGroup(uint8_t entity_type, uint16_t column_id,
     return Status::OK();
   }
 
-  uint64_t file_number = next_file_number_.fetch_add(1);
+  uint64_t file_number = next_file_number_->fetch_add(1);
   std::string filepath = SstFilePath(file_number);
 
   uint64_t min_entity_id = UINT64_MAX;
@@ -2766,7 +2766,7 @@ Status LsmEngine::DoCompaction(int level, const std::vector<SSTFileMeta>& inputs
   }
   
   // 创建输出文件路径
-  uint64_t file_number = next_file_number_.fetch_add(1);
+  uint64_t file_number = next_file_number_->fetch_add(1);
   std::string output_path = SstFilePath(file_number);
   int output_level = level + 1;
   
@@ -3035,7 +3035,7 @@ Status LsmEngine::LoadSstFiles() {
       uint64_t file_number = 0;
       try {
         file_number = std::stoull(number_str);
-        next_file_number_ = std::max(next_file_number_.load(), file_number + 1);
+        next_file_number_->store(std::max(next_file_number_->load(), file_number + 1));
       } catch (...) {
         std::cerr << "[LSMEngine] Failed to parse file number from: " << number_str << std::endl;
         continue;
@@ -3082,7 +3082,7 @@ Status LsmEngine::LoadSstFiles() {
 }
 
 uint64_t LsmEngine::NewFileNumber() {
-  return next_file_number_.fetch_add(1);
+  return next_file_number_->fetch_add(1);
 }
 
 std::string LsmEngine::SstFilePath(uint64_t file_number) {
