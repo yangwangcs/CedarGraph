@@ -14,6 +14,10 @@
 #include <vector>
 
 #include "cedar/types/cedar_types.h"
+#include "cedar/storage/lsm_engine.h"
+#include "cedar/cypher/value.h"
+#include "cedar/cypher/expression_evaluator.h"
+#include "cedar/core/logging.h"
 #include "cedar/cypher/ast.h"
 #include "cedar/cypher/temporal_dialect.h"
 #include "cedar/cypher/value.h"
