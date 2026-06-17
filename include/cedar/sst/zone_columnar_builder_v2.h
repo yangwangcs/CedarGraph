@@ -119,6 +119,7 @@ class ZoneColumnarSstBuilder {
 
   std::vector<CedarKey> all_keys_;
   std::string temporal_filter_data_;
+  std::string bloom_filter_data_;
 
   uint64_t total_rows_ = 0;
   uint64_t min_entity_id_ = 0;

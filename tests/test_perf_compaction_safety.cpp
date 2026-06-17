@@ -152,10 +152,35 @@ int main() {
   db->ForceFlush();
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
   
-  // Read cold data (in SST files)
-  std::cout << std::endl << "[2b] MT read COLD data (100K entries in SST, " << nthreads << "T)..." << std::endl;
+  // Read cold data (in SST files, keys that EXIST)
+  std::cout << std::endl << "[2b] MT read COLD data (existing keys, " << nthreads << "T)..." << std::endl;
   double rps_cold = TestMTRead(db, 100000, nthreads, 100000);
   std::cout << "  " << std::fixed << std::setprecision(0) << rps_cold << " ops/sec" << std::endl;
+  
+  // Read cold data with NON-EXISTENT keys (bloom filter should help)
+  std::cout << std::endl << "[2c] MT read COLD (non-existent keys, bloom filter helps, " << nthreads << "T)..." << std::endl;
+  {
+    std::atomic<uint64_t> ops{0};
+    std::vector<std::thread> threads2;
+    auto t2c_start = std::chrono::steady_clock::now();
+    for (int t = 0; t < nthreads; ++t) {
+      threads2.emplace_back([&, t]() {
+        int per_thread = 100000 / nthreads;
+        volatile int found = 0;
+        for (int i = 0; i < per_thread; ++i) {
+          // Use entity_ids in range 500000-599999 (NOT in the database)
+          int key = 500000 + (t * per_thread + i) % 100000;
+          auto r = db->Get(key, (uint64_t)(1000000 + key));
+          if (r.has_value()) found++;
+          ops.fetch_add(1);
+        }
+      });
+    }
+    for (auto& t : threads2) t.join();
+    auto t2c_end = std::chrono::steady_clock::now();
+    double rps_miss = ops.load() / std::chrono::duration<double>(t2c_end - t2c_start).count();
+    std::cout << "  " << std::fixed << std::setprecision(0) << rps_miss << " ops/sec" << std::endl;
+  }
   
   // Mixed
   std::cout << std::endl << "[3] MT mixed R/W (80/20, 50K, " << nthreads << "T)..." << std::endl;

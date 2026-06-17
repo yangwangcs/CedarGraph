@@ -27,11 +27,13 @@
 
 #include "cedar/core/crc32c.h"
 #include "cedar/core/env.h"
+#include "cedar/sst/bloom_filter.h"
 #include "cedar/sst/zone_encoder.h"
 #include "cedar/storage/sst_temporal_filter.h"
 
 #include <algorithm>
 #include <cstring>
+#include <unordered_set>
 
 // =============================================================================
 // 编码/解码辅助函数 + CRC64 helper
@@ -373,12 +375,35 @@ Status ZoneColumnarSstBuilder::WriteFile() {
     }
   }
 
+  // 3.6 Entity-level Bloom Filter（用于快速跳过不包含目标 entity 的 SST 文件）
+  size_t bloom_filter_offset = 0;
+  size_t bloom_filter_size = 0;
+  if (!all_keys_.empty()) {
+    // 10 bits per key ≈ 1% false positive rate
+    BloomFilter bf(10, all_keys_.size());
+    // Use set to deduplicate entity_ids (same entity may have multiple versions)
+    std::unordered_set<uint64_t> seen_entities;
+    for (const auto& key : all_keys_) {
+      uint64_t eid = key.entity_id();
+      if (seen_entities.insert(eid).second) {
+        bf.Add(eid);
+      }
+    }
+    auto bf_data = bf.Finish();
+    bloom_filter_data_ = std::string(bf_data.begin(), bf_data.end());
+    if (!bloom_filter_data_.empty()) {
+      bloom_filter_offset = file_data.size();
+      file_data.append(bloom_filter_data_);
+      bloom_filter_size = bloom_filter_data_.size();
+    }
+  }
+
   // 4. Footer
   ZoneColumnarFooter footer;
   footer.block_index_offset = static_cast<uint32_t>(index_offset);
   footer.block_index_size = static_cast<uint32_t>(index_size);
-  footer.bloom_filter_offset = 0;
-  footer.bloom_filter_size = 0;
+  footer.bloom_filter_offset = static_cast<uint32_t>(bloom_filter_offset);
+  footer.bloom_filter_size = static_cast<uint32_t>(bloom_filter_size);
   footer.row_count = total_rows_;
   footer.block_count = static_cast<uint32_t>(blocks_.size());
   footer.footer_magic = ZoneColumnarFooter::kFooterMagic;

@@ -752,6 +752,14 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
         }
       }
       
+      // Bloom filter 快速跳过：如果 SST 文件不包含该 entity_id，直接跳过
+      if (!reader->MayContainEntity(entity_id)) {
+        if (sst_reader_cache_) {
+          sst_reader_cache_->Release(file_meta.path);
+        }
+        continue;
+      }
+      
       // 使用 GetRange 获取该 Entity 的所有版本
       auto range_results = reader->GetRange(entity_id, entity_type, column_id,
                                            Timestamp(0), Timestamp(UINT64_MAX));
@@ -798,6 +806,14 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
         }
         
         if (!reader) continue;
+        
+        // Bloom filter 快速跳过
+        if (!reader->MayContainEntity(entity_id)) {
+          if (sst_reader_cache_) {
+            sst_reader_cache_->Release(filepath);
+          }
+          continue;
+        }
         
         auto range_results = reader->GetRange(entity_id, entity_type, column_id,
                                              Timestamp(0), Timestamp(UINT64_MAX));
