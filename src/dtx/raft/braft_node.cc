@@ -483,15 +483,18 @@ public:
     };
 
     ::cedar::Status AddPeer(const std::string& peer_address) {
-        std::lock_guard<std::mutex> lock(node_mutex_);
-        if (!node_ || !node_->is_leader()) {
-            return ::cedar::Status::InvalidArgument("Not a leader");
+        std::shared_ptr<std::promise<::cedar::Status>> promise;
+        {
+            std::lock_guard<std::mutex> lock(node_mutex_);
+            if (!node_ || !node_->is_leader()) {
+                return ::cedar::Status::InvalidArgument("Not a leader");
+            }
+            
+            braft::PeerId new_peer(peer_address);
+            promise = std::make_shared<std::promise<::cedar::Status>>();
+            node_->add_peer(new_peer, new PeerChangeClosure(promise));
         }
-        
-        braft::PeerId new_peer(peer_address);
-        auto promise = std::make_shared<std::promise<::cedar::Status>>();
-        node_->add_peer(new_peer, new PeerChangeClosure(promise));
-        
+        // Release lock before waiting to avoid blocking other operations
         auto future = promise->get_future();
         if (future.wait_for(std::chrono::milliseconds(FLAGS_raft_propose_timeout_ms)) == std::future_status::timeout) {
           return ::cedar::Status::IOError("BRaftNode", "add_peer timeout");
@@ -500,15 +503,18 @@ public:
     }
     
     ::cedar::Status RemovePeer(const std::string& peer_address) {
-        std::lock_guard<std::mutex> lock(node_mutex_);
-        if (!node_ || !node_->is_leader()) {
-            return ::cedar::Status::InvalidArgument("Not a leader");
+        std::shared_ptr<std::promise<::cedar::Status>> promise;
+        {
+            std::lock_guard<std::mutex> lock(node_mutex_);
+            if (!node_ || !node_->is_leader()) {
+                return ::cedar::Status::InvalidArgument("Not a leader");
+            }
+            
+            braft::PeerId old_peer(peer_address);
+            promise = std::make_shared<std::promise<::cedar::Status>>();
+            node_->remove_peer(old_peer, new PeerChangeClosure(promise));
         }
-        
-        braft::PeerId old_peer(peer_address);
-        auto promise = std::make_shared<std::promise<::cedar::Status>>();
-        node_->remove_peer(old_peer, new PeerChangeClosure(promise));
-        
+        // Release lock before waiting to avoid blocking other operations
         auto future = promise->get_future();
         if (future.wait_for(std::chrono::milliseconds(FLAGS_raft_propose_timeout_ms)) == std::future_status::timeout) {
           return ::cedar::Status::IOError("BRaftNode", "remove_peer timeout");
