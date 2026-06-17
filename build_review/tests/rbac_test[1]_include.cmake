@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/rbac_test[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/rbac_test[1]_tests.cmake")
+else()
+  add_test(rbac_test_NOT_BUILT rbac_test_NOT_BUILT)
+endif()

@@ -9,7 +9,7 @@
 #include <vector>
 #include <string>
 
-#include "cedar/sst/zone_columnar_format.h"
+#include "cedar/sst/zone_columnar_format_v2.h"
 #include "cedar/sst/zone_columnar_reader.h"
 #include "cedar/sst/sst_builder_factory.h"
 #include "cedar/storage/size_tiered_compaction.h"

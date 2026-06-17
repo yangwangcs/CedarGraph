@@ -33,12 +33,12 @@ class SstBuilderWrapper : public SstBuilderInterface {
   SstBuilderWrapper(WritableFile* file, 
                     const std::string& db_path,
                     const SstBuilderOptions& options) {
-    ZoneColumnarSstBuilderV2::Options v2_options;
+    ZoneColumnarSstBuilder::Options v2_options;
     v2_options.target_block_size = options.target_block_size;
     v2_options.block_row_limit = options.block_row_limit;
     v2_options.enable_compression = options.enable_compression;
     
-    builder_ = std::make_unique<ZoneColumnarSstBuilderV2>(v2_options, file);
+    builder_ = std::make_unique<ZoneColumnarSstBuilder>(v2_options, file);
   }
   
   void Add(const CedarKey& key, const Descriptor& desc, Timestamp txn_version) override {
@@ -62,7 +62,7 @@ class SstBuilderWrapper : public SstBuilderInterface {
   }
   
  private:
-  std::unique_ptr<ZoneColumnarSstBuilderV2> builder_;
+  std::unique_ptr<ZoneColumnarSstBuilder> builder_;
 };
 
 // =============================================================================

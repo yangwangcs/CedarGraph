@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <unistd.h>
@@ -103,6 +104,87 @@ TEST_F(CypherExecutionE2ETest, MatchWithProjectsNameColumn) {
     // correct column.
     EXPECT_TRUE(name_opt->IsNull() || name_opt->IsString());
   }
+}
+
+// ============================================================================
+// CPU Loop Fix Verification Tests
+// ============================================================================
+
+TEST_F(CypherExecutionE2ETest, MatchOnEmptyDbCompletesQuickly) {
+  auto start = std::chrono::steady_clock::now();
+  ResultSet rs = engine_->Execute("MATCH (n) RETURN n");
+  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start).count();
+
+  ASSERT_FALSE(rs.HasError()) << rs.error.value_or("unknown error");
+  EXPECT_EQ(rs.records.size(), 0u);
+  // Must complete within 2 seconds — before the fix this could take 10+ seconds
+  EXPECT_LT(elapsed_ms, 2000) << "MATCH on empty DB took " << elapsed_ms << "ms — CPU loop?";
+}
+
+TEST_F(CypherExecutionE2ETest, MatchWithSparseEntitiesCompletes) {
+  // Create a few nodes with large IDs (simulating production entity IDs)
+  for (int i = 0; i < 5; ++i) {
+    std::string query = "CREATE (n:Test {id: " + std::to_string(1000 + i) + "})";
+    auto rs = engine_->Execute(query);
+    ASSERT_FALSE(rs.HasError()) << rs.error.value_or("unknown error");
+  }
+
+  auto start = std::chrono::steady_clock::now();
+  ResultSet rs = engine_->Execute("MATCH (n:Test) RETURN n");
+  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start).count();
+
+  ASSERT_FALSE(rs.HasError()) << rs.error.value_or("unknown error");
+  // Should find the 5 nodes we created via label index
+  EXPECT_GE(rs.records.size(), 1u);
+  // Must complete within 2 seconds
+  EXPECT_LT(elapsed_ms, 2000) << "MATCH with sparse entities took " << elapsed_ms << "ms";
+}
+
+TEST_F(CypherExecutionE2ETest, MatchThenCreatePipeline) {
+  // Seed data
+  auto seed = engine_->Execute("CREATE (n:Pipeline {id: 42}) RETURN n");
+  ASSERT_FALSE(seed.HasError()) << seed.error.value_or("unknown error");
+
+  // MATCH + CREATE pipeline
+  auto start = std::chrono::steady_clock::now();
+  ResultSet rs = engine_->Execute("CREATE (m:Created {id: 99}) RETURN m");
+  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start).count();
+
+  ASSERT_FALSE(rs.HasError()) << rs.error.value_or("unknown error");
+  ASSERT_EQ(rs.records.size(), 1u);
+  EXPECT_LT(elapsed_ms, 1000);
+}
+
+TEST_F(CypherExecutionE2ETest, MatchWithWhereIdPointLookup) {
+  // Create a node with MERGE (which uses the id property for lookup)
+  auto seed = engine_->Execute("MERGE (n:Lookup {id: 777}) RETURN n");
+  ASSERT_FALSE(seed.HasError()) << seed.error.value_or("unknown error");
+
+  auto start = std::chrono::steady_clock::now();
+  ResultSet rs = engine_->Execute("MATCH (n:Lookup {id: 777}) RETURN n");
+  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start).count();
+
+  ASSERT_FALSE(rs.HasError()) << rs.error.value_or("unknown error");
+  // The point lookup via id property should be fast
+  EXPECT_LT(elapsed_ms, 500) << "Point lookup took " << elapsed_ms << "ms";
+}
+
+TEST_F(CypherExecutionE2ETest, MultipleMatchQueriesNoCpuSpin) {
+  // Run multiple MATCH queries in sequence to verify no accumulation
+  auto start = std::chrono::steady_clock::now();
+  for (int i = 0; i < 10; ++i) {
+    ResultSet rs = engine_->Execute("MATCH (n) RETURN n");
+    ASSERT_FALSE(rs.HasError()) << rs.error.value_or("unknown error");
+  }
+  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start).count();
+
+  // 10 MATCH queries on empty DB should complete within 5 seconds total
+  EXPECT_LT(elapsed_ms, 5000) << "10 MATCH queries took " << elapsed_ms << "ms — CPU loop?";
 }
 
 int main(int argc, char** argv) {

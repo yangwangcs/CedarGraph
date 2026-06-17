@@ -1,0 +1,5 @@
+add_test([=[TemporalMinimal.WriteOnly]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_temporal_minimal [==[--gtest_filter=TemporalMinimal.WriteOnly]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[TemporalMinimal.WriteOnly]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/test_temporal_minimal.cc:19 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[TemporalMinimal.WriteThenRead]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_temporal_minimal [==[--gtest_filter=TemporalMinimal.WriteThenRead]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[TemporalMinimal.WriteThenRead]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/test_temporal_minimal.cc:53 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_temporal_minimal_TESTS TemporalMinimal.WriteOnly TemporalMinimal.WriteThenRead)

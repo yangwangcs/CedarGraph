@@ -47,6 +47,7 @@ struct Config {
   std::string meta_server = "127.0.0.1:9559";
   std::string gcn_server = "127.0.0.1:9780";
   cedar::dtx::raft::TlsConfig tls;
+  bool test_mode = false;  // Test mode: disable auth
 };
 
 static void LoadConfigFromFile(Config* config, const std::string& path) {
@@ -86,6 +87,7 @@ Config ParseArgs(int argc, char* argv[]) {
       config.tls.enabled = (val == "true" || val == "1" || val == "yes");
     } else if (arg == "--test_mode") {
       config.tls.enabled = false;  // Disable TLS in test mode for convenience
+      config.test_mode = true;     // Disable auth in test mode
     } else if (arg == "--help" || arg == "-h") {
       std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
       std::cout << "Options:" << std::endl;
@@ -154,6 +156,22 @@ int main(int argc, char* argv[]) {
   auto router = std::make_unique<cedar::service::GraphServiceRouter>();
   router->SetDistributedExecutor(distributed_executor.get());
   router->SetTlsConfig(config.tls);
+
+  // Initialize SecurityManager (disable auth in test mode)
+  {
+    cedar::dtx::security::SecurityManager::Config sm_config;
+    sm_config.enable_encryption = config.tls.enabled;
+    sm_config.enable_auth = !config.test_mode;
+    sm_config.enable_audit = false;
+    auto* sm = cedar::dtx::security::SecurityManager::GetInstance();
+    auto sm_status = sm->Initialize(sm_config);
+    if (!sm_status.ok()) {
+      std::cerr << "[GraphD] SecurityManager init warning: " << sm_status.ToString() << std::endl;
+    } else {
+      std::cout << "[GraphD] SecurityManager initialized (auth=" 
+                << (config.test_mode ? "disabled" : "enabled") << ")" << std::endl;
+    }
+  }
 
   // Initialize router
   auto status = router->Initialize(config.meta_server, config.gcn_server);

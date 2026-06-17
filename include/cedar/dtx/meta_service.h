@@ -367,6 +367,7 @@ public:
     
     bool IsLeader() const;
     NodeID GetLeader() const;
+    std::string GetLeaderAddress() const;
     
     // ===== braft 集成接口 =====
     

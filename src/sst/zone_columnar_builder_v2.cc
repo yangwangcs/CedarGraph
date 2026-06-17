@@ -148,15 +148,15 @@ bool RowBuffer::Empty() const { return entity_ids.empty(); }
 size_t RowBuffer::Size() const { return entity_ids.size(); }
 
 // =============================================================================
-// ZoneColumnarSstBuilderV2 实现
+// ZoneColumnarSstBuilder 实现
 // =============================================================================
-ZoneColumnarSstBuilderV2::ZoneColumnarSstBuilderV2(const Options& options,
+ZoneColumnarSstBuilder::ZoneColumnarSstBuilder(const Options& options,
                                                     WritableFile* file)
     : options_(options), file_(file) {
   buffer_.Reserve(options.block_row_limit);
 }
 
-void ZoneColumnarSstBuilderV2::Add(const CedarKey& key, const Descriptor& desc,
+void ZoneColumnarSstBuilder::Add(const CedarKey& key, const Descriptor& desc,
                                         Timestamp txn_version) {
   if (!status_.ok()) return;
 
@@ -184,7 +184,7 @@ void ZoneColumnarSstBuilderV2::Add(const CedarKey& key, const Descriptor& desc,
   }
 }
 
-Status ZoneColumnarSstBuilderV2::Finish() {
+Status ZoneColumnarSstBuilder::Finish() {
   if (!status_.ok()) return status_;
   if (closed_) return Status::OK();
 
@@ -198,7 +198,7 @@ Status ZoneColumnarSstBuilderV2::Finish() {
   return WriteFile();
 }
 
-SSTStats ZoneColumnarSstBuilderV2::GetStats() const {
+SSTStats ZoneColumnarSstBuilder::GetStats() const {
   SSTStats stats;
   stats.block_count = block_index_.size();
   stats.row_count = total_rows_;
@@ -207,8 +207,8 @@ SSTStats ZoneColumnarSstBuilderV2::GetStats() const {
     stats.data_size += block.compressed_size;
   }
   stats.file_size = stats.data_size + stats.index_size +
-                    ZoneColumnarHeaderV2::kEncodedSize +
-                    ZoneColumnarFooterV2::kEncodedSize;
+                    ZoneColumnarHeader::kEncodedSize +
+                    ZoneColumnarFooter::kEncodedSize;
   if (total_rows_ > 0) {
     stats.compression_ratio = static_cast<double>(stats.file_size) /
                               (total_rows_ * 40);  // 假设原始 40B/行
@@ -216,13 +216,13 @@ SSTStats ZoneColumnarSstBuilderV2::GetStats() const {
   return stats;
 }
 
-uint64_t ZoneColumnarSstBuilderV2::FileSize() const { return file_size_; }
-uint64_t ZoneColumnarSstBuilderV2::NumEntries() const { return total_rows_; }
-const std::string& ZoneColumnarSstBuilderV2::GetTemporalFilterData() const {
+uint64_t ZoneColumnarSstBuilder::FileSize() const { return file_size_; }
+uint64_t ZoneColumnarSstBuilder::NumEntries() const { return total_rows_; }
+const std::string& ZoneColumnarSstBuilder::GetTemporalFilterData() const {
   return temporal_filter_data_;
 }
 
-bool ZoneColumnarSstBuilderV2::ShouldCutBlock() const {
+bool ZoneColumnarSstBuilder::ShouldCutBlock() const {
   if (buffer_.Empty()) return false;
 
   // 条件 1: 行数超过限制
@@ -239,7 +239,7 @@ bool ZoneColumnarSstBuilderV2::ShouldCutBlock() const {
   return false;
 }
 
-Status ZoneColumnarSstBuilderV2::FlushBlock() {
+Status ZoneColumnarSstBuilder::FlushBlock() {
   if (buffer_.Empty()) return Status::OK();
 
   Block block;
@@ -307,13 +307,13 @@ Status ZoneColumnarSstBuilderV2::FlushBlock() {
   return Status::OK();
 }
 
-Status ZoneColumnarSstBuilderV2::WriteFile() {
+Status ZoneColumnarSstBuilder::WriteFile() {
   std::string file_data;
   file_data.reserve(options_.target_sst_size);
 
   // 1. Header（占位，稍后填充）
   size_t header_offset = file_data.size();
-  file_data.append(ZoneColumnarHeaderV2::kEncodedSize, '\0');
+  file_data.append(ZoneColumnarHeader::kEncodedSize, '\0');
 
   // 2. 写入所有 Blocks
   block_index_.clear();
@@ -374,20 +374,20 @@ Status ZoneColumnarSstBuilderV2::WriteFile() {
   }
 
   // 4. Footer
-  ZoneColumnarFooterV2 footer;
+  ZoneColumnarFooter footer;
   footer.block_index_offset = static_cast<uint32_t>(index_offset);
   footer.block_index_size = static_cast<uint32_t>(index_size);
   footer.bloom_filter_offset = 0;
   footer.bloom_filter_size = 0;
   footer.row_count = total_rows_;
   footer.block_count = static_cast<uint32_t>(blocks_.size());
-  footer.footer_magic = ZoneColumnarFooterV2::kFooterMagic;
+  footer.footer_magic = ZoneColumnarFooter::kFooterMagic;
   footer.temporal_filter_offset = static_cast<uint32_t>(temporal_filter_offset);
   footer.temporal_filter_size = static_cast<uint32_t>(temporal_filter_size);
   footer.reserved = 0;
 
   // 计算 data_checksum: header 之后到 footer 之前的所有数据
-  size_t data_start = ZoneColumnarHeaderV2::kEncodedSize;
+  size_t data_start = ZoneColumnarHeader::kEncodedSize;
   size_t data_end = file_data.size();
   size_t data_len = data_end - data_start;
   footer.data_checksum = ComputeCRC64(file_data.data() + data_start, data_len);
@@ -397,7 +397,7 @@ Status ZoneColumnarSstBuilderV2::WriteFile() {
   file_data.append(footer_data);
 
   // 5. 编码 Header（含 CRC32C checksum）
-  ZoneColumnarHeaderV2 header;
+  ZoneColumnarHeader header;
   header.file_size = file_data.size();
   header.min_entity_id = min_entity_id_;
   header.max_entity_id = max_entity_id_;

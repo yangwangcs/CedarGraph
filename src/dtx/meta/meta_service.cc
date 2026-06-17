@@ -1199,6 +1199,12 @@ NodeID MetadataService::GetLeader() const {
     return leader.value_or(kInvalidNodeID);
 }
 
+std::string MetadataService::GetLeaderAddress() const {
+    if (config_.test_mode) return "";
+    if (!raft_node_) return "";
+    return raft_node_->GetLeaderAddress();
+}
+
 bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
     switch (cmd.type) {
         case RaftCommandType::kCreateSpace: {

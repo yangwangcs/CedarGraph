@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/failover_consensus_test[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/failover_consensus_test[1]_tests.cmake")
+else()
+  add_test(failover_consensus_test_NOT_BUILT failover_consensus_test_NOT_BUILT)
+endif()

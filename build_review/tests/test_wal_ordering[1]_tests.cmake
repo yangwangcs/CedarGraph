@@ -1,0 +1,3 @@
+add_test([=[WalOrderingTest.WalFailurePreservesOldValue]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_wal_ordering [==[--gtest_filter=WalOrderingTest.WalFailurePreservesOldValue]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[WalOrderingTest.WalFailurePreservesOldValue]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/transaction/test_wal_ordering.cc:25 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_wal_ordering_TESTS WalOrderingTest.WalFailurePreservesOldValue)

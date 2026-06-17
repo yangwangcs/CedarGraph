@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_column_filter_benchmark[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_column_filter_benchmark[1]_tests.cmake")
+else()
+  add_test(test_column_filter_benchmark_NOT_BUILT test_column_filter_benchmark_NOT_BUILT)
+endif()

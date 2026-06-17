@@ -80,7 +80,7 @@ struct BlockIndexEntry {
 // =============================================================================
 // 文件级 Footer（精简版）
 // =============================================================================
-struct ZoneColumnarFooterV2 {
+struct ZoneColumnarFooter {
   uint32_t block_index_offset;       // Block 索引偏移
   uint32_t block_index_size;         // Block 索引大小
   uint32_t bloom_filter_offset;      // Bloom Filter 偏移（可选）
@@ -103,7 +103,7 @@ struct ZoneColumnarFooterV2 {
 // =============================================================================
 // Header（精简版）
 // =============================================================================
-struct ZoneColumnarHeaderV2 {
+struct ZoneColumnarHeader {
   uint32_t magic = sstv2::kMagic;
   uint32_t version = sstv2::kVersion;
   uint64_t file_size = 0;           // 文件总大小
@@ -124,6 +124,24 @@ struct ZoneColumnarHeaderV2 {
 };
 
 // =============================================================================
+// =============================================================================
+// Restart Point 条目 (16 bytes)
+// =============================================================================
+// 每 N 行记录一个，支持二分查找
+#pragma pack(push, 1)
+struct ZoneRestartPoint {
+  uint64_t entity_id;               // 该重启点的首个 entity_id
+  uint32_t timestamp_hi;            // 时间戳高 32 位
+  uint32_t row_index;               // 行索引（相对于块起始）
+
+  static constexpr size_t kEncodedSize = 16;
+
+  void EncodeTo(std::string* dst) const;
+  Status DecodeFrom(Slice* input);
+};
+static_assert(sizeof(ZoneRestartPoint) == 16, "ZoneRestartPoint must be 16 bytes");
+#pragma pack(pop)
+
 // SST 统计信息
 // =============================================================================
 struct SSTStats {

@@ -349,7 +349,7 @@ Status LsmEngine::Put(const CedarKey& key, const Descriptor& descriptor, Timesta
       return s;
     }
     
-    InvalidateQueryCache(key.entity_id());
+// InvalidateQueryCache disabled
     
     if (!disable_column_tracking_) {
       TrackColumnId(key.entity_id(), key.column_id());
@@ -410,7 +410,7 @@ Status LsmEngine::WriteBatch(const std::vector<WriteBatchEntry>& entries) {
         return s;
       }
       
-      InvalidateQueryCache(entry.key.entity_id());
+// InvalidateQueryCache disabled
       
       if (!disable_column_tracking_) {
         TrackColumnId(entry.key.entity_id(), entry.key.column_id());
@@ -469,7 +469,7 @@ Status LsmEngine::Delete(const CedarKey& key, Timestamp txn_version) {
       return s;
     }
     
-    InvalidateQueryCache(key.entity_id());
+// InvalidateQueryCache disabled
     if (!disable_column_tracking_) {
       TrackColumnId(key.entity_id(), key.column_id());
     }
@@ -680,13 +680,8 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     return std::nullopt;
   }
 
-  // Check query cache first (disabled for performance testing)
-  // if (query_cache_) {
-  //   auto cached = query_cache_->Get(entity_id, column_id, timestamp.value());
-  //   if (cached.has_value()) {
-  //     return cached.value();
-  //   }
-  // }
+  // QueryCache intentionally disabled — std::mutex serializes all reads.
+  // MemTable shared_mutex allows concurrent reads without cache overhead.
 
   std::shared_lock<std::shared_mutex> lock(mutex_);
 
@@ -694,7 +689,7 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
   auto desc = mem_->GetAtTime(entity_id, entity_type, column_id, timestamp);
   if (desc.has_value()) {
     if (query_cache_) {
-      query_cache_->Put(entity_id, column_id, timestamp.value(), desc);
+// query_cache_->Put disabled
     }
     return desc;
   }
@@ -704,7 +699,7 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     desc = imm_->GetAtTime(entity_id, entity_type, column_id, timestamp);
     if (desc.has_value()) {
       if (query_cache_) {
-        query_cache_->Put(entity_id, column_id, timestamp.value(), desc);
+  // query_cache_->Put disabled
       }
       return desc;
     }
@@ -714,7 +709,7 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
   auto accumulated = QueryAccumulatedBuffer(entity_id, entity_type, column_id, timestamp);
   if (accumulated.has_value()) {
     if (query_cache_) {
-      query_cache_->Put(entity_id, column_id, timestamp.value(), accumulated->second);
+// query_cache_->Put disabled
     }
     return accumulated->second;
   }
@@ -832,7 +827,7 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     
     if (best_descriptor.has_value()) {
       if (query_cache_) {
-        query_cache_->Put(entity_id, column_id, timestamp.value(), best_descriptor);
+// query_cache_->Put disabled
       }
       return best_descriptor;
     }
@@ -840,7 +835,7 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
   
   // Cache the negative result to avoid repeated SST scans
   if (query_cache_) {
-    query_cache_->Put(entity_id, column_id, timestamp.value(), std::nullopt);
+// query_cache_->Put disabled
   }
   return std::nullopt;
 }

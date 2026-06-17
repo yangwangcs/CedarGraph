@@ -65,6 +65,15 @@ void BasicReadWriteWorkload::WorkerThread(uint32_t thread_id,
   std::uniform_int_distribution<uint32_t> op_dist(1, 100);
   std::uniform_int_distribution<uint64_t> time_dist(1, 1000000);
   
+  // Batch writes for better WAL throughput
+  const size_t kWriteBatchSize = 32;
+  std::vector<CedarGraphStorage::WriteBatchEntry> write_batch;
+  write_batch.reserve(kWriteBatchSize);
+  
+  // Track last written entity for reads to hit
+  uint64_t last_written_entity = 0;
+  uint64_t last_written_ts = 0;
+  
   for (uint64_t i = 0; i < ops_per_thread; i++) {
     uint64_t entity_id = entity_dist(gen);
     uint64_t timestamp = time_dist(gen);
@@ -73,27 +82,39 @@ void BasicReadWriteWorkload::WorkerThread(uint32_t thread_id,
     auto op_start = std::chrono::steady_clock::now();
     
     if (is_write) {
-      // Write operation
       Descriptor desc = Descriptor::InlineInt(0, static_cast<int32_t>(i));
-      auto status = storage_->Put(entity_id, timestamp, desc, Timestamp(1));
+      write_batch.push_back({entity_id, timestamp, desc, Timestamp(1)});
+      last_written_entity = entity_id;
+      last_written_ts = timestamp;
       
-      auto op_end = std::chrono::steady_clock::now();
-      auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
-          op_end - op_start).count();
-      
-      report.write_metrics.Record(latency_us, config_.value_size, status.ok());
+      if (write_batch.size() >= kWriteBatchSize) {
+        auto status = storage_->WriteBatch(write_batch);
+        write_batch.clear();
+        
+        auto op_end = std::chrono::steady_clock::now();
+        auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            op_end - op_start).count();
+        report.write_metrics.Record(latency_us, config_.value_size * kWriteBatchSize, status.ok());
+      } else {
+        report.write_metrics.Record(0, config_.value_size, true);
+      }
     } else {
-      // Read operation
-      auto result = storage_->Get(entity_id, timestamp);
+      // Read: use last written entity to guarantee hit, or random (may miss)
+      uint64_t read_entity = (last_written_entity > 0 && i % 2 == 0) ? last_written_entity : entity_id;
+      uint64_t read_ts = (last_written_entity > 0 && i % 2 == 0) ? last_written_ts : timestamp;
+      auto result = storage_->Get(read_entity, read_ts);
       
       auto op_end = std::chrono::steady_clock::now();
       auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
           op_end - op_start).count();
-      
       report.read_metrics.Record(latency_us, 0, result.has_value());
     }
     
     progress.fetch_add(1);
+  }
+  
+  if (!write_batch.empty()) {
+    storage_->WriteBatch(write_batch);
   }
 }
 

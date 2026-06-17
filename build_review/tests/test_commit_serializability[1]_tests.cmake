@@ -1,0 +1,3 @@
+add_test([=[CommitSerializabilityTest.ConcurrentWritesToSameKey]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_commit_serializability [==[--gtest_filter=CommitSerializabilityTest.ConcurrentWritesToSameKey]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[CommitSerializabilityTest.ConcurrentWritesToSameKey]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/transaction/test_commit_serializability.cc:29 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_commit_serializability_TESTS CommitSerializabilityTest.ConcurrentWritesToSameKey)

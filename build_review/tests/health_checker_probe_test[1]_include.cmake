@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/health_checker_probe_test[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/health_checker_probe_test[1]_tests.cmake")
+else()
+  add_test(health_checker_probe_test_NOT_BUILT health_checker_probe_test_NOT_BUILT)
+endif()

@@ -1,0 +1,3 @@
+add_test([=[BatchWriteMemtableRefreshTest.NoLostWritesDuringFlush]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_batchwrite_memtable_refresh [==[--gtest_filter=BatchWriteMemtableRefreshTest.NoLostWritesDuringFlush]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[BatchWriteMemtableRefreshTest.NoLostWritesDuringFlush]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/transaction/test_batchwrite_memtable_refresh.cc:28 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_batchwrite_memtable_refresh_TESTS BatchWriteMemtableRefreshTest.NoLostWritesDuringFlush)

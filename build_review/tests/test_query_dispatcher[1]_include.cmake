@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_query_dispatcher[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_query_dispatcher[1]_tests.cmake")
+else()
+  add_test(test_query_dispatcher_NOT_BUILT test_query_dispatcher_NOT_BUILT)
+endif()

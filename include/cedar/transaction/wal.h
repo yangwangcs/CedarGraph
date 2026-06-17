@@ -295,4 +295,4 @@ class WalReader {
 
 }  // namespace cedar
 
-#endif  // FERN_WAL_H_
+#endif  // CEDAR_WAL_H_

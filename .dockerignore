@@ -1,0 +1,9 @@
+.git
+build
+build_review
+build_brpc
+build_linux
+data
+logs
+*.sock
+*.sock.lock

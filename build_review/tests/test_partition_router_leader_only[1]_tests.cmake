@@ -1,0 +1,3 @@
+add_test([=[PartitionRouterLeaderOnlyStub.CompileAndLink]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_partition_router_leader_only [==[--gtest_filter=PartitionRouterLeaderOnlyStub.CompileAndLink]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[PartitionRouterLeaderOnlyStub.CompileAndLink]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/test_partition_router_leader_only.cc:6 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_partition_router_leader_only_TESTS PartitionRouterLeaderOnlyStub.CompileAndLink)

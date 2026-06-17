@@ -441,6 +441,7 @@ class SizeTieredCompactionEngine {
   
   // 原子操作：从某层移除文件
   void RemoveFileFromLevel(uint64_t file_number, int level);
+  void RemoveFileFromLevelInternal(uint64_t file_number, int level);  // Caller must hold levels_mutex_
   
   // 持久化层级状态（MANIFEST）
   Status SaveManifest();

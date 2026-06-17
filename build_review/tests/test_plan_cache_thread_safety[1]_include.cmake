@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_plan_cache_thread_safety[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_plan_cache_thread_safety[1]_tests.cmake")
+else()
+  add_test(test_plan_cache_thread_safety_NOT_BUILT test_plan_cache_thread_safety_NOT_BUILT)
+endif()

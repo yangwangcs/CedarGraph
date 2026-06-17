@@ -1,0 +1,3 @@
+add_test([=[CoordinatorClientTest.LocateReturnsWindow]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_coordinator_client [==[--gtest_filter=CoordinatorClientTest.LocateReturnsWindow]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[CoordinatorClientTest.LocateReturnsWindow]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/gcn/test_coordinator_client.cc:75 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_coordinator_client_TESTS CoordinatorClientTest.LocateReturnsWindow)

@@ -39,7 +39,7 @@
 
 #include "cedar/core/status.h"
 #include "cedar/core/env.h"
-#include "cedar/sst/zone_columnar_format.h"
+#include "cedar/sst/zone_columnar_format_v2.h"
 #include "cedar/sst/zone_columnar_reader.h"
 #include "cedar/storage/size_tiered_compaction.h"
 

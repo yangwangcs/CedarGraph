@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_partition_migration_end_to_end[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_partition_migration_end_to_end[1]_tests.cmake")
+else()
+  add_test(test_partition_migration_end_to_end_NOT_BUILT test_partition_migration_end_to_end_NOT_BUILT)
+endif()

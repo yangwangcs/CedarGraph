@@ -850,10 +850,10 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
     std::unique_lock<std::shared_mutex> lock(levels_mutex_);
     levels_[task.output_level].files.push_back(output_meta);
     for (const auto& f : task.input_files) {
-      RemoveFileFromLevel(f.file_number, task.input_level);
+      RemoveFileFromLevelInternal(f.file_number, task.input_level);
     }
     for (const auto& f : task.overlapping_files) {
-      RemoveFileFromLevel(f.file_number, task.output_level);
+      RemoveFileFromLevelInternal(f.file_number, task.output_level);
     }
   }
 
@@ -1148,12 +1148,12 @@ void SizeTieredCompactionEngine::AddFileToLevel(const ZoneSstMeta& meta, int lev
 }
 
 void SizeTieredCompactionEngine::RemoveFileFromLevel(uint64_t file_number, int level) {
-  if (level < 0 || level >= config_.max_levels) {
-    return;
-  }
-  
   std::unique_lock<std::shared_mutex> lock(levels_mutex_);
-  
+  RemoveFileFromLevelInternal(file_number, level);
+}
+
+void SizeTieredCompactionEngine::RemoveFileFromLevelInternal(uint64_t file_number, int level) {
+  // Caller must hold levels_mutex_
   auto& files = levels_[level].files;
   for (auto it = files.begin(); it != files.end(); ++it) {
     if (it->file_number == file_number) {

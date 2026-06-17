@@ -22,9 +22,9 @@
 // 4. 内存占用与数据量无关
 // =============================================================================
 
-#include "cedar/sst/zone_columnar_format.h"
+#include "cedar/sst/zone_columnar_format_v2.h"
 #include "cedar/sst/zone_columnar_reader.h"
-#include "cedar/sst/zone_columnar_builder.h"
+#include "cedar/sst/zone_columnar_builder_v2.h"
 #include "cedar/core/env.h"
 #include <queue>
 #include <vector>
@@ -72,11 +72,10 @@ class StreamingCompactionMerger {
     if (!s.ok()) return nullptr;
     output_file_.reset(file);
     
-    // 3. 创建 Builder
-    SstBuilder::Options builder_options;
-    builder_options.db_path = db_path_;
-    builder_ = std::make_unique<SstBuilder>(builder_options, output_file_.get());
-    builder_->SetLevel(config_.output_level);
+    // 3. 创建 V2 Builder
+    ZoneColumnarSstBuilder::Options v2_options;
+    v2_options.target_block_size = config_.prefetch_buffer_size;
+    builder_ = std::make_unique<ZoneColumnarSstBuilder>(v2_options, output_file_.get());
     
     // 4. 执行流式归并
     if (!Merge()) {
@@ -292,7 +291,7 @@ class StreamingCompactionMerger {
   
   std::vector<std::unique_ptr<InputStream>> streams_;
   std::unique_ptr<WritableFile> output_file_;
-  std::unique_ptr<SstBuilder> builder_;
+  std::unique_ptr<ZoneColumnarSstBuilder> builder_;
 };
 
 }  // namespace cedar

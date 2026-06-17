@@ -1,0 +1,7 @@
+add_test([=[RBAC.ExactMatchAllowsAccess]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/rbac_test [==[--gtest_filter=RBAC.ExactMatchAllowsAccess]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[RBAC.ExactMatchAllowsAccess]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/security/rbac_test.cc:24 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[RBAC.SubstringNoLongerMatches]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/rbac_test [==[--gtest_filter=RBAC.SubstringNoLongerMatches]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[RBAC.SubstringNoLongerMatches]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/security/rbac_test.cc:42 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[RBAC.GlobWildcardMatches]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/rbac_test [==[--gtest_filter=RBAC.GlobWildcardMatches]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[RBAC.GlobWildcardMatches]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/security/rbac_test.cc:60 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  rbac_test_TESTS RBAC.ExactMatchAllowsAccess RBAC.SubstringNoLongerMatches RBAC.GlobWildcardMatches)

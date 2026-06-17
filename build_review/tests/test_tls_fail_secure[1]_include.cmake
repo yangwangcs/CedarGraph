@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_tls_fail_secure[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_tls_fail_secure[1]_tests.cmake")
+else()
+  add_test(test_tls_fail_secure_NOT_BUILT test_tls_fail_secure_NOT_BUILT)
+endif()

@@ -8,6 +8,8 @@
 #include <cmath>
 #include <limits>
 
+#include "cedar/cypher/execution_plan.h"
+
 namespace cedar {
 namespace cypher {
 
@@ -105,12 +107,10 @@ CostEstimate CostOptimizer::EstimateCost(const PhysicalOperator* op) const {
   
   // NodeScan: scan all nodes of a type
   if (op_name == "NodeScan") {
-    const auto& details = op->GetDetails();
-    auto it = details.find("label");
-    std::string label = it != details.end() ? it->second : "default";
-    const auto& stats = GetTableStats(label);
-    double io = EstimateScanCost(stats.row_count, 1.0);
-    return CostEstimate(io, stats.row_count * kCPUWeight, 0, stats.row_count);
+    // Default statistics for node scan
+    constexpr uint64_t kDefaultNodeCount = 1000;
+    double io = EstimateScanCost(kDefaultNodeCount, 1.0);
+    return CostEstimate(io, kDefaultNodeCount * kCPUWeight, 0, kDefaultNodeCount);
   }
   
   // IndexScan: index lookup (much cheaper)
@@ -161,7 +161,7 @@ CostEstimate CostOptimizer::EstimateCost(const PhysicalOperator* op) const {
   // Default: estimate based on child costs
   CostEstimate total;
   for (size_t i = 0; i < op->GetChildren().size(); ++i) {
-    CostEstimate child_cost = EstimateCost(op->GetChildren()[i]);
+    CostEstimate child_cost = EstimateCost(op->GetChildren()[i].get());
     total.io_cost += child_cost.io_cost;
     total.cpu_cost += child_cost.cpu_cost;
     total.memory_cost += child_cost.memory_cost;

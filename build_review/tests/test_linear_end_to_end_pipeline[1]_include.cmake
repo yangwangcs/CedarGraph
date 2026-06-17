@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_linear_end_to_end_pipeline[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_linear_end_to_end_pipeline[1]_tests.cmake")
+else()
+  add_test(test_linear_end_to_end_pipeline_NOT_BUILT test_linear_end_to_end_pipeline_NOT_BUILT)
+endif()

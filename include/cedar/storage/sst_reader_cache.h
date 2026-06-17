@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <list>
 
-#include "cedar/sst/zone_columnar_format.h"
+#include "cedar/sst/zone_columnar_format_v2.h"
 #include "cedar/sst/zone_columnar_reader.h"
 
 namespace cedar {

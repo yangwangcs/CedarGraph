@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_eventbus_integration[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_eventbus_integration[1]_tests.cmake")
+else()
+  add_test(test_eventbus_integration_NOT_BUILT test_eventbus_integration_NOT_BUILT)
+endif()

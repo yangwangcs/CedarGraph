@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_batchwrite_memtable_refresh[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_batchwrite_memtable_refresh[1]_tests.cmake")
+else()
+  add_test(test_batchwrite_memtable_refresh_NOT_BUILT test_batchwrite_memtable_refresh_NOT_BUILT)
+endif()

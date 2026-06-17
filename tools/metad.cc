@@ -20,6 +20,11 @@
 #include <thread>
 #include <atomic>
 
+#ifdef __APPLE__
+#include <execinfo.h>
+#include <cxxabi.h>
+#endif
+
 #include "cedar/dtx/meta_service.h"
 #include "cedar/dtx/meta_service_grpc.h"
 #include "cedar/dtx/raft/grpc_tls.h"
@@ -30,6 +35,18 @@ namespace dtx {
 std::atomic<bool> g_running{true};
 std::unique_ptr<MetaServiceGrpcServer> g_grpc_server;
 std::unique_ptr<MetadataService> g_meta_service;
+
+void CrashHandler(int sig) {
+    void* callstack[64];
+    int frames = backtrace(callstack, 64);
+    std::cerr << "\n[FATAL] Signal " << sig << " (SIGSEGV) received. Stack trace:\n";
+    char** symbols = backtrace_symbols(callstack, frames);
+    for (int i = 0; i < frames; i++) {
+        std::cerr << "  " << symbols[i] << "\n";
+    }
+    free(symbols);
+    _exit(128 + sig);
+}
 
 void SignalHandler(int signal) {
   if (signal == SIGINT || signal == SIGTERM) {
@@ -45,6 +62,7 @@ struct MetadConfig {
   uint32_t node_id = 0;
   std::string listen_address = "0.0.0.0:9559";
   std::string advertise_address;
+  std::string grpc_address;  // Separate gRPC port for client API
   std::string data_dir = "./meta_data";
   std::vector<std::pair<uint32_t, std::string>> peers;
   
@@ -88,6 +106,8 @@ MetadConfig ParseArgs(int argc, char* argv[]) {
       config.election_timeout_ms = std::stoul(argv[++i]);
     } else if (arg == "--heartbeat_interval" && i + 1 < argc) {
       config.heartbeat_interval_ms = std::stoul(argv[++i]);
+    } else if (arg == "--grpc_port" && i + 1 < argc) {
+      config.grpc_address = "0.0.0.0:" + std::string(argv[++i]);
     } else if (arg == "--test_mode") {
       config.test_mode = true;
     } else if (arg == "--help" || arg == "-h") {
@@ -102,6 +122,7 @@ MetadConfig ParseArgs(int argc, char* argv[]) {
                 << "  --peer <id:address>         Add a peer node (repeatable)\n"
                 << "  --election_timeout <ms>     Raft election timeout (default: 1000)\n"
                 << "  --heartbeat_interval <ms>   Raft heartbeat interval (default: 100)\n"
+                << "  --grpc_port <port>          gRPC client API port (default: listen_port + 1000)\n"
                 << "  -h, --help                  Show this help\n";
       exit(0);
     }
@@ -117,9 +138,21 @@ int main(int argc, char* argv[]) {
   
   MetadConfig config = ParseArgs(argc, argv);
   
+  // Compute default gRPC address: 0.0.0.0 on port + 1000
+  if (config.grpc_address.empty()) {
+    auto colon = config.listen_address.rfind(':');
+    if (colon != std::string::npos) {
+      int raft_port = std::stoi(config.listen_address.substr(colon + 1));
+      config.grpc_address = "0.0.0.0:" + std::to_string(raft_port + 1000);
+    } else {
+      config.grpc_address = "0.0.0.0:10559";
+    }
+  }
+  
   std::cout << "[MetaD] CedarGraph Metadata Server starting..." << std::endl;
   std::cout << "[MetaD] Node ID: " << config.node_id << std::endl;
-  std::cout << "[MetaD] Listen: " << config.listen_address << std::endl;
+  std::cout << "[MetaD] Raft Listen: " << config.listen_address << std::endl;
+  std::cout << "[MetaD] gRPC Listen: " << config.grpc_address << std::endl;
   std::cout << "[MetaD] Data dir: " << config.data_dir << std::endl;
   std::cout << "[MetaD] Peers: " << config.peers.size() << std::endl;
   std::cout << "[MetaD] Test mode: " << (config.test_mode ? "yes" : "no") << std::endl;
@@ -127,6 +160,8 @@ int main(int argc, char* argv[]) {
   // Setup signal handlers
   std::signal(SIGINT, SignalHandler);
   std::signal(SIGTERM, SignalHandler);
+  std::signal(SIGSEGV, CrashHandler);
+  std::signal(SIGBUS, CrashHandler);
   
   // Create metadata service with braft consensus
   g_meta_service = std::make_unique<MetadataService>();
@@ -150,16 +185,16 @@ int main(int argc, char* argv[]) {
   }
   std::cout << "[MetaD] Metadata service initialized with braft consensus" << std::endl;
   
-  // Start gRPC server for client API
+  // Start gRPC server for client API (on separate port from braft)
   g_grpc_server = std::make_unique<MetaServiceGrpcServer>();
-  auto grpc_status = g_grpc_server->Start(config.listen_address, g_meta_service.get());
+  auto grpc_status = g_grpc_server->Start(config.grpc_address, g_meta_service.get());
   if (!grpc_status.ok()) {
     std::cerr << "[MetaD] Failed to start gRPC server: " 
               << grpc_status.ToString() << std::endl;
     g_meta_service->Shutdown();
     return 1;
   }
-  std::cout << "[MetaD] gRPC server listening on " << config.listen_address << std::endl;
+  std::cout << "[MetaD] gRPC server listening on " << config.grpc_address << std::endl;
   
   // Wait for shutdown signal
   std::cout << "[MetaD] Server running. Press Ctrl+C to stop." << std::endl;

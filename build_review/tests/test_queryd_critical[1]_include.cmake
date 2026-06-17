@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_queryd_critical[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_queryd_critical[1]_tests.cmake")
+else()
+  add_test(test_queryd_critical_NOT_BUILT test_queryd_critical_NOT_BUILT)
+endif()

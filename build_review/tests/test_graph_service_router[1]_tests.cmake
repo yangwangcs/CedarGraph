@@ -1,0 +1,3 @@
+add_test([=[GraphServiceRouterTest.GetSchemaReturnsEmptyWhenNoMetaD]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_graph_service_router [==[--gtest_filter=GraphServiceRouterTest.GetSchemaReturnsEmptyWhenNoMetaD]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[GraphServiceRouterTest.GetSchemaReturnsEmptyWhenNoMetaD]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/service/test_graph_service_router.cc:29 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_graph_service_router_TESTS GraphServiceRouterTest.GetSchemaReturnsEmptyWhenNoMetaD)

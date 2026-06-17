@@ -1,0 +1,5 @@
+add_test([=[AuditLog.RejectsDirectoryTraversal]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/audit_log_test [==[--gtest_filter=AuditLog.RejectsDirectoryTraversal]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[AuditLog.RejectsDirectoryTraversal]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/security/audit_log_test.cc:24 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[AuditLog.RejectsPathOutsidePrefix]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/audit_log_test [==[--gtest_filter=AuditLog.RejectsPathOutsidePrefix]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[AuditLog.RejectsPathOutsidePrefix]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/security/audit_log_test.cc:35 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  audit_log_test_TESTS AuditLog.RejectsDirectoryTraversal AuditLog.RejectsPathOutsidePrefix)

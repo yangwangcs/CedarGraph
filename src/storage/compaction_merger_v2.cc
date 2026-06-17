@@ -8,7 +8,7 @@
 #include <queue>
 #include <vector>
 
-#include "cedar/sst/zone_columnar_builder.h"
+#include "cedar/sst/zone_columnar_builder_v2.h"
 #include "cedar/sst/zone_columnar_reader.h"
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
@@ -79,10 +79,9 @@ class CompactionMergerV2::Impl {
     output_file_.reset(file_ptr);
     
     // 创建 V2 Builder
-    SstBuilder::Options builder_options;
-    builder_options.block_size = options_.target_block_size;
-    builder_options.entity_aligned = true;
-    builder_ = std::make_unique<SstBuilder>(builder_options, output_file_.get());
+    ZoneColumnarSstBuilder::Options builder_options;
+    builder_options.target_block_size = options_.target_block_size;
+    builder_ = std::make_unique<ZoneColumnarSstBuilder>(builder_options, output_file_.get());
     
     // 初始化堆：从每个输入读取第一个条目
     current_row_.resize(readers_.size(), 0);
@@ -122,7 +121,7 @@ class CompactionMergerV2::Impl {
       }
       
       // 输出到 Builder
-      builder_->Add(current.key, current.descriptor);
+      builder_->Add(current.key, current.descriptor, Timestamp(0));
       stats_.output_entries++;
       
       // 从同一输入读取下一个

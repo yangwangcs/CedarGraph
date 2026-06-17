@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_dtx_rpc_client_promise_safety[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_dtx_rpc_client_promise_safety[1]_tests.cmake")
+else()
+  add_test(test_dtx_rpc_client_promise_safety_NOT_BUILT test_dtx_rpc_client_promise_safety_NOT_BUILT)
+endif()

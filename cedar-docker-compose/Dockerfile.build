@@ -1,0 +1,109 @@
+# CedarGraph Docker Image - Complete Build
+# 使用 Ubuntu 24.04 + 官方镜像 + 重试机制
+
+FROM ubuntu:24.04 AS builder
+
+# 安装编译依赖（带重试）
+RUN for i in 1 2 3; do \
+      apt-get update && \
+      apt-get install -y \
+        build-essential cmake git wget curl \
+        libcurl4-openssl-dev liblz4-dev libgrpc++-dev \
+        protobuf-compiler-grpc libprotobuf-dev protobuf-compiler libprotoc-dev \
+        libssl-dev libyaml-cpp-dev libgflags-dev libgoogle-glog-dev \
+        libgtest-dev libleveldb-dev libsnappy-dev pkg-config \
+      && break || sleep 30; \
+    done && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# 复制源代码
+COPY . /build/
+
+# Step 1: 编译并安装 brpc
+RUN echo "=== Step 1: 编译 brpc ===" && \
+    cd /build/third_party/brpc && \
+    mkdir -p build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release \
+             -DBUILD_SHARED_LIBS=OFF \
+             -DBUILD_BRPC_TOOLS=OFF && \
+    make -j2 && \
+    make install && \
+    echo "brpc 安装完成"
+
+# Step 2: 编译并安装 braft
+RUN echo "=== Step 2: 编译 braft ===" && \
+    cd /build/third_party/braft && \
+    mkdir -p build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release \
+             -DBUILD_SHARED_LIBS=OFF && \
+    make -j2 && \
+    make install && \
+    echo "braft 安装完成"
+
+# Step 3: 编译 CedarGraph
+RUN echo "=== Step 3: 编译 CedarGraph ===" && \
+    cd /build && \
+    mkdir -p build_linux && cd build_linux && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release \
+             -DBUILD_TESTS=OFF && \
+    make -j2 cedar-metad cedar-storaged cedar-graphd && \
+    echo "CedarGraph 编译完成"
+
+# =============================================================================
+# 运行阶段
+# =============================================================================
+FROM ubuntu:24.04
+
+# 安装运行时依赖（带重试）
+RUN for i in 1 2 3; do \
+      apt-get update && \
+      apt-get install -y \
+        liblz4-1 libgrpc++1 libprotobuf32t64 libcurl4t64 libssl3t64 \
+        libyaml-cpp0.8 libgflags2.2 libgoogle-glog0v6t64 \
+        libleveldb1d libsnappy1v5 \
+        curl netcat-openbsd dnsutils iputils-ping \
+      && break || sleep 30; \
+    done && \
+    rm -rf /var/lib/apt/lists/*
+
+# 创建用户
+RUN groupadd -r cedar && useradd -r -g cedar cedar
+
+# 创建目录
+RUN mkdir -p /data /logs /etc/cedar /usr/local/bin && \
+    chown -R cedar:cedar /data /logs
+
+# 复制编译产物
+COPY --from=builder /build/build_linux/cedar-metad /usr/local/bin/
+COPY --from=builder /build/build_linux/cedar-storaged /usr/local/bin/
+COPY --from=builder /build/build_linux/cedar-graphd /usr/local/bin/
+
+# 复制脚本
+COPY scripts/cedar_health_check.sh /usr/local/bin/
+COPY cedar-docker-compose/docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/*.sh
+
+# 设置环境变量
+ENV PATH="/usr/local/bin:${PATH}"
+ENV NODE_ROLE=""
+ENV DATA_DIR="/data"
+ENV LOG_DIR="/logs"
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD bash -c 'case "${NODE_ROLE}" in metad) P=9559;; storaged) P=9779;; graphd) P=9669;; *) exit 1;; esac; nc -z localhost ${P} || exit 1'
+
+# 暴露端口
+EXPOSE 9559 9669 9779
+
+# 切换到非 root 用户
+USER cedar
+
+# 数据卷
+VOLUME ["/data", "/logs"]
+
+# 入口点
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD []

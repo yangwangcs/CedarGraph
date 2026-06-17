@@ -1,0 +1,3 @@
+add_test([=[PartialCommitRollbackTest.HaltsAndRollsBackOnSecondCommitFailure]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_partial_commit_rollback [==[--gtest_filter=PartialCommitRollbackTest.HaltsAndRollsBackOnSecondCommitFailure]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[PartialCommitRollbackTest.HaltsAndRollsBackOnSecondCommitFailure]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/test_partial_commit_rollback.cc:14 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_partial_commit_rollback_TESTS PartialCommitRollbackTest.HaltsAndRollsBackOnSecondCommitFailure)

@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -march=native -ffast-math CMakeFiles/queryd_client_example.dir/examples/queryd/client_example.cpp.o CMakeFiles/queryd_client_example.dir/generated_proto/query_service.pb.cc.o CMakeFiles/queryd_client_example.dir/generated_proto/query_service.grpc.pb.cc.o -o queryd_client_example  -lgRPC::grpc++ /usr/lib/aarch64-linux-gnu/libprotobuf.so 

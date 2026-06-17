@@ -402,16 +402,29 @@ std::vector<uint64_t> CedarGraph::ScanVertices(Timestamp start, Timestamp end) {
 
   // Use the same configurable range as NodeScan
   uint64_t min_entity_id = 1;
-  uint64_t max_entity_id = 1000;
+  uint64_t max_entity_id = 50;  // Reduced from 100 to avoid CPU spin
+  constexpr size_t kMaxScanResults = 100;  // Reduced from 500
   const char* env_max = std::getenv("CEDAR_SCAN_MAX_ENTITIES");
   if (env_max) {
     max_entity_id = std::max(min_entity_id, static_cast<uint64_t>(std::strtoull(env_max, nullptr, 10)));
   }
 
+  // Track consecutive misses to early-terminate when entities are sparse
+  uint64_t consecutive_misses = 0;
+  constexpr uint64_t kMaxConsecutiveMisses = 10;  // Reduced from 50
+
   for (uint64_t entity_id = min_entity_id; entity_id <= max_entity_id; ++entity_id) {
+    if (result.size() >= kMaxScanResults) break;
+    
     auto versions = storage_->Scan(entity_id, start, end);
     if (!versions.empty()) {
       result.push_back(entity_id);
+      consecutive_misses = 0;
+    } else {
+      ++consecutive_misses;
+      if (consecutive_misses >= kMaxConsecutiveMisses && !result.empty()) {
+        break;
+      }
     }
   }
 

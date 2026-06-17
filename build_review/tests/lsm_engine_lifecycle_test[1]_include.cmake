@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/lsm_engine_lifecycle_test[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/lsm_engine_lifecycle_test[1]_tests.cmake")
+else()
+  add_test(lsm_engine_lifecycle_test_NOT_BUILT lsm_engine_lifecycle_test_NOT_BUILT)
+endif()

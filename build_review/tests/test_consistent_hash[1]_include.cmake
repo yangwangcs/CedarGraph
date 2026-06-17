@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_consistent_hash[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_consistent_hash[1]_tests.cmake")
+else()
+  add_test(test_consistent_hash_NOT_BUILT test_consistent_hash_NOT_BUILT)
+endif()

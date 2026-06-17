@@ -1,0 +1,3 @@
+add_test([=[HealthCheckerProbeTest.K8sProbeAliasesReturn200]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/health_checker_probe_test [==[--gtest_filter=HealthCheckerProbeTest.K8sProbeAliasesReturn200]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[HealthCheckerProbeTest.K8sProbeAliasesReturn200]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/governance/health_checker_probe_test.cc:111 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  health_checker_probe_test_TESTS HealthCheckerProbeTest.K8sProbeAliasesReturn200)

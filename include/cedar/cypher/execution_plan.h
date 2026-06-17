@@ -220,6 +220,9 @@ class IndexScan : public PhysicalOperator {
   std::string GetName() const override { return "IndexScan"; }
   std::string GetDetails() const override;
   std::unique_ptr<PhysicalOperator> Clone() const override;
+  
+  void SetRequiredColumns(const std::unordered_set<std::string>& columns) { required_columns_ = columns; }
+  const std::string& GetVariable() const { return variable_; }
 
  private:
   std::string variable_;
@@ -231,6 +234,7 @@ class IndexScan : public PhysicalOperator {
   size_t current_index_ = 0;
   std::vector<uint64_t> node_ids_;
   bool used_index_ = false;
+  std::unordered_set<std::string> required_columns_;
 
   bool MatchesPredicate(const Node& node) const;
 };

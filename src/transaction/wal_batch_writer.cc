@@ -126,25 +126,35 @@ Status WalBatchWriter::DoFlush(std::vector<WalBatchEntry>& entries) {
     return Status::OK();
   }
   
+  // Build a single WalBatch from all entries for true batching
+  WalBatch batch;
   for (const auto& entry : entries) {
-    Status s;
     switch (entry.type) {
       case WalBatchEntry::PUT:
-        s = wal_writer_->WritePut(entry.key, entry.descriptor, entry.timestamp);
+        batch.Put(entry.key, entry.descriptor, entry.timestamp);
         break;
-      case WalBatchEntry::COMMIT:
-        s = wal_writer_->WriteCommit(entry.txn_id, entry.timestamp);
+      case WalBatchEntry::COMMIT: {
+        // Commit uses special key encoding (txn_id in descriptor)
+        CedarKey key;
+        batch.Commit(key, Descriptor::InlineInt(0, static_cast<int32_t>(entry.txn_id)), 
+                     entry.timestamp);
         break;
-      case WalBatchEntry::ABORT:
-        s = wal_writer_->WriteAbort(entry.txn_id, entry.timestamp);
+      }
+      case WalBatchEntry::ABORT: {
+        // Abort uses special key encoding (txn_id in descriptor)
+        CedarKey key;
+        batch.Abort(key, Descriptor::Tombstone(0), entry.timestamp);
         break;
+      }
       default:
         return Status::InvalidArgument("WalBatchWriter", "Unknown entry type");
     }
-    
-    if (!s.ok()) {
-      return s;
-    }
+  }
+  
+  // Write entire batch in one call (enables group commit and single fsync)
+  Status s = wal_writer_->WriteBatch(batch);
+  if (!s.ok()) {
+    return s;
   }
   
   // 更新统计
@@ -157,7 +167,7 @@ Status WalBatchWriter::DoFlush(std::vector<WalBatchEntry>& entries) {
   return Status::OK();
 }
 
-void WalBatchWriter::BackgroundFlushLoop() {
+void cedar::WalBatchWriter::BackgroundFlushLoop() {
   while (!stop_background_.load()) {
     std::unique_lock<std::mutex> lock(buffer_mutex_);
     
@@ -184,7 +194,7 @@ void WalBatchWriter::BackgroundFlushLoop() {
   }
 }
 
-WalBatchWriter::Stats WalBatchWriter::GetStats() const {
+cedar::WalBatchWriter::Stats cedar::WalBatchWriter::GetStats() const {
   std::lock_guard<std::mutex> lock(stats_mutex_);
   Stats stats = stats_;
   
@@ -200,7 +210,7 @@ WalBatchWriter::Stats WalBatchWriter::GetStats() const {
   return stats;
 }
 
-Status WalBatchWriter::WriteEntry(const WalBatchEntry& entry) {
+cedar::Status cedar::WalBatchWriter::WriteEntry(const WalBatchEntry& entry) {
   std::lock_guard<std::mutex> lock(buffer_mutex_);
   
   if (buffer_.size() >= options_.batch_size) {
@@ -218,10 +228,10 @@ Status WalBatchWriter::WriteEntry(const WalBatchEntry& entry) {
 
 // ==================== TransactionWalBatch ====================
 
-TransactionWalBatch::TransactionWalBatch(WalBatchWriter* writer)
+cedar::TransactionWalBatch::TransactionWalBatch(WalBatchWriter* writer)
     : writer_(writer) {}
 
-TransactionWalBatch::~TransactionWalBatch() {
+cedar::TransactionWalBatch::~TransactionWalBatch() {
   if (!entries_.empty()) {
     // Best-effort flush on destruction. Do NOT throw or propagate errors
     // during stack unwinding — just log and discard.
@@ -233,20 +243,20 @@ TransactionWalBatch::~TransactionWalBatch() {
   }
 }
 
-void TransactionWalBatch::AddPut(uint64_t txn_id, 
+void cedar::TransactionWalBatch::AddPut(uint64_t txn_id, 
                                   const CedarKey& key, 
                                   const Descriptor& descriptor) {
   entries_.emplace_back(WalBatchEntry::PUT, txn_id, key, descriptor, Timestamp(0));
 }
 
-void TransactionWalBatch::AddPutWithTimestamp(uint64_t txn_id, 
+void cedar::TransactionWalBatch::AddPutWithTimestamp(uint64_t txn_id, 
                                                const CedarKey& key,
                                                const Descriptor& descriptor, 
                                                Timestamp ts) {
   entries_.emplace_back(WalBatchEntry::PUT, txn_id, key, descriptor, ts);
 }
 
-Status TransactionWalBatch::Commit() {
+cedar::Status cedar::TransactionWalBatch::Commit() {
   if (!writer_ || entries_.empty()) {
     return Status::OK();
   }
@@ -262,7 +272,7 @@ Status TransactionWalBatch::Commit() {
   return Status::OK();
 }
 
-Status TransactionWalBatch::CommitAndSync() {
+cedar::Status cedar::TransactionWalBatch::CommitAndSync() {
   Status s = Commit();
   if (!s.ok()) {
     return s;
@@ -271,7 +281,7 @@ Status TransactionWalBatch::CommitAndSync() {
   return writer_->Sync();
 }
 
-void TransactionWalBatch::Clear() {
+void cedar::TransactionWalBatch::Clear() {
   entries_.clear();
 }
 

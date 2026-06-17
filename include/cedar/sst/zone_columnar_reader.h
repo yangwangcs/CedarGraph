@@ -33,8 +33,8 @@
 //    - Block 内随机访问 O(1)
 // =============================================================================
 
-#ifndef FERN_ZONE_COLUMNAR_READER_H_
-#define FERN_ZONE_COLUMNAR_READER_H_
+#ifndef CEDAR_SST_ZONE_COLUMNAR_READER_H_
+#define CEDAR_SST_ZONE_COLUMNAR_READER_H_
 
 #include <cstdint>
 #include <string>
@@ -440,4 +440,4 @@ using SstReader = ZoneColumnarSstReader;
 
 }  // namespace cedar
 
-#endif  // FERN_ZONE_COLUMNAR_READER_H_
+#endif  // CEDAR_SST_ZONE_COLUMNAR_READER_H_

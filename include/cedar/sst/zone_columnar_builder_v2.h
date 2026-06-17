@@ -55,9 +55,9 @@ class RowBuffer {
 };
 
 // =============================================================================
-// ZoneColumnarSstBuilderV2
+// ZoneColumnarSstBuilder
 // =============================================================================
-class ZoneColumnarSstBuilderV2 {
+class ZoneColumnarSstBuilder {
  public:
   struct Options {
     size_t target_block_size = sstv2::kTargetBlockSize;  // 256KB
@@ -66,7 +66,7 @@ class ZoneColumnarSstBuilderV2 {
     bool enable_compression = true;
   };
 
-  explicit ZoneColumnarSstBuilderV2(const Options& options, WritableFile* file);
+  explicit ZoneColumnarSstBuilder(const Options& options, WritableFile* file);
 
   // 添加条目（要求：按 CedarKey 排序）
   void Add(const CedarKey& key, const Descriptor& desc, Timestamp txn_version);
@@ -127,6 +127,9 @@ class ZoneColumnarSstBuilderV2 {
   uint64_t max_timestamp_ = 0;
   uint64_t file_size_ = 0;
 };
+
+// SstBuilder 别名
+using SstBuilder = ZoneColumnarSstBuilder;
 
 }  // namespace cedar
 

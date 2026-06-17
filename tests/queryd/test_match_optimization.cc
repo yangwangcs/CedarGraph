@@ -175,6 +175,10 @@ TEST_F(MatchOptimizationTest, StorageBackedContextNullClientNoLabel) {
 // Partition pruning tests
 // ============================================================================
 
+// Must be in cedar::queryd to match the friend declaration in DistributedExecutor
+namespace cedar {
+namespace queryd {
+
 class TestableDistributedExecutor : public DistributedExecutor {
  public:
   using DistributedExecutor::DistributedExecutor;
@@ -187,6 +191,9 @@ class TestableDistributedExecutor : public DistributedExecutor {
     return GetPartitionsForLabel(label);
   }
 };
+
+}  // namespace queryd
+}  // namespace cedar
 
 TEST(MatchOptimizationPartitionPruning, EmptyCacheReturnsNoPartitions) {
   QueryStorageClient client;

@@ -1,0 +1,3 @@
+add_test([=[PipelineRaceTest.TimeoutDoesNotRaceWithWorker]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_2pc_pipeline_race [==[--gtest_filter=PipelineRaceTest.TimeoutDoesNotRaceWithWorker]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[PipelineRaceTest.TimeoutDoesNotRaceWithWorker]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/test_2pc_pipeline_race.cc:8 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_2pc_pipeline_race_TESTS PipelineRaceTest.TimeoutDoesNotRaceWithWorker)

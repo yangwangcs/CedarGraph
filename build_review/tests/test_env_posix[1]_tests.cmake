@@ -1,0 +1,3 @@
+add_test([=[EnvPosixTest.MmapReadRejectsWraparoundOffset]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_env_posix [==[--gtest_filter=EnvPosixTest.MmapReadRejectsWraparoundOffset]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[EnvPosixTest.MmapReadRejectsWraparoundOffset]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/core/test_env_posix.cc:5 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_env_posix_TESTS EnvPosixTest.MmapReadRejectsWraparoundOffset)

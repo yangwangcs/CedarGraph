@@ -1,0 +1,3 @@
+add_test([=[PoolStateResetTest.AbortedTransactionCanBeReused]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_pool_state_reset [==[--gtest_filter=PoolStateResetTest.AbortedTransactionCanBeReused]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[PoolStateResetTest.AbortedTransactionCanBeReused]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/transaction/test_pool_state_reset.cc:65 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_pool_state_reset_TESTS PoolStateResetTest.AbortedTransactionCanBeReused)

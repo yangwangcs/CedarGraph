@@ -1,0 +1,5 @@
+if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/prometheus_escape_test[1]_tests.cmake")
+  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/prometheus_escape_test[1]_tests.cmake")
+else()
+  add_test(prometheus_escape_test_NOT_BUILT prometheus_escape_test_NOT_BUILT)
+endif()

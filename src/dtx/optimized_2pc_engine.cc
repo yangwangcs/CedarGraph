@@ -1312,7 +1312,9 @@ void Optimized2PCEngine::SyncRecoveryRpcClient() {
   }
   
   if (!dtx_rpc_client_) {
-    dtx_rpc_client_ = std::make_shared<dtx::DTXRpcClient>(dtx::DTXRpcConfig{});
+    dtx::DTXRpcConfig rpc_config;
+    rpc_config.tls_config.enabled = false;  // Disable TLS for local development
+    dtx_rpc_client_ = std::make_shared<dtx::DTXRpcClient>(rpc_config);
   }
   
   for (size_t i = 0; i < clients_.size(); ++i) {

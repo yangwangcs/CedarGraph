@@ -1,0 +1,3 @@
+add_test([=[CompactionMergerV2Stub.CompileAndLink]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_compaction_merger_v2 [==[--gtest_filter=CompactionMergerV2Stub.CompileAndLink]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[CompactionMergerV2Stub.CompileAndLink]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/test_compaction_merger_v2.cc:6 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_compaction_merger_v2_TESTS CompactionMergerV2Stub.CompileAndLink)

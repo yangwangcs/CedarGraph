@@ -1,0 +1,5 @@
+add_test([=[EventApplierTest.ApplyOrderedEvents]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_event_applier [==[--gtest_filter=EventApplierTest.ApplyOrderedEvents]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[EventApplierTest.ApplyOrderedEvents]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/gcn/test_event_applier.cc:10 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[EventApplierTest.ReorderUnorderedEvents]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_event_applier [==[--gtest_filter=EventApplierTest.ReorderUnorderedEvents]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[EventApplierTest.ReorderUnorderedEvents]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/gcn/test_event_applier.cc:34 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  test_event_applier_TESTS EventApplierTest.ApplyOrderedEvents EventApplierTest.ReorderUnorderedEvents)

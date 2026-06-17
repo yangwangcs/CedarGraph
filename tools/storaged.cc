@@ -100,7 +100,7 @@ struct Config {
   int port = 9779;
   std::string bind_address = "0.0.0.0";
   std::string advertise_address;  // Empty = auto-detect; used for MetaD registration
-  std::string data_dir = "/var/lib/cedar/storaged";
+  std::string data_dir = "./data/storaged";
   std::string meta_server = "127.0.0.1:9559";
   int heartbeat_interval_sec = 10;
   cedar::dtx::raft::TlsConfig tls;
@@ -161,7 +161,7 @@ Config ParseArgs(int argc, char* argv[]) {
       std::cout << "  -p, --port <port>      Port to listen on (default: 9779)" << std::endl;
       std::cout << "  -b, --bind <addr>      Bind address (default: 0.0.0.0)" << std::endl;
       std::cout << "  -a, --advertise_address <addr>  Address advertised to MetaD (default: auto-detect)" << std::endl;
-      std::cout << "  -d, --data_dir <dir>   Data directory (default: /var/lib/cedar/storaged)" << std::endl;
+      std::cout << "  -d, --data_dir <dir>   Data directory (default: ./data/storaged)" << std::endl;
       std::cout << "  -m, --meta <addr>      MetaD server address (default: 127.0.0.1:9559)" << std::endl;
       std::cout << "  -c, --config <path>    Configuration file (YAML)" << std::endl;
       std::cout << "  --tls <true|false>     Enable/disable TLS (default: true)" << std::endl;
@@ -1069,6 +1069,20 @@ class MetaClient {
     cedar::meta::RegisterNodeResponse response;
     grpc::ClientContext context;
     auto status = stub_->RegisterNode(&context, request, &response);
+
+    // Handle leader redirect
+    if (status.ok() && !response.success() && response.leader_address().size() > 0) {
+      std::cout << "[StorageD] Redirecting to MetaD leader at " 
+                << response.leader_address() << std::endl;
+      auto channel = grpc::CreateChannel(response.leader_address(), 
+                                          grpc::InsecureChannelCredentials());
+      stub_ = cedar::meta::MetaService::NewStub(channel);
+      grpc::ClientContext ctx2;
+      status = stub_->RegisterNode(&ctx2, request, &response);
+    } else if (!status.ok() || !response.success()) {
+      std::cerr << "[StorageD] Registration failed: " 
+                << (status.ok() ? response.error_msg() : status.error_message()) << std::endl;
+    }
 
     if (!status.ok() || !response.success()) {
       std::cerr << "[StorageD] Failed to register with MetaD: " 
