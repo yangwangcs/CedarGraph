@@ -31,15 +31,24 @@ namespace dtx {
 // PartitionStorage Implementation - Shared LSM-Tree Architecture
 // =============================================================================
 
-PartitionStorage::PartitionStorage(PartitionID partition_id, 
+PartitionStorage::PartitionStorage(PartitionID partition_id,
                                    CedarGraphStorage* shared_storage,
-                                   StoragePartitionManager* manager)
+                                   StoragePartitionManager* manager,
+                                   StorageBackend* backend)
     : partition_id_(partition_id),
       shared_storage_(shared_storage),
+      backend_(backend),
       manager_(manager) {}
 
 PartitionStorage::~PartitionStorage() {
   // Note: shared_storage_ is owned by PartitionManager, not deleted here
+}
+
+CedarGraphStorage* PartitionStorage::GetEffectiveStorage() const {
+  if (backend_) {
+    return backend_->GetStorageForPartition(partition_id_);
+  }
+  return shared_storage_;
 }
 
 CedarKey PartitionStorage::InjectPartitionId(const CedarKey& key) const {
@@ -54,7 +63,8 @@ PartitionID PartitionStorage::ExtractPartitionId(const CedarKey& key) {
 
 Status PartitionStorage::Put(const CedarKey& key, const Descriptor& descriptor,
                             Timestamp txn_version, TxnID txn_id) {
-  if (!shared_storage_) {
+  CedarGraphStorage* storage = GetEffectiveStorage();
+  if (!storage) {
     return Status::IOError("Storage not initialized");
   }
   
@@ -66,10 +76,9 @@ Status PartitionStorage::Put(const CedarKey& key, const Descriptor& descriptor,
   CedarKey storage_key = InjectPartitionId(key);
   
   // Use CedarGraphStorage API: Put(entity_id, tx_time, descriptor, txn_version)
-  // Note: tx_time (business timestamp) comes from key.timestamp(), not txn_version
-  Status s = shared_storage_->Put(
+  Status s = storage->Put(
       storage_key.entity_id(),
-      storage_key.timestamp().value(),  // Use key's timestamp as tx_time
+      storage_key.timestamp().value(),
       descriptor,
       txn_version
   );

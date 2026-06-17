@@ -270,6 +270,7 @@ set(CEDAR_DTX_SOURCES
     src/dtx/chaos/chaos_testing.cc
     src/dtx/storage_impl/partition_storage.cc
     src/dtx/storage_impl/partition_manager.cc
+    src/storage/storage_backend.cc
     src/dtx/storage_impl/storage_client.cc
     src/dtx/storage_impl/storage_server.cc
     src/dtx/storage_impl/storage_service_impl.cc
