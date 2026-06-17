@@ -64,6 +64,7 @@ class ZoneColumnarSstBuilder {
     size_t target_sst_size = sstv2::kTargetSSTSize;      // 64MB
     size_t block_row_limit = sstv2::kBlockRowLimit;      // 16K 行
     bool enable_compression = true;
+    int output_level = 0;  // 0=no compress, 1-2=LZ4, 3+=Zstd
   };
 
   explicit ZoneColumnarSstBuilder(const Options& options, WritableFile* file);
@@ -97,6 +98,7 @@ class ZoneColumnarSstBuilder {
     uint64_t max_timestamp = 0;
     uint32_t row_count = 0;
     uint32_t compressed_size = 0;
+    uint8_t compression_types[6] = {0, 0, 0, 0, 0, 0};  // per-zone compression type
   };
 
   // 判断是否应该切割 Block

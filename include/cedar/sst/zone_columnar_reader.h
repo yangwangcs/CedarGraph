@@ -106,6 +106,9 @@ struct BlockCacheEntry {
   size_t zone_offsets[6] = {0, 0, 0, 0, 0, 0};
   size_t zone_sizes[6] = {0, 0, 0, 0, 0, 0};
   
+  // Decompressed zone data (when zone is LZ4/Zstd compressed)
+  std::string decompressed_zones[6];
+  
   // 禁用拷贝，支持移动
   BlockCacheEntry() = default;
   BlockCacheEntry(const BlockCacheEntry&) = delete;

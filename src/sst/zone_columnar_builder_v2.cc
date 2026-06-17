@@ -29,6 +29,7 @@
 #include "cedar/core/env.h"
 #include "cedar/sst/bloom_filter.h"
 #include "cedar/sst/zone_encoder.h"
+#include "cedar/sst/compression.h"
 #include "cedar/storage/sst_temporal_filter.h"
 #include "cedar/common/logging.h"
 
@@ -297,9 +298,30 @@ Status ZoneColumnarSstBuilder::FlushBlock() {
   memcpy(&block.zone5_data[0], buffer_.txn_versions.data(),
          block.zone5_data.size());
 
-  // 计算压缩后大小
+  // 分级压缩: L0=不压缩, L1+=LZ4 (Zstd 暂未实现，L3+ 也用 LZ4)
+  if (options_.enable_compression && options_.output_level > 0) {
+    CedarCompressionType compress_type = CedarCompressionType::LZ4;
+    
+    std::string* zones[] = {&block.zone0_data, &block.zone1_data, &block.zone2_data,
+                            &block.zone3_data, &block.zone4_data, &block.zone5_data};
+    for (int i = 0; i < 6; ++i) {
+      if (zones[i]->size() >= 64) {  // 小数据不压缩
+        std::string compressed;
+        CedarCompressionType actual_type;
+        Status s = Compression::Compress(compress_type, Slice(*zones[i]),
+                                        &compressed, &actual_type);
+        if (s.ok() && actual_type != CedarCompressionType::None && 
+            compressed.size() < zones[i]->size()) {
+          *zones[i] = std::move(compressed);
+          block.compression_types[i] = static_cast<uint8_t>(actual_type);
+        }
+      }
+    }
+  }
+
+  // 计算压缩后大小 (Block Header 50 bytes + 6 zones)
   block.compressed_size = static_cast<uint32_t>(
-      44 +  // BlockHeader (6 zones: 4 + 24 + 8 + 8)
+      50 +  // BlockHeader (50 bytes: 44 + 6 compression types)
       block.zone0_data.size() + block.zone1_data.size() +
       block.zone2_data.size() + block.zone3_data.size() +
       block.zone4_data.size() + block.zone5_data.size());
@@ -334,8 +356,8 @@ Status ZoneColumnarSstBuilder::WriteFile() {
     entry.max_timestamp = block.max_timestamp;
     block_index_.push_back(entry);
 
-    // 写入 Block Header（44 bytes）
-    char bh_data[44];
+    // 写入 Block Header（50 bytes = 44 + 6 compression types）
+    char bh_data[50];
     EncodeFixed32(bh_data, block.row_count);
     EncodeFixed32(bh_data + 4, static_cast<uint32_t>(block.zone0_data.size()));
     EncodeFixed32(bh_data + 8, static_cast<uint32_t>(block.zone1_data.size()));
@@ -345,7 +367,11 @@ Status ZoneColumnarSstBuilder::WriteFile() {
     EncodeFixed32(bh_data + 24, static_cast<uint32_t>(block.zone5_data.size()));
     EncodeFixed64(bh_data + 28, block.min_entity_id);
     EncodeFixed64(bh_data + 36, block.max_entity_id);
-    file_data.append(bh_data, 44);
+    // Per-zone compression type (6 bytes)
+    for (int i = 0; i < 6; ++i) {
+      bh_data[44 + i] = static_cast<char>(block.compression_types[i]);
+    }
+    file_data.append(bh_data, 50);
 
     // 写入 6 个 Zone
     file_data.append(block.zone0_data);

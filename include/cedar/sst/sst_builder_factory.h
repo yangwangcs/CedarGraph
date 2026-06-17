@@ -66,6 +66,9 @@ struct SstBuilderOptions {
   
   // 是否启用压缩
   bool enable_compression = true;
+  
+  // 输出层级 (0=L0不压缩, 1-2=LZ4, 3+=Zstd)
+  int output_level = 0;
 };
 
 // Builder 工厂

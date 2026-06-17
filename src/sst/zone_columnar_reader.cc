@@ -20,6 +20,7 @@
 #include "cedar/core/env.h"
 #include "cedar/core/crc32c.h"
 #include "cedar/sst/blob_file_manager.h"
+#include "cedar/sst/compression.h"
 
 namespace {
 // CRC64: combine two CRC32C with different seeds for 64-bit integrity check
@@ -430,8 +431,11 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   cache_entry->access_time = std::chrono::steady_clock::now();
   cache_entry->data.assign(result.data(), result.size());
   
-  // Parse block header (44 bytes)
-  if (result.size() < BlockHeader::kSize) return nullptr;
+  // Parse block header (50 bytes = 44 + 6 compression types)
+  if (result.size() < 50) {
+    // Fallback: try old 44-byte header format
+    if (result.size() < BlockHeader::kSize) return nullptr;
+  }
   const char* p = result.data();
   uint32_t row_count;
   std::memcpy(&row_count, p, sizeof(row_count));
@@ -449,15 +453,25 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   p += 8;
   uint64_t max_entity;
   std::memcpy(&max_entity, p, sizeof(max_entity));
+  p += 8;
+  
+  // Per-zone compression types (6 bytes, new in V2.1)
+  uint8_t compression_types[6] = {0, 0, 0, 0, 0, 0};
+  if (result.size() >= 50) {
+    for (int i = 0; i < 6; ++i) {
+      compression_types[i] = static_cast<uint8_t>(p[i]);
+    }
+  }
   
   (void)row_count;
   (void)min_entity;
   (void)max_entity;
   
-
+  // Determine actual header size
+  size_t header_size = (result.size() >= 50) ? 50 : BlockHeader::kSize;
   
-  // Store zone offsets for later parsing
-  size_t offset = BlockHeader::kSize;
+  // Store zone offsets and sizes for later parsing
+  size_t offset = header_size;
   for (int i = 0; i < 6; i++) {
     cache_entry->zone_offsets[i] = offset;
     cache_entry->zone_sizes[i] = zone_sizes[i];
@@ -467,6 +481,52 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   // Validate all zones fit within block data
   if (offset > result.size()) {
     return nullptr;
+  }
+  
+  // Decompress zones if needed (LZ4/Zstd)
+  bool any_compressed = false;
+  for (int i = 0; i < 6; ++i) {
+    if (compression_types[i] != 0) {
+      any_compressed = true;
+      break;
+    }
+  }
+  
+  if (any_compressed) {
+    // Decompress each zone and rebuild block data
+    std::string rebuilt_data;
+    rebuilt_data.reserve(result.size() * 2);  // Estimate
+    
+    for (int i = 0; i < 6; ++i) {
+      if (compression_types[i] != 0 && zone_sizes[i] > 0) {
+        auto ct = static_cast<CedarCompressionType>(compression_types[i]);
+        size_t uncompressed_size = row_count * 8;
+        std::string decompressed;
+        const char* zone_data = result.data() + header_size;
+        // Compute zone offset within block
+        size_t zone_off = 0;
+        for (int j = 0; j < i; ++j) zone_off += zone_sizes[j];
+        
+        Status ds = Compression::Decompress(ct, Slice(zone_data + zone_off, zone_sizes[i]),
+                                            &decompressed, uncompressed_size);
+        if (ds.ok()) {
+          cache_entry->zone_offsets[i] = rebuilt_data.size();
+          cache_entry->zone_sizes[i] = decompressed.size();
+          rebuilt_data.append(decompressed);
+        } else {
+          // Decompression failed, keep raw data
+          cache_entry->zone_offsets[i] = rebuilt_data.size();
+          rebuilt_data.append(zone_data + zone_off, zone_sizes[i]);
+        }
+      } else {
+        // Uncompressed zone, copy as-is
+        size_t zone_off = 0;
+        for (int j = 0; j < i; ++j) zone_off += zone_sizes[j];
+        cache_entry->zone_offsets[i] = rebuilt_data.size();
+        rebuilt_data.append(result.data() + header_size + zone_off, zone_sizes[i]);
+      }
+    }
+    cache_entry->data = std::move(rebuilt_data);
   }
   
   // Add to cache (double-check after loading to prevent thundering herd)

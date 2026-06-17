@@ -809,6 +809,7 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
   
   // 创建输出 Builder
   ZoneColumnarSstBuilder::Options builder_options;
+  builder_options.output_level = task.output_level;  // 分级压缩: L0=不压缩, L1-2=LZ4, L3+=Zstd
   ZoneColumnarSstBuilder builder(builder_options, writable_file.get());
   
   // 执行多路归并（合并 input + overlapping 所有文件）
