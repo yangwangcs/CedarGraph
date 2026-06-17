@@ -388,6 +388,7 @@ endif()
 target_include_directories(cedar PUBLIC 
     ${CMAKE_SOURCE_DIR}/third_party/braft/include
     ${CMAKE_BINARY_DIR}/third_party/braft/src
+    ${CMAKE_SOURCE_DIR}/third_party/braft/src
     ${CMAKE_SOURCE_DIR}/third_party/brpc/src
     ${CMAKE_BINARY_DIR}/third_party/brpc/src
 )

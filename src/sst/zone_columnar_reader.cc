@@ -680,12 +680,6 @@ bool ZoneColumnarSstReader::MayContainTimeRange(uint64_t start_ts, uint64_t end_
   return !(end_ts < header_.min_timestamp || start_ts > header_.max_timestamp);
 }
 
-bool ZoneColumnarSstReader::MayMatchPredicate(const ReadPredicate& predicate) const {
-  // Simplified implementation
-  (void)predicate;
-  return true;
-}
-
 ZoneColumnarSstReader::Stats ZoneColumnarSstReader::GetStats() const {
   Stats stats;
   stats.total_blocks = footer_.block_count;

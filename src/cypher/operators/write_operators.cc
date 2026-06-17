@@ -7,6 +7,7 @@
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/storage/lsm_engine.h"
 #include "cedar/core/logging.h"
+#include "cedar/utils/hash_utils.h"
 
 #include <chrono>
 #include <cerrno>
@@ -19,10 +20,9 @@ namespace cypher {
 // Helpers: Property name → column_id, Value → Descriptor
 // ============================================================================
 
+// Use shared utility
 static uint16_t PropertyNameToColumnId(const std::string& name) {
-  // Simple hash-based mapping from string property names to 12-bit column IDs.
-  // Collision is acceptable for MVP; production will use a schema registry.
-  return static_cast<uint16_t>(std::hash<std::string>{}(name) & 0x0FFF);
+  return cedar::utils::PropertyNameToColumnId(name);
 }
 
 static Descriptor ValueToDescriptor(const Value& value, uint16_t col_id) {

@@ -2,27 +2,14 @@
 // Execution Plan with Storage Layer Integration
 
 #include "cedar/cypher/execution_plan.h"
-#include "cedar/cypher/expression_evaluator.h"
-#include "cedar/graph/cedar_graph.h"
-#include "cedar/storage/cedar_graph_storage.h"
-#include "cedar/storage/lsm_engine.h"
-#include "cedar/core/logging.h"
-#include "cedar/core/status.h"
-#include <algorithm>
-#include <cerrno>
-#include <chrono>
-#include <cstdlib>
-#include <sstream>
+#include "cedar/utils/hash_utils.h"
 
 namespace cedar {
 namespace cypher {
 
-// ============================================================================
-// Index helpers
-// ============================================================================
-
+// Use shared utility
 static uint16_t PropertyNameToColumnId(const std::string& name) {
-  return static_cast<uint16_t>(std::hash<std::string>{}(name) & 0x0FFF);
+  return cedar::utils::PropertyNameToColumnId(name);
 }
 
 static std::string ValueToIndexString(const Value& value) {

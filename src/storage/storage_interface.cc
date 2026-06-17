@@ -155,12 +155,6 @@ Status StorageInterface::ScanInEdges(uint64_t node_id, uint16_t edge_type,
   return Status::OK();
 }
 
-std::string StorageInterface::SerializeProperties(
-    const std::map<std::string, cypher::Value>& props) {
-  (void)props;
-  return "";
-}
-
 bool StorageInterface::EvaluatePredicate(const PropertyPredicateItem& pred,
                                          const std::map<std::string, cypher::Value>& props) {
   auto it = props.find(pred.property_name);
