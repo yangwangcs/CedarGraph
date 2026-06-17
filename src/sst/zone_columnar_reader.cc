@@ -382,6 +382,7 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   cache_entry->num_rows = entry.row_count;
   cache_entry->min_entity_id = entry.min_entity_id;
   cache_entry->max_entity_id = entry.max_entity_id;
+  cache_entry->access_time = std::chrono::steady_clock::now();
   cache_entry->data.assign(result.data(), result.size());
   
   // Parse block header (44 bytes)
@@ -432,7 +433,14 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
       return it->second;  // Already loaded by another thread
     }
     if (block_cache_.size() >= kMaxCachedBlocks) {
-      block_cache_.erase(block_cache_.begin());  // Simple eviction
+      // Evict oldest entry (by access time) instead of arbitrary begin()
+      auto oldest = block_cache_.begin();
+      for (auto it = block_cache_.begin(); it != block_cache_.end(); ++it) {
+        if (it->second->access_time < oldest->second->access_time) {
+          oldest = it;
+        }
+      }
+      block_cache_.erase(oldest);
     }
     block_cache_[block_id] = cache_entry;
   }

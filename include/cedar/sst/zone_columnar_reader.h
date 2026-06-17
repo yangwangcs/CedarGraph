@@ -44,6 +44,7 @@
 #include <optional>
 #include <unordered_map>
 #include <shared_mutex>
+#include <chrono>
 
 #include "cedar/core/status.h"
 #include "cedar/core/slice.h"
@@ -80,6 +81,7 @@ struct BlockCacheEntry {
   uint64_t last_entity_id = 0;
   uint64_t min_entity_id = 0;
   uint64_t max_entity_id = 0;
+  std::chrono::steady_clock::time_point access_time;  // For LRU eviction
   
   // Zone 解码器（延迟初始化）- 使用 unique_ptr 存储，支持移动语义 (V1 legacy)
   std::unique_ptr<EntityIdZoneEncoder::Decoder> entity_decoder;
