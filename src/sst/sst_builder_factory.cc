@@ -37,6 +37,7 @@ class SstBuilderWrapper : public SstBuilderInterface {
     v2_options.target_block_size = options.target_block_size;
     v2_options.block_row_limit = options.block_row_limit;
     v2_options.enable_compression = options.enable_compression;
+    v2_options.output_level = options.output_level;
     
     builder_ = std::make_unique<ZoneColumnarSstBuilder>(v2_options, file);
   }

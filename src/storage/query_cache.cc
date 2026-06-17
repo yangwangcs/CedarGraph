@@ -30,6 +30,12 @@ std::optional<Descriptor> QueryCache::Get(uint64_t entity_id, uint16_t column_id
   return std::nullopt;
 }
 
+bool QueryCache::Has(uint64_t entity_id, uint16_t column_id, uint64_t timestamp) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  QueryCacheKey key{entity_id, column_id, timestamp};
+  return cache_.count(key) > 0;
+}
+
 void QueryCache::Put(uint64_t entity_id, uint16_t column_id, uint64_t timestamp,
                      const std::optional<Descriptor>& result) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -63,26 +69,34 @@ void QueryCache::Put(uint64_t entity_id, uint16_t column_id, uint64_t timestamp,
   entry.access_time = std::chrono::steady_clock::now();
   
   cache_[key] = std::make_pair(lru_list_.begin(), entry);
+  entity_index_[entity_id].push_back(key);
   current_size_bytes_ += entry_size;
 }
 
 void QueryCache::Invalidate(uint64_t entity_id, uint16_t column_id) {
   std::lock_guard<std::mutex> lock(mutex_);
   
-  // Find and remove entries for this entity
-  auto it = cache_.begin();
-  while (it != cache_.end()) {
-    if (it->first.entity_id == entity_id) {
-      // If column_id == UINT16_MAX, invalidate all columns.
-      // Otherwise, only invalidate the specified column.
-      if (column_id == UINT16_MAX || it->first.column_id == column_id) {
-        current_size_bytes_ -= it->second.second.size_bytes;
-        lru_list_.erase(it->second.first);
-        it = cache_.erase(it);
-        continue;
-      }
+  auto idx_it = entity_index_.find(entity_id);
+  if (idx_it == entity_index_.end()) return;
+  
+  auto& keys = idx_it->second;
+  auto write_it = keys.begin();
+  for (auto read_it = keys.begin(); read_it != keys.end(); ++read_it) {
+    const auto& k = *read_it;
+    if (column_id != UINT16_MAX && k.column_id != column_id) {
+      *write_it++ = k;
+      continue;
     }
-    ++it;
+    auto it = cache_.find(k);
+    if (it != cache_.end()) {
+      current_size_bytes_ -= it->second.second.size_bytes;
+      lru_list_.erase(it->second.first);
+      cache_.erase(it);
+    }
+  }
+  keys.erase(write_it, keys.end());
+  if (keys.empty()) {
+    entity_index_.erase(idx_it);
   }
 }
 
@@ -91,6 +105,7 @@ void QueryCache::Clear() {
   
   cache_.clear();
   lru_list_.clear();
+  entity_index_.clear();
   current_size_bytes_ = 0;
 }
 
@@ -127,6 +142,18 @@ void QueryCache::EvictLRU() {
   if (it != cache_.end()) {
     current_size_bytes_ -= it->second.second.size_bytes;
     cache_.erase(it);
+  }
+  // Remove from entity index
+  auto idx_it = entity_index_.find(lru_key.entity_id);
+  if (idx_it != entity_index_.end()) {
+    auto& keys = idx_it->second;
+    keys.erase(std::remove_if(keys.begin(), keys.end(),
+        [&lru_key](const QueryCacheKey& k) {
+          return k.entity_id == lru_key.entity_id &&
+                 k.column_id == lru_key.column_id &&
+                 k.timestamp == lru_key.timestamp;
+        }), keys.end());
+    if (keys.empty()) entity_index_.erase(idx_it);
   }
   lru_list_.pop_back();
 }

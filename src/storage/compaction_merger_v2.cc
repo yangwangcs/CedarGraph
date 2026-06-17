@@ -102,12 +102,25 @@ class CompactionMergerV2::Impl {
   }
   
   bool Merge() {
+    CedarKey last_key;
+    bool has_last = false;
+    
     while (!heap_.empty()) {
       // 弹出最小元素
       auto current = heap_.top();
       heap_.pop();
       
       stats_.input_entries++;
+      
+      // 去重：跳过相同 key（保留最先弹出的 = 最新版本，因为堆按 ts DESC 排序）
+      if (has_last && IsDuplicate(last_key, current.key)) {
+        stats_.deleted_entries++;
+        // 从同一输入读取下一个
+        if (ReadNextFromInput(current.input_idx, current.row_idx + 1)) {
+          // ReadNextFromInput 会将新条目推入堆
+        }
+        continue;
+      }
       
       // 跟踪 key range
       uint64_t eid = current.key.entity_id();
@@ -119,6 +132,8 @@ class CompactionMergerV2::Impl {
         //  Tombstone，根据策略决定是否删除
         if (options_.remove_tombstones) {
           stats_.deleted_entries++;
+          last_key = current.key;
+          has_last = true;
           // 继续读取下一个
           if (ReadNextFromInput(current.input_idx, current.row_idx + 1)) {
             // ReadNextFromInput 会将新条目推入堆
@@ -130,6 +145,9 @@ class CompactionMergerV2::Impl {
       // 输出到 Builder
       builder_->Add(current.key, current.descriptor, Timestamp(0));
       stats_.output_entries++;
+      
+      last_key = current.key;
+      has_last = true;
       
       // 从同一输入读取下一个
       if (ReadNextFromInput(current.input_idx, current.row_idx + 1)) {
@@ -196,6 +214,14 @@ class CompactionMergerV2::Impl {
     }
     
     return false;
+  }
+  
+  bool IsDuplicate(const CedarKey& a, const CedarKey& b) const {
+    return a.entity_id() == b.entity_id() &&
+           a.timestamp().value() == b.timestamp().value() &&
+           a.target_id() == b.target_id() &&
+           a.column_id() == b.column_id() &&
+           a.entity_type() == b.entity_type();
   }
   
  private:

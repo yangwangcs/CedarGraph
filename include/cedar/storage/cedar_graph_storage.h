@@ -196,6 +196,10 @@ class CedarGraphStorage {
   // Trigger compaction manually
   Status Compact();
 
+  // Pause/resume background compaction (for snapshot safety)
+  void PauseCompaction();
+  void ResumeCompaction();
+
   // Get database statistics
   struct Stats {
     size_t memtable_size = 0;

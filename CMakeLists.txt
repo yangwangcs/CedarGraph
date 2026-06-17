@@ -110,6 +110,10 @@ add_custom_target(generate_proto ALL
 # Find required packages
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LZ4 REQUIRED liblz4)
+pkg_check_modules(ZSTD libzstd)
+if(NOT ZSTD_FOUND)
+  message(STATUS "Zstd not found, L3+ will use LZ4 fallback")
+endif()
 find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -266,6 +270,7 @@ set(CEDAR_DTX_SOURCES
     src/dtx/chaos/chaos_testing.cc
     src/dtx/storage_impl/partition_storage.cc
     src/dtx/storage_impl/partition_manager.cc
+    src/storage/storage_backend.cc
     src/dtx/storage_impl/storage_client.cc
     src/dtx/storage_impl/storage_server.cc
     src/dtx/storage_impl/storage_service_impl.cc
@@ -371,7 +376,7 @@ add_library(cedar STATIC
     ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc
 )
 
-target_link_libraries(cedar ${LZ4_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf gRPC::grpc++ yaml-cpp::yaml-cpp)
+target_link_libraries(cedar ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf gRPC::grpc++ yaml-cpp::yaml-cpp)
 target_include_directories(cedar PUBLIC ${LZ4_INCLUDE_DIRS})
 target_link_directories(cedar PUBLIC ${LZ4_LIBRARY_DIRS})
 target_compile_definitions(cedar PRIVATE CEDAR_NO_GLOG)
@@ -746,6 +751,26 @@ add_executable(test_flush_persistence
     tests/test_flush_persistence.cpp
 )
 target_link_libraries(test_flush_persistence cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+
+add_executable(test_multilevel_compaction
+    tests/test_multilevel_compaction.cpp
+)
+target_link_libraries(test_multilevel_compaction cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+
+add_executable(test_level_compaction
+    tests/test_level_compaction.cpp
+)
+target_link_libraries(test_level_compaction cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+
+add_executable(test_perf_compaction_safety
+    tests/test_perf_compaction_safety.cpp
+)
+target_link_libraries(test_perf_compaction_safety cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+
+add_executable(test_leveled_verify
+    tests/test_leveled_verify.cpp
+)
+target_link_libraries(test_leveled_verify cedar ${LZ4_LIBRARIES} gRPC::grpc++)
 
 
 

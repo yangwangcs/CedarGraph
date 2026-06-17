@@ -31,15 +31,24 @@ namespace dtx {
 // PartitionStorage Implementation - Shared LSM-Tree Architecture
 // =============================================================================
 
-PartitionStorage::PartitionStorage(PartitionID partition_id, 
+PartitionStorage::PartitionStorage(PartitionID partition_id,
                                    CedarGraphStorage* shared_storage,
-                                   StoragePartitionManager* manager)
+                                   StoragePartitionManager* manager,
+                                   StorageBackend* backend)
     : partition_id_(partition_id),
       shared_storage_(shared_storage),
+      backend_(backend),
       manager_(manager) {}
 
 PartitionStorage::~PartitionStorage() {
   // Note: shared_storage_ is owned by PartitionManager, not deleted here
+}
+
+CedarGraphStorage* PartitionStorage::GetEffectiveStorage() const {
+  if (backend_) {
+    return backend_->GetStorageForPartition(partition_id_);
+  }
+  return shared_storage_;
 }
 
 CedarKey PartitionStorage::InjectPartitionId(const CedarKey& key) const {
@@ -54,7 +63,8 @@ PartitionID PartitionStorage::ExtractPartitionId(const CedarKey& key) {
 
 Status PartitionStorage::Put(const CedarKey& key, const Descriptor& descriptor,
                             Timestamp txn_version, TxnID txn_id) {
-  if (!shared_storage_) {
+  CedarGraphStorage* storage = GetEffectiveStorage();
+  if (!storage) {
     return Status::IOError("Storage not initialized");
   }
   
@@ -66,10 +76,9 @@ Status PartitionStorage::Put(const CedarKey& key, const Descriptor& descriptor,
   CedarKey storage_key = InjectPartitionId(key);
   
   // Use CedarGraphStorage API: Put(entity_id, tx_time, descriptor, txn_version)
-  // Note: tx_time (business timestamp) comes from key.timestamp(), not txn_version
-  Status s = shared_storage_->Put(
+  Status s = storage->Put(
       storage_key.entity_id(),
-      storage_key.timestamp().value(),  // Use key's timestamp as tx_time
+      storage_key.timestamp().value(),
       descriptor,
       txn_version
   );
@@ -91,7 +100,8 @@ Status PartitionStorage::Put(const CedarKey& key, const Descriptor& descriptor,
 }
 
 StatusOr<Descriptor> PartitionStorage::Get(const CedarKey& key, Timestamp read_time) {
-  if (!shared_storage_) {
+  CedarGraphStorage* storage = GetEffectiveStorage();
+  if (!storage) {
     return Status::IOError("Storage not initialized");
   }
   
@@ -99,8 +109,7 @@ StatusOr<Descriptor> PartitionStorage::Get(const CedarKey& key, Timestamp read_t
   CedarKey storage_key = InjectPartitionId(key);
   
   // Use CedarGraphStorage API: Get(entity_id, entity_type, column_id, timestamp)
-  // Use the caller's read_time so temporal queries return the correct version.
-  auto result = shared_storage_->Get(
+  auto result = storage->Get(
       storage_key.entity_id(),
       storage_key.entity_type(),
       storage_key.column_id(),
@@ -119,7 +128,8 @@ Status PartitionStorage::Prepare(TxnID txn_id, const std::vector<CedarKey>& read
                                  const std::unordered_map<uint64_t, Descriptor>& write_descriptors,
                                  Timestamp commit_ts,
                                  Timestamp read_timestamp) {
-  if (!shared_storage_) {
+  CedarGraphStorage* storage = GetEffectiveStorage();
+  if (!storage) {
     return Status::IOError("Storage not initialized");
   }
   
@@ -150,8 +160,8 @@ Status PartitionStorage::Prepare(TxnID txn_id, const std::vector<CedarKey>& read
   // Validate read-set: check that no key in reads has been modified
   // after the transaction's read_timestamp (snapshot isolation).
   // If read_timestamp is 0, skip validation (backward compatibility).
-  if (shared_storage_ && read_timestamp.value() > 0) {
-    auto* lsm_engine = shared_storage_->GetLsmEngine();
+  if (storage && read_timestamp.value() > 0) {
+    auto* lsm_engine = storage->GetLsmEngine();
     if (lsm_engine) {
       for (const auto& read_key : reads) {
         if (ExtractPartitionId(read_key) != partition_id_) {
@@ -189,7 +199,8 @@ Status PartitionStorage::Prepare(TxnID txn_id, const std::vector<CedarKey>& read
 }
 
 Status PartitionStorage::Commit(TxnID txn_id, Timestamp commit_ts) {
-  if (!shared_storage_) {
+  CedarGraphStorage* storage = GetEffectiveStorage();
+  if (!storage) {
     return Status::IOError("Storage not initialized");
   }
   
@@ -236,7 +247,7 @@ Status PartitionStorage::Commit(TxnID txn_id, Timestamp commit_ts) {
   size_t written_count = 0;
   for (const auto& entry : validated_writes) {
     CedarKey storage_key = InjectPartitionId(entry.key);
-    Status s = shared_storage_->Put(
+    Status s = storage->Put(
         storage_key.entity_id(),
         storage_key.timestamp().value(),
         entry.desc,
@@ -318,10 +329,11 @@ PartitionStorage::StorageStats PartitionStorage::GetStats() const {
     stats.num_active_txns = prepared_txns_.size();
   }
   
-  // Estimate partition stats from shared storage
-  if (shared_storage_) {
+  // Estimate partition stats from storage
+  CedarGraphStorage* storage = GetEffectiveStorage();
+  if (storage) {
     // Get storage statistics
-    auto storage_stats = shared_storage_->GetStats();
+    auto storage_stats = storage->GetStats();
     
     // Estimate per-partition stats based on partition proportion
     // In a shared LSM-Tree, we approximate based on partition ID distribution

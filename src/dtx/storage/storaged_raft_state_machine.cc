@@ -1,6 +1,6 @@
 #include "cedar/dtx/storage/storaged_raft_state_machine.h"
 #include "cedar/dtx/storage/braft_partition_state_machine.h"
-#include <brpc/closure_guard.h>
+#include <braft/raft.h>
 #include <butil/logging.h>
 #include <filesystem>
 
@@ -11,7 +11,7 @@ StorageRaftStateMachine::StorageRaftStateMachine(CedarGraphStorage* storage)
 
 void StorageRaftStateMachine::on_apply(braft::Iterator& iter) {
   for (; iter.valid(); iter.next()) {
-    brpc::ClosureGuard done_guard(iter.done());
+    braft::AsyncClosureGuard done_guard(iter.done());
 
     butil::IOBuf data_buf = iter.data();
     std::string data = data_buf.to_string();
@@ -39,7 +39,10 @@ void StorageRaftStateMachine::on_apply(braft::Iterator& iter) {
           cmd.txn_version);
       if (!status.ok()) {
         LOG(ERROR) << "Apply PUT failed at index=" << iter.index()
-                   << ": " << status.ToString();
+                   << ": " << status.ToString()
+                   << " — stepping down";
+        iter.set_error_and_rollback();
+        return;
       }
     } else if (cmd.type == StorageRaftCommand::Type::kDelete) {
       auto status = storage_->Delete(
@@ -48,7 +51,10 @@ void StorageRaftStateMachine::on_apply(braft::Iterator& iter) {
           cmd.txn_version);
       if (!status.ok()) {
         LOG(ERROR) << "Apply DELETE failed at index=" << iter.index()
-                   << ": " << status.ToString();
+                   << ": " << status.ToString()
+                   << " — stepping down";
+        iter.set_error_and_rollback();
+        return;
       }
     }
 
@@ -60,7 +66,7 @@ void StorageRaftStateMachine::on_shutdown() {}
 
 void StorageRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
                                                 braft::Closure* done) {
-  brpc::ClosureGuard done_guard(done);
+  braft::AsyncClosureGuard done_guard(done);
   LOG(INFO) << "Raft snapshot save to " << writer->get_path();
 
   if (!storage_) {
@@ -72,14 +78,17 @@ void StorageRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
     std::string snapshot_path = writer->get_path();
     std::string data_path = storage_->GetDbPath();
 
-    // Step 1: Flush underlying storage to ensure all data is on disk
+    // Step 1: Pause compaction to prevent SST file deletion during copy
+    storage_->PauseCompaction();
+
+    // Step 2: Flush underlying storage to ensure all data is on disk
     auto flush_status = storage_->ForceFlush();
     if (!flush_status.ok()) {
       LOG(WARNING) << "ForceFlush failed during snapshot: "
                    << flush_status.ToString();
     }
 
-    // Step 2: Copy data directory to snapshot path
+    // Step 3: Copy data directory to snapshot path
     std::string snapshot_data_dir = snapshot_path + "/data";
     std::filesystem::create_directories(snapshot_data_dir);
 
@@ -98,6 +107,9 @@ void StorageRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
         }
       }
     }
+
+    // Step 4: Resume compaction
+    storage_->ResumeCompaction();
 
     // Register data files with snapshot writer
     for (const auto& entry :

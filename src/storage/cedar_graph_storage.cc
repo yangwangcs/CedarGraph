@@ -646,6 +646,20 @@ Status CedarGraphStorage::Compact() {
   return rep_->engine->Compact();
 }
 
+void CedarGraphStorage::PauseCompaction() {
+  std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
+  if (rep_->engine) {
+    rep_->engine->PauseCompaction();
+  }
+}
+
+void CedarGraphStorage::ResumeCompaction() {
+  std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
+  if (rep_->engine) {
+    rep_->engine->ResumeCompaction();
+  }
+}
+
 CedarGraphStorage::Stats CedarGraphStorage::GetStats() const {
   std::shared_lock<std::shared_mutex> lock(rep_->mutex_);
   

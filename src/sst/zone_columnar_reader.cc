@@ -20,6 +20,7 @@
 #include "cedar/core/env.h"
 #include "cedar/core/crc32c.h"
 #include "cedar/sst/blob_file_manager.h"
+#include "cedar/sst/compression.h"
 
 namespace {
 // CRC64: combine two CRC32C with different seeds for 64-bit integrity check
@@ -167,6 +168,34 @@ Status ZoneColumnarSstReader::LoadMetadata() {
     CEDAR_RETURN_IF_ERROR(s);
     temporal_filter_data_.assign(tf_result.data(), tf_result.size());
   }
+  
+  // 加载 Entity Hash Index (if present)
+  if (footer_.entity_index_size > 0 && footer_.entity_index_offset > 0) {
+    std::string ei_buf;
+    ei_buf.resize(footer_.entity_index_size);
+    Slice ei_result;
+    s = file_->Read(footer_.entity_index_offset, footer_.entity_index_size, &ei_result, &ei_buf[0]);
+    if (s.ok() && ei_result.size() >= 4) {
+      const char* p = ei_result.data();
+      uint32_t entry_count;
+      std::memcpy(&entry_count, p, sizeof(entry_count));
+      p += 4;
+      const char* end = ei_result.data() + ei_result.size();
+      for (uint32_t i = 0; i < entry_count && p + 10 <= end; ++i) {
+        uint64_t eid;
+        std::memcpy(&eid, p, sizeof(eid)); p += 8;
+        uint16_t bc;
+        std::memcpy(&bc, p, sizeof(bc)); p += 2;
+        auto& block_ids = entity_index_[eid];
+        for (uint16_t j = 0; j < bc && p + 2 <= end; ++j) {
+          uint16_t bid;
+          std::memcpy(&bid, p, sizeof(bid)); p += 2;
+          block_ids.push_back(bid);
+        }
+      }
+      has_entity_index_ = !entity_index_.empty();
+    }
+  }
 
   // 验证 data_checksum: header 之后到 footer 之前的所有数据
   size_t data_start = ZoneColumnarHeader::kEncodedSize;
@@ -289,50 +318,67 @@ std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> ZoneColumnarSstReader::
   
   if (!opened_) return results;
   
-  // 使用二分查找定位可能包含该 entity 的 Block
-  auto it = std::lower_bound(block_index_.begin(), block_index_.end(), entity_id,
-    [](const BlockIndexEntry& entry, uint64_t eid) {
-      return entry.max_entity_id < eid;
-    });
-  
-  // 从找到的位置向前扫描
-  for (size_t block_idx = (it != block_index_.begin() ? 
-                           std::distance(block_index_.begin(), it - 1) : 0); 
-       block_idx < block_index_.size(); ++block_idx) {
-    const auto& entry = block_index_[block_idx];
+  // O(1) block lookup via Entity Hash Index
+  if (has_entity_index_) {
+    auto it = entity_index_.find(entity_id);
+    if (it == entity_index_.end()) return results;  // entity definitely not in this SST
     
-    if (entity_id < entry.min_entity_id) {
-      break;  // 后面的 block 都不会包含这个 entity
-    }
-    if (entity_id > entry.max_entity_id) {
-      continue;
-    }
-    
-    // Skip if timestamp not in range
-    if (end.value() < entry.min_timestamp || start.value() > entry.max_timestamp) {
-      continue;
-    }
-    
-    // Load block
-    auto block = LoadBlock(block_idx);
-    if (!block) continue;
-    
-    // Scan block for matching entries
-    for (uint32_t row = 0; row < entry.row_count; ++row) {
-      CedarKey key = ReconstructKeyFromBlock(*block, row);
+    for (uint32_t block_idx : it->second) {
+      if (block_idx >= block_index_.size()) continue;
+      const auto& entry = block_index_[block_idx];
       
-      if (key.entity_id() != entity_id) continue;
-      // Entity type 检查: 如果查询指定了特定类型，始终过滤
-      if (static_cast<uint8_t>(entity_type) != 0 &&
-          static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
-      // Column ID 检查: 如果查询指定了特定 column_id，始终过滤（即使 SST 是跨列存储）
-      if (column_id != UINT16_MAX && key.column_id() != column_id) continue;
-      if (key.timestamp().value() < start.value() || key.timestamp().value() > end.value()) continue;
+      if (end.value() < entry.min_timestamp || start.value() > entry.max_timestamp) continue;
       
-      auto desc = GetValueByRow(*block, row);
-      if (desc.has_value()) {
-        Timestamp txn_version = GetTxnVersionFromBlock(*block, row);
-        results.emplace_back(key, desc.value(), txn_version);
+      auto block = LoadBlock(block_idx);
+      if (!block) continue;
+      
+      for (uint32_t row = 0; row < entry.row_count; ++row) {
+        CedarKey key = ReconstructKeyFromBlock(*block, row);
+        if (key.entity_id() != entity_id) continue;
+        if (static_cast<uint8_t>(entity_type) != 0 &&
+            static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
+        if (column_id != UINT16_MAX && key.column_id() != column_id) continue;
+        if (key.timestamp().value() < start.value() || key.timestamp().value() > end.value()) continue;
+        
+        auto desc = GetValueByRow(*block, row);
+        if (desc.has_value()) {
+          Timestamp txn_version = GetTxnVersionFromBlock(*block, row);
+          results.emplace_back(key, desc.value(), txn_version);
+        }
+      }
+    }
+  } else {
+    // Fallback: binary search on block index
+    auto it = std::lower_bound(block_index_.begin(), block_index_.end(), entity_id,
+      [](const BlockIndexEntry& entry, uint64_t eid) {
+        return entry.max_entity_id < eid;
+      });
+    
+    for (size_t block_idx = (it != block_index_.begin() ? 
+                             std::distance(block_index_.begin(), it - 1) : 0); 
+         block_idx < block_index_.size(); ++block_idx) {
+      const auto& entry = block_index_[block_idx];
+      
+      if (entity_id < entry.min_entity_id) break;
+      if (entity_id > entry.max_entity_id) continue;
+      if (end.value() < entry.min_timestamp || start.value() > entry.max_timestamp) continue;
+      
+      auto block = LoadBlock(block_idx);
+      if (!block) continue;
+      
+      for (uint32_t row = 0; row < entry.row_count; ++row) {
+        CedarKey key = ReconstructKeyFromBlock(*block, row);
+        if (key.entity_id() != entity_id) continue;
+        if (static_cast<uint8_t>(entity_type) != 0 &&
+            static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
+        if (column_id != UINT16_MAX && key.column_id() != column_id) continue;
+        if (key.timestamp().value() < start.value() || key.timestamp().value() > end.value()) continue;
+        
+        auto desc = GetValueByRow(*block, row);
+        if (desc.has_value()) {
+          Timestamp txn_version = GetTxnVersionFromBlock(*block, row);
+          results.emplace_back(key, desc.value(), txn_version);
+        }
       }
     }
   }
@@ -385,8 +431,11 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   cache_entry->access_time = std::chrono::steady_clock::now();
   cache_entry->data.assign(result.data(), result.size());
   
-  // Parse block header (44 bytes)
-  if (result.size() < BlockHeader::kSize) return nullptr;
+  // Parse block header (50 bytes = 44 + 6 compression types)
+  if (result.size() < 50) {
+    // Fallback: try old 44-byte header format
+    if (result.size() < BlockHeader::kSize) return nullptr;
+  }
   const char* p = result.data();
   uint32_t row_count;
   std::memcpy(&row_count, p, sizeof(row_count));
@@ -404,15 +453,25 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   p += 8;
   uint64_t max_entity;
   std::memcpy(&max_entity, p, sizeof(max_entity));
+  p += 8;
+  
+  // Per-zone compression types (6 bytes, new in V2.1)
+  uint8_t compression_types[6] = {0, 0, 0, 0, 0, 0};
+  if (result.size() >= 50) {
+    for (int i = 0; i < 6; ++i) {
+      compression_types[i] = static_cast<uint8_t>(p[i]);
+    }
+  }
   
   (void)row_count;
   (void)min_entity;
   (void)max_entity;
   
-
+  // Determine actual header size
+  size_t header_size = (result.size() >= 50) ? 50 : BlockHeader::kSize;
   
-  // Store zone offsets for later parsing
-  size_t offset = BlockHeader::kSize;
+  // Store zone offsets and sizes for later parsing
+  size_t offset = header_size;
   for (int i = 0; i < 6; i++) {
     cache_entry->zone_offsets[i] = offset;
     cache_entry->zone_sizes[i] = zone_sizes[i];
@@ -422,6 +481,52 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   // Validate all zones fit within block data
   if (offset > result.size()) {
     return nullptr;
+  }
+  
+  // Decompress zones if needed (LZ4/Zstd)
+  bool any_compressed = false;
+  for (int i = 0; i < 6; ++i) {
+    if (compression_types[i] != 0) {
+      any_compressed = true;
+      break;
+    }
+  }
+  
+  if (any_compressed) {
+    // Decompress each zone and rebuild block data
+    std::string rebuilt_data;
+    rebuilt_data.reserve(result.size() * 2);  // Estimate
+    
+    for (int i = 0; i < 6; ++i) {
+      if (compression_types[i] != 0 && zone_sizes[i] > 0) {
+        auto ct = static_cast<CedarCompressionType>(compression_types[i]);
+        size_t uncompressed_size = row_count * 8;
+        std::string decompressed;
+        const char* zone_data = result.data() + header_size;
+        // Compute zone offset within block
+        size_t zone_off = 0;
+        for (int j = 0; j < i; ++j) zone_off += zone_sizes[j];
+        
+        Status ds = Compression::Decompress(ct, Slice(zone_data + zone_off, zone_sizes[i]),
+                                            &decompressed, uncompressed_size);
+        if (ds.ok()) {
+          cache_entry->zone_offsets[i] = rebuilt_data.size();
+          cache_entry->zone_sizes[i] = decompressed.size();
+          rebuilt_data.append(decompressed);
+        } else {
+          // Decompression failed, keep raw data
+          cache_entry->zone_offsets[i] = rebuilt_data.size();
+          rebuilt_data.append(zone_data + zone_off, zone_sizes[i]);
+        }
+      } else {
+        // Uncompressed zone, copy as-is
+        size_t zone_off = 0;
+        for (int j = 0; j < i; ++j) zone_off += zone_sizes[j];
+        cache_entry->zone_offsets[i] = rebuilt_data.size();
+        rebuilt_data.append(result.data() + header_size + zone_off, zone_sizes[i]);
+      }
+    }
+    cache_entry->data = std::move(rebuilt_data);
   }
   
   // Add to cache (double-check after loading to prevent thundering herd)

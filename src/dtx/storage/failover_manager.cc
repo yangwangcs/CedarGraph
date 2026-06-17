@@ -594,10 +594,17 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
       return quorum_status;
     }
   } else {
-    CEDAR_LOG_ERROR() << "[FailoverManager] WARNING: No quorum verification callback. "
-              << "Proceeding with leader switch for partition=" << pid
-              << " WITHOUT quorum confirmation. This is unsafe in production."
-              << std::endl;
+    CEDAR_LOG_ERROR() << "[FailoverManager] ERROR: No quorum verification callback registered. "
+              << "Refusing leader switch for partition=" << pid
+              << " without quorum confirmation." << std::endl;
+    {
+      std::lock_guard<std::mutex> lock(partitions_mutex_);
+      auto it = partitions_.find(pid);
+      if (it != partitions_.end()) {
+        it->second.is_failover_in_progress = false;
+      }
+    }
+    return Status::IOError("FailoverManager", "No quorum verification callback");
   }
 
   // Step 3: Safe to update current_leader.

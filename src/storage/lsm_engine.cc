@@ -36,7 +36,7 @@ LsmEngine::LsmEngine(const std::string& db_path,
       next_file_number_(1),
       shutdown_(false),
       bg_thread_(nullptr),
-      query_cache_(std::make_unique<QueryCache>(10000)),
+      query_cache_(std::make_unique<QueryCache>(128 * 1024 * 1024)),  // 128MB row cache
       compaction_scheduled_(false),
       has_work_(false),
       disable_column_tracking_(false),
@@ -58,12 +58,8 @@ LsmEngine::LsmEngine(const std::string& db_path,
   
   // ========== SST 配置 ==========
   // 默认使用 Zone-Columnar 格式（256KB Block，稀疏索引）
-  // 默认使用更大的 SST 文件
   if (compaction_config_.l0_file_size < 64 * 1024 * 1024) {
     compaction_config_.l0_file_size = 64 * 1024 * 1024;  // 64MB
-  }
-  if (compaction_config_.l0_max_files < 8) {
-    compaction_config_.l0_max_files = 8;  // L0 最多 8 个文件
   }
 }
 
@@ -122,6 +118,9 @@ Status LsmEngine::Open() {
   if (!s.ok()) {
     return Status::IOError("LsmEngine", "Failed to open compaction engine: " + s.ToString());
   }
+  
+  // 共享文件号计数器，避免 compaction 输出与 flush 输出文件号冲突
+  compaction_engine_->SetSharedFileNumber(&next_file_number_);
   
   // 启动自动 Compaction 后台线程
   auto_compaction_enabled_.store(true);
@@ -350,7 +349,8 @@ Status LsmEngine::Put(const CedarKey& key, const Descriptor& descriptor, Timesta
       return s;
     }
     
-// InvalidateQueryCache disabled
+    // Invalidate row cache on write
+    InvalidateQueryCache(key.entity_id());
     
     if (!disable_column_tracking_) {
       TrackColumnId(key.entity_id(), key.column_id());
@@ -411,7 +411,8 @@ Status LsmEngine::WriteBatch(const std::vector<WriteBatchEntry>& entries) {
         return s;
       }
       
-// InvalidateQueryCache disabled
+    // Invalidate row cache on write
+    InvalidateQueryCache(entry.key.entity_id());
       
       if (!disable_column_tracking_) {
         TrackColumnId(entry.key.entity_id(), entry.key.column_id());
@@ -470,7 +471,8 @@ Status LsmEngine::Delete(const CedarKey& key, Timestamp txn_version) {
       return s;
     }
     
-// InvalidateQueryCache disabled
+    // Invalidate row cache on write
+    InvalidateQueryCache(key.entity_id());
     if (!disable_column_tracking_) {
       TrackColumnId(key.entity_id(), key.column_id());
     }
@@ -674,120 +676,163 @@ std::vector<MemTableEntry> LsmEngine::GetAll(uint64_t entity_id,
 }
 
 std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
-                                               EntityType entity_type,
-                                               uint16_t column_id,
-                                               Timestamp timestamp) {
+                                                EntityType entity_type,
+                                                uint16_t column_id,
+                                                Timestamp timestamp) {
   if (!opened_) {
     return std::nullopt;
   }
 
-  // QueryCache intentionally disabled — std::mutex serializes all reads.
-  // MemTable shared_mutex allows concurrent reads without cache overhead.
-
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-
-  // 1. Query MemTable (hot data)
-  auto desc = mem_->GetAtTime(entity_id, entity_type, column_id, timestamp);
-  if (desc.has_value()) {
-    if (query_cache_) {
-// query_cache_->Put disabled
-    }
-    return desc;
+  // 0. Row Cache: check before acquiring shared_lock (cache has its own mutex)
+  if (query_cache_ && query_cache_->Has(entity_id, column_id, timestamp.value())) {
+    return query_cache_->Get(entity_id, column_id, timestamp.value());
   }
 
-  // 2. Query Immutable MemTable
-  if (imm_) {
-    desc = imm_->GetAtTime(entity_id, entity_type, column_id, timestamp);
+  // Phase 1: Check MemTable under shared_lock (memtable needs engine lock)
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+
+    // 1. Query MemTable (hot data)
+    auto desc = mem_->GetAtTime(entity_id, entity_type, column_id, timestamp);
     if (desc.has_value()) {
+      lock.unlock();
       if (query_cache_) {
-  // query_cache_->Put disabled
+        query_cache_->Put(entity_id, column_id, timestamp.value(), desc);
       }
       return desc;
     }
-  }
-  
-  // 3. Query Accumulated Buffer (for accumulated flush mode)
-  auto accumulated = QueryAccumulatedBuffer(entity_id, entity_type, column_id, timestamp);
-  if (accumulated.has_value()) {
-    if (query_cache_) {
-// query_cache_->Put disabled
+
+    // 2. Query Immutable MemTable
+    if (imm_) {
+      desc = imm_->GetAtTime(entity_id, entity_type, column_id, timestamp);
+      if (desc.has_value()) {
+        lock.unlock();
+        if (query_cache_) {
+          query_cache_->Put(entity_id, column_id, timestamp.value(), desc);
+        }
+        return desc;
+      }
     }
-    return accumulated->second;
+    
+    // 3. Query Accumulated Buffer (for accumulated flush mode)
+    auto accumulated = QueryAccumulatedBuffer(entity_id, entity_type, column_id, timestamp);
+    if (accumulated.has_value()) {
+      lock.unlock();
+      if (query_cache_) {
+        query_cache_->Put(entity_id, column_id, timestamp.value(), accumulated->second);
+      }
+      return accumulated->second;
+    }
+    
+    // All memtable paths missed — release lock before SST reads.
+    // SST files are immutable and SstReaderCache uses reference counting,
+    // so SST reads are safe without the engine lock.
   }
-  
-  // 4. Query SST files
-  // 收集所有匹配的条目
+
+  // Phase 2: SST reads WITHOUT engine lock (SST files are immutable)
+  // GetFilesForEntity has its own shared_lock on levels_mutex_
+  // SstReaderCache has its own internal locking
+  // Multiple threads can now read SST files in parallel!
   std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> all_entries;
   
-  // 从 Compaction Engine 获取文件列表（如果可用）
   if (compaction_engine_) {
     auto files = compaction_engine_->GetFilesForEntity(
         entity_id, column_id, static_cast<uint8_t>(entity_type));
     
+    // Filter files by range and temporal bloom filter first (fast, serial)
+    struct SstQueryTask {
+      std::string path;
+      std::string temporal_filter;
+    };
+    std::vector<SstQueryTask> tasks;
     for (const auto& file_meta : files) {
-      // 快速范围检查
       if (entity_id < file_meta.min_entity_id || 
-          entity_id > file_meta.max_entity_id) {
-        continue;
-      }
+          entity_id > file_meta.max_entity_id) continue;
       
-      // Temporal Bloom Filter 检查
       if (!file_meta.temporal_filter_metadata.empty()) {
         auto filter_opt = TemporalBloomFilter::Deserialize(file_meta.temporal_filter_metadata);
-        if (filter_opt.has_value() && 
-            !filter_opt.value().MayContain(entity_id)) {
+        if (filter_opt.has_value() && !filter_opt.value().MayContain(entity_id)) continue;
+      }
+      tasks.push_back({file_meta.path, file_meta.temporal_filter_metadata});
+    }
+    
+    // Parallel SST reads: launch async tasks for each qualifying file
+    if (tasks.size() > 1) {
+      std::vector<std::future<std::vector<std::tuple<CedarKey, Descriptor, Timestamp>>>> futures;
+      futures.reserve(tasks.size());
+      
+      for (const auto& task : tasks) {
+        futures.push_back(std::async(std::launch::async, [this, &task, entity_id, entity_type, column_id]() {
+          std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> results;
+          
+          std::shared_ptr<SstReader> reader;
+          if (sst_reader_cache_) {
+            reader = sst_reader_cache_->Get(task.path);
+          }
+          if (!reader) {
+            reader = std::make_shared<SstReader>(task.path);
+            if (!reader->Open().ok()) return results;
+          }
+          
+          if (!reader->MayContainEntity(entity_id)) {
+            if (sst_reader_cache_) sst_reader_cache_->Release(task.path);
+            return results;
+          }
+          
+          results = reader->GetRange(entity_id, entity_type, column_id,
+                                     Timestamp(0), Timestamp(UINT64_MAX));
+          
+          if (sst_reader_cache_) sst_reader_cache_->Release(task.path);
+          return results;
+        }));
+      }
+      
+      // Merge results from all parallel tasks
+      for (auto& f : futures) {
+        auto results = f.get();
+        all_entries.insert(all_entries.end(), results.begin(), results.end());
+      }
+    } else {
+      // Single file: no need for async overhead
+      for (const auto& task : tasks) {
+        std::shared_ptr<SstReader> reader;
+        if (sst_reader_cache_) {
+          reader = sst_reader_cache_->Get(task.path);
+        }
+        if (!reader) {
+          reader = std::make_shared<SstReader>(task.path);
+          if (!reader->Open().ok()) continue;
+        }
+        
+        if (!reader->MayContainEntity(entity_id)) {
+          if (sst_reader_cache_) sst_reader_cache_->Release(task.path);
           continue;
         }
-      }
-      
-      // 使用缓存的 Reader
-      std::shared_ptr<SstReader> reader;
-      if (sst_reader_cache_) {
-        reader = sst_reader_cache_->Get(file_meta.path);
-      }
-      if (!reader) {
-        // 缓存未命中，创建新的
-        reader = std::make_shared<SstReader>(file_meta.path);
-        if (!reader->Open().ok()) {
-          continue;
-        }
-      }
-      
-      // 使用 GetRange 获取该 Entity 的所有版本
-      auto range_results = reader->GetRange(entity_id, entity_type, column_id,
-                                           Timestamp(0), Timestamp(UINT64_MAX));
-      all_entries.insert(all_entries.end(), range_results.begin(), range_results.end());
-      
-      // 释放 Reader（减少引用计数）
-      if (sst_reader_cache_) {
-        sst_reader_cache_->Release(file_meta.path);
+        
+        auto range_results = reader->GetRange(entity_id, entity_type, column_id,
+                                             Timestamp(0), Timestamp(UINT64_MAX));
+        all_entries.insert(all_entries.end(), range_results.begin(), range_results.end());
+        
+        if (sst_reader_cache_) sst_reader_cache_->Release(task.path);
       }
     }
   }
   
-  // 从本地 levels_ 获取文件列表（当 compaction_engine_ 不可用时）
+  // Fallback: 从本地 levels_ 获取文件列表（当 compaction_engine_ 不可用时）
   if (all_entries.empty()) {
-    // mutex_ is already locked by the outer shared_lock at line 457
+    // Need shared_lock to read levels_ (it's part of engine state)
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     for (const auto& level : levels_) {
       for (const auto& meta : level) {
-        // 支持跨列存储的文件
         bool column_match = (meta.column_id == column_id) || (meta.column_id == UINT16_MAX);
         bool type_match = (meta.entity_type == static_cast<uint8_t>(entity_type)) || 
                          (meta.entity_type == 0);
         
-        if (!column_match || !type_match) {
-          continue;
-        }
+        if (!column_match || !type_match) continue;
+        if (entity_id < meta.min_entity_id || entity_id > meta.max_entity_id) continue;
         
-        // 范围检查
-        if (entity_id < meta.min_entity_id || entity_id > meta.max_entity_id) {
-          continue;
-        }
-        
-        // 构建文件路径
         std::string filepath = SstFilePath(meta.file_number);
         
-        // Use cached SstReader if available
         std::shared_ptr<SstReader> reader;
         if (sst_reader_cache_) {
           reader = sst_reader_cache_->Get(filepath);
@@ -799,6 +844,13 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
         }
         
         if (!reader) continue;
+        
+        if (!reader->MayContainEntity(entity_id)) {
+          if (sst_reader_cache_) {
+            sst_reader_cache_->Release(filepath);
+          }
+          continue;
+        }
         
         auto range_results = reader->GetRange(entity_id, entity_type, column_id,
                                              Timestamp(0), Timestamp(UINT64_MAX));
@@ -812,8 +864,8 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     }
   }
   
+  // Phase 3: Select best result and cache (no lock needed)
   if (!all_entries.empty()) {
-    // 增量处理：直接遍历找最佳匹配，避免全量排序
     std::optional<Descriptor> best_descriptor;
     uint64_t best_ts = 0;
     
@@ -828,15 +880,15 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     
     if (best_descriptor.has_value()) {
       if (query_cache_) {
-// query_cache_->Put disabled
+        query_cache_->Put(entity_id, column_id, timestamp.value(), best_descriptor);
       }
       return best_descriptor;
     }
   }
   
-  // Cache the negative result to avoid repeated SST scans
+  // Cache negative result
   if (query_cache_) {
-// query_cache_->Put disabled
+    query_cache_->Put(entity_id, column_id, timestamp.value(), std::nullopt);
   }
   return std::nullopt;
 }
@@ -2957,11 +3009,19 @@ Status LsmEngine::LoadSstFiles() {
 
   std::cerr << "[LoadSstFiles] Loading from: " << db_path_ << std::endl;
   int loaded_count = 0;
+  int cleaned_count = 0;
 
   for (const auto& entry : std::filesystem::directory_iterator(db_path_)) {
     if (entry.is_regular_file() && entry.path().extension() == ".sst") {
       std::string filename = entry.path().filename().string();
-      std::cerr << "[LoadSstFiles] Found SST: " << filename << std::endl;
+      
+      // 清理 0 字节或过小的无效 SST 文件（compaction 失败残留）
+      if (entry.file_size() < 64) {
+        std::error_code ec;
+        std::filesystem::remove(entry.path(), ec);
+        cleaned_count++;
+        continue;
+      }
       
       size_t dot_pos = filename.find('.');
       if (dot_pos == std::string::npos) continue;
@@ -3006,8 +3066,14 @@ Status LsmEngine::LoadSstFiles() {
       meta.temporal_filter_metadata = reader.GetTemporalFilterData();
 
       levels_[0].push_back(meta);
+      loaded_count++;
     }
   }
+  
+  if (cleaned_count > 0) {
+    std::cerr << "[LoadSstFiles] Cleaned " << cleaned_count << " invalid SST files" << std::endl;
+  }
+  std::cerr << "[LoadSstFiles] Loaded " << loaded_count << " valid SST files" << std::endl;
 
   return Status::OK();
 }
@@ -3099,6 +3165,15 @@ std::vector<uint64_t> LsmEngine::GetCandidateFiles(uint64_t entity_id,
 
 void LsmEngine::AutoCompactionThread() {
   while (auto_compaction_enabled_.load()) {
+    // Check if compaction is paused (for snapshot safety)
+    {
+      std::unique_lock<std::mutex> pause_lock(compaction_pause_mutex_);
+      compaction_pause_cv_.wait(pause_lock, [this] {
+        return !compaction_paused_.load() || !auto_compaction_enabled_.load();
+      });
+    }
+    if (!auto_compaction_enabled_.load()) break;
+
     // 如果后台合并被禁用，跳过执行但保持线程运行
     if (!options_.size_tiered_config.enable_background_compaction) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -3119,6 +3194,23 @@ void LsmEngine::AutoCompactionThread() {
     
     // 休眠一段时间再检查
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+}
+
+void LsmEngine::PauseCompaction() {
+  compaction_paused_.store(true);
+  // Also pause the compaction engine's background threads
+  if (compaction_engine_) {
+    compaction_engine_->PauseCompaction();
+  }
+}
+
+void LsmEngine::ResumeCompaction() {
+  compaction_paused_.store(false);
+  compaction_pause_cv_.notify_all();
+  // Also resume the compaction engine's background threads
+  if (compaction_engine_) {
+    compaction_engine_->ResumeCompaction();
   }
 }
 

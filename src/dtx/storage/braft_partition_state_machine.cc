@@ -8,6 +8,7 @@
 #include <butil/logging.h>
 #include <fstream>
 #include <filesystem>
+#include <braft/raft.h>
 
 namespace cedar {
 namespace dtx {
@@ -116,6 +117,22 @@ void PartitionRaftStateMachine::on_apply(braft::Iterator& iter) {
     }
     
     last_applied_index_.store(iter.index());
+    
+    // Update GC safe point on leader: tombstones at deep levels can only be
+    // dropped after all replicas have applied beyond this index. The committed
+    // index is the high-water mark guaranteed by Raft consensus.
+    if (storage_) {
+      auto* shared = storage_->GetSharedStorage();
+      if (shared) {
+        auto* engine = shared->GetLsmEngine();
+        if (engine) {
+          auto* compaction = engine->GetCompactionEngine();
+          if (compaction) {
+            compaction->SetGCSafePoint(iter.index());
+          }
+        }
+      }
+    }
   }
 }
 
@@ -152,27 +169,44 @@ void PartitionRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
                                                   braft::Closure* done) {
   braft::AsyncClosureGuard done_guard(done);
   
-  if (!storage_) {
-    LOG(WARNING) << "Storage not available for snapshot save";
-    return;
-  }
-  
-  // Step 1: Flush underlying storage to ensure all data is on disk
-  // (Similar to NebulaGraph's write-blocking + checkpoint creation)
-  auto* shared_storage = storage_->GetSharedStorage();
-  if (shared_storage) {
-    auto flush_status = shared_storage->ForceFlush();
-    if (!flush_status.ok()) {
-      LOG(WARNING) << "ForceFlush failed during snapshot: " << flush_status.ToString();
+  try {
+    if (!storage_) {
+      LOG(WARNING) << "Storage not available for snapshot save";
+      return;
     }
-  }
-  
-  // Step 2: Copy data files from storage data_root to snapshot directory
-  // NebulaGraph uses RocksDB Checkpoint (hard links). We use file copy
-  // since LsmEngine doesn't support checkpoint API.
-  std::string data_root = storage_->GetDataRoot();
-  std::string snapshot_path = writer->get_path();
-  auto copied_files = CopyDirectoryContents(data_root, snapshot_path + "/data");
+    
+    auto* shared_storage = storage_->GetSharedStorage();
+    
+    // Step 1: Pause compaction to prevent SST file deletion during copy
+    if (shared_storage) {
+      shared_storage->PauseCompaction();
+    }
+    
+    // Step 2: Flush underlying storage to ensure all data is on disk
+    if (shared_storage) {
+      auto flush_status = shared_storage->ForceFlush();
+      if (!flush_status.ok()) {
+        LOG(WARNING) << "ForceFlush failed during snapshot: " << flush_status.ToString();
+      }
+    }
+    
+    // Step 3: Copy data files from storage data_root to snapshot directory
+    std::string data_root = storage_->GetDataRoot();
+    std::string snapshot_path = writer->get_path();
+    std::vector<std::string> copied_files;
+    try {
+      copied_files = CopyDirectoryContents(data_root, snapshot_path + "/data");
+    } catch (...) {
+      if (shared_storage) {
+        shared_storage->ResumeCompaction();
+      }
+      throw;
+    }
+    
+    // Step 4: Resume compaction
+    if (shared_storage) {
+      shared_storage->ResumeCompaction();
+    }
   
   // Register copied data files with snapshot writer
   for (const auto& rel_path : copied_files) {
@@ -186,7 +220,7 @@ void PartitionRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
     }
   }
   
-  // Step 3: Serialize prepared transaction state (2PC)
+  // Step 5: Serialize prepared transaction state (2PC)
   std::string txn_state_path = snapshot_path + "/txn_state";
   auto status = storage_->SavePreparedTxns(txn_state_path);
   if (!status.ok()) {
@@ -206,26 +240,66 @@ void PartitionRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
   
   LOG(INFO) << "Snapshot saved for partition " << storage_->GetPartitionId()
             << " with " << copied_files.size() << " data files";
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "Exception during snapshot save: " << e.what();
+    if (done) {
+      done->status().set_error(EIO, std::string("Exception during snapshot save: ") + e.what());
+    }
+  } catch (...) {
+    LOG(ERROR) << "Unknown exception during snapshot save";
+    if (done) {
+      done->status().set_error(EIO, "Unknown exception during snapshot save");
+    }
+  }
 }
 
 int PartitionRaftStateMachine::on_snapshot_load(braft::SnapshotReader* reader) {
   if (!storage_) {
     LOG(WARNING) << "Storage not available for snapshot load";
-    return 0;
+    return -1;
   }
   
   std::string snapshot_path = reader->get_path();
   std::string data_root = storage_->GetDataRoot();
   
-  // Step 1: Restore data files from snapshot to storage data_root
+  // Step 1: Remove stale SST/blob/MANIFEST files not present in snapshot
+  // This prevents orphaned files from serving stale data after restore
   std::string snapshot_data_dir = snapshot_path + "/data";
+  if (std::filesystem::exists(data_root)) {
+    for (const auto& entry : std::filesystem::directory_iterator(data_root)) {
+      if (entry.is_regular_file()) {
+        std::string filename = entry.path().filename().string();
+        // Remove old SST, blob, and manifest files before restoring
+        if (filename.find(".sst") != std::string::npos ||
+            filename.find(".blob") != std::string::npos ||
+            filename.find("MANIFEST") != std::string::npos) {
+          std::error_code ec;
+          std::filesystem::remove(entry.path(), ec);
+        }
+      }
+    }
+  }
+  
+  // Step 2: Restore data files from snapshot to storage data_root
   if (std::filesystem::exists(snapshot_data_dir)) {
     auto copied_files = CopyDirectoryContents(snapshot_data_dir, data_root);
     LOG(INFO) << "Restored " << copied_files.size() << " data files from snapshot"
               << " for partition " << storage_->GetPartitionId();
   }
   
-  // Step 2: Restore prepared transaction state (2PC)
+  // Step 3: Reload compaction engine manifest if available
+  auto* shared_storage = storage_->GetSharedStorage();
+  if (shared_storage) {
+    auto* engine = shared_storage->GetLsmEngine();
+    if (engine) {
+      auto* compaction = engine->GetCompactionEngine();
+      if (compaction) {
+        compaction->LoadManifest();
+      }
+    }
+  }
+  
+  // Step 4: Restore prepared transaction state (2PC)
   std::string txn_state_path = snapshot_path + "/txn_state";
   if (std::filesystem::exists(txn_state_path)) {
     auto status = storage_->LoadPreparedTxns(txn_state_path);

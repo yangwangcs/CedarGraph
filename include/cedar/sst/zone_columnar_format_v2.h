@@ -90,7 +90,8 @@ struct ZoneColumnarFooter {
   uint32_t footer_magic;             // Footer 魔数校验
   uint32_t temporal_filter_offset;   // Temporal Bloom Filter 偏移（可选，V2+）
   uint32_t temporal_filter_size;     // Temporal Bloom Filter 大小（V2+）
-  uint32_t reserved;                 // Reserved
+  uint32_t entity_index_offset;      // Entity Hash Index 偏移（V2+, 0=不存在）
+  uint32_t entity_index_size;        // Entity Hash Index 大小（V2+, 0=不存在）
   uint64_t data_checksum;            // CRC64 of all data between header and footer
   
   void EncodeTo(std::string* dst) const;

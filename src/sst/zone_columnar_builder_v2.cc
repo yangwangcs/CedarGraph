@@ -27,11 +27,15 @@
 
 #include "cedar/core/crc32c.h"
 #include "cedar/core/env.h"
+#include "cedar/sst/bloom_filter.h"
 #include "cedar/sst/zone_encoder.h"
+#include "cedar/sst/compression.h"
 #include "cedar/storage/sst_temporal_filter.h"
+#include "cedar/common/logging.h"
 
 #include <algorithm>
 #include <cstring>
+#include <unordered_set>
 
 // =============================================================================
 // 编码/解码辅助函数 + CRC64 helper
@@ -177,7 +181,10 @@ void ZoneColumnarSstBuilder::Add(const CedarKey& key, const Descriptor& desc,
 
   // 收集 key 用于构建 TemporalBloomFilter
   all_keys_.push_back(key);
-
+  
+  // 跟踪 entity_id → block 映射 (当前 block 还在 buffer 中，索引 = blocks_.size())
+  entity_blocks_[key.entity_id()].push_back(static_cast<uint32_t>(blocks_.size()));
+  
   // 检查是否需要切割 Block
   if (ShouldCutBlock()) {
     status_ = FlushBlock();
@@ -291,9 +298,33 @@ Status ZoneColumnarSstBuilder::FlushBlock() {
   memcpy(&block.zone5_data[0], buffer_.txn_versions.data(),
          block.zone5_data.size());
 
-  // 计算压缩后大小
+  // 分级压缩: L0=不压缩, L1-2=LZ4, L3+=Zstd
+  if (options_.enable_compression && options_.output_level > 0) {
+    CedarCompressionType compress_type = CedarCompressionType::LZ4;
+    if (options_.output_level >= 3 && Compression::IsSupported(CedarCompressionType::Zstd)) {
+      compress_type = CedarCompressionType::Zstd;
+    }
+    
+    std::string* zones[] = {&block.zone0_data, &block.zone1_data, &block.zone2_data,
+                            &block.zone3_data, &block.zone4_data, &block.zone5_data};
+    for (int i = 0; i < 6; ++i) {
+      if (zones[i]->size() >= 64) {  // 小数据不压缩
+        std::string compressed;
+        CedarCompressionType actual_type;
+        Status s = Compression::Compress(compress_type, Slice(*zones[i]),
+                                        &compressed, &actual_type);
+        if (s.ok() && actual_type != CedarCompressionType::None && 
+            compressed.size() < zones[i]->size()) {
+          *zones[i] = std::move(compressed);
+          block.compression_types[i] = static_cast<uint8_t>(actual_type);
+        }
+      }
+    }
+  }
+
+  // 计算压缩后大小 (Block Header 50 bytes + 6 zones)
   block.compressed_size = static_cast<uint32_t>(
-      44 +  // BlockHeader (6 zones: 4 + 24 + 8 + 8)
+      50 +  // BlockHeader (50 bytes: 44 + 6 compression types)
       block.zone0_data.size() + block.zone1_data.size() +
       block.zone2_data.size() + block.zone3_data.size() +
       block.zone4_data.size() + block.zone5_data.size());
@@ -328,8 +359,8 @@ Status ZoneColumnarSstBuilder::WriteFile() {
     entry.max_timestamp = block.max_timestamp;
     block_index_.push_back(entry);
 
-    // 写入 Block Header（44 bytes）
-    char bh_data[44];
+    // 写入 Block Header（50 bytes = 44 + 6 compression types）
+    char bh_data[50];
     EncodeFixed32(bh_data, block.row_count);
     EncodeFixed32(bh_data + 4, static_cast<uint32_t>(block.zone0_data.size()));
     EncodeFixed32(bh_data + 8, static_cast<uint32_t>(block.zone1_data.size()));
@@ -339,7 +370,11 @@ Status ZoneColumnarSstBuilder::WriteFile() {
     EncodeFixed32(bh_data + 24, static_cast<uint32_t>(block.zone5_data.size()));
     EncodeFixed64(bh_data + 28, block.min_entity_id);
     EncodeFixed64(bh_data + 36, block.max_entity_id);
-    file_data.append(bh_data, 44);
+    // Per-zone compression type (6 bytes)
+    for (int i = 0; i < 6; ++i) {
+      bh_data[44 + i] = static_cast<char>(block.compression_types[i]);
+    }
+    file_data.append(bh_data, 50);
 
     // 写入 6 个 Zone
     file_data.append(block.zone0_data);
@@ -373,18 +408,70 @@ Status ZoneColumnarSstBuilder::WriteFile() {
     }
   }
 
+  // 3.6 Entity-level Bloom Filter（用于快速跳过不包含目标 entity 的 SST 文件）
+  size_t bloom_filter_offset = 0;
+  size_t bloom_filter_size = 0;
+  if (!all_keys_.empty()) {
+    // 10 bits per key ≈ 1% false positive rate
+    BloomFilter bf(10, all_keys_.size());
+    // Use set to deduplicate entity_ids (same entity may have multiple versions)
+    std::unordered_set<uint64_t> seen_entities;
+    for (const auto& key : all_keys_) {
+      uint64_t eid = key.entity_id();
+      if (seen_entities.insert(eid).second) {
+        bf.Add(eid);
+      }
+    }
+    auto bf_data = bf.Finish();
+    bloom_filter_data_ = std::string(bf_data.begin(), bf_data.end());
+    if (!bloom_filter_data_.empty()) {
+      bloom_filter_offset = file_data.size();
+      file_data.append(bloom_filter_data_);
+      bloom_filter_size = bloom_filter_data_.size();
+    }
+  }
+
+  // 3.7 Entity Hash Index (entity_id → block_ids, O(1) lookup)
+  size_t entity_index_offset = 0;
+  size_t entity_index_size = 0;
+  if (!entity_blocks_.empty()) {
+    // Deduplicate block_ids per entity (same entity may appear in same block multiple times)
+    for (auto& [eid, block_ids] : entity_blocks_) {
+      std::sort(block_ids.begin(), block_ids.end());
+      block_ids.erase(std::unique(block_ids.begin(), block_ids.end()), block_ids.end());
+    }
+    // Serialize: [entry_count:4] [(entity_id:8, block_count:2, block_ids:2*block_count) ...]
+    std::string idx_data;
+    uint32_t entry_count = static_cast<uint32_t>(entity_blocks_.size());
+    idx_data.append(reinterpret_cast<const char*>(&entry_count), sizeof(entry_count));
+    for (const auto& [eid, block_ids] : entity_blocks_) {
+      idx_data.append(reinterpret_cast<const char*>(&eid), sizeof(eid));
+      uint16_t bc = static_cast<uint16_t>(block_ids.size());
+      idx_data.append(reinterpret_cast<const char*>(&bc), sizeof(bc));
+      for (uint32_t bid : block_ids) {
+        uint16_t bid16 = static_cast<uint16_t>(bid);
+        idx_data.append(reinterpret_cast<const char*>(&bid16), sizeof(bid16));
+      }
+    }
+    entity_index_data_ = std::move(idx_data);
+    entity_index_offset = file_data.size();
+    file_data.append(entity_index_data_);
+    entity_index_size = entity_index_data_.size();
+  }
+
   // 4. Footer
   ZoneColumnarFooter footer;
   footer.block_index_offset = static_cast<uint32_t>(index_offset);
   footer.block_index_size = static_cast<uint32_t>(index_size);
-  footer.bloom_filter_offset = 0;
-  footer.bloom_filter_size = 0;
+  footer.bloom_filter_offset = static_cast<uint32_t>(bloom_filter_offset);
+  footer.bloom_filter_size = static_cast<uint32_t>(bloom_filter_size);
   footer.row_count = total_rows_;
   footer.block_count = static_cast<uint32_t>(blocks_.size());
   footer.footer_magic = ZoneColumnarFooter::kFooterMagic;
   footer.temporal_filter_offset = static_cast<uint32_t>(temporal_filter_offset);
   footer.temporal_filter_size = static_cast<uint32_t>(temporal_filter_size);
-  footer.reserved = 0;
+  footer.entity_index_offset = static_cast<uint32_t>(entity_index_offset);
+  footer.entity_index_size = static_cast<uint32_t>(entity_index_size);
 
   // 计算 data_checksum: header 之后到 footer 之前的所有数据
   size_t data_start = ZoneColumnarHeader::kEncodedSize;

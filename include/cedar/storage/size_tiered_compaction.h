@@ -55,12 +55,12 @@ namespace cedar {
 // =============================================================================
 struct SizeTieredConfig {
   // L0 配置
-  uint64_t l0_max_size = 64 * 1024 * 1024;      // 64MB
-  uint64_t l0_file_size = 16 * 1024 * 1024;     // 16MB 单个文件
-  size_t l0_max_files = 4;                       // L0 最大文件数
+  uint64_t l0_max_size = 256 * 1024 * 1024;     // 256MB (= 4 × memtable)
+  uint64_t l0_file_size = 64 * 1024 * 1024;     // 64MB 单个文件目标
+  size_t l0_max_files = 4;                       // L0 文件数触发 (RocksDB 默认)
   
-  // 层级增长倍数
-  double size_ratio = 4.0;                       // 每层容量是上一层的 4 倍
+  // 层级增长倍数 (RocksDB 默认 10)
+  double size_ratio = 10.0;
   
   // 最大层级
   int max_levels = 7;                            // L0-L6
@@ -70,8 +70,8 @@ struct SizeTieredConfig {
   double disk_usage_threshold = 0.9;             // 磁盘使用 > 90% 紧急合并
   
   // 合并行为
-  size_t max_merge_width = 32;                   // 单次合并最多文件数
-  uint64_t blob_rewrite_threshold = 1024 * 1024; // Blob > 1MB 重写，否则仅拷贝指针
+  size_t max_merge_width = 10;                   // 单次合并最多文件数 (RocksDB 默认)
+  uint64_t blob_rewrite_threshold = 1024 * 1024; // Blob > 1MB 重写
   
   // Tombstone 清理
   int tombstone_cleanup_level = 3;               // L3+ 才允许清理 tombstone
@@ -400,6 +400,17 @@ class SizeTieredCompactionEngine {
   // 获取数据库总大小
   uint64_t GetTotalSize() const;
   
+  // GC safe point: gates tombstone deletion in multi-replica setups
+  void SetGCSafePoint(uint64_t safe_point) { gc_safe_point_.store(safe_point); }
+  uint64_t GetGCSafePoint() const { return gc_safe_point_.load(); }
+  
+  // Reload manifest from disk (used after snapshot restore)
+  Status LoadManifest();
+  
+  // Pause/resume background compaction threads (for snapshot safety)
+  void PauseCompaction();
+  void ResumeCompaction();
+  
   // 获取各层大小
   std::vector<uint64_t> GetLevelSizes() const;
   
@@ -413,7 +424,15 @@ class SizeTieredCompactionEngine {
   friend class ParallelCompactionEngine;
   
   // 获取下一个文件编号
-  uint64_t NewFileNumber() { return next_file_number_.fetch_add(1); }
+  uint64_t NewFileNumber() {
+    if (shared_file_number_) return shared_file_number_->fetch_add(1);
+    return next_file_number_.fetch_add(1);
+  }
+  
+  // 设置共享文件号计数器（避免与 LsmEngine 文件号冲突）
+  void SetSharedFileNumber(std::atomic<uint64_t>* counter) {
+    shared_file_number_ = counter;
+  }
 
  private:
   // ============= 内部方法 =============
@@ -426,7 +445,8 @@ class SizeTieredCompactionEngine {
   
   // 多路归并（核心算法）
   Status MergeZones(const std::vector<ZoneSstMeta>& inputs,
-                    SstBuilder* output);
+                    SstBuilder* output,
+                    int output_level = 0);
   
   // 处理 Tombstone 清理
   bool ShouldDropTombstone(const CedarKey& key, int output_level);
@@ -441,11 +461,11 @@ class SizeTieredCompactionEngine {
   
   // 原子操作：从某层移除文件
   void RemoveFileFromLevel(uint64_t file_number, int level);
-  void RemoveFileFromLevelInternal(uint64_t file_number, int level);  // Caller must hold levels_mutex_
+  void RemoveFileFromLevelInternal(uint64_t file_number, int level);
+  void RemoveFileMetadataOnly(uint64_t file_number, int level);  // Caller must hold levels_mutex_
   
   // 持久化层级状态（MANIFEST）
   Status SaveManifest();
-  Status LoadManifest();
   
   // 查找文件
   std::optional<ZoneSstMeta> FindFile(uint64_t file_number) const;
@@ -470,6 +490,7 @@ class SizeTieredCompactionEngine {
   
   // 文件编号生成器
   std::atomic<uint64_t> next_file_number_{1};
+  std::atomic<uint64_t>* shared_file_number_ = nullptr;
   
   // 后台线程控制
   std::atomic<bool> shutdown_{false};
@@ -493,6 +514,15 @@ class SizeTieredCompactionEngine {
   
   // I/O 限速器
   std::unique_ptr<RateLimiter> rate_limiter_;
+
+  // GC safe point: minimum last_applied_index across all replicas.
+  // Tombstones with timestamps older than this can be safely removed.
+  std::atomic<uint64_t> gc_safe_point_{0};
+  
+  // Background thread pause support (for snapshot safety)
+  std::mutex pause_mutex_;
+  std::condition_variable pause_cv_;
+  std::atomic<bool> pause_requested_{false};
 };
 
 // =============================================================================

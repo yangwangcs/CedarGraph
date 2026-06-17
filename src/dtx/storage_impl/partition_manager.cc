@@ -40,23 +40,46 @@ Status StoragePartitionManager::Initialize(const PartitionConfig& config) {
   // Create data root directory
   std::filesystem::create_directories(config_.data_root);
   
-  // Create ONE shared CedarGraphStorage (LSM-Tree) for ALL partitions
-  // This is the key difference from physical isolation design
   CedarOptions options;
   options.create_if_missing = true;
   options.error_if_exists = false;
   options.memtable_threshold = 256 * 1024;  // 256KB for faster flush during tests
   options.write_buffer_size = 256 * 1024;
   options.enable_wal = true;
-  options.enable_accumulated_flush = false;  // Disable accumulated flush for immediate persistence
+  options.enable_accumulated_flush = false;
   
-  CedarGraphStorage* storage = nullptr;
-  Status s = CedarGraphStorage::Open(options, config_.data_root, &storage);
-  if (!s.ok()) {
-    return Status::IOError("Failed to open shared storage: " + s.ToString());
+  if (config_.storage_mode == "partitioned") {
+    // Partitioned mode: each partition gets its own CedarGraphStorage
+    PartitionedStorageBackend::Config backend_config;
+    backend_config.max_open_partitions = config_.max_open_partitions;
+    backend_config.per_partition_memtable_mb = config_.per_partition_memtable_mb;
+    backend_config.enable_lru_eviction = config_.enable_lru_eviction;
+    
+    auto backend = std::make_unique<PartitionedStorageBackend>(backend_config);
+    Status s = backend->Open(options, config_.data_root);
+    if (!s.ok()) {
+      return Status::IOError("Failed to open partitioned backend: " + s.ToString());
+    }
+    backend_ = std::move(backend);
+    LOG(INFO) << "Storage mode: partitioned (max_open=" << config_.max_open_partitions << ")";
+  } else {
+    // Shared mode: all partitions share one CedarGraphStorage (default)
+    auto backend = std::make_unique<SharedStorageBackend>();
+    Status s = backend->Open(options, config_.data_root);
+    if (!s.ok()) {
+      return Status::IOError("Failed to open shared backend: " + s.ToString());
+    }
+    
+    // Also set shared_storage_ for backward compatibility
+    CedarGraphStorage* storage = nullptr;
+    s = CedarGraphStorage::Open(options, config_.data_root, &storage);
+    if (!s.ok()) {
+      return Status::IOError("Failed to open shared storage: " + s.ToString());
+    }
+    shared_storage_.reset(storage);
+    backend_ = std::move(backend);
+    LOG(INFO) << "Storage mode: shared";
   }
-  
-  shared_storage_.reset(storage);
   
   // Register failover handlers if both managers are configured
   if (failover_manager_ && raft_manager_) {
@@ -88,7 +111,13 @@ void StoragePartitionManager::Shutdown() {
   // Clear all logical partition views
   partitions_.clear();
   
-  // Close shared storage
+  // Close backend
+  if (backend_) {
+    backend_->Shutdown();
+    backend_.reset();
+  }
+  
+  // Close shared storage (backward compat)
   shared_storage_.reset();
   
   initialized_ = false;
@@ -122,7 +151,8 @@ Status StoragePartitionManager::AddPartition(PartitionID pid) {
   
   // Create logical partition view - shares the same LSM-Tree
   // No physical directory created, partition_id is encoded in keys
-  auto storage = std::make_unique<PartitionStorage>(pid, shared_storage_.get(), this);
+  CedarGraphStorage* shared = shared_storage_ ? shared_storage_.get() : nullptr;
+  auto storage = std::make_unique<PartitionStorage>(pid, shared, this, backend_.get());
   
   // Recover any prepared transaction state from WAL
   auto recover_status = storage->RecoverFromWAL();
@@ -198,25 +228,17 @@ size_t StoragePartitionManager::GetTotalDiskUsage() const {
 Status StoragePartitionManager::FlushAll() {
   std::shared_lock<std::shared_mutex> lock(partitions_mutex_);
   
-  if (!shared_storage_) {
+  if (!backend_) {
     return Status::IOError("Storage not initialized");
   }
   
-  // Flush shared storage (affects all partitions)
-  auto status = shared_storage_->ForceFlush();
-  if (!status.ok()) {
-    return Status::IOError("Flush failed: " + status.ToString());
-  }
-  
-  LOG_INFO("PartitionManager", "FlushAll completed for " + std::to_string(partitions_.size()) + " partitions");
-  
-  return Status::OK();
+  return backend_->FlushAll();
 }
 
 Status StoragePartitionManager::CompactPartition(PartitionID pid) {
   std::shared_lock<std::shared_mutex> lock(partitions_mutex_);
   
-  if (!shared_storage_) {
+  if (!backend_) {
     return Status::IOError("Storage not initialized");
   }
   
@@ -224,34 +246,17 @@ Status StoragePartitionManager::CompactPartition(PartitionID pid) {
     return Status::NotFound("Partition not found");
   }
   
-  // In shared LSM-Tree, we trigger compaction on the entire storage
-  // The partition ID is encoded in the key prefix
-  auto status = shared_storage_->Compact();
-  if (!status.ok()) {
-    return Status::IOError("Compact failed: " + status.ToString());
-  }
-  
-  LOG_INFO("PartitionManager", "CompactPartition completed for partition " + std::to_string(pid));
-  
-  return Status::OK();
+  return backend_->CompactPartition(pid);
 }
 
 Status StoragePartitionManager::CompactAll() {
   std::shared_lock<std::shared_mutex> lock(partitions_mutex_);
   
-  if (!shared_storage_) {
+  if (!backend_) {
     return Status::IOError("Storage not initialized");
   }
   
-  // Compact entire shared storage
-  auto status = shared_storage_->Compact();
-  if (!status.ok()) {
-    return Status::IOError("Compact failed: " + status.ToString());
-  }
-  
-  LOG_INFO("PartitionManager", "CompactAll completed for " + std::to_string(partitions_.size()) + " partitions");
-  
-  return Status::OK();
+  return backend_->FlushAll();
 }
 
 }  // namespace dtx

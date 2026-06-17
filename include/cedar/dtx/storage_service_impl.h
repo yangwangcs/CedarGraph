@@ -48,6 +48,7 @@
 #include "cedar/dtx/cross_dc_replicator.h"
 #include "cedar/dtx/storage/braft_partition_raft.h"
 #include "cedar/dtx/storage/partition_migrator.h"
+#include "cedar/storage/storage_backend.h"
 
 // Forward declaration to avoid including dtx_protocol.grpc.pb.h here,
 // which would shadow cedar::CedarKey with cedar::dtx::CedarKey (protobuf)
@@ -87,6 +88,7 @@ class StorageServiceImpl;
 class PartitionRaftManager;
 
 // Forward declaration for failover manager
+
 class ClusterFailoverManager;
 
 // =============================================================================
@@ -112,10 +114,11 @@ class PartitionStorage {
     DistributedTxnState status;
   };
 
-  // Constructor: takes partition_id and shared storage reference
-  PartitionStorage(PartitionID partition_id, 
+  // Constructor: takes partition_id and storage backend
+  PartitionStorage(PartitionID partition_id,
                    CedarGraphStorage* shared_storage,
-                   StoragePartitionManager* manager);
+                   StoragePartitionManager* manager,
+                   StorageBackend* backend = nullptr);
   ~PartitionStorage();
 
   // No Open/Close - storage is managed by PartitionManager
@@ -163,6 +166,9 @@ class PartitionStorage {
   // Get the underlying shared storage engine
   CedarGraphStorage* GetSharedStorage() const { return shared_storage_; }
 
+  // Get the effective storage (backend-aware)
+  CedarGraphStorage* GetEffectiveStorage() const;
+
   // Key manipulation: inject/extract part_id
   CedarKey InjectPartitionId(const CedarKey& key) const;
   static PartitionID ExtractPartitionId(const CedarKey& key);
@@ -171,7 +177,8 @@ class PartitionStorage {
   Status WriteTxnWAL(uint64_t txn_id, const std::string& operation);
 
   PartitionID partition_id_;
-  CedarGraphStorage* shared_storage_;  // Shared across all partitions
+  CedarGraphStorage* shared_storage_;  // Shared across all partitions (legacy)
+  StorageBackend* backend_;            // Storage backend (shared or partitioned)
   StoragePartitionManager* manager_;   // For cross-partition operations
   
   std::atomic<bool> is_readonly_{false};
@@ -191,6 +198,12 @@ class StoragePartitionManager {
     std::string data_root = "/tmp/cedar_storage";
     size_t max_partitions = 1024;
     size_t max_disk_usage = 0;  // 0 = unlimited
+    // Storage mode: "partitioned" (default) or "shared"
+    std::string storage_mode = "partitioned";
+    // Partitioned mode config
+    size_t max_open_partitions = 256;
+    size_t per_partition_memtable_mb = 16;
+    bool enable_lru_eviction = true;
   };
 
   StoragePartitionManager();
@@ -210,8 +223,11 @@ class StoragePartitionManager {
   std::vector<PartitionID> GetLoadedPartitions() const;
   size_t GetPartitionCount() const;
   
-  // Get shared storage
+  // Get shared storage (for backward compatibility)
   CedarGraphStorage* GetSharedStorage() const { return shared_storage_.get(); }
+
+  // Get the storage backend (supports both shared and partitioned modes)
+  StorageBackend* GetBackend() const { return backend_.get(); }
 
   // Maintenance - operates on shared storage
   Status FlushAll();
@@ -229,7 +245,8 @@ class StoragePartitionManager {
 
  private:
   PartitionConfig config_;
-  std::unique_ptr<CedarGraphStorage> shared_storage_;  // One LSM-Tree for all partitions
+  std::unique_ptr<StorageBackend> backend_;  // Shared or partitioned backend
+  std::unique_ptr<CedarGraphStorage> shared_storage_;  // For shared mode (backward compat)
   std::unordered_map<PartitionID, std::unique_ptr<PartitionStorage>> partitions_;
   mutable std::shared_mutex partitions_mutex_;
   std::atomic<bool> initialized_{false};
