@@ -257,6 +257,7 @@ set(CEDAR_DTX_SOURCES
 
     src/dtx/load_balancer.cc
     src/dtx/coordinator_integration.cc
+    src/dtx/unified_meta_client.cc
 
     src/dtx/phi_accrual.cc
     src/dtx/storage/failover_manager.cc

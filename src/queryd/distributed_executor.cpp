@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <future>
+#include <random>
 #include <sstream>
 #include <unordered_set>
 
@@ -70,6 +71,44 @@ Status PartitionRouter::GetStorageNode(uint32_t partition_id,
   
   return Status::NotFound("Partition not found: " + 
                           std::to_string(partition_id));
+}
+
+Status PartitionRouter::GetStorageNode(uint32_t partition_id,
+                                       std::string* address,
+                                       DistributedExecutionContext::Consistency consistency) {
+  if (consistency == DistributedExecutionContext::Consistency::kEventual) {
+    Status s = GetFollowerNode(partition_id, address);
+    if (s.ok()) return s;
+  }
+  return GetStorageNode(partition_id, address);
+}
+
+Status PartitionRouter::GetFollowerNode(uint32_t partition_id,
+                                        std::string* address) {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  auto it = partition_info_cache_.find(partition_id);
+  if (it == partition_info_cache_.end()) {
+    lock.unlock();
+    RefreshPartitionCache();
+    lock.lock();
+    it = partition_info_cache_.find(partition_id);
+    if (it == partition_info_cache_.end()) {
+      return Status::NotFound("Partition not found: " +
+                              std::to_string(partition_id));
+    }
+  }
+
+  const auto& info = it->second;
+  if (info.follower_addresses.empty()) {
+    return Status::Unavailable("No followers available for partition " +
+                               std::to_string(partition_id));
+  }
+
+  // Pick a random healthy follower
+  static thread_local std::mt19937 rng(std::random_device{}());
+  std::uniform_int_distribution<size_t> dist(0, info.follower_addresses.size() - 1);
+  *address = info.follower_addresses[dist(rng)];
+  return Status::OK();
 }
 
 std::vector<uint32_t> PartitionRouter::GetPartitionsForRange(
@@ -195,6 +234,10 @@ std::vector<SubQueryResult> ParallelExecutor::ExecuteParallel(
             return;
         }
 
+        if (t.consistency == DistributedExecutionContext::Consistency::kEventual) {
+          node_client->SetReadConsistency(true);
+        }
+
         Status s = node_client->ExecuteSubQuery(t.sub_query, t.parameters, &r.result);
         r.status = s;
 
@@ -253,6 +296,9 @@ void ParallelExecutor::ExecuteParallelStreaming(
         r.status = Status::IOError("No node client for partition " +
                                     std::to_string(task.partition_id));
       } else {
+        if (task.consistency == DistributedExecutionContext::Consistency::kEventual) {
+          node_client->SetReadConsistency(true);
+        }
         r.status = node_client->ExecuteSubQuery(
             task.sub_query, task.parameters, &r.result);
       }
@@ -660,7 +706,7 @@ Status DistributedExecutor::ExecuteStreaming(
 
   // Split query into sub-queries
   std::vector<SubQueryTask> tasks;
-  Status split_status = SplitQuery(query, parameters, &tasks);
+  Status split_status = SplitQuery(query, parameters, &tasks, ctx->consistency);
   if (!split_status.ok()) {
     return split_status;
   }
@@ -783,12 +829,14 @@ Status DistributedExecutor::TemporalQuery(
   // Get partition for entity
   uint32_t partition_id = router_->GetPartitionId(entity_id);
   
-  // Leader check
-  std::string leader_address;
-  Status rs = router_->GetStorageNode(partition_id, &leader_address);
+  // Route based on consistency level
+  std::string storage_address;
+  Status rs = router_->GetStorageNode(partition_id, &storage_address, consistency);
   if (!rs.ok()) return rs;
-  rs = router_->CheckIsLeader(partition_id, leader_address);
-  if (!rs.ok()) return rs;
+  if (consistency != DistributedExecutionContext::Consistency::kEventual) {
+    rs = router_->CheckIsLeader(partition_id, storage_address);
+    if (!rs.ok()) return rs;
+  }
   
   // Get storage node client
   auto node_client = storage_client_->GetNodeClient(partition_id);
@@ -987,17 +1035,25 @@ Status DistributedExecutor::ExecuteSinglePartition(
     return Status::Cancelled("Query cancelled before single-partition execution");
   }
 
-  // Leader check
-  std::string leader_address;
-  Status rs = router_->GetStorageNode(partition_id, &leader_address);
+  // Route based on consistency level
+  std::string storage_address;
+  Status rs = router_->GetStorageNode(partition_id, &storage_address,
+                                      ctx->consistency);
   if (!rs.ok()) return rs;
-  rs = router_->CheckIsLeader(partition_id, leader_address);
-  if (!rs.ok()) return rs;
+
+  if (ctx->consistency != DistributedExecutionContext::Consistency::kEventual) {
+    rs = router_->CheckIsLeader(partition_id, storage_address);
+    if (!rs.ok()) return rs;
+  }
 
   // Send query to specific storage node
   auto node_client = storage_client_->GetNodeClient(partition_id);
   if (!node_client) {
     return Status::NotFound("Storage node not found");
+  }
+
+  if (ctx->consistency == DistributedExecutionContext::Consistency::kEventual) {
+    node_client->SetReadConsistency(true);
   }
 
   // Execute query on the single partition
@@ -1023,7 +1079,7 @@ Status DistributedExecutor::ExecuteCrossPartition(
 
   // Split into sub-queries per partition
   std::vector<SubQueryTask> tasks;
-  Status split_status = SplitQuery(query, parameters, &tasks);
+  Status split_status = SplitQuery(query, parameters, &tasks, ctx->consistency);
   if (!split_status.ok()) {
     return split_status;
   }
@@ -1120,7 +1176,8 @@ void DistributedExecutor::DiscoverLabelPartitions(const std::string& label) {
 Status DistributedExecutor::SplitQuery(
     const std::string& query,
     const std::unordered_map<std::string, cypher::Value>& parameters,
-    std::vector<SubQueryTask>* tasks) {
+    std::vector<SubQueryTask>* tasks,
+    DistributedExecutionContext::Consistency consistency) {
 
   tasks->clear();
 
@@ -1168,20 +1225,24 @@ Status DistributedExecutor::SplitQuery(
     if (partition_count >= kMaxPartitions) {
       break;
     }
-    
+
     SubQueryTask task;
     task.partition_id = partition.partition_id;
-    Status s = router_->GetStorageNode(task.partition_id, &task.storage_node);
+    Status s = router_->GetStorageNode(task.partition_id, &task.storage_node,
+                                       consistency);
     if (!s.ok()) {
       continue;
     }
-    s = router_->CheckIsLeader(task.partition_id, task.storage_node);
-    if (!s.ok()) {
-      continue;
+    if (consistency != DistributedExecutionContext::Consistency::kEventual) {
+      s = router_->CheckIsLeader(task.partition_id, task.storage_node);
+      if (!s.ok()) {
+        continue;
+      }
     }
     task.sub_query = query;
     task.parameters = parameters;
     task.sequence = seq++;
+    task.consistency = consistency;
     tasks->push_back(std::move(task));
     partition_count++;
   }

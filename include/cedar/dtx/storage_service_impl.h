@@ -368,6 +368,11 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   // Otherwise returns UNAVAILABLE with leader hint in error_details.
   grpc::Status CheckReadLeader(PartitionID pid, std::string* leader_hint);
 
+  // Follower read lag check. Returns OK if follower is caught up within
+  // the configured lag threshold. Returns UNAVAILABLE if lag is too high,
+  // so the client retries on leader.
+  grpc::Status CheckFollowerReadLag(PartitionID pid);
+
   std::unique_ptr<cedar::storage::StorageInterface> storage_interface_;
   std::unique_ptr<cedar::cypher::CypherEngine> cypher_engine_;
   std::vector<cedar::storage::PropertyPredicateItem> ConvertPredicates(
@@ -382,6 +387,17 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
 
   // Rebuild txn_partitions_ from all partitions' prepared_txns_ (used after snapshot load)
   void RebuildTxnPartitions();
+};
+
+// =============================================================================
+// MetaClientInterface - Abstract interface for meta client access
+// =============================================================================
+
+class MetaClientInterface {
+ public:
+  virtual ~MetaClientInterface() = default;
+  virtual std::string GetLeaderAddress(uint32_t partition_id) = 0;
+  virtual void InvalidatePartition(uint32_t partition_id) = 0;
 };
 
 // =============================================================================
@@ -447,6 +463,14 @@ class StorageClient {
   // Get server address (for connection pool management)
   const std::string& GetServerAddress() const { return config_.server_address; }
 
+  // Leader-switch support: set a meta client and partition ID so that
+  // NotLeader errors trigger automatic leader refresh and retry.
+  void SetMetaClient(MetaClientInterface* meta_client) {
+    meta_client_ = meta_client;
+  }
+  MetaClientInterface* GetMetaClient() const { return meta_client_; }
+  void SetPartitionId(uint32_t pid) { partition_id_ = pid; }
+
  private:
   // Retry with backoff for Status-returning operations
   Status RetryWithBackoff(std::function<Status()> operation,
@@ -490,6 +514,25 @@ class StorageClient {
     return last_result;
   }
 
+  // Leader-switch retry: retries the operation with leader refresh on NotLeader errors.
+  // Falls back to regular RetryWithBackoff if no meta client is configured.
+  Status RetryWithLeaderSwitch(std::function<Status()> operation,
+                               bool is_idempotent = true);
+
+  // Leader-switch retry for StatusOr<T>-returning operations.
+  template<typename T>
+  StatusOr<T> RetryWithLeaderSwitch(std::function<StatusOr<T>()> operation,
+                                    bool is_idempotent = true);
+
+  // NotLeader error detection and leader hint extraction.
+  static bool IsNotLeaderError(const Status& s);
+  static bool IsNotLeaderGrpcStatus(const grpc::Status& s);
+  static std::string ExtractLeaderHint(const grpc::Status& grpc_status,
+                                       const std::string& response_error_msg);
+
+  // Connect to a new leader address (updates channel_ and stub_).
+  Status ConnectToLeader(const std::string& leader_address);
+
   ClientConfig config_;
   std::atomic<bool> connected_{false};
   std::atomic<bool> shutdown_{false};
@@ -497,6 +540,10 @@ class StorageClient {
   // gRPC resources
   std::shared_ptr<grpc::Channel> channel_;
   std::unique_ptr<cedar::storage::StorageService::Stub> stub_;
+
+  // Leader-switch support (optional, for partition-aware clients)
+  MetaClientInterface* meta_client_ = nullptr;
+  uint32_t partition_id_ = 0;
 };
 
 // =============================================================================

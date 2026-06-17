@@ -156,6 +156,9 @@ class QueryStorageClient {
         const std::string& query_fragment,
         const std::unordered_map<std::string, cypher::Value>& parameters,
         cypher::ResultSet* result) = 0;
+
+    // Set consistency level for subsequent reads (affects gRPC metadata)
+    virtual void SetReadConsistency(bool /*eventual*/) {}
   };
   
   std::shared_ptr<NodeClient> GetNodeClient(uint32_t partition_id);

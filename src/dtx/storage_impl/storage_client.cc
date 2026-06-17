@@ -125,15 +125,13 @@ Status StorageClient::Put(const CedarKey& key, const Descriptor& descriptor,
     return Status::IOError("Client not connected");
   }
   
-  return RetryWithBackoff([&]() {
+  return RetryWithLeaderSwitch([&]() {
     cedar::storage::PutRequest request;
     cedar::storage::PutResponse response;
     grpc::ClientContext context;
 
-    // Set timeout
     context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
 
-    // Populate key
     auto* pb_key = request.mutable_key();
     pb_key->set_entity_id(key.entity_id());
     pb_key->set_timestamp(key.timestamp().value());
@@ -143,24 +141,29 @@ Status StorageClient::Put(const CedarKey& key, const Descriptor& descriptor,
     pb_key->set_type_flags(key.flags());
     pb_key->set_partition_id(key.part_id());
 
-    // Populate descriptor - store raw 8 bytes
     uint64_t raw_value = descriptor.AsRaw();
     request.mutable_descriptor_()->set_data(
         reinterpret_cast<const char*>(&raw_value), sizeof(raw_value));
 
-    // Populate transaction info
     request.mutable_txn_version()->set_value(static_cast<uint64_t>(txn_version));
     request.set_txn_id(txn_id);
 
-    // Make gRPC call
     grpc::Status status = stub_->Put(&context, request, &response);
 
+    if (IsNotLeaderGrpcStatus(status)) {
+      std::string hint = ExtractLeaderHint(status, response.error_msg());
+      return Status::NotLeader("Not leader: " + hint);
+    }
     if (!status.ok()) {
       return Status::IOError("gRPC Put failed: " + status.error_message());
     }
 
     if (!response.success()) {
-      return Status::IOError("Storage error: " + response.error_msg());
+      Status app_status = Status::IOError("Storage error: " + response.error_msg());
+      if (IsNotLeaderError(app_status)) {
+        return Status::NotLeader(response.error_msg());
+      }
+      return app_status;
     }
 
     return Status::OK();
@@ -172,15 +175,13 @@ StatusOr<Descriptor> StorageClient::Get(const CedarKey& key, Timestamp read_time
     return Status::IOError("Client not connected");
   }
   
-  return RetryWithBackoff<Descriptor>([&]() -> StatusOr<Descriptor> {
+  return RetryWithLeaderSwitch<Descriptor>([&]() -> StatusOr<Descriptor> {
     cedar::storage::GetRequest request;
     cedar::storage::GetResponse response;
     grpc::ClientContext context;
     
-    // Set timeout
     context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
     
-    // Populate request
     auto* pb_key = request.mutable_key();
     pb_key->set_entity_id(key.entity_id());
     pb_key->set_timestamp(key.timestamp().value());
@@ -190,22 +191,28 @@ StatusOr<Descriptor> StorageClient::Get(const CedarKey& key, Timestamp read_time
     pb_key->set_type_flags(key.flags());
     pb_key->set_partition_id(key.part_id());
     
-    // Make gRPC call
     grpc::Status status = stub_->Get(&context, request, &response);
     
+    if (IsNotLeaderGrpcStatus(status)) {
+      std::string hint = ExtractLeaderHint(status, response.error_msg());
+      return StatusOr<Descriptor>(Status::NotLeader("Not leader: " + hint));
+    }
     if (!status.ok()) {
       return Status::IOError("gRPC Get failed: " + status.error_message());
     }
     
     if (!response.success()) {
-      return Status::IOError("Storage error: " + response.error_msg());
+      Status app_status = Status::IOError("Storage error: " + response.error_msg());
+      if (IsNotLeaderError(app_status)) {
+        return Status::NotLeader(response.error_msg());
+      }
+      return app_status;
     }
     
     if (!response.found()) {
       return Status::NotFound("Key not found");
     }
     
-    // Convert response descriptor - read raw 8 bytes
     const std::string& data = response.descriptor_().data();
     if (data.size() >= sizeof(uint64_t)) {
       uint64_t raw_value;
@@ -213,7 +220,7 @@ StatusOr<Descriptor> StorageClient::Get(const CedarKey& key, Timestamp read_time
       return Descriptor(raw_value);
     }
     
-    return Descriptor();  // Return empty descriptor if no data
+    return Descriptor();
   });
 }
 
@@ -222,7 +229,7 @@ Status StorageClient::Delete(const CedarKey& key, Timestamp txn_version, TxnID t
     return Status::IOError("Client not connected");
   }
 
-  return RetryWithBackoff([&]() {
+  return RetryWithLeaderSwitch([&]() {
     cedar::storage::DeleteRequest request;
     cedar::storage::DeleteResponse response;
     grpc::ClientContext context;
@@ -243,12 +250,20 @@ Status StorageClient::Delete(const CedarKey& key, Timestamp txn_version, TxnID t
 
     grpc::Status status = stub_->Delete(&context, request, &response);
 
+    if (IsNotLeaderGrpcStatus(status)) {
+      std::string hint = ExtractLeaderHint(status, response.error_msg());
+      return Status::NotLeader("Not leader: " + hint);
+    }
     if (!status.ok()) {
       return Status::IOError("gRPC Delete failed: " + status.error_message());
     }
 
     if (!response.success()) {
-      return Status::IOError("Storage error: " + response.error_msg());
+      Status app_status = Status::IOError("Storage error: " + response.error_msg());
+      if (IsNotLeaderError(app_status)) {
+        return Status::NotLeader(response.error_msg());
+      }
+      return app_status;
     }
 
     return Status::OK();
@@ -284,7 +299,7 @@ Status StorageClient::ScanNodeV2(uint64_t node_id, Timestamp start_time, Timesta
     return Status::IOError("Client not connected");
   }
 
-  return RetryWithBackoff([&]() {
+  return RetryWithLeaderSwitch([&]() {
     cedar::storage::ScanNodeRequestV2 request;
     request.set_node_id(node_id);
     request.set_start_time(start_time.value());
@@ -295,11 +310,19 @@ Status StorageClient::ScanNodeV2(uint64_t node_id, Timestamp start_time, Timesta
     context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
 
     auto grpc_status = stub_->ScanNodeV2(&context, request, &response);
+    if (IsNotLeaderGrpcStatus(grpc_status)) {
+      std::string hint = ExtractLeaderHint(grpc_status, response.error_msg());
+      return Status::NotLeader("Not leader: " + hint);
+    }
     if (!grpc_status.ok()) {
       return Status::IOError("Storage RPC failed: " + grpc_status.error_message());
     }
     if (!response.success()) {
-      return Status::IOError(response.error_msg());
+      Status app_status = Status::IOError(response.error_msg());
+      if (IsNotLeaderError(app_status)) {
+        return Status::NotLeader(response.error_msg());
+      }
+      return app_status;
     }
 
     results->clear();
@@ -325,7 +348,7 @@ Status StorageClient::ScanEdgeV2(uint64_t node_id, uint16_t edge_type,
     return Status::IOError("Client not connected");
   }
 
-  return RetryWithBackoff([&]() {
+  return RetryWithLeaderSwitch([&]() {
     cedar::storage::ScanEdgeRequestV2 request;
     request.set_node_id(node_id);
     request.set_edge_type(edge_type);
@@ -338,11 +361,19 @@ Status StorageClient::ScanEdgeV2(uint64_t node_id, uint16_t edge_type,
     context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
 
     auto grpc_status = stub_->ScanEdgeV2(&context, request, &response);
+    if (IsNotLeaderGrpcStatus(grpc_status)) {
+      std::string hint = ExtractLeaderHint(grpc_status, response.error_msg());
+      return Status::NotLeader("Not leader: " + hint);
+    }
     if (!grpc_status.ok()) {
       return Status::IOError("Storage RPC failed: " + grpc_status.error_message());
     }
     if (!response.success()) {
-      return Status::IOError(response.error_msg());
+      Status app_status = Status::IOError(response.error_msg());
+      if (IsNotLeaderError(app_status)) {
+        return Status::NotLeader(response.error_msg());
+      }
+      return app_status;
     }
 
     edges->clear();
@@ -367,57 +398,70 @@ StatusOr<bool> StorageClient::Prepare(TxnID txn_id, const std::vector<CedarKey>&
   if (!connected_.load()) {
     return Status::IOError("Client not connected");
   }
-  
-  cedar::storage::PrepareRequest request;
-  request.set_txn_id(txn_id);
-  request.set_commit_ts(commit_ts.value());
-  request.set_read_timestamp(read_timestamp.value());
-  
-  // Convert reads to proto
-  for (const auto& key : reads) {
-    auto* proto_key = request.add_read_set();
-    proto_key->set_entity_id(key.entity_id());
-    proto_key->set_timestamp(key.timestamp().value());
-    proto_key->set_target_id(key.target_id());
-    proto_key->set_column_id(key.column_id());
-    proto_key->set_sequence(key.sequence());
-    proto_key->set_type_flags(key.flags());
-    proto_key->set_partition_id(key.part_id());
-  }
-  
-  // Convert writes to proto
-  for (const auto& key : writes) {
-    auto* proto_key = request.add_write_set();
-    proto_key->set_entity_id(key.entity_id());
-    proto_key->set_timestamp(key.timestamp().value());
-    proto_key->set_target_id(key.target_id());
-    proto_key->set_column_id(key.column_id());
-    proto_key->set_sequence(key.sequence());
-    proto_key->set_type_flags(key.flags());
-    proto_key->set_partition_id(key.part_id());
-  }
-  
-  cedar::storage::PrepareResponse response;
-  grpc::ClientContext context;
-  
-  // Set timeout
-  auto deadline = std::chrono::system_clock::now() + config_.operation_timeout;
-  context.set_deadline(deadline);
-  
-  grpc::Status status = stub_->Prepare(&context, request, &response);
-  
-  if (!status.ok()) {
-    if (status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
-      return Status::IOError("StorageClient::Prepare", "Operation timeout");
+
+  constexpr int kMaxRetries = 3;
+  for (int retry = 0; retry < kMaxRetries; ++retry) {
+    cedar::storage::PrepareRequest request;
+    request.set_txn_id(txn_id);
+    request.set_commit_ts(commit_ts.value());
+    request.set_read_timestamp(read_timestamp.value());
+
+    for (const auto& key : reads) {
+      auto* proto_key = request.add_read_set();
+      proto_key->set_entity_id(key.entity_id());
+      proto_key->set_timestamp(key.timestamp().value());
+      proto_key->set_target_id(key.target_id());
+      proto_key->set_column_id(key.column_id());
+      proto_key->set_sequence(key.sequence());
+      proto_key->set_type_flags(key.flags());
+      proto_key->set_partition_id(key.part_id());
     }
-    return Status::IOError("StorageClient::Prepare", status.error_message());
+
+    for (const auto& key : writes) {
+      auto* proto_key = request.add_write_set();
+      proto_key->set_entity_id(key.entity_id());
+      proto_key->set_timestamp(key.timestamp().value());
+      proto_key->set_target_id(key.target_id());
+      proto_key->set_column_id(key.column_id());
+      proto_key->set_sequence(key.sequence());
+      proto_key->set_type_flags(key.flags());
+      proto_key->set_partition_id(key.part_id());
+    }
+
+    cedar::storage::PrepareResponse response;
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + config_.operation_timeout);
+
+    grpc::Status status = stub_->Prepare(&context, request, &response);
+
+    if (IsNotLeaderGrpcStatus(status) ||
+        (!status.ok() && IsNotLeaderError(Status::IOError(status.error_message()))) ||
+        (status.ok() && !response.prepared() && IsNotLeaderError(Status::IOError(response.error_msg())))) {
+      if (meta_client_ && retry < kMaxRetries - 1) {
+        meta_client_->InvalidatePartition(partition_id_);
+        std::string new_leader = meta_client_->GetLeaderAddress(partition_id_);
+        if (!new_leader.empty() && new_leader != config_.server_address) {
+          if (ConnectToLeader(new_leader).ok()) continue;
+        }
+      }
+      return Status::NotLeader("Not leader for partition " + std::to_string(partition_id_));
+    }
+
+    if (!status.ok()) {
+      if (status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
+        return Status::IOError("StorageClient::Prepare", "Operation timeout");
+      }
+      return Status::IOError("StorageClient::Prepare", status.error_message());
+    }
+
+    if (!response.prepared()) {
+      return false;
+    }
+
+    return true;
   }
-  
-  if (!response.prepared()) {
-    return false;  // Participant voted to abort
-  }
-  
-  return true;
+
+  return Status::IOError("Prepare failed after leader retries");
 }
 
 Status StorageClient::Commit(TxnID txn_id, Timestamp commit_ts) {
@@ -544,6 +588,134 @@ Status StorageClient::Ping() {
   }
   
   return Status::IOError("Health check failed: channel not ready");
+}
+
+// =============================================================================
+// NotLeader detection and leader hint extraction
+// =============================================================================
+
+bool StorageClient::IsNotLeaderError(const Status& s) {
+  if (s.IsNotLeader()) return true;
+  std::string msg = s.ToString();
+  // Case-insensitive check for "not leader" in error message
+  std::string lower;
+  lower.reserve(msg.size());
+  for (char c : msg) lower.push_back(std::tolower(c));
+  return lower.find("not leader") != std::string::npos;
+}
+
+bool StorageClient::IsNotLeaderGrpcStatus(const grpc::Status& s) {
+  if (!s.ok() && s.error_code() == grpc::StatusCode::UNAVAILABLE) {
+    std::string msg = s.error_message();
+    std::string lower;
+    lower.reserve(msg.size());
+    for (char c : msg) lower.push_back(std::tolower(c));
+    if (lower.find("not leader") != std::string::npos) return true;
+    if (lower.find("leader") != std::string::npos) return true;
+  }
+  return false;
+}
+
+std::string StorageClient::ExtractLeaderHint(
+    const grpc::Status& grpc_status,
+    const std::string& response_error_msg) {
+  // gRPC error_details carries the leader address directly (set by StorageServiceImpl)
+  if (!grpc_status.ok()) {
+    std::string details = grpc_status.error_details();
+    if (!details.empty()) return details;
+  }
+  // Fallback: parse from response error_msg ("Not leader, redirect to: <addr>")
+  const std::string prefix = "redirect to: ";
+  auto pos = response_error_msg.find(prefix);
+  if (pos != std::string::npos) {
+    return response_error_msg.substr(pos + prefix.size());
+  }
+  return "";
+}
+
+Status StorageClient::ConnectToLeader(const std::string& leader_address) {
+  if (leader_address.empty() || leader_address == config_.server_address) {
+    return Status::OK();
+  }
+  config_.server_address = leader_address;
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
+  if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok()) {
+    return Status::IOError("Failed to create TLS credentials for leader switch");
+  }
+  channel_ = grpc::CreateChannel(leader_address, creds.ValueOrDie());
+  stub_ = cedar::storage::StorageService::NewStub(channel_);
+  return Status::OK();
+}
+
+Status StorageClient::RetryWithLeaderSwitch(std::function<Status()> operation,
+                                             bool is_idempotent) {
+  if (!meta_client_) {
+    return RetryWithBackoff(std::move(operation), is_idempotent);
+  }
+
+  constexpr int kMaxLeaderRetries = 3;
+  Status last_status;
+
+  for (int leader_retry = 0; leader_retry < kMaxLeaderRetries; ++leader_retry) {
+    last_status = RetryWithBackoff(operation, is_idempotent);
+
+    if (last_status.ok() || !IsNotLeaderError(last_status)) {
+      return last_status;
+    }
+
+    if (shutdown_.load()) {
+      return Status::IOError("Operation aborted: client shutting down");
+    }
+
+    // Invalidate partition cache and get fresh leader
+    meta_client_->InvalidatePartition(partition_id_);
+    std::string new_leader = meta_client_->GetLeaderAddress(partition_id_);
+
+    if (new_leader.empty() || new_leader == config_.server_address) {
+      return last_status;
+    }
+
+    Status s = ConnectToLeader(new_leader);
+    if (!s.ok()) return last_status;
+  }
+
+  return last_status;
+}
+
+template<typename T>
+StatusOr<T> StorageClient::RetryWithLeaderSwitch(
+    std::function<StatusOr<T>()> operation, bool is_idempotent) {
+  if (!meta_client_) {
+    return RetryWithBackoff<T>(std::move(operation), is_idempotent);
+  }
+
+  constexpr int kMaxLeaderRetries = 3;
+  StatusOr<T> last_result;
+
+  for (int leader_retry = 0; leader_retry < kMaxLeaderRetries; ++leader_retry) {
+    last_result = RetryWithBackoff<T>(operation, is_idempotent);
+
+    if (last_result.ok() || !IsNotLeaderError(last_result.status())) {
+      return last_result;
+    }
+
+    if (shutdown_.load()) {
+      return StatusOr<T>(Status::IOError("Operation aborted: client shutting down"));
+    }
+
+    meta_client_->InvalidatePartition(partition_id_);
+    std::string new_leader = meta_client_->GetLeaderAddress(partition_id_);
+
+    if (new_leader.empty() || new_leader == config_.server_address) {
+      return last_result;
+    }
+
+    Status s = ConnectToLeader(new_leader);
+    if (!s.ok()) return last_result;
+  }
+
+  return last_result;
 }
 
 // 带抖动（jitter）的指数退避

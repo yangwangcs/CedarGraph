@@ -267,7 +267,16 @@ struct CedarConfig {
   } tls;
 
   // ========================================================================
-  // 12. Input limits (DoS protection)
+  // 13. Follower Read Parameters
+  // ========================================================================
+  struct {
+    bool enable_follower_reads = true;                   // Enable follower read routing
+    int64_t lag_threshold_entries = 100;                  // Max Raft entry lag for follower reads
+    uint32_t lag_threshold_ms = 1000;                    // Max time lag (ms) for follower reads
+  } follower_read;
+
+  // ========================================================================
+  // Input limits (DoS protection)
   // ========================================================================
   struct Limits {
     size_t max_query_length = 1024 * 1024;            // 1 MB

@@ -93,6 +93,9 @@ class PartitionRouter {
 
   uint32_t GetPartitionId(uint64_t entity_id);
   Status GetStorageNode(uint32_t partition_id, std::string* address);
+  Status GetStorageNode(uint32_t partition_id, std::string* address,
+                        DistributedExecutionContext::Consistency consistency);
+  Status GetFollowerNode(uint32_t partition_id, std::string* address);
   Status GetPartitionInfo(uint32_t partition_id, PartitionInfo* info);
   Status CheckIsLeader(uint32_t partition_id, const std::string& address);
   std::vector<uint32_t> GetPartitionsForRange(uint64_t start_id, uint64_t end_id);
@@ -126,6 +129,10 @@ struct SubQueryTask {
   
   // For result ordering
   uint32_t sequence;
+
+  // Consistency level for this sub-query
+  DistributedExecutionContext::Consistency consistency =
+      DistributedExecutionContext::Consistency::kReadYourWrites;
 };
 
 struct SubQueryResult {
@@ -324,7 +331,9 @@ class DistributedExecutor {
   Status SplitQuery(
       const std::string& query,
       const std::unordered_map<std::string, cypher::Value>& parameters,
-      std::vector<SubQueryTask>* tasks);
+      std::vector<SubQueryTask>* tasks,
+      DistributedExecutionContext::Consistency consistency =
+          DistributedExecutionContext::Consistency::kReadYourWrites);
   
   // Optimize traversal using CedarKey physical clustering
   Status TraverseOptimized(

@@ -580,6 +580,10 @@ class RemoteRPCNodeClient : public QueryStorageClient::NodeClient {
       : stub_(cedar::storage::StorageService::NewStub(channel)),
         partition_id_(partition_id) {}
 
+  void SetReadConsistency(bool eventual) override {
+    eventual_read_ = eventual;
+  }
+
   Status ScanEntity(uint64_t entity_id,
                     EntityType entity_type,
                     Timestamp start_ts,
@@ -611,6 +615,9 @@ class RemoteRPCNodeClient : public QueryStorageClient::NodeClient {
 
     grpc::ClientContext ctx;
     ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
+    if (eventual_read_) {
+      ctx.AddMetadata("x-cedar-consistency", "eventual");
+    }
     auto reader = stub_->ExecuteSubQuery(&ctx, req);
 
     cedar::storage::SubQueryResultBatch batch;
@@ -644,6 +651,7 @@ class RemoteRPCNodeClient : public QueryStorageClient::NodeClient {
  private:
   std::unique_ptr<cedar::storage::StorageService::Stub> stub_;
   uint32_t partition_id_;
+  bool eventual_read_ = false;
 };
 
 // ============================================================================
@@ -681,6 +689,10 @@ class CircuitBreakerTrackingNodeClient : public QueryStorageClient::NodeClient {
       const std::string& node_address,
       std::shared_ptr<NodeClient> inner)
       : client_(client), node_address_(node_address), inner_(std::move(inner)) {}
+
+  void SetReadConsistency(bool eventual) override {
+    inner_->SetReadConsistency(eventual);
+  }
 
   Status ScanEntity(uint64_t entity_id,
                     EntityType entity_type,

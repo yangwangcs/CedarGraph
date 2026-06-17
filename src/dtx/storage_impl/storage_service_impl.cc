@@ -277,6 +277,14 @@ grpc::Status CheckWriteLeader(BraftPartitionNode* raft_group) {
   return grpc::Status::OK;
 }
 
+bool IsFollowerReadRequest(grpc::ServerContext* context) {
+  auto it = context->client_metadata().find("x-cedar-consistency");
+  if (it != context->client_metadata().end()) {
+    return std::string(it->second.data(), it->second.size()) == "eventual";
+  }
+  return false;
+}
+
 grpc::Status StorageServiceImpl::Put(grpc::ServerContext* context,
                                       const cedar::storage::PutRequest* request,
                                       cedar::storage::PutResponse* response) {
@@ -369,6 +377,30 @@ grpc::Status StorageServiceImpl::CheckReadLeader(PartitionID pid, std::string* l
   return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Not leader or lease expired");
 }
 
+grpc::Status StorageServiceImpl::CheckFollowerReadLag(PartitionID pid) {
+  if (!raft_manager_) {
+    return grpc::Status::OK;  // No raft = single node, always allow
+  }
+  auto* raft_group = raft_manager_->GetRaftGroup(pid);
+  if (!raft_group) {
+    return grpc::Status::OK;
+  }
+  // Leader can always serve reads
+  if (raft_group->IsLeader()) {
+    return grpc::Status::OK;
+  }
+  auto status = raft_group->GetStatus();
+  const auto& config = cedar::CedarConfigManager::Instance()->GetConfig();
+  int64_t lag = status.committed_index - status.applied_index;
+  if (lag > config.follower_read.lag_threshold_entries) {
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                        "Follower lag too high: " + std::to_string(lag) +
+                        " entries behind (threshold: " +
+                        std::to_string(config.follower_read.lag_threshold_entries) + ")");
+  }
+  return grpc::Status::OK;
+}
+
 grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
                                       const cedar::storage::GetRequest* request,
                                       cedar::storage::GetResponse* response) {
@@ -390,14 +422,23 @@ grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
     return grpc::Status(grpc::StatusCode::NOT_FOUND, "Partition not found");
   }
 
-  // Leader check for linearizable read
-  std::string leader_hint;
-  auto leader_status = CheckReadLeader(pid, &leader_hint);
-  if (!leader_status.ok()) {
-    response->set_success(false);
-    response->set_error_msg("Not leader, redirect to: " + leader_hint);
-    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
-                        "Not leader", leader_hint);
+  // Read consistency check: follower reads skip leader check, verify lag instead
+  if (IsFollowerReadRequest(context)) {
+    auto lag_status = CheckFollowerReadLag(pid);
+    if (!lag_status.ok()) {
+      response->set_success(false);
+      response->set_error_msg(lag_status.error_message());
+      return lag_status;
+    }
+  } else {
+    std::string leader_hint;
+    auto leader_status = CheckReadLeader(pid, &leader_hint);
+    if (!leader_status.ok()) {
+      response->set_success(false);
+      response->set_error_msg("Not leader, redirect to: " + leader_hint);
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                          "Not leader", leader_hint);
+    }
   }
   
   // Convert proto key to CedarKey
@@ -506,15 +547,24 @@ grpc::Status StorageServiceImpl::Scan(grpc::ServerContext* context,
     return st;
   }
 
-  // Leader check for linearizable read
+  // Read consistency check
   PartitionID pid = static_cast<PartitionID>(request->partition_id());
-  std::string leader_hint;
-  auto leader_status = CheckReadLeader(pid, &leader_hint);
-  if (!leader_status.ok()) {
-    response->set_success(false);
-    response->set_error_msg("Not leader, redirect to: " + leader_hint);
-    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
-                        "Not leader", leader_hint);
+  if (IsFollowerReadRequest(context)) {
+    auto lag_status = CheckFollowerReadLag(pid);
+    if (!lag_status.ok()) {
+      response->set_success(false);
+      response->set_error_msg(lag_status.error_message());
+      return lag_status;
+    }
+  } else {
+    std::string leader_hint;
+    auto leader_status = CheckReadLeader(pid, &leader_hint);
+    if (!leader_status.ok()) {
+      response->set_success(false);
+      response->set_error_msg("Not leader, redirect to: " + leader_hint);
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                          "Not leader", leader_hint);
+    }
   }
 
   if (!storage_interface_) {
@@ -558,15 +608,24 @@ grpc::Status StorageServiceImpl::ScanNodeV2(grpc::ServerContext* context,
     return st;
   }
 
-  // Leader check for linearizable read
+  // Read consistency check
   PartitionID pid = static_cast<PartitionID>(request->partition_id());
-  std::string leader_hint;
-  auto leader_status = CheckReadLeader(pid, &leader_hint);
-  if (!leader_status.ok()) {
-    response->set_success(false);
-    response->set_error_msg("Not leader, redirect to: " + leader_hint);
-    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
-                        "Not leader", leader_hint);
+  if (IsFollowerReadRequest(context)) {
+    auto lag_status = CheckFollowerReadLag(pid);
+    if (!lag_status.ok()) {
+      response->set_success(false);
+      response->set_error_msg(lag_status.error_message());
+      return lag_status;
+    }
+  } else {
+    std::string leader_hint;
+    auto leader_status = CheckReadLeader(pid, &leader_hint);
+    if (!leader_status.ok()) {
+      response->set_success(false);
+      response->set_error_msg("Not leader, redirect to: " + leader_hint);
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                          "Not leader", leader_hint);
+    }
   }
 
   if (!storage_interface_) {
@@ -611,15 +670,24 @@ grpc::Status StorageServiceImpl::ScanEdgeV2(grpc::ServerContext* context,
     return st;
   }
 
-  // Leader check for linearizable read
+  // Read consistency check
   PartitionID pid = static_cast<PartitionID>(request->partition_id());
-  std::string leader_hint;
-  auto leader_status = CheckReadLeader(pid, &leader_hint);
-  if (!leader_status.ok()) {
-    response->set_success(false);
-    response->set_error_msg("Not leader, redirect to: " + leader_hint);
-    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
-                        "Not leader", leader_hint);
+  if (IsFollowerReadRequest(context)) {
+    auto lag_status = CheckFollowerReadLag(pid);
+    if (!lag_status.ok()) {
+      response->set_success(false);
+      response->set_error_msg(lag_status.error_message());
+      return lag_status;
+    }
+  } else {
+    std::string leader_hint;
+    auto leader_status = CheckReadLeader(pid, &leader_hint);
+    if (!leader_status.ok()) {
+      response->set_success(false);
+      response->set_error_msg("Not leader, redirect to: " + leader_hint);
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                          "Not leader", leader_hint);
+    }
   }
 
   if (!storage_interface_) {
@@ -816,13 +884,22 @@ grpc::Status StorageServiceImpl::BatchGet(grpc::ServerContext* context,
   // For simplicity, check the first key's partition (typical use case)
   if (!request->keys().empty()) {
     PartitionID first_pid = static_cast<PartitionID>(request->keys(0).partition_id());
-    std::string leader_hint;
-    auto leader_status = CheckReadLeader(first_pid, &leader_hint);
-    if (!leader_status.ok()) {
-      response->set_success(false);
-      response->set_error_msg("Not leader, redirect to: " + leader_hint);
-      return grpc::Status(grpc::StatusCode::UNAVAILABLE,
-                          "Not leader", leader_hint);
+    if (IsFollowerReadRequest(context)) {
+      auto lag_status = CheckFollowerReadLag(first_pid);
+      if (!lag_status.ok()) {
+        response->set_success(false);
+        response->set_error_msg(lag_status.error_message());
+        return lag_status;
+      }
+    } else {
+      std::string leader_hint;
+      auto leader_status = CheckReadLeader(first_pid, &leader_hint);
+      if (!leader_status.ok()) {
+        response->set_success(false);
+        response->set_error_msg("Not leader, redirect to: " + leader_hint);
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                            "Not leader", leader_hint);
+      }
     }
   }
   
@@ -1557,16 +1634,26 @@ grpc::Status StorageServiceImpl::ExecuteSubQuery(
     return st;
   }
 
-  // Leader check for linearizable read
+  // Read consistency check
   PartitionID pid = static_cast<PartitionID>(request->partition_id());
-  std::string leader_hint;
-  auto leader_status = CheckReadLeader(pid, &leader_hint);
-  if (!leader_status.ok()) {
-    cedar::storage::SubQueryResultBatch batch;
-    batch.set_is_last(true);
-    writer->Write(batch);
-    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
-                        "Not leader", leader_hint);
+  if (IsFollowerReadRequest(context)) {
+    auto lag_status = CheckFollowerReadLag(pid);
+    if (!lag_status.ok()) {
+      cedar::storage::SubQueryResultBatch batch;
+      batch.set_is_last(true);
+      writer->Write(batch);
+      return lag_status;
+    }
+  } else {
+    std::string leader_hint;
+    auto leader_status = CheckReadLeader(pid, &leader_hint);
+    if (!leader_status.ok()) {
+      cedar::storage::SubQueryResultBatch batch;
+      batch.set_is_last(true);
+      writer->Write(batch);
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                          "Not leader", leader_hint);
+    }
   }
 
   if (!cypher_engine_) {
