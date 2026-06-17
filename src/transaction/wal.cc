@@ -516,6 +516,11 @@ void WalWriter::GroupCommitThread() {
 }
 
 void WalWriter::ProcessGroupCommit() {
+  // Check shutdown before processing
+  if (shutdown_.load()) {
+    return;
+  }
+  
   std::deque<std::shared_ptr<GroupCommitRequest>> batch;
   
   {
