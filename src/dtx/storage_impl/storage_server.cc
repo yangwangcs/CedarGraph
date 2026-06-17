@@ -1,3 +1,4 @@
+#include "cedar/core/logging.h"
 // Copyright 2025 The Cedar Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -96,7 +97,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
     }
   }
   if (resolved_metad_address.empty()) {
-    std::cerr << "Warning: No MetaD address configured. Set CEDAR_METAD_ENDPOINT or "
+    CEDAR_LOG_WARN() << "warning: No MetaD address configured. Set CEDAR_METAD_ENDPOINT or "
                  "StorageServerConfig::metad_address to enable MetaD registration." << std::endl;
   }
 
@@ -112,13 +113,13 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
   meta_client_ = std::make_unique<MetaServiceNodeClient>();
   s = meta_client_->Initialize(meta_config);
   if (!s.ok()) {
-    std::cerr << "Warning: Failed to initialize MetaD client: " << s.ToString() << std::endl;
+    CEDAR_LOG_WARN() << "warning: Failed to initialize MetaD client: " << s.ToString() << std::endl;
     // Continue anyway - we can still serve storage requests
   } else {
     // Register with MetaD
     s = RegisterToMetaD();
     if (!s.ok()) {
-      std::cerr << "Warning: Failed to register with MetaD: " << s.ToString() << std::endl;
+      CEDAR_LOG_WARN() << "warning: Failed to register with MetaD: " << s.ToString() << std::endl;
       // Continue anyway - we'll retry in heartbeat loop
     }
   }
@@ -128,7 +129,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
   storage::MigrationConfig migrator_config;
   s = partition_migrator_->Initialize(migrator_config);
   if (!s.ok()) {
-    std::cerr << "Warning: Failed to initialize partition migrator: " << s.ToString() << std::endl;
+    CEDAR_LOG_WARN() << "warning: Failed to initialize partition migrator: " << s.ToString() << std::endl;
     // Continue anyway - migration is optional
   } else {
     // Inject dependencies
@@ -162,7 +163,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
   if (dtx_grpc_server_) {
     std::cerr << "DTX replication gRPC server started on " << dtx_listen_address << std::endl;
   } else {
-    std::cerr << "Warning: Failed to start DTX replication gRPC server" << std::endl;
+    CEDAR_LOG_WARN() << "warning: Failed to start DTX replication gRPC server" << std::endl;
   }
 
   // Initialize CrossDCReplicator if DC config is provided
@@ -177,7 +178,7 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
       dtx_service_impl_->SetCrossDCReplicator(cross_dc_replicator_.get());
       std::cerr << "CrossDCReplicator started for DC: " << config_.local_dc_id << std::endl;
     } else {
-      std::cerr << "Warning: Failed to initialize CrossDCReplicator: " << s.ToString() << std::endl;
+      CEDAR_LOG_WARN() << "warning: Failed to initialize CrossDCReplicator: " << s.ToString() << std::endl;
     }
   }
 
@@ -302,7 +303,7 @@ Status StorageServer::RegisterToMetaD() {
   // Fetch partition assignment and initialize raft groups
   auto nodes_result = meta_client_->GetAliveNodes();
   if (!nodes_result.ok()) {
-    std::cerr << "Warning: Failed to get alive nodes: " << nodes_result.status().ToString() << std::endl;
+    CEDAR_LOG_WARN() << "warning: Failed to get alive nodes: " << nodes_result.status().ToString() << std::endl;
     return Status::OK();  // Continue anyway
   }
   
@@ -313,7 +314,7 @@ Status StorageServer::RegisterToMetaD() {
   
   auto map_result = meta_client_->GetSpacePartitionMap("default");
   if (!map_result.ok()) {
-    std::cerr << "Warning: Failed to get partition map: " << map_result.status().ToString() << std::endl;
+    CEDAR_LOG_WARN() << "warning: Failed to get partition map: " << map_result.status().ToString() << std::endl;
     return Status::OK();  // Continue anyway, partitions can be added later
   }
   
@@ -338,7 +339,7 @@ Status StorageServer::RegisterToMetaD() {
     // Add partition to manager
     auto s = partition_manager_.AddPartition(pid);
     if (!s.ok() && !s.IsInvalidArgument()) {
-      std::cerr << "Warning: Failed to add partition " << pid << ": " << s.ToString() << std::endl;
+      CEDAR_LOG_WARN() << "warning: Failed to add partition " << pid << ": " << s.ToString() << std::endl;
       continue;
     }
     
@@ -356,13 +357,13 @@ Status StorageServer::RegisterToMetaD() {
     }
     
     if (peers.empty()) {
-      std::cerr << "Warning: No peers found for partition " << pid << std::endl;
+      CEDAR_LOG_WARN() << "warning: No peers found for partition " << pid << std::endl;
       continue;
     }
     
     auto* storage = partition_manager_.GetPartition(pid);
     if (!storage) {
-      std::cerr << "Warning: Partition " << pid << " not found after add" << std::endl;
+      CEDAR_LOG_WARN() << "warning: Partition " << pid << " not found after add" << std::endl;
       continue;
     }
     
@@ -374,7 +375,7 @@ Status StorageServer::RegisterToMetaD() {
     
     s = raft_manager_->CreateRaftGroup(pid, peers, storage, 1000, peer_node_ids);
     if (!s.ok()) {
-      std::cerr << "Warning: Failed to create raft group for partition " << pid << ": " << s.ToString() << std::endl;
+      CEDAR_LOG_WARN() << "warning: Failed to create raft group for partition " << pid << ": " << s.ToString() << std::endl;
       continue;
     }
     

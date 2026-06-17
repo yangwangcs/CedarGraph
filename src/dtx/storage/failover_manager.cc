@@ -1,3 +1,4 @@
+#include "cedar/core/logging.h"
 // Copyright 2025 The Cedar Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -92,7 +93,7 @@ std::string ContainerRuntimeToString(ContainerRuntime runtime) {
     case ContainerRuntime::kDocker: return "Docker";
     case ContainerRuntime::kUnknown: return "Unknown";
     default:
-      std::cerr << "[FailoverManager] Unknown container runtime" << std::endl;
+      CEDAR_LOG_ERROR() << "[FailoverManager] Unknown container runtime" << std::endl;
       return "Unknown";
   }
   return "Unknown";
@@ -135,7 +136,7 @@ void PartitionFailoverController::Shutdown() noexcept {
       lease_thread_.join();
     }
   } catch (...) {
-    std::cerr << "[FailoverManager] Lease thread join exception" << std::endl;
+    CEDAR_LOG_ERROR() << "[FailoverManager] Lease thread join exception" << std::endl;
   }
   
   try {
@@ -143,7 +144,7 @@ void PartitionFailoverController::Shutdown() noexcept {
       health_thread_.join();
     }
   } catch (...) {
-    std::cerr << "[FailoverManager] Health thread join exception" << std::endl;
+    CEDAR_LOG_ERROR() << "[FailoverManager] Health thread join exception" << std::endl;
   }
   
   // Wait for all queued failover tasks to finish before destruction
@@ -290,7 +291,7 @@ void PartitionFailoverController::ExecuteFailover(PartitionID pid) {
       successful_leader = candidate;
       break;
     }
-    std::cerr << "[FailoverManager] Candidate " << candidate
+    CEDAR_LOG_ERROR() << "[FailoverManager] Candidate " << candidate
               << " failed for partition=" << pid
               << ", trying next candidate..." << std::endl;
   }
@@ -316,7 +317,7 @@ void PartitionFailoverController::ExecuteFailover(PartitionID pid) {
       try {
         callback(pid, old_leader, successful_leader);
       } catch (...) {
-        std::cerr << "[FailoverManager] Failover callback exception" << std::endl;
+        CEDAR_LOG_ERROR() << "[FailoverManager] Failover callback exception" << std::endl;
       }
     }
   }
@@ -414,7 +415,7 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
     try {
       port = std::stoi(address.substr(colon + 1));
     } catch (const std::exception& e) {
-      std::cerr << "[Failover] Invalid port in address '" << address
+      CEDAR_LOG_ERROR() << "[Failover] Invalid port in address '" << address
                 << "': " << e.what() << std::endl;
       std::lock_guard<std::mutex> health_lock(health_state_mutex_);
       replica_health_[node_id] = false;
@@ -430,7 +431,7 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
         addr.sin_family = AF_INET;
         addr.sin_port = htons(static_cast<uint16_t>(port));
         if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
-            std::cerr << "[Failover] Invalid IPv4 address: '" << host << "'" << std::endl;
+            CEDAR_LOG_ERROR() << "[Failover] Invalid IPv4 address: '" << host << "'" << std::endl;
             close(sock);
             std::lock_guard<std::mutex> health_lock(health_state_mutex_);
             replica_health_[node_id] = false;
@@ -440,7 +441,7 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
         // Set non-blocking for timeout control
         int flags = fcntl(sock, F_GETFL, 0);
         if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
-            std::cerr << "[Failover] fcntl failed for health probe socket" << std::endl;
+            CEDAR_LOG_ERROR() << "[Failover] fcntl failed for health probe socket" << std::endl;
             close(sock);
             std::lock_guard<std::mutex> health_lock(health_state_mutex_);
             replica_health_[node_id] = false;
@@ -485,7 +486,7 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
     }
 
     if (!healthy) {
-        std::cerr << "[Failover] Health check FAILED for node " << node_id
+        CEDAR_LOG_ERROR() << "[Failover] Health check FAILED for node " << node_id
                   << " at " << address << std::endl;
     }
 
@@ -543,7 +544,7 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
   }
 
   if (!consensus_callback) {
-    std::cerr << "[FailoverManager] WARNING: No consensus transfer callback registered. "
+    CEDAR_LOG_ERROR() << "[FailoverManager] WARNING: No consensus transfer callback registered. "
               << "Refusing to perform leader switch for partition=" << pid
               << " in production mode. Marking for manual intervention." << std::endl;
     {
@@ -561,7 +562,7 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
   // Step 1: Request consensus layer to transfer leadership.
   Status consensus_status = consensus_callback(pid, new_leader);
   if (!consensus_status.ok()) {
-    std::cerr << "[FailoverManager] Consensus transfer failed for partition="
+    CEDAR_LOG_ERROR() << "[FailoverManager] Consensus transfer failed for partition="
               << pid << " target=" << new_leader
               << " error=" << consensus_status.ToString() << std::endl;
     {
@@ -579,7 +580,7 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
   if (quorum_callback) {
     Status quorum_status = quorum_callback(pid, new_leader, config_.leader_switch_timeout);
     if (!quorum_status.ok()) {
-      std::cerr << "[FailoverManager] Quorum verification FAILED for partition="
+      CEDAR_LOG_ERROR() << "[FailoverManager] Quorum verification FAILED for partition="
                 << pid << " target=" << new_leader
                 << " error=" << quorum_status.ToString()
                 << ". Old leader remains authoritative." << std::endl;
@@ -593,7 +594,7 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
       return quorum_status;
     }
   } else {
-    std::cerr << "[FailoverManager] WARNING: No quorum verification callback. "
+    CEDAR_LOG_ERROR() << "[FailoverManager] WARNING: No quorum verification callback. "
               << "Proceeding with leader switch for partition=" << pid
               << " WITHOUT quorum confirmation. This is unsafe in production."
               << std::endl;
@@ -643,7 +644,7 @@ void PartitionFailoverController::LeaseRenewalLoop() {
         }
       }
     } catch (...) {
-      std::cerr << "[FailoverManager] Lease renewal exception" << std::endl;
+      CEDAR_LOG_ERROR() << "[FailoverManager] Lease renewal exception" << std::endl;
     }
   }
 }
@@ -675,7 +676,7 @@ void PartitionFailoverController::HealthCheckLoop() {
               }
             } else if (lease_it->second - now < std::chrono::seconds(2)) {
               // Lease expiring soon - log warning
-              std::cerr << "[Failover] Leader lease for partition " << pid
+              CEDAR_LOG_ERROR() << "[Failover] Leader lease for partition " << pid
                         << " expiring soon" << std::endl;
             }
           }
@@ -683,7 +684,7 @@ void PartitionFailoverController::HealthCheckLoop() {
       }
 
       for (PartitionID pid : expired_leaders) {
-        std::cerr << "[Failover] Leader lease expired for partition " << pid
+        CEDAR_LOG_ERROR() << "[Failover] Leader lease expired for partition " << pid
                   << ", triggering failover" << std::endl;
         ReportLeaderFailure(pid);
       }
@@ -736,7 +737,7 @@ void PartitionFailoverController::HealthCheckLoop() {
             double phi = it->second->Phi();
             if (phi >= config_.detection_config.phi_threshold) {
               score.is_unhealthy = true;
-              std::cerr << "[Failover] Phi Accrual suspects node " << node_id
+              CEDAR_LOG_ERROR() << "[Failover] Phi Accrual suspects node " << node_id
                         << " (phi=" << phi << ")" << std::endl;
             }
           }
@@ -755,7 +756,7 @@ void PartitionFailoverController::HealthCheckLoop() {
 
         // Fire routing callbacks outside the health lock to respect lock ordering.
         if (newly_degraded) {
-          std::cerr << "[Failover] Predictive degradation triggered for node " << node_id
+          CEDAR_LOG_ERROR() << "[Failover] Predictive degradation triggered for node " << node_id
                     << ". Redirecting new read traffic." << std::endl;
           RouteUpdateCallback cb;
           {
@@ -768,7 +769,7 @@ void PartitionFailoverController::HealthCheckLoop() {
           }
         }
         if (was_degraded) {
-          std::cerr << "[Failover] Predictive degradation cancelled for node " << node_id
+          CEDAR_LOG_ERROR() << "[Failover] Predictive degradation cancelled for node " << node_id
                     << ". Restoring full traffic." << std::endl;
         }
 
@@ -779,7 +780,7 @@ void PartitionFailoverController::HealthCheckLoop() {
             PartitionID pid = partition_pair.first;
             const auto& state = partition_pair.second;
             if (state.current_leader == node_id && !state.is_failover_in_progress) {
-              std::cerr << "[Failover] Node " << node_id
+              CEDAR_LOG_ERROR() << "[Failover] Node " << node_id
                         << " unhealthy, triggering failover for partition " << pid << std::endl;
               // Launch failover asynchronously on the bounded worker pool
               failover_worker_pool_->Schedule([this, pid]() { ReportLeaderFailure(pid); });
@@ -789,7 +790,7 @@ void PartitionFailoverController::HealthCheckLoop() {
         }
       }
     } catch (...) {
-      std::cerr << "[FailoverManager] Health check exception" << std::endl;
+      CEDAR_LOG_ERROR() << "[FailoverManager] Health check exception" << std::endl;
     }
   }
 }
@@ -947,7 +948,7 @@ void PartitionFailoverController::TriggerGraduatedDegradation(NodeID node_id) {
     newly_degraded = TriggerGraduatedDegradationLocked(node_id);
   }
   if (newly_degraded) {
-    std::cerr << "[Failover] Predictive degradation triggered for node " << node_id
+    CEDAR_LOG_ERROR() << "[Failover] Predictive degradation triggered for node " << node_id
               << ". Redirecting new read traffic." << std::endl;
     // Notify routing layer to deprioritize this node for new requests
     RouteUpdateCallback cb;
@@ -977,7 +978,7 @@ void PartitionFailoverController::CancelGraduatedDegradation(NodeID node_id) {
     was_degraded = CancelGraduatedDegradationLocked(node_id);
   }
   if (was_degraded) {
-    std::cerr << "[Failover] Predictive degradation cancelled for node " << node_id
+    CEDAR_LOG_ERROR() << "[Failover] Predictive degradation cancelled for node " << node_id
               << ". Restoring full traffic." << std::endl;
   }
 }
@@ -1042,7 +1043,7 @@ void ClusterFailoverManager::Shutdown() noexcept {
       detection_thread_.join();
     }
   } catch (...) {
-    std::cerr << "[FailoverManager] Detection thread join exception" << std::endl;
+    CEDAR_LOG_ERROR() << "[FailoverManager] Detection thread join exception" << std::endl;
   }
   
   try {
@@ -1050,7 +1051,7 @@ void ClusterFailoverManager::Shutdown() noexcept {
       recovery_thread_.join();
     }
   } catch (...) {
-    std::cerr << "[FailoverManager] Recovery thread join exception" << std::endl;
+    CEDAR_LOG_ERROR() << "[FailoverManager] Recovery thread join exception" << std::endl;
   }
 }
 
@@ -1197,7 +1198,7 @@ void ClusterFailoverManager::DetectionLoop() {
         }
       }
     } catch (...) {
-      std::cerr << "[FailoverManager] Detection loop exception" << std::endl;
+      CEDAR_LOG_ERROR() << "[FailoverManager] Detection loop exception" << std::endl;
     }
   }
 }
@@ -1257,7 +1258,7 @@ void ClusterFailoverManager::RecoveryLoop() {
         }
       }
     } catch (...) {
-      std::cerr << "[FailoverManager] Recovery loop exception" << std::endl;
+      CEDAR_LOG_ERROR() << "[FailoverManager] Recovery loop exception" << std::endl;
     }
   }
 }
@@ -1265,7 +1266,7 @@ void ClusterFailoverManager::RecoveryLoop() {
 ContainerRuntime ClusterFailoverManager::DetectedRuntime() const {
   std::call_once(detect_runtime_once_, [this]() {
     detected_runtime_.store(DetectContainerRuntime());
-    std::cerr << "[ClusterFailover] Detected runtime: "
+    CEDAR_LOG_ERROR() << "[ClusterFailover] Detected runtime: "
               << ContainerRuntimeToString(detected_runtime_.load()) << std::endl;
   });
   return detected_runtime_.load();
@@ -1273,7 +1274,7 @@ ContainerRuntime ClusterFailoverManager::DetectedRuntime() const {
 
 Status ClusterFailoverManager::RestartViaKubernetes(const FailureEvent& event) {
   pid_t pid = getpid();
-  std::cerr << "[ClusterFailover] K8s restart: sending SIGTERM to self (PID "
+  CEDAR_LOG_ERROR() << "[ClusterFailover] K8s restart: sending SIGTERM to self (PID "
             << pid << ") for graceful pod restart. Node=" << event.node_id << std::endl;
 
   constexpr int kMaxTermAttempts = 3;
@@ -1282,7 +1283,7 @@ Status ClusterFailoverManager::RestartViaKubernetes(const FailureEvent& event) {
   for (int attempt = 1; attempt <= kMaxTermAttempts; ++attempt) {
     int rc = std::raise(SIGTERM);
     if (rc != 0) {
-      std::cerr << "[ClusterFailover] raise(SIGTERM) attempt " << attempt
+      CEDAR_LOG_ERROR() << "[ClusterFailover] raise(SIGTERM) attempt " << attempt
                 << " failed: " << strerror(errno) << std::endl;
       if (attempt == kMaxTermAttempts) {
         return Status::IOError(
@@ -1294,15 +1295,15 @@ Status ClusterFailoverManager::RestartViaKubernetes(const FailureEvent& event) {
     }
     std::this_thread::sleep_for(kTermDelay);
     if (kill(pid, 0) != 0) {
-      std::cerr << "[ClusterFailover] Process no longer responding to kill(0), "
+      CEDAR_LOG_ERROR() << "[ClusterFailover] Process no longer responding to kill(0), "
                 << "assuming graceful shutdown is in progress." << std::endl;
       return Status::OK();
     }
-    std::cerr << "[ClusterFailover] SIGTERM attempt " << attempt
+    CEDAR_LOG_ERROR() << "[ClusterFailover] SIGTERM attempt " << attempt
               << " sent but process still alive. Retrying..." << std::endl;
   }
 
-  std::cerr << "[ClusterFailover] All SIGTERM attempts exhausted. "
+  CEDAR_LOG_ERROR() << "[ClusterFailover] All SIGTERM attempts exhausted. "
             << "Relying on external orchestrator for final termination." << std::endl;
   return Status::OK();
 }
@@ -1314,7 +1315,7 @@ Status ClusterFailoverManager::RestartViaSystemd(const FailureEvent& event) {
     return RestartViaSignal(event);
   }
   
-  std::cerr << "[ClusterFailover] systemd restart via NOTIFY_SOCKET="
+  CEDAR_LOG_ERROR() << "[ClusterFailover] systemd restart via NOTIFY_SOCKET="
             << notify_socket << ", node=" << event.node_id << std::endl;
   
   // 实现 sd_notify 协议：向 NOTIFY_SOCKET 发送 WATCHDOG=trigger
@@ -1353,7 +1354,7 @@ Status ClusterFailoverManager::RestartViaSystemd(const FailureEvent& event) {
     return RestartViaSignal(event);
   }
   
-  std::cerr << "[ClusterFailover] systemd WATCHDOG=trigger sent successfully" << std::endl;
+  CEDAR_LOG_ERROR() << "[ClusterFailover] systemd WATCHDOG=trigger sent successfully" << std::endl;
   
   // 同时发送 SIGTERM 以加速重启
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -1364,7 +1365,7 @@ Status ClusterFailoverManager::RestartViaSystemd(const FailureEvent& event) {
 }
 
 Status ClusterFailoverManager::RestartViaSignal(const FailureEvent& event) {
-  std::cerr << "[ClusterFailover] Sending SIGTERM to self (PID " << getpid()
+  CEDAR_LOG_ERROR() << "[ClusterFailover] Sending SIGTERM to self (PID " << getpid()
             << ") for service restart. Node=" << event.node_id << std::endl;
   
   int rc = std::raise(SIGTERM);
@@ -1389,7 +1390,7 @@ Status ClusterFailoverManager::ExecuteContainerizedRecovery(
     case ContainerRuntime::kBareMetal:
     case ContainerRuntime::kUnknown:
     default:
-      std::cerr << "[ClusterFailover] Service restart on bare metal: "
+      CEDAR_LOG_ERROR() << "[ClusterFailover] Service restart on bare metal: "
                 << "node=" << event.node_id
                 << ". Consider configuring systemd or K8s for automatic restart."
                 << std::endl;
@@ -1446,12 +1447,12 @@ Status ClusterFailoverManager::ExecuteRecovery(const FailureEvent& event) {
   switch (action.strategy) {
     case RecoveryStrategy::kRestartService: {
       auto runtime = DetectedRuntime();
-      std::cerr << "[ClusterFailover] Service restart for node " << event.node_id
+      CEDAR_LOG_ERROR() << "[ClusterFailover] Service restart for node " << event.node_id
                 << " in " << ContainerRuntimeToString(runtime) << " environment" << std::endl;
       return ExecuteContainerizedRecovery(event, runtime);
     }
     case RecoveryStrategy::kSwitchLeader: {
-      std::cerr << "[ClusterFailoverManager] Leader switch requested for partition "
+      CEDAR_LOG_ERROR() << "[ClusterFailoverManager] Leader switch requested for partition "
                 << event.partition_id << " to node " << event.node_id << std::endl;
       SwitchLeaderHandler handler;
       {
@@ -1464,7 +1465,7 @@ Status ClusterFailoverManager::ExecuteRecovery(const FailureEvent& event) {
       return Status::IOError("No recovery handler registered for leader switch");
     }
     case RecoveryStrategy::kPromoteReplica: {
-      std::cerr << "[ClusterFailoverManager] Replica promotion requested for partition "
+      CEDAR_LOG_ERROR() << "[ClusterFailoverManager] Replica promotion requested for partition "
                 << event.partition_id << " on node " << event.node_id << std::endl;
       PromoteReplicaHandler handler;
       {

@@ -1,3 +1,4 @@
+#include "cedar/core/logging.h"
 // Copyright 2025 The Cedar Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -67,7 +68,7 @@ GrpcConnectionPool::~GrpcConnectionPool() {
 }
 
 Status GrpcConnectionPool::Initialize(const std::vector<std::string>& endpoints) {
-  std::cerr << "[ConnectionPool] Initializing with " << endpoints.size() 
+  CEDAR_LOG_ERROR() << "[ConnectionPool] Initializing with " << endpoints.size() 
             << " endpoints..." << std::endl;
   
   endpoints_ = endpoints;
@@ -85,7 +86,7 @@ Status GrpcConnectionPool::Initialize(const std::vector<std::string>& endpoints)
     }
   }
   
-  std::cerr << "[ConnectionPool] Created " << available_connections_.size() 
+  CEDAR_LOG_ERROR() << "[ConnectionPool] Created " << available_connections_.size() 
             << " initial connections" << std::endl;
   
   // 启动后台线程
@@ -233,7 +234,7 @@ void GrpcConnectionPool::Release(std::shared_ptr<PooledChannel> channel) {
 }
 
 Status GrpcConnectionPool::WarmupConnections() {
-  std::cerr << "[ConnectionPool] Warming up connections..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ConnectionPool] Warming up connections..." << std::endl;
   
   // 对每个端点执行一次简单调用以建立连接
   for (const auto& endpoint : endpoints_) {
@@ -245,7 +246,7 @@ Status GrpcConnectionPool::WarmupConnections() {
     }
   }
   
-  std::cerr << "[ConnectionPool] Warmup completed" << std::endl;
+  CEDAR_LOG_ERROR() << "[ConnectionPool] Warmup completed" << std::endl;
   return Status::OK();
 }
 
@@ -281,7 +282,7 @@ GrpcConnectionPool::Stats GrpcConnectionPool::GetStats() const {
 }
 
 void GrpcConnectionPool::Shutdown() noexcept {
-  std::cerr << "[ConnectionPool] Shutting down..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ConnectionPool] Shutting down..." << std::endl;
   
   shutdown_ = true;
   cv_.notify_all();
@@ -292,7 +293,7 @@ void GrpcConnectionPool::Shutdown() noexcept {
       health_check_thread_.join();
     }
   } catch (...) {
-    std::cerr << "[GrpcConnectionPool] Thread join exception" << std::endl;
+    CEDAR_LOG_ERROR() << "[GrpcConnectionPool] Thread join exception" << std::endl;
   }
   
   try {
@@ -300,7 +301,7 @@ void GrpcConnectionPool::Shutdown() noexcept {
       cleanup_thread_.join();
     }
   } catch (...) {
-    std::cerr << "[GrpcConnectionPool] Thread join exception" << std::endl;
+    CEDAR_LOG_ERROR() << "[GrpcConnectionPool] Thread join exception" << std::endl;
   }
   
   // 清空连接池
@@ -310,7 +311,7 @@ void GrpcConnectionPool::Shutdown() noexcept {
   }
   endpoint_connections_.clear();
   
-  std::cerr << "[ConnectionPool] Shutdown completed" << std::endl;
+  CEDAR_LOG_ERROR() << "[ConnectionPool] Shutdown completed" << std::endl;
 }
 
 void GrpcConnectionPool::HealthCheckLoop() {
@@ -344,7 +345,7 @@ void GrpcConnectionPool::HealthCheckLoop() {
             endpoint_connections_.erase(ep_it);
           }
         }
-        std::cerr << "[ConnectionPool] Removing unhealthy connection to " 
+        CEDAR_LOG_ERROR() << "[ConnectionPool] Removing unhealthy connection to " 
                   << conn->GetAddress() << std::endl;
       }
     }
@@ -399,7 +400,7 @@ void GrpcConnectionPool::IdleCleanupLoop() {
     available_connections_ = std::move(keep_queue);
     
     if (removed > 0) {
-      std::cerr << "[ConnectionPool] Cleaned up " << removed 
+      CEDAR_LOG_ERROR() << "[ConnectionPool] Cleaned up " << removed 
                 << " idle connections" << std::endl;
     }
   }
@@ -418,7 +419,7 @@ std::shared_ptr<PooledChannel> GrpcConnectionPool::CreateConnection(
   // 创建通道
   auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
   if (!client_creds.ok()) {
-    std::cerr << "[ConnectionPool] TLS error: " << client_creds.status().ToString() << std::endl;
+    CEDAR_LOG_ERROR() << "[ConnectionPool] TLS error: " << client_creds.status().ToString() << std::endl;
     return nullptr;
   }
   auto channel = grpc::CreateCustomChannel(
@@ -429,7 +430,7 @@ std::shared_ptr<PooledChannel> GrpcConnectionPool::CreateConnection(
   // 等待连接就绪（避免将未连接好的通道放入连接池）
   auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(2);
   if (!channel->WaitForConnected(deadline)) {
-    std::cerr << "[ConnectionPool] Channel to " << endpoint
+    CEDAR_LOG_ERROR() << "[ConnectionPool] Channel to " << endpoint
               << " did not connect within 2s" << std::endl;
   }
 

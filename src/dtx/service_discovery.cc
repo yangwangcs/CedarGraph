@@ -1,3 +1,4 @@
+#include "cedar/core/logging.h"
 // Copyright 2025 The Cedar Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -48,7 +49,7 @@ Status ServiceDiscovery::Initialize() {
     return Status::OK();  // 已初始化
   }
   
-  std::cerr << "[ServiceDiscovery] Initializing..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ServiceDiscovery] Initializing..." << std::endl;
   std::cerr << "  Docker discovery: " << (config_.enable_docker_discovery ? "enabled" : "disabled") << std::endl;
   std::cerr << "  DNS discovery: " << (config_.enable_dns_discovery ? "enabled" : "disabled") << std::endl;
   std::cerr << "  Auto register: " << (config_.auto_register ? "enabled" : "disabled") << std::endl;
@@ -65,11 +66,11 @@ Status ServiceDiscovery::Start() {
     return Status::OK();  // 已在运行
   }
   
-  std::cerr << "[ServiceDiscovery] Starting discovery service..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ServiceDiscovery] Starting discovery service..." << std::endl;
   
   // 立即执行一次发现
   auto nodes = DiscoverNow();
-  std::cerr << "[ServiceDiscovery] Initial discovery found " << nodes.size() << " nodes" << std::endl;
+  CEDAR_LOG_ERROR() << "[ServiceDiscovery] Initial discovery found " << nodes.size() << " nodes" << std::endl;
   
   // 启动后台线程
   std::lock_guard<std::mutex> lock(thread_mutex_);
@@ -84,7 +85,7 @@ void ServiceDiscovery::Stop() {
     return;
   }
   
-  std::cerr << "[ServiceDiscovery] Stopping discovery service..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ServiceDiscovery] Stopping discovery service..." << std::endl;
   
   {
     std::lock_guard<std::mutex> lock(cv_mutex_);
@@ -281,14 +282,14 @@ std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaDocker() {
   if (docker_host == nullptr) {
     // 尝试本地 Docker socket
     if (access(config_.docker_socket.c_str(), F_OK) != 0) {
-      std::cerr << "[ServiceDiscovery] Docker socket not available" << std::endl;
+      CEDAR_LOG_ERROR() << "[ServiceDiscovery] Docker socket not available" << std::endl;
       return nodes;
     }
   }
   
   // 模拟从 Docker 获取容器信息
   // 实际实现应该调用 Docker API
-  std::cerr << "[ServiceDiscovery] Discovering via Docker..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ServiceDiscovery] Discovering via Docker..." << std::endl;
   
   // 常见的存储节点名称
   std::vector<std::string> possible_names = {
@@ -329,7 +330,7 @@ std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaDocker() {
 std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaDNS() {
   std::vector<StorageNodeInfo> nodes;
   
-  std::cerr << "[ServiceDiscovery] Discovering via DNS..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ServiceDiscovery] Discovering via DNS..." << std::endl;
   
   for (const auto& name : config_.dns_names) {
     struct addrinfo hints = {};
@@ -362,7 +363,7 @@ std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaDNS() {
 
 std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaConsul() {
   // Consul 发现暂未实现
-  std::cerr << "[ServiceDiscovery] Consul discovery not implemented yet" << std::endl;
+  CEDAR_LOG_ERROR() << "[ServiceDiscovery] Consul discovery not implemented yet" << std::endl;
   return {};
 }
 
@@ -381,7 +382,7 @@ void ServiceDiscovery::DiscoveryLoop() {
     if (!running_.load()) break;
     
     auto new_nodes = DiscoverNow();
-    std::cerr << "[ServiceDiscovery] Discovery loop found " << new_nodes.size() << " nodes" << std::endl;
+    CEDAR_LOG_ERROR() << "[ServiceDiscovery] Discovery loop found " << new_nodes.size() << " nodes" << std::endl;
   }
 }
 
@@ -445,7 +446,7 @@ void ServiceDiscovery::HealthCheckLoop() {
       stats_.healthy_nodes = healthy_count;
     }
     
-    std::cerr << "[ServiceDiscovery] Health check: " << healthy_count << "/" 
+    CEDAR_LOG_ERROR() << "[ServiceDiscovery] Health check: " << healthy_count << "/" 
               << nodes.size() << " nodes healthy" << std::endl;
   }
 }
@@ -472,7 +473,7 @@ void ServiceDiscovery::MergeNodes(const std::vector<StorageNodeInfo>& new_nodes)
   
   // 在锁外调用回调，避免死锁
   for (const auto& node : newly_discovered) {
-    std::cerr << "[ServiceDiscovery] New node discovered: " << node.GetEndpoint() << std::endl;
+    CEDAR_LOG_ERROR() << "[ServiceDiscovery] New node discovered: " << node.GetEndpoint() << std::endl;
     std::lock_guard<std::mutex> cb_lock(callback_mutex_);
     if (discovered_callback_) {
       discovered_callback_(node);
@@ -493,7 +494,7 @@ ClusterInitializer::ClusterInitializer(const Config& config)
 ClusterInitializer::~ClusterInitializer() = default;
 
 Status ClusterInitializer::InitializeCluster() {
-  std::cerr << "[ClusterInitializer] Initializing cluster..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ClusterInitializer] Initializing cluster..." << std::endl;
   
   // 1. 等待 MetaD 就绪
   auto status = WaitForMetaD();
@@ -505,18 +506,18 @@ Status ClusterInitializer::InitializeCluster() {
   if (config_.auto_discover_storaged) {
     status = AutoDiscoverAndRegister();
     if (!status.ok()) {
-      std::cerr << "[ClusterInitializer] Warning: Auto-discovery failed: " 
+      CEDAR_LOG_ERROR() << "[ClusterInitializer] Warning: Auto-discovery failed: " 
                 << status.ToString() << std::endl;
       // 继续，不中断初始化
     }
   }
   
-  std::cerr << "[ClusterInitializer] Cluster initialization completed!" << std::endl;
+  CEDAR_LOG_ERROR() << "[ClusterInitializer] Cluster initialization completed!" << std::endl;
   return Status::OK();
 }
 
 Status ClusterInitializer::WaitForMetaD() {
-  std::cerr << "[ClusterInitializer] Waiting for MetaD to be ready..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ClusterInitializer] Waiting for MetaD to be ready..." << std::endl;
   
   auto start = std::chrono::steady_clock::now();
   auto timeout = std::chrono::seconds(config_.init_timeout_seconds);
@@ -533,7 +534,7 @@ Status ClusterInitializer::WaitForMetaD() {
       try {
         port = std::stoi(meta_server.substr(colon_pos + 1));
       } catch (const std::exception& e) {
-        std::cerr << "[ClusterInitializer] Invalid port in meta server address: "
+        CEDAR_LOG_ERROR() << "[ClusterInitializer] Invalid port in meta server address: "
                   << meta_server << " - " << e.what() << std::endl;
         continue;
       }
@@ -567,7 +568,7 @@ Status ClusterInitializer::WaitForMetaD() {
         
         if (connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
           close(sock);
-          std::cerr << "[ClusterInitializer] MetaD is ready at " << meta_server << std::endl;
+          CEDAR_LOG_ERROR() << "[ClusterInitializer] MetaD is ready at " << meta_server << std::endl;
           return Status::OK();
         }
       }
@@ -583,7 +584,7 @@ Status ClusterInitializer::WaitForMetaD() {
 }
 
 Status ClusterInitializer::AutoDiscoverAndRegister() {
-  std::cerr << "[ClusterInitializer] Auto-discovering storage nodes..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ClusterInitializer] Auto-discovering storage nodes..." << std::endl;
   
   // 初始化服务发现
   auto status = service_discovery_->Initialize();
@@ -598,14 +599,14 @@ Status ClusterInitializer::AutoDiscoverAndRegister() {
     return Status::NotFound("No storage nodes discovered");
   }
   
-  std::cerr << "[ClusterInitializer] Discovered " << nodes.size() << " storage nodes" << std::endl;
+  CEDAR_LOG_ERROR() << "[ClusterInitializer] Discovered " << nodes.size() << " storage nodes" << std::endl;
   
   // 注册节点
   return RegisterStorageNodes(nodes);
 }
 
 Status ClusterInitializer::RegisterStorageNodes(const std::vector<StorageNodeInfo>& nodes) {
-  std::cerr << "[ClusterInitializer] Registering storage nodes..." << std::endl;
+  CEDAR_LOG_ERROR() << "[ClusterInitializer] Registering storage nodes..." << std::endl;
 
   if (nodes.empty()) {
     return Status::InvalidArgument("No storage nodes to register");
@@ -646,7 +647,7 @@ Status ClusterInitializer::RegisterStorageNodes(const std::vector<StorageNodeInf
     }
   }
 
-  std::cerr << "[ClusterInitializer] Registered " << success_count << "/"
+  CEDAR_LOG_ERROR() << "[ClusterInitializer] Registered " << success_count << "/"
             << nodes.size() << " nodes" << std::endl;
 
   return success_count > 0 ? Status::OK()

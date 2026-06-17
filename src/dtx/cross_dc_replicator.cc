@@ -1,3 +1,4 @@
+#include "cedar/core/logging.h"
 // Copyright 2025 The Cedar Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,7 +31,7 @@ CrossDCReplicator::~CrossDCReplicator() {
   try {
     Stop();
   } catch (...) {
-    std::cerr << "[CrossDCReplicator] Destructor exception suppressed" << std::endl;
+    CEDAR_LOG_ERROR() << "[CrossDCReplicator] Destructor exception suppressed" << std::endl;
   }
 }
 
@@ -77,7 +78,7 @@ Status CrossDCReplicator::Initialize(
         creds = grpc::SslCredentials(ssl_opts);
       } else {
         if (!config_.allow_insecure) {
-          std::cerr << "[CrossDCReplicator] FATAL: TLS is required for cross-DC replication. "
+          CEDAR_LOG_ERROR() << "[CrossDCReplicator] FATAL: TLS is required for cross-DC replication. "
                     << "Set tls_enabled=true or allow_insecure=true (dev only)." << std::endl;
           return Status::IOError("Cross-DC replication requires TLS or explicit insecure override");
         }
@@ -101,7 +102,7 @@ Status CrossDCReplicator::Start() {
       replication_thread_ = std::thread(&CrossDCReplicator::ReplicationLoop, this);
     } catch (...) {
       running_ = false;
-      std::cerr << "[CrossDCReplicator] Failed to start replication thread" << std::endl;
+      CEDAR_LOG_ERROR() << "[CrossDCReplicator] Failed to start replication thread" << std::endl;
       return Status::IOError("Failed to start replication thread");
     }
   }
@@ -116,7 +117,7 @@ Status CrossDCReplicator::Start() {
     if (replication_thread_.joinable()) {
       replication_thread_.join();
     }
-    std::cerr << "[CrossDCReplicator] Failed to start reconciliation thread" << std::endl;
+    CEDAR_LOG_ERROR() << "[CrossDCReplicator] Failed to start reconciliation thread" << std::endl;
     return Status::IOError("Failed to start reconciliation thread");
   }
   
@@ -133,7 +134,7 @@ void CrossDCReplicator::Stop() {
       replication_thread_.join();
     }
   } catch (...) {
-    std::cerr << "[CrossDCReplicator] Replication thread join exception" << std::endl;
+    CEDAR_LOG_ERROR() << "[CrossDCReplicator] Replication thread join exception" << std::endl;
   }
 
   try {
@@ -141,7 +142,7 @@ void CrossDCReplicator::Stop() {
       reconciliation_thread_.join();
     }
   } catch (...) {
-    std::cerr << "[CrossDCReplicator] Reconciliation thread join exception" << std::endl;
+    CEDAR_LOG_ERROR() << "[CrossDCReplicator] Reconciliation thread join exception" << std::endl;
   }
 }
 
@@ -197,7 +198,7 @@ Status CrossDCReplicator::Replicate(const ::cedar::CedarKey& key,
       for (const auto& succ_dc : succeeded_dcs) {
         Status del_status = DeleteFromDC(log.key, succ_dc);
         if (!del_status.ok()) {
-          std::cerr << "[CrossDCReplicator] Sync rollback FAILED for " << succ_dc
+          CEDAR_LOG_ERROR() << "[CrossDCReplicator] Sync rollback FAILED for " << succ_dc
                     << ": " << del_status.ToString() << std::endl;
           all_cleaned = false;
         }
@@ -207,7 +208,7 @@ Status CrossDCReplicator::Replicate(const ::cedar::CedarKey& key,
         // Critical: we could not undo the partial write. We MUST NOT return OK.
         // Return the ORIGINAL failure so the caller (2PC coordinator) knows
         // the transaction did NOT commit globally and can retry or abort.
-        std::cerr << "[CrossDCReplicator] CRITICAL: sync replication partially "
+        CEDAR_LOG_ERROR() << "[CrossDCReplicator] CRITICAL: sync replication partially "
                      "committed and rollback incomplete. Returning failure to caller."
                   << std::endl;
       }
@@ -360,7 +361,7 @@ void CrossDCReplicator::ReplicationLoop() {
     try {
       ProcessReplicationQueue();
     } catch (...) {
-      std::cerr << "[CrossDCReplicator] Replication loop exception" << std::endl;
+      CEDAR_LOG_ERROR() << "[CrossDCReplicator] Replication loop exception" << std::endl;
     }
     // Wait for new data or timeout; avoids busy-waiting when queue is empty.
     {
@@ -395,7 +396,7 @@ void CrossDCReplicator::ProcessReplicationQueue() {
         try {
           callback(log, s);
         } catch (...) {
-          std::cerr << "[CrossDCReplicator] Callback exception" << std::endl;
+          CEDAR_LOG_ERROR() << "[CrossDCReplicator] Callback exception" << std::endl;
         }
       }
       if (!s.ok()) {
@@ -439,7 +440,7 @@ void CrossDCReplicator::DrainPendingQueue() {
       try {
         callback(entry.log, s);
       } catch (...) {
-        std::cerr << "[CrossDCReplicator] Callback exception" << std::endl;
+        CEDAR_LOG_ERROR() << "[CrossDCReplicator] Callback exception" << std::endl;
       }
     }
   }
@@ -622,13 +623,13 @@ void CrossDCReplicator::ReconciliationLoop() {
                          }),
           reconciliation_queue_.end());
       if (evicted_ttl > 0) {
-        std::cerr << "[CrossDCReplicator] Reconciliation TTL eviction: dropped "
+        CEDAR_LOG_ERROR() << "[CrossDCReplicator] Reconciliation TTL eviction: dropped "
                   << evicted_ttl << " expired entries" << std::endl;
       }
 
       // Bound the queue: if still oversized, drop oldest (FIFO)
       while (reconciliation_queue_.size() > max_size) {
-        std::cerr << "[CrossDCReplicator] Reconciliation queue overflow: dropping oldest entry"
+        CEDAR_LOG_ERROR() << "[CrossDCReplicator] Reconciliation queue overflow: dropping oldest entry"
                   << std::endl;
         reconciliation_queue_.pop_front();
       }
@@ -659,7 +660,7 @@ void CrossDCReplicator::ReconciliationLoop() {
 void CrossDCReplicator::ReconcileKey(const ::cedar::CedarKey& key,
                                      const std::string& dc_id) {
   if (!storage_) {
-    std::cerr << "[CrossDCReplicator] ReconcileKey: no storage set, cannot "
+    CEDAR_LOG_ERROR() << "[CrossDCReplicator] ReconcileKey: no storage set, cannot "
                  "reconcile " << key.ToString() << std::endl;
     return;
   }

@@ -1,3 +1,4 @@
+#include "cedar/core/logging.h"
 #include "cedar/dtx/meta_service.h"
 #include "cedar/dtx/meta_service_impl.h"
 #include <chrono>
@@ -151,7 +152,7 @@ cedar::meta::NodeInfo ToProto(const NodeInfo& info) {
         case NodeInfo::State::kOffline: proto.set_state("OFFLINE"); break;
         case NodeInfo::State::kSuspected: proto.set_state("SUSPECTED"); break;
         default:
-          std::cerr << "[MetaService] Unknown node state" << std::endl;
+          CEDAR_LOG_ERROR() << "[MetaService] Unknown node state" << std::endl;
           break;
     }
     return proto;
@@ -1210,7 +1211,7 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
         case RaftCommandType::kCreateSpace: {
             auto space = SpaceDef::Deserialize(cmd.payload);
             if (!space.ok()) {
-                std::cerr << "[MetadataService] Failed to deserialize space: "
+                CEDAR_LOG_ERROR() << "[MetadataService] Failed to deserialize space: "
                           << space.status().ToString() << std::endl;
                 return false;
             }
@@ -1231,7 +1232,7 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
                 state_machine_.ApplyUpdateNodeStatus(status.value());
                 return true;
             }
-            std::cerr << "[MetadataService] Failed to deserialize node info/status"
+            CEDAR_LOG_ERROR() << "[MetadataService] Failed to deserialize node info/status"
                       << std::endl;
             return false;
         }
@@ -1239,7 +1240,7 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
             size_t p1 = cmd.payload.find('|');
             size_t p2 = cmd.payload.find('|', p1 + 1);
             if (p1 == std::string::npos || p2 == std::string::npos) {
-                std::cerr << "[MetadataService] Invalid kUpdateAssignment format"
+                CEDAR_LOG_ERROR() << "[MetadataService] Invalid kUpdateAssignment format"
                           << std::endl;
                 return false;
             }
@@ -1249,7 +1250,7 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
                 unsigned long leader_raw = std::stoul(cmd.payload.substr(p2 + 1));
                 if (pid_raw > std::numeric_limits<PartitionID>::max() ||
                     leader_raw > std::numeric_limits<NodeID>::max()) {
-                    std::cerr << "[MetadataService] kUpdateAssignment value out of range"
+                    CEDAR_LOG_ERROR() << "[MetadataService] kUpdateAssignment value out of range"
                               << std::endl;
                     return false;
                 }
@@ -1269,7 +1270,7 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
                 }
                 return true;
             } catch (const std::exception& e) {
-                std::cerr << "[MetadataService] Invalid kUpdateAssignment payload: "
+                CEDAR_LOG_ERROR() << "[MetadataService] Invalid kUpdateAssignment payload: "
                           << e.what() << std::endl;
                 return false;
             }
@@ -1280,7 +1281,7 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
 }
 
 void MetadataService::OnBecomeLeader() {
-    std::cerr << "[MetadataService] Node " << config_.node_id << " became leader" << std::endl;
+    CEDAR_LOG_ERROR() << "[MetadataService] Node " << config_.node_id << " became leader" << std::endl;
 
     // Notify watchers on leader change
     PartitionMapChange change;
@@ -1295,7 +1296,7 @@ void MetadataService::OnBecomeLeader() {
 }
 
 void MetadataService::OnStepDown() {
-    std::cerr << "[MetadataService] Node " << config_.node_id << " stepped down" << std::endl;
+    CEDAR_LOG_ERROR() << "[MetadataService] Node " << config_.node_id << " stepped down" << std::endl;
 }
 
 void MetadataService::HeartbeatCheckLoop() {
@@ -1307,7 +1308,7 @@ void MetadataService::HeartbeatCheckLoop() {
             // Mark failed nodes as offline
             for (NodeID node_id : failed_nodes) {
                 if (state_machine_.MarkNodeOffline(node_id)) {
-                    std::cerr << "[MetaD] Node " << node_id << " marked as OFFLINE "
+                    CEDAR_LOG_ERROR() << "[MetaD] Node " << node_id << " marked as OFFLINE "
                               << "(heartbeat timeout after " << config_.heartbeat_timeout_sec << "s)" << std::endl;
                     
                     // Trigger node change callbacks
@@ -1325,15 +1326,15 @@ void MetadataService::HeartbeatCheckLoop() {
                         try {
                             callback(change);
                         } catch (...) {
-                            std::cerr << "[MetaD] Heartbeat callback exception" << std::endl;
+                            CEDAR_LOG_ERROR() << "[MetaD] Heartbeat callback exception" << std::endl;
                         }
                     }
                 }
             }
         } catch (const std::exception& e) {
-            std::cerr << "[MetaD] HeartbeatCheckLoop exception: " << e.what() << std::endl;
+            CEDAR_LOG_ERROR() << "[MetaD] HeartbeatCheckLoop exception: " << e.what() << std::endl;
         } catch (...) {
-            std::cerr << "[MetaD] HeartbeatCheckLoop unknown exception" << std::endl;
+            CEDAR_LOG_ERROR() << "[MetaD] HeartbeatCheckLoop unknown exception" << std::endl;
         }
 
         // Use condition_variable for responsive shutdown
@@ -1360,7 +1361,7 @@ void MetadataService::NotifyPartitionChange(const PartitionMapChange& change) {
         try {
             callback(change);
         } catch (...) {
-            std::cerr << "[MetaD] Partition change callback exception" << std::endl;
+            CEDAR_LOG_ERROR() << "[MetaD] Partition change callback exception" << std::endl;
         }
     }
 }
@@ -1387,7 +1388,7 @@ void MetadataService::NotifyNodeChange(const NodeChange& change) {
         try {
             callback(change);
         } catch (...) {
-            std::cerr << "[MetaD] Node change callback exception" << std::endl;
+            CEDAR_LOG_ERROR() << "[MetaD] Node change callback exception" << std::endl;
         }
     }
 }

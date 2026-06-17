@@ -1,3 +1,4 @@
+#include "cedar/core/logging.h"
 // Copyright 2025 The Cedar Authors
 //
 // Licensed under the Apache License, Version 2.0
@@ -188,7 +189,7 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
     return Status::InvalidArgument("Failed to connect to MetaD: " + connect_status.ToString());
   }
 
-  std::cerr << "[GraphD] Connected to MetaD at " << meta_server_addr << std::endl;
+  CEDAR_LOG_ERROR() << "[GraphD] Connected to MetaD at " << meta_server_addr << std::endl;
   
   // 初始化 GCN 路由（如果配置了）
   gcn_router_ = std::make_shared<cedar::gcn::ScatterGatherRouter>();
@@ -196,12 +197,12 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
     auto gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls_config_);
     if (!gcn_creds.ok()) gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
     if (!gcn_creds.ok()) {
-      std::cerr << "[GraphD] GCN TLS error: " << gcn_creds.status().ToString() << std::endl;
+      CEDAR_LOG_ERROR() << "[GraphD] GCN TLS error: " << gcn_creds.status().ToString() << std::endl;
     } else {
       auto gcn_channel = grpc::CreateChannel(gcn_server_addr, gcn_creds.ValueOrDie());
       gcn_router_->RegisterPeer(gcn_server_addr, gcn_channel);
       gcn_peer_addresses_.push_back(gcn_server_addr);
-      std::cerr << "[GraphD] Registered GCN " << gcn_server_addr << " in router" << std::endl;
+      CEDAR_LOG_ERROR() << "[GraphD] Registered GCN " << gcn_server_addr << " in router" << std::endl;
     }
   }
   
@@ -224,7 +225,7 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   }
   std::filesystem::create_directories(txn_wal_dir_);
   
-  std::cerr << "[GraphD] Query cache initialized" << std::endl;
+  CEDAR_LOG_ERROR() << "[GraphD] Query cache initialized" << std::endl;
 
   // 初始化 2PC 分布式事务引擎
   auto s = Initialize2PCEngine();
@@ -245,13 +246,13 @@ Status GraphServiceRouter::Start() {
   if (txn_recovery_manager_) {
     auto recovery_result = txn_recovery_manager_->RecoverAllPendingTransactions();
     if (!recovery_result.ok()) {
-      std::cerr << "[GraphD] Transaction recovery warning: " << recovery_result.ToString() << std::endl;
+      CEDAR_LOG_ERROR() << "[GraphD] Transaction recovery warning: " << recovery_result.ToString() << std::endl;
     } else {
-      std::cerr << "[GraphD] Transaction recovery completed" << std::endl;
+      CEDAR_LOG_ERROR() << "[GraphD] Transaction recovery completed" << std::endl;
     }
   }
   
-  std::cerr << "[GraphD] Router started" << std::endl;
+  CEDAR_LOG_ERROR() << "[GraphD] Router started" << std::endl;
   return Status::OK();
 }
 
@@ -276,7 +277,7 @@ Status GraphServiceRouter::Stop() {
     meta_client_.reset();
   }
 
-  std::cerr << "[GraphD] Router stopped" << std::endl;
+  CEDAR_LOG_ERROR() << "[GraphD] Router stopped" << std::endl;
   return Status::OK();
 }
 
@@ -730,7 +731,7 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   // Slow query log: log queries exceeding threshold (default 500ms)
   static constexpr int64_t kSlowQueryThresholdUs = 500 * 1000;  // 500ms
   if (latency_us > kSlowQueryThresholdUs) {
-    std::cerr << "[SLOW_QUERY] latency=" << latency_us / 1000 << "ms"
+    CEDAR_LOG_ERROR() << "[SLOW_QUERY] latency=" << latency_us / 1000 << "ms"
               << " query=\"" << request->query().substr(0, 200) << "\""
               << " rows=" << result_set.rows_size()
               << " partitions=" << route_ctx.target_partitions.size()
@@ -1925,7 +1926,7 @@ GraphServiceRouter::GetStorageStub(const std::string& node_addr) {
   auto storage_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls_config_);
   if (!storage_creds.ok()) storage_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
   if (!storage_creds.ok()) {
-    std::cerr << "[GraphD] Storage TLS error: " << storage_creds.status().ToString() << std::endl;
+    CEDAR_LOG_ERROR() << "[GraphD] Storage TLS error: " << storage_creds.status().ToString() << std::endl;
     return nullptr;
   }
   auto channel = grpc::CreateChannel(node_addr, storage_creds.ValueOrDie());
@@ -1961,7 +1962,7 @@ GraphServiceRouter::GetStorageStub(const std::string& node_addr) {
         two_pc_engine_->AddClient(client);
         storage_clients_.push_back(client);
       } else {
-        std::cerr << "[GraphD] Failed to create StorageClient for 2PC: " << node_addr
+        CEDAR_LOG_ERROR() << "[GraphD] Failed to create StorageClient for 2PC: " << node_addr
                   << " - " << s.ToString() << std::endl;
       }
     }
@@ -2051,7 +2052,7 @@ Status GraphServiceRouter::ExecutePartitionQuery(
   // Get partition route
   auto route_result = GetPartitionRoute(partition_id);
   if (!route_result.ok()) {
-    std::cerr << "[GraphD] Failed to get route for partition " << partition_id
+    CEDAR_LOG_ERROR() << "[GraphD] Failed to get route for partition " << partition_id
               << ": " << route_result.status().ToString() << std::endl;
     return route_result.status();
   }
@@ -2060,7 +2061,7 @@ Status GraphServiceRouter::ExecutePartitionQuery(
   // Get storage stub
   auto stub = GetStorageStub(route.leader_node);
   if (!stub) {
-    std::cerr << "[GraphD] Failed to get storage stub for partition " << partition_id
+    CEDAR_LOG_ERROR() << "[GraphD] Failed to get storage stub for partition " << partition_id
               << " at " << route.leader_node << std::endl;
     return Status::IOError("Failed to connect to storage node");
   }
@@ -2177,7 +2178,7 @@ Status GraphServiceRouter::ExecutePartitionQuery(
       auto grpc_status = stub->ScanEdgeV2(&ctx, edge_req, &edge_resp);
 
       if (!grpc_status.ok() || !edge_resp.success()) {
-        std::cerr << "[GraphD] ScanEdgeV2 failed for partition " << partition_id
+        CEDAR_LOG_ERROR() << "[GraphD] ScanEdgeV2 failed for partition " << partition_id
                   << ": " << grpc_status.error_message() << std::endl;
         break;
       }
@@ -2255,7 +2256,7 @@ Status GraphServiceRouter::ExecutePartitionQuery(
       break;
     }
     default:
-      std::cerr << "[GraphServiceRouter] Unknown query type" << std::endl;
+      CEDAR_LOG_ERROR() << "[GraphServiceRouter] Unknown query type" << std::endl;
       return Status::InvalidArgument("GraphServiceRouter", "Unknown query type");
   }
 
@@ -2270,7 +2271,7 @@ Status GraphServiceRouter::RefreshPartitionMap(const std::string& space_name) {
 
   auto result = meta_client_->GetSpacePartitionMap(space_name);
   if (!result.ok()) {
-    std::cerr << "[GraphServiceRouter] Failed to refresh partition map: "
+    CEDAR_LOG_ERROR() << "[GraphServiceRouter] Failed to refresh partition map: "
               << result.status().ToString() << std::endl;
     return result.status();
   }
@@ -2284,7 +2285,7 @@ Status GraphServiceRouter::RefreshPartitionMap(const std::string& space_name) {
     route.partition_id = entry.first;
     auto leader = GetNodeAddress(assignment.leader_node);
     if (!leader.ok()) {
-      std::cerr << "[GraphServiceRouter] Failed to resolve leader node "
+      CEDAR_LOG_ERROR() << "[GraphServiceRouter] Failed to resolve leader node "
                 << assignment.leader_node << " for partition " << entry.first
                 << ": " << leader.status().ToString() << std::endl;
       continue;
@@ -2293,7 +2294,7 @@ Status GraphServiceRouter::RefreshPartitionMap(const std::string& space_name) {
     for (uint32_t replica : assignment.follower_nodes) {
       auto addr = GetNodeAddress(replica);
       if (!addr.ok()) {
-        std::cerr << "[GraphServiceRouter] Failed to resolve replica node "
+        CEDAR_LOG_ERROR() << "[GraphServiceRouter] Failed to resolve replica node "
                   << replica << " for partition " << entry.first
                   << ": " << addr.status().ToString() << std::endl;
         continue;
@@ -2355,12 +2356,12 @@ Status GraphServiceRouter::Initialize2PCEngine() {
       client_config.tls = tls_config_;
       auto s = client->Initialize(client_config);
       if (!s.ok()) {
-        std::cerr << "[GraphD] Failed to create StorageClient for " << addr
+        CEDAR_LOG_ERROR() << "[GraphD] Failed to create StorageClient for " << addr
                   << ": " << s.ToString() << std::endl;
         continue;
       }
       storage_clients_.push_back(client);
-      std::cerr << "[GraphD] StorageClient connected to " << addr << std::endl;
+      CEDAR_LOG_ERROR() << "[GraphD] StorageClient connected to " << addr << std::endl;
     }
   }
   
@@ -2376,19 +2377,19 @@ Status GraphServiceRouter::Initialize2PCEngine() {
           client_config.tls = tls_config_;
           auto s = client->Initialize(client_config);
           if (!s.ok()) {
-            std::cerr << "[GraphD] Failed to create StorageClient for " << node.address
+            CEDAR_LOG_ERROR() << "[GraphD] Failed to create StorageClient for " << node.address
                       << ": " << s.ToString() << std::endl;
             continue;
           }
           storage_clients_.push_back(client);
-          std::cerr << "[GraphD] StorageClient connected to " << node.address << std::endl;
+          CEDAR_LOG_ERROR() << "[GraphD] StorageClient connected to " << node.address << std::endl;
         }
       }
     }
   }
   
   if (storage_clients_.empty()) {
-    std::cerr << "[GraphD] No storage clients available, 2PC engine not initialized" << std::endl;
+    CEDAR_LOG_ERROR() << "[GraphD] No storage clients available, 2PC engine not initialized" << std::endl;
     return Status::OK();  // Non-fatal
   }
   
@@ -2396,7 +2397,7 @@ Status GraphServiceRouter::Initialize2PCEngine() {
   txn_state_manager_ = std::make_unique<cedar::TransactionStateManager>();
   auto s = txn_state_manager_->Initialize(txn_wal_dir_);
   if (!s.ok()) {
-    std::cerr << "[GraphD] Failed to initialize TransactionStateManager: " << s.ToString() << std::endl;
+    CEDAR_LOG_ERROR() << "[GraphD] Failed to initialize TransactionStateManager: " << s.ToString() << std::endl;
     txn_state_manager_.reset();
     storage_clients_.clear();
     return s;
@@ -2406,7 +2407,7 @@ Status GraphServiceRouter::Initialize2PCEngine() {
   txn_recovery_manager_ = std::make_unique<cedar::TransactionRecoveryManager>();
   s = txn_recovery_manager_->Initialize(txn_state_manager_.get());
   if (!s.ok()) {
-    std::cerr << "[GraphD] Failed to initialize TransactionRecoveryManager: " << s.ToString() << std::endl;
+    CEDAR_LOG_ERROR() << "[GraphD] Failed to initialize TransactionRecoveryManager: " << s.ToString() << std::endl;
     txn_recovery_manager_.reset();
     txn_state_manager_->Shutdown();
     txn_state_manager_.reset();
@@ -2426,7 +2427,7 @@ Status GraphServiceRouter::Initialize2PCEngine() {
     two_pc_engine_ = std::make_unique<cedar::dtx::Optimized2PCEngine>(two_pc_config);
     s = two_pc_engine_->Initialize(storage_clients_);
     if (!s.ok()) {
-      std::cerr << "[GraphD] Failed to initialize Optimized2PCEngine: " << s.ToString() << std::endl;
+      CEDAR_LOG_ERROR() << "[GraphD] Failed to initialize Optimized2PCEngine: " << s.ToString() << std::endl;
       two_pc_engine_.reset();
     } else {
       two_pc_engine_->SetStateManager(txn_state_manager_.get());
@@ -2445,7 +2446,7 @@ Status GraphServiceRouter::Initialize2PCEngine() {
     return s;
   }
   
-  std::cerr << "[GraphD] 2PC engine initialized with " << storage_clients_.size()
+  CEDAR_LOG_ERROR() << "[GraphD] 2PC engine initialized with " << storage_clients_.size()
             << " storage clients" << std::endl;
   return Status::OK();
 }
@@ -2568,7 +2569,7 @@ grpc::Status GraphServiceRouter::Commit(grpc::ServerContext* context,
   }
   
   response->set_ok(true);
-  std::cerr << "[GraphD] Commit: " << txn_id_str << " (keys=" << txn_ctx.write_set.size() << ")" << std::endl;
+  CEDAR_LOG_ERROR() << "[GraphD] Commit: " << txn_id_str << " (keys=" << txn_ctx.write_set.size() << ")" << std::endl;
   return grpc::Status::OK;
 }
 
@@ -2617,12 +2618,12 @@ grpc::Status GraphServiceRouter::Rollback(grpc::ServerContext* context,
       auto txn_id = std::stoull(txn_id_str);
       txn_state_manager_->UpdateState(txn_id, cedar::TxnState::kAborted);
     } catch (const std::exception& e) {
-      std::cerr << "[GraphD] Failed to parse txn_id for rollback: " << txn_id_str << std::endl;
+      CEDAR_LOG_ERROR() << "[GraphD] Failed to parse txn_id for rollback: " << txn_id_str << std::endl;
     }
   }
   
   response->set_ok(true);
-  std::cerr << "[GraphD] Rollback: " << txn_id_str << std::endl;
+  CEDAR_LOG_ERROR() << "[GraphD] Rollback: " << txn_id_str << std::endl;
   return grpc::Status::OK;
 }
 
@@ -2748,7 +2749,7 @@ Status GraphServiceRouter::InitializeDualModePartition(
   
   partition_strategy_ = std::make_unique<cedar::dtx::DualModePartitionStrategy>(config);
   
-  std::cerr << "[GraphD] Dual-mode partition strategy initialized: " 
+  CEDAR_LOG_ERROR() << "[GraphD] Dual-mode partition strategy initialized: " 
             << partition_strategy_->Name() << std::endl;
   
   return Status::OK();
@@ -2761,7 +2762,7 @@ Status GraphServiceRouter::SetPartitionMode(cedar::dtx::DualModePartitionStrateg
   
   partition_strategy_->SetMode(mode);
   
-  std::cerr << "[GraphD] Partition mode switched to: " 
+  CEDAR_LOG_ERROR() << "[GraphD] Partition mode switched to: " 
             << partition_strategy_->Name() << std::endl;
   
   return Status::OK();

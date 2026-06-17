@@ -1,3 +1,4 @@
+#include "cedar/core/logging.h"
 // Copyright 2025 The Cedar Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -148,7 +149,7 @@ void Optimized2PCEngine::Shutdown() noexcept {
   // Join worker threads BEFORE destroying thread pool
   for (auto& t : worker_threads_) {
     if (t.joinable()) {
-      try { t.join(); } catch (...) { std::cerr << "[2PC] Worker thread join exception" << std::endl; }
+      try { t.join(); } catch (...) { CEDAR_LOG_ERROR() << "[2PC] Worker thread join exception" << std::endl; }
     }
   }
   
@@ -156,19 +157,19 @@ void Optimized2PCEngine::Shutdown() noexcept {
     if (pipeline_thread_.joinable()) {
       pipeline_thread_.join();
     }
-  } catch (...) { std::cerr << "[2PC] Pipeline thread join exception" << std::endl; }
+  } catch (...) { CEDAR_LOG_ERROR() << "[2PC] Pipeline thread join exception" << std::endl; }
   
   try {
     if (batch_thread_.joinable()) {
       batch_thread_.join();
     }
-  } catch (...) { std::cerr << "[2PC] Batch thread join exception" << std::endl; }
+  } catch (...) { CEDAR_LOG_ERROR() << "[2PC] Batch thread join exception" << std::endl; }
   
   try {
     if (tuning_thread_.joinable()) {
       tuning_thread_.join();
     }
-  } catch (...) { std::cerr << "[2PC] Tuning thread join exception" << std::endl; }
+  } catch (...) { CEDAR_LOG_ERROR() << "[2PC] Tuning thread join exception" << std::endl; }
   
   // NOW safe to destroy thread pool
   if (thread_pool_) {
@@ -181,13 +182,13 @@ void Optimized2PCEngine::Shutdown() noexcept {
     if (timeout_manager_) {
       timeout_manager_->Shutdown();
     }
-  } catch (...) { std::cerr << "[2PC] Timeout manager shutdown exception" << std::endl; }
+  } catch (...) { CEDAR_LOG_ERROR() << "[2PC] Timeout manager shutdown exception" << std::endl; }
   try {
     if (recovery_manager_) {
       recovery_manager_->SetDecisionLogLoader(nullptr);
       recovery_manager_->Shutdown();
     }
-  } catch (...) { std::cerr << "[2PC] Recovery manager shutdown exception" << std::endl; }
+  } catch (...) { CEDAR_LOG_ERROR() << "[2PC] Recovery manager shutdown exception" << std::endl; }
 }
 
 // =============================================================================
@@ -479,7 +480,7 @@ Status Optimized2PCEngine::PersistCommitDecision(const CommitDecision& decision)
   if (replicated_decision_log_ != nullptr) {
     auto rep_status = replicated_decision_log_->Append(decision);
     if (!rep_status.ok()) {
-      std::cerr << "[2PC] Decision log replication failed for txn "
+      CEDAR_LOG_ERROR() << "[2PC] Decision log replication failed for txn "
                 << decision.txn_id << ": " << rep_status.ToString() << std::endl;
     }
   }
@@ -594,14 +595,14 @@ Status Optimized2PCEngine::ExecuteSequential2PC(
   decision.participants = GetPartitionIDs(ctx->write_set);
   Status decision_status = PersistCommitDecision(decision);
   if (!decision_status.ok()) {
-    std::cerr << "[Optimized2PCEngine] Failed to persist commit decision for txn="
+    CEDAR_LOG_ERROR() << "[Optimized2PCEngine] Failed to persist commit decision for txn="
               << ctx->txn_id << ": " << decision_status.ToString() << std::endl;
     ctx->state.store(TransactionContext::State::kAborting);
     // Abort all prepared participants to release locks
     for (auto& client : participants) {
       auto abort_status = client->Abort(ctx->txn_id);
       if (!abort_status.ok()) {
-        std::cerr << "[Optimized2PCEngine] Abort failed for txn=" << ctx->txn_id
+        CEDAR_LOG_ERROR() << "[Optimized2PCEngine] Abort failed for txn=" << ctx->txn_id
                   << ": " << abort_status.ToString() << std::endl;
       }
     }
@@ -684,7 +685,7 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
           (*prepare_promises)[i].set_value(false);
         }
       } catch (...) {
-        std::cerr << "[2PC] Prepare RPC exception for txn_id=" << ctx->txn_id << std::endl;
+        CEDAR_LOG_ERROR() << "[2PC] Prepare RPC exception for txn_id=" << ctx->txn_id << std::endl;
         ctx->prepare_nacks.fetch_add(1);
         (*prepare_promises)[i].set_value(false);
       }
@@ -722,7 +723,7 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
             ctx->abort_acks.fetch_add(1);
           }
         } catch (...) {
-          std::cerr << "[2PC] Abort RPC exception for txn_id=" << ctx->txn_id << std::endl;
+          CEDAR_LOG_ERROR() << "[2PC] Abort RPC exception for txn_id=" << ctx->txn_id << std::endl;
           // Abort 异常不应导致线程崩溃
         }
         abort_promises[i].set_value();
@@ -746,14 +747,14 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
   decision.participants = GetPartitionIDs(ctx->write_set);
   Status decision_status = PersistCommitDecision(decision);
   if (!decision_status.ok()) {
-    std::cerr << "[Optimized2PCEngine] Failed to persist commit decision for txn="
+    CEDAR_LOG_ERROR() << "[Optimized2PCEngine] Failed to persist commit decision for txn="
               << ctx->txn_id << ": " << decision_status.ToString() << std::endl;
     ctx->state.store(TransactionContext::State::kAborting);
     // Abort all prepared participants to release locks
     for (auto& client : participants) {
       auto abort_status = client->Abort(ctx->txn_id);
       if (!abort_status.ok()) {
-        std::cerr << "[Optimized2PCEngine] Abort failed for txn=" << ctx->txn_id
+        CEDAR_LOG_ERROR() << "[Optimized2PCEngine] Abort failed for txn=" << ctx->txn_id
                   << ": " << abort_status.ToString() << std::endl;
       }
     }
@@ -787,7 +788,7 @@ Status Optimized2PCEngine::ExecuteParallel2PC(
           (*commit_promises)[i].set_value(false);
         }
       } catch (...) {
-        std::cerr << "[2PC] Commit RPC exception for txn_id=" << ctx->txn_id << std::endl;
+        CEDAR_LOG_ERROR() << "[2PC] Commit RPC exception for txn_id=" << ctx->txn_id << std::endl;
         (*commit_promises)[i].set_value(false);
       }
     });
@@ -960,7 +961,7 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
                 prepare_promises[i].set_value(false);
               }
             } catch (...) {
-              std::cerr << "[2PC] Prepare RPC exception for txn_id=" << ctx->txn_id << std::endl;
+              CEDAR_LOG_ERROR() << "[2PC] Prepare RPC exception for txn_id=" << ctx->txn_id << std::endl;
               ctx->prepare_nacks.fetch_add(1);
               prepare_promises[i].set_value(false);
             }
@@ -981,7 +982,7 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
                 ctx->abort_acks.fetch_add(1);
               }
             } catch (...) {
-              std::cerr << "[2PC] Abort RPC exception for txn_id=" << ctx->txn_id << std::endl;
+              CEDAR_LOG_ERROR() << "[2PC] Abort RPC exception for txn_id=" << ctx->txn_id << std::endl;
             }
           }
           ctx->state.store(TransactionContext::State::kAborted);
@@ -1007,7 +1008,7 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
         decision.participants = GetPartitionIDs(ctx->write_set);
         Status decision_status = PersistCommitDecision(decision);
         if (!decision_status.ok()) {
-          std::cerr << "[Optimized2PCEngine] Failed to persist commit decision for pipelined txn="
+          CEDAR_LOG_ERROR() << "[Optimized2PCEngine] Failed to persist commit decision for pipelined txn="
                     << ctx->txn_id << ": " << decision_status.ToString() << std::endl;
           ctx->state.store(TransactionContext::State::kAborting);
           // Abort all prepared participants to release locks
@@ -1015,11 +1016,11 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
             try {
               auto abort_status = client->Abort(ctx->txn_id);
               if (!abort_status.ok()) {
-                std::cerr << "[Optimized2PCEngine] Abort failed for txn=" << ctx->txn_id
+                CEDAR_LOG_ERROR() << "[Optimized2PCEngine] Abort failed for txn=" << ctx->txn_id
                           << ": " << abort_status.ToString() << std::endl;
               }
             } catch (...) {
-              std::cerr << "[2PC] Abort RPC exception for txn_id=" << ctx->txn_id << std::endl;
+              CEDAR_LOG_ERROR() << "[2PC] Abort RPC exception for txn_id=" << ctx->txn_id << std::endl;
             }
           }
           if (state_manager_) {
@@ -1051,7 +1052,7 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
                 commit_promises[i].set_value(false);
               }
             } catch (...) {
-              std::cerr << "[2PC] Commit RPC exception for txn_id=" << ctx->txn_id << std::endl;
+              CEDAR_LOG_ERROR() << "[2PC] Commit RPC exception for txn_id=" << ctx->txn_id << std::endl;
               commit_promises[i].set_value(false);
             }
           });
@@ -1297,7 +1298,7 @@ void Optimized2PCEngine::SyncRecoveryRpcClient() {
         CommitDecision decision;
         Status s = LoadCommitDecision(txn_id, &decision);
         if (!s.ok()) {
-          std::cerr << "[Optimized2PCEngine] Decision log missing or unreadable for txn=" << txn_id
+          CEDAR_LOG_ERROR() << "[Optimized2PCEngine] Decision log missing or unreadable for txn=" << txn_id
                     << ": " << s.ToString() << std::endl;
           return s;
         }
@@ -1445,7 +1446,7 @@ void Optimized2PCEngine::BatchWorkerLoop() {
           ctx->done_promise->set_value();
         }
       } catch (const std::exception& e) {
-        std::cerr << "[2PC] BatchWorkerLoop exception: " << e.what() << std::endl;
+        CEDAR_LOG_ERROR() << "[2PC] BatchWorkerLoop exception: " << e.what() << std::endl;
         if (ctx) {
           ctx->state.store(TransactionContext::State::kAborted);
           if (ctx->done_promise) {
@@ -1453,7 +1454,7 @@ void Optimized2PCEngine::BatchWorkerLoop() {
           }
         }
       } catch (...) {
-        std::cerr << "[2PC] BatchWorkerLoop unknown exception" << std::endl;
+        CEDAR_LOG_ERROR() << "[2PC] BatchWorkerLoop unknown exception" << std::endl;
         if (ctx) {
           ctx->state.store(TransactionContext::State::kAborted);
           if (ctx->done_promise) {

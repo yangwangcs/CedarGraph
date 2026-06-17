@@ -1,3 +1,4 @@
+#include "cedar/core/logging.h"
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 
 #include "cedar/storage/lsm_engine.h"
@@ -70,7 +71,7 @@ LsmEngine::~LsmEngine() {
   try {
     Close();
   } catch (...) {
-    std::cerr << "[LsmEngine] Exception during Close() in destructor — swallowed" << std::endl;
+    CEDAR_LOG_ERROR() << "[LsmEngine] Exception during Close() in destructor — swallowed" << std::endl;
   }
   // Wait for any pending async flushes to prevent UAF
   if (active_flush_count_.load() > 0) {
@@ -1635,12 +1636,12 @@ void LsmEngine::MaybeScheduleFlush() {
       if (s.ok()) {
         success = true;
       } else {
-        std::cerr << "[LsmEngine] FlushMemTable failed after retries: " << s.ToString() << std::endl;
+        CEDAR_LOG_ERROR() << "[LsmEngine] FlushMemTable failed after retries: " << s.ToString() << std::endl;
       }
     } catch (const std::exception& e) {
-      std::cerr << "[LsmEngine] FlushMemTable exception: " << e.what() << std::endl;
+      CEDAR_LOG_ERROR() << "[LsmEngine] FlushMemTable exception: " << e.what() << std::endl;
     } catch (...) {
-      std::cerr << "[LsmEngine] FlushMemTable unknown exception" << std::endl;
+      CEDAR_LOG_ERROR() << "[LsmEngine] FlushMemTable unknown exception" << std::endl;
     }
 
     if (success && !shutdown_.load()) {
@@ -2560,7 +2561,7 @@ Status LsmEngine::FlushMemTableWithRetry(VSLMemTable* mem) {
     if (s.ok()) {
       return s;
     }
-    std::cerr << "[LsmEngine] Flush attempt " << attempt << " failed: " << s.ToString() << std::endl;
+    CEDAR_LOG_ERROR() << "[LsmEngine] Flush attempt " << attempt << " failed: " << s.ToString() << std::endl;
     if (attempt < 3) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }

@@ -1,3 +1,4 @@
+#include "cedar/core/logging.h"
 // Copyright 2025 The Cedar Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -138,7 +139,7 @@ std::string SerializeCypherValue(const cedar::cypher::Value& value) {
       }
       break;
     default:
-      std::cerr << "[StorageServerWithGrpc] Unknown cypher value type tag" << std::endl;
+      CEDAR_LOG_ERROR() << "[StorageServerWithGrpc] Unknown cypher value type tag" << std::endl;
       return cedar::cypher::Value();
   }
   return cedar::cypher::Value();
@@ -1021,7 +1022,7 @@ int main(int argc, char* argv[]) {
   }
   
   if (config_path.empty()) {
-    std::cerr << "Error: No config file specified. Use --config <path>" << std::endl;
+    CEDAR_LOG_ERROR() << "error: No config file specified. Use --config <path>" << std::endl;
     return 1;
   }
   
@@ -1063,7 +1064,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   
-  std::cerr << "[1/3] Partition manager initialized" << std::endl;
+  CEDAR_LOG_ERROR() << "[1/3] Partition manager initialized" << std::endl;
   
   // Create and start gRPC server
   StorageServiceImpl grpc_service(partition_manager.get());
@@ -1086,8 +1087,8 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   
-  std::cerr << "[2/3] gRPC server listening on " << config.bind_address << std::endl;
-  std::cerr << "[3/3] Running..." << std::endl;
+  CEDAR_LOG_ERROR() << "[2/3] gRPC server listening on " << config.bind_address << std::endl;
+  CEDAR_LOG_ERROR() << "[3/3] Running..." << std::endl;
   std::cerr << std::endl;
   
   // Monitor and print stats, with periodic flush
@@ -1107,7 +1108,7 @@ int main(int argc, char* argv[]) {
 
       if (ticks % 10 == 0) {
         auto stats = storage->GetStats();
-        std::cerr << "[Stats] partitions=" << partition_manager->GetPartitionCount()
+        CEDAR_LOG_ERROR() << "[Stats] partitions=" << partition_manager->GetPartitionCount()
                   << " memtable=" << stats.memtable_size / 1000
                   << "KB sst=" << stats.sst_count
                   << " data=" << (stats.sst_size / 1024 / 1024) << "MB"
