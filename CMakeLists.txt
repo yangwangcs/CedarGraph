@@ -747,6 +747,26 @@ add_executable(test_flush_persistence
 )
 target_link_libraries(test_flush_persistence cedar ${LZ4_LIBRARIES} gRPC::grpc++)
 
+add_executable(test_multilevel_compaction
+    tests/test_multilevel_compaction.cpp
+)
+target_link_libraries(test_multilevel_compaction cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+
+add_executable(test_level_compaction
+    tests/test_level_compaction.cpp
+)
+target_link_libraries(test_level_compaction cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+
+add_executable(test_perf_compaction_safety
+    tests/test_perf_compaction_safety.cpp
+)
+target_link_libraries(test_perf_compaction_safety cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+
+add_executable(test_leveled_verify
+    tests/test_leveled_verify.cpp
+)
+target_link_libraries(test_leveled_verify cedar ${LZ4_LIBRARIES} gRPC::grpc++)
+
 
 
 # =============================================================================
