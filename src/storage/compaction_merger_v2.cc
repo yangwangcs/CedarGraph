@@ -42,7 +42,9 @@ class CompactionMergerV2::Impl {
       : options_(options),
         input_files_(input_files),
         output_path_(output_path),
-        fs_(fs) {}
+        fs_(fs),
+        min_entity_id_(UINT64_MAX),
+        max_entity_id_(0) {}
   
   std::unique_ptr<ZoneSstMeta> Run() {
     if (!Initialize()) {
@@ -107,6 +109,11 @@ class CompactionMergerV2::Impl {
       
       stats_.input_entries++;
       
+      // 跟踪 key range
+      uint64_t eid = current.key.entity_id();
+      if (eid < min_entity_id_) min_entity_id_ = eid;
+      if (eid > max_entity_id_) max_entity_id_ = eid;
+      
       // 检查是否为墓碑
       if (ShouldFilter(current.key, current.descriptor)) {
         //  Tombstone，根据策略决定是否删除
@@ -166,8 +173,8 @@ class CompactionMergerV2::Impl {
     auto meta = std::make_unique<ZoneSstMeta>();
     meta->file_size = stats_.output_file_size;
     meta->num_entries = stats_.output_entries;
-    meta->min_entity_id = 0;  // Requires key range tracking during merge
-    meta->max_entity_id = 0;  // Requires key range tracking during merge
+    meta->min_entity_id = min_entity_id_;
+    meta->max_entity_id = max_entity_id_;
     
     return meta;
   }
@@ -203,6 +210,9 @@ class CompactionMergerV2::Impl {
   
   std::priority_queue<MergeItem, std::vector<MergeItem>, std::greater<>> heap_;
   std::vector<uint32_t> current_row_;  // 每个 reader 的当前行号
+  
+  uint64_t min_entity_id_;  // 跟踪合并过程中的最小 entity_id
+  uint64_t max_entity_id_;  // 跟踪合并过程中的最大 entity_id
   
   struct Stats {
     size_t input_entries = 0;

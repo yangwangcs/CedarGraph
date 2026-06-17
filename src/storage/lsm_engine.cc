@@ -1643,11 +1643,13 @@ void LsmEngine::MaybeScheduleFlush() {
       std::cerr << "[LsmEngine] FlushMemTable unknown exception" << std::endl;
     }
 
-    if (success) {
+    if (success && !shutdown_.load()) {
       std::unique_lock<std::shared_mutex> cleanup_lock(mutex_);
-      imm_.reset();
-      if (compaction_engine_) {
-        compaction_engine_->ScheduleCompaction();
+      if (!shutdown_.load()) {
+        imm_.reset();
+        if (compaction_engine_) {
+          compaction_engine_->ScheduleCompaction();
+        }
       }
     }
     active_flush_count_.fetch_sub(1);
@@ -2042,13 +2044,16 @@ LsmEngine::CapacityInfo LsmEngine::GetCapacityInfo() const {
 
 void LsmEngine::TrackColumnId(uint64_t entity_id, uint16_t column_id) {
   if (batch_tracking_enabled_) {
-    size_t idx = batch_buffer_index_.fetch_add(1);
-    if (idx < kTrackBatchSize) {
-      batch_buffer_[idx] = {entity_id, column_id};
-    } else {
-      // Buffer overflow guard: prevent unbounded index growth
-      batch_buffer_index_.fetch_sub(1);
-    }
+    // Use CAS loop to prevent TOCTOU race on batch_buffer_index_
+    size_t idx;
+    do {
+      idx = batch_buffer_index_.load(std::memory_order_relaxed);
+      if (idx >= kTrackBatchSize) {
+        return;  // Buffer full, skip
+      }
+    } while (!batch_buffer_index_.compare_exchange_weak(idx, idx + 1, 
+                                                         std::memory_order_relaxed));
+    batch_buffer_[idx] = {entity_id, column_id};
     return;
   }
   

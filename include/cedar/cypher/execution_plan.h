@@ -157,6 +157,10 @@ class PhysicalOperator {
     return children_;
   }
   
+  std::vector<std::shared_ptr<PhysicalOperator>>& MutableChildren() {
+    return children_;
+  }
+  
  protected:
   ExecutionContext* context_ = nullptr;
   std::vector<std::shared_ptr<PhysicalOperator>> children_;

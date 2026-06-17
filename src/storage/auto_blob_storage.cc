@@ -73,7 +73,8 @@ Status AutoBlobStorage::PutBlobString(uint64_t entity_id, uint16_t col_id, const
     uint32_t file_id, offset, size;
     Status s = blob_mgr_->WriteBlob(Slice(value), &file_id, &offset, &size);
     if (!s.ok()) {
-        // Blob失败，回退到内联
+        std::cerr << "[AutoBlobStorage] Blob write failed: " << s.ToString() 
+                  << ", falling back to inline" << std::endl;
         return PutInlineString(entity_id, col_id, value);
     }
     
@@ -82,11 +83,15 @@ Status AutoBlobStorage::PutBlobString(uint64_t entity_id, uint16_t col_id, const
     constexpr uint32_t kMaxFileId = 0x0F;
     constexpr uint32_t kMaxOffset = 0x0FFFFFFF;
     if (file_id > kMaxFileId || offset > kMaxOffset) {
+        // Blob 写入成功但编码溢出
+        std::cerr << "[AutoBlobStorage] Blob encoding overflow: file_id=" << file_id 
+                  << " offset=" << offset << ", falling back to inline" << std::endl;
         return PutInlineString(entity_id, col_id, value);
     }
     uint32_t packed = (file_id << 28) | offset;
     
     // 存储单个 ExternalRef Descriptor 到主列
+    // 注意: size 可能超过 255，需要分片或使用更大的字段
     uint8_t len = static_cast<uint8_t>(std::min(size, static_cast<uint32_t>(255)));
     CedarKey key = CedarKey::Vertex(entity_id, col_id, Timestamp(0));
     Descriptor desc(EntryKind::ExternalRef, col_id, packed, len);

@@ -1705,10 +1705,10 @@ static std::shared_ptr<PhysicalOperator> ApplyPredicatePushdown(
   }
 
   // If root has children, try to push into the first child
-  auto& children = root->GetChildren();
+  auto& children = root->MutableChildren();
   if (!children.empty()) {
     auto new_child = ApplyPredicatePushdown(children[0], predicates);
-    const_cast<std::vector<std::shared_ptr<PhysicalOperator>>&>(children)[0] = new_child;
+    children[0] = new_child;
   }
 
   return root;
@@ -1803,7 +1803,7 @@ static std::shared_ptr<PhysicalOperator> ApplyProjectionPushdown(
   if (!children.empty()) {
     for (size_t i = 0; i < children.size(); ++i) {
       auto new_child = ApplyProjectionPushdown(children[i], required_columns);
-      const_cast<std::vector<std::shared_ptr<PhysicalOperator>>&>(children)[i] = new_child;
+      root->MutableChildren()[i] = new_child;
     }
   }
 

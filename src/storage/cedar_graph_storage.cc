@@ -1243,6 +1243,10 @@ std::optional<Descriptor> CedarGraphStorage::GetDynamicEdge(uint64_t src_id,
     return std::nullopt;
   }
   
+  // TODO: dst_id filtering is not yet supported at the storage level.
+  // Current implementation returns all edges from src_id, which may include
+  // edges to different dst_id values. The caller should filter by dst_id.
+  // See: https://github.com/cedargraph/CedarGraph-Core/issues/XXX
   return rep_->engine->GetAtTime(src_id, EntityType::EdgeOut, property_id, timestamp);
 }
 
