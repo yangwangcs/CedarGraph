@@ -936,17 +936,20 @@ class BraftPartitionNode::Impl {
   }
 
   Status WaitForApplied(uint64_t index, std::chrono::milliseconds timeout) {
-    std::lock_guard<std::mutex> lock(node_mutex_);
-    if (!node_) return Status::IOError("Node not initialized");
-
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-      braft::NodeStatus node_status;
-      node_->get_status(&node_status);
-      if (node_status.known_applied_index >= static_cast<int64_t>(index)) {
-        return Status::OK();
+      // Check under lock, then release to allow other operations (Propose, IsLeader, Shutdown)
+      {
+        std::lock_guard<std::mutex> lock(node_mutex_);
+        if (!node_) return Status::IOError("Node not initialized");
+        braft::NodeStatus node_status;
+        node_->get_status(&node_status);
+        if (node_status.known_applied_index >= static_cast<int64_t>(index)) {
+          return Status::OK();
+        }
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      // Sleep outside lock so Propose/IsLeader/Shutdown are not blocked
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return Status::IOError("WaitForApplied timeout");
   }

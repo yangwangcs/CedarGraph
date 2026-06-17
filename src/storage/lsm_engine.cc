@@ -3146,15 +3146,19 @@ void LsmEngine::AutoCompactionThread() {
 
 void LsmEngine::PauseCompaction() {
   compaction_paused_.store(true);
-  // Wait for any in-flight compaction to finish
+  // Also pause the compaction engine's background threads
   if (compaction_engine_) {
-    compaction_engine_->WaitForCompactions();
+    compaction_engine_->PauseCompaction();
   }
 }
 
 void LsmEngine::ResumeCompaction() {
   compaction_paused_.store(false);
   compaction_pause_cv_.notify_all();
+  // Also resume the compaction engine's background threads
+  if (compaction_engine_) {
+    compaction_engine_->ResumeCompaction();
+  }
 }
 
 void LsmEngine::MigrateExistingSstFiles() {

@@ -700,6 +700,16 @@ void SizeTieredCompactionEngine::SetCompactionObserver(CompactionObserver observ
   compaction_observer_ = std::move(observer);
 }
 
+void SizeTieredCompactionEngine::PauseCompaction() {
+  pause_requested_.store(true);
+  WaitForCompactions();
+}
+
+void SizeTieredCompactionEngine::ResumeCompaction() {
+  pause_requested_.store(false);
+  pause_cv_.notify_all();
+}
+
 Status SizeTieredCompactionEngine::CompactAll() {
   // 逐层强制合并
   for (int level = 0; level < config_.max_levels - 1; ++level) {
@@ -742,6 +752,12 @@ void SizeTieredCompactionEngine::BackgroundCompactionThread() {
     pending_tasks_.pop();
     
     lock.unlock();
+    
+    // Skip compaction if paused (e.g., during snapshot save)
+    if (pause_requested_.load()) {
+      std::unique_lock<std::mutex> pause_lock(pause_mutex_);
+      pause_cv_.wait(pause_lock, [this] { return !pause_requested_.load(); });
+    }
     
     stats_.active_compactions.fetch_add(1);
     stats_.pending_compaction_bytes.fetch_add(task.estimated_output_size);

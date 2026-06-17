@@ -407,6 +407,10 @@ class SizeTieredCompactionEngine {
   // Reload manifest from disk (used after snapshot restore)
   Status LoadManifest();
   
+  // Pause/resume background compaction threads (for snapshot safety)
+  void PauseCompaction();
+  void ResumeCompaction();
+  
   // 获取各层大小
   std::vector<uint64_t> GetLevelSizes() const;
   
@@ -513,8 +517,12 @@ class SizeTieredCompactionEngine {
 
   // GC safe point: minimum last_applied_index across all replicas.
   // Tombstones with timestamps older than this can be safely removed.
-  // Set by Raft state machine after learning peer applied indices.
   std::atomic<uint64_t> gc_safe_point_{0};
+  
+  // Background thread pause support (for snapshot safety)
+  std::mutex pause_mutex_;
+  std::condition_variable pause_cv_;
+  std::atomic<bool> pause_requested_{false};
 };
 
 // =============================================================================
