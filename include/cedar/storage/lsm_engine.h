@@ -299,6 +299,10 @@ class LsmEngine {
   // Trigger compaction manually
   Status Compact();
 
+  // Pause/resume background compaction (for snapshot safety)
+  void PauseCompaction();
+  void ResumeCompaction();
+
   // Get SST file list for a level
   std::vector<SSTFileMeta> GetSSTFiles(int level) const;
 
@@ -804,6 +808,11 @@ class LsmEngine {
   std::atomic<bool> auto_compaction_enabled_{true};
   std::unique_ptr<std::thread> auto_compaction_thread_;
   void AutoCompactionThread();
+
+  // Compaction pause support (for snapshot safety)
+  std::mutex compaction_pause_mutex_;
+  std::condition_variable compaction_pause_cv_;
+  std::atomic<bool> compaction_paused_{false};
   
   // 跟踪后台 Flush 操作
   std::atomic<int> active_flush_count_{0};

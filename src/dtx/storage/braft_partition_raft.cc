@@ -476,8 +476,14 @@ void StoragePartitionStateMachine::on_snapshot_save(
       return;
     }
     
-    // Step 1: Flush underlying storage to ensure all data is on disk
     auto* shared_storage = storage_->GetSharedStorage();
+    
+    // Step 1: Pause compaction to prevent SST file deletion during copy
+    if (shared_storage) {
+      shared_storage->PauseCompaction();
+    }
+    
+    // Step 2: Flush underlying storage to ensure all data is on disk
     if (shared_storage) {
       auto flush_status = shared_storage->ForceFlush();
       if (!flush_status.ok()) {
@@ -485,10 +491,16 @@ void StoragePartitionStateMachine::on_snapshot_save(
       }
     }
     
-    // Step 2: Copy data files from storage data_root to snapshot directory
+    // Step 3: Copy data files from storage data_root to snapshot directory
     std::string data_root = storage_->GetDataRoot();
     std::string snapshot_path = writer->get_path();
     auto copy_result = CopySnapshotFiles(data_root, snapshot_path + "/data");
+    
+    // Step 4: Resume compaction regardless of copy result
+    if (shared_storage) {
+      shared_storage->ResumeCompaction();
+    }
+    
     if (!copy_result.ok()) {
       LOG(ERROR) << "Failed to copy snapshot files: " << copy_result.status().ToString();
       if (done) {
@@ -547,14 +559,29 @@ int StoragePartitionStateMachine::on_snapshot_load(
     braft::SnapshotReader* reader) {
   if (!storage_) {
     LOG(WARNING) << "Storage not available for snapshot load";
-    return -1;  // Return error so braft retries or falls back to log replay
+    return -1;
   }
   
   std::string snapshot_path = reader->get_path();
   std::string data_root = storage_->GetDataRoot();
   
-  // Step 1: Restore data files from snapshot to storage data_root
+  // Step 1: Remove stale SST/blob/MANIFEST files not present in snapshot
   std::string snapshot_data_dir = snapshot_path + "/data";
+  if (std::filesystem::exists(data_root)) {
+    for (const auto& entry : std::filesystem::directory_iterator(data_root)) {
+      if (entry.is_regular_file()) {
+        std::string filename = entry.path().filename().string();
+        if (filename.find(".sst") != std::string::npos ||
+            filename.find(".blob") != std::string::npos ||
+            filename.find("MANIFEST") != std::string::npos) {
+          std::error_code ec;
+          std::filesystem::remove(entry.path(), ec);
+        }
+      }
+    }
+  }
+  
+  // Step 2: Restore data files from snapshot to storage data_root
   if (std::filesystem::exists(snapshot_data_dir)) {
     auto copy_result = CopySnapshotFiles(snapshot_data_dir, data_root);
     if (!copy_result.ok()) {
@@ -566,7 +593,19 @@ int StoragePartitionStateMachine::on_snapshot_load(
               << " for partition " << storage_->GetPartitionId();
   }
   
-  // Step 2: Restore prepared transaction state (2PC)
+  // Step 3: Reload compaction engine manifest if available
+  auto* shared_storage = storage_->GetSharedStorage();
+  if (shared_storage) {
+    auto* engine = shared_storage->GetLsmEngine();
+    if (engine) {
+      auto* compaction = engine->GetCompactionEngine();
+      if (compaction) {
+        compaction->LoadManifest();
+      }
+    }
+  }
+  
+  // Step 4: Restore prepared transaction state (2PC)
   std::string txn_state_path = snapshot_path + "/txn_state";
   if (std::filesystem::exists(txn_state_path)) {
     auto status = storage_->LoadPreparedTxns(txn_state_path);

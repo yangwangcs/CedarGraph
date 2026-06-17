@@ -492,76 +492,77 @@ bool SizeTieredCompactionEngine::NeedsCompaction() const {
 std::optional<CompactionTask> SizeTieredCompactionEngine::PickNextCompaction() {
   std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   
-  // ========== 优先：小文件合并（L0 层特殊处理）==========
+  // ========== L0 合并 → L1 ==========
+  // 当 L0 有多个文件时，合并所有 L0 文件 + L1 重叠文件 → L1
   if (levels_[0].files.size() > 1) {
-    constexpr uint64_t kSmallFileThreshold = 8 * 1024 * 1024;  // 8MB
-    auto small_files = levels_[0].GetSmallFiles(kSmallFileThreshold);
-    
-    if (small_files.size() >= 2) {
-      // 检查小文件是否可用（不在合并中）
-      std::vector<ZoneSstMeta> available_small_files;
-      {
-        std::lock_guard<std::mutex> compact_lock(compacting_mutex_);
-        for (const auto& f : small_files) {
-          if (compacting_files_.count(f.file_number) == 0) {
-            available_small_files.push_back(f);
-          }
+    // 检查是否有文件正在被合并
+    {
+      std::lock_guard<std::mutex> compact_lock(compacting_mutex_);
+      for (const auto& f : levels_[0].files) {
+        if (compacting_files_.count(f.file_number) > 0) {
+          goto try_higher_levels;  // 有文件在合并中，跳过
         }
       }
+    }
+    
+    {
+      CompactionTask task;
+      task.input_level = 0;
+      task.output_level = 1;  // L0 → L1
       
-      // 如果有 2 个以上的可用小文件，优先合并它们
-      if (available_small_files.size() >= 2) {
-        // 按文件大小排序，优先合并最小的
-        std::sort(available_small_files.begin(), available_small_files.end(),
+      // 合并所有 L0 文件
+      task.input_files = levels_[0].files;
+      
+      // 限制合并宽度
+      if (task.input_files.size() > config_.max_merge_width) {
+        std::sort(task.input_files.begin(), task.input_files.end(),
                   [](const ZoneSstMeta& a, const ZoneSstMeta& b) {
                     return a.file_size < b.file_size;
                   });
-        
-        // 限制合并宽度（最多 4 个小文件）
-        if (available_small_files.size() > 4) {
-          available_small_files.resize(4);
-        }
-        
-        CompactionTask task;
-        task.input_level = 0;
-        task.output_level = 0;  // 小文件合并后仍在 L0
-        task.input_files = available_small_files;
-        
-        // 计算输入范围
-        uint64_t min_entity = UINT64_MAX, max_entity = 0;
-        uint64_t min_ts = UINT64_MAX, max_ts = 0;
-        for (const auto& f : task.input_files) {
-          min_entity = std::min(min_entity, f.min_entity_id);
-          max_entity = std::max(max_entity, f.max_entity_id);
-          min_ts = std::min(min_ts, f.min_timestamp);
-          max_ts = std::max(max_ts, f.max_timestamp);
-        }
-        
-        // 查找重叠文件（L0 层其他可能重叠的文件）
-        task.overlapping_files = levels_[0].FindOverlapping(
-            min_entity, max_entity, min_ts, max_ts);
-        
-        // 标记正在合并
-        {
-          std::lock_guard<std::mutex> compact_lock(compacting_mutex_);
-          for (const auto& f : task.input_files) {
-            compacting_files_.insert(f.file_number);
-          }
-        }
-        
-        task.estimated_output_size = 0;
-        for (const auto& f : task.input_files) {
-          task.estimated_output_size += f.file_size;
-        }
-        
-        return task;
+        task.input_files.resize(config_.max_merge_width);
       }
+      
+      // 计算输入范围
+      uint64_t min_entity = UINT64_MAX, max_entity = 0;
+      uint64_t min_ts = UINT64_MAX, max_ts = 0;
+      for (const auto& f : task.input_files) {
+        min_entity = std::min(min_entity, f.min_entity_id);
+        max_entity = std::max(max_entity, f.max_entity_id);
+        min_ts = std::min(min_ts, f.min_timestamp);
+        max_ts = std::max(max_ts, f.max_timestamp);
+      }
+      
+      // 查找 L1 重叠文件
+      if (1 < config_.max_levels) {
+        task.overlapping_files = levels_[1].FindOverlapping(
+            min_entity, max_entity, min_ts, max_ts);
+      }
+      
+      // 标记正在合并
+      {
+        std::lock_guard<std::mutex> compact_lock(compacting_mutex_);
+        for (const auto& f : task.input_files) {
+          compacting_files_.insert(f.file_number);
+        }
+      }
+      
+      task.estimated_output_size = 0;
+      for (const auto& f : task.input_files) {
+        task.estimated_output_size += f.file_size;
+      }
+      for (const auto& f : task.overlapping_files) {
+        task.estimated_output_size += f.file_size;
+      }
+      task.estimated_output_size = static_cast<uint64_t>(task.estimated_output_size * 0.7);
+      
+      return task;
     }
   }
   
+try_higher_levels:
   // ========== 常规合并流程 ==========
-  // 优先级：L0 > L1 > L2 > ... （从下往上）
-  for (int level = 0; level < config_.max_levels - 1; ++level) {
+  // 优先级：L1 > L2 > L3 > ... （L0 已在上面处理）
+  for (int level = 1; level < config_.max_levels - 1; ++level) {
     if (!levels_[level].needs_compaction(config_)) {
       continue;
     }
@@ -794,8 +795,21 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
   ZoneColumnarSstBuilder::Options builder_options;
   ZoneColumnarSstBuilder builder(builder_options, writable_file.get());
   
-  // 执行多路归并
-  s = MergeZones(task.input_files, &builder);
+  // 执行多路归并（合并 input + overlapping 所有文件）
+  std::vector<ZoneSstMeta> all_inputs = task.input_files;
+  for (const auto& f : task.overlapping_files) {
+    bool is_dup = false;
+    for (const auto& existing : all_inputs) {
+      if (existing.file_number == f.file_number) {
+        is_dup = true;
+        break;
+      }
+    }
+    if (!is_dup) {
+      all_inputs.push_back(f);
+    }
+  }
+  s = MergeZones(all_inputs, &builder, task.output_level);
   if (!s.ok()) {
     return s;
   }
@@ -806,9 +820,15 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
     return s;
   }
   
-  // 获取文件大小
+  // 获取文件大小和条目数
   uint64_t file_size = builder.FileSize();
   uint64_t num_entries = builder.NumEntries();
+  
+  // 如果合并输出为空（输入文件已被删除），清理输出文件并返回
+  if (num_entries == 0 || file_size < 64) {
+    env_->RemoveFile(output_path);
+    return Status::OK();
+  }
   
   // 构建输出元数据
   ZoneSstMeta output_meta;
@@ -819,12 +839,10 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
   output_meta.path = output_path;
   output_meta.blob_path = output_blob_path;
   
-  // 从输入文件推断范围（实际应该从 builder 获取）
   if (!task.input_files.empty()) {
     output_meta.column_id = task.input_files[0].column_id;
     output_meta.entity_type = task.input_files[0].entity_type;
     
-    // 计算合并后的范围
     uint64_t min_entity = UINT64_MAX, max_entity = 0;
     uint64_t min_ts = UINT64_MAX, max_ts = 0;
     for (const auto& f : task.input_files) {
@@ -846,14 +864,15 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
   }
   
   // Step 1: Update in-memory metadata (add output, remove inputs/overlaps)
+  // 仅更新元数据，不删除物理文件（等 manifest 保存后再删）
   {
     std::unique_lock<std::shared_mutex> lock(levels_mutex_);
     levels_[task.output_level].files.push_back(output_meta);
     for (const auto& f : task.input_files) {
-      RemoveFileFromLevelInternal(f.file_number, task.input_level);
+      RemoveFileMetadataOnly(f.file_number, task.input_level);
     }
     for (const auto& f : task.overlapping_files) {
-      RemoveFileFromLevelInternal(f.file_number, task.output_level);
+      RemoveFileMetadataOnly(f.file_number, task.output_level);
     }
   }
 
@@ -918,7 +937,8 @@ struct MergeIteratorItem {
 
 Status SizeTieredCompactionEngine::MergeZones(
     const std::vector<ZoneSstMeta>& inputs,
-    SstBuilder* output) {
+    SstBuilder* output,
+    int output_level) {
   
   // 打开所有输入文件
   std::vector<std::unique_ptr<MergeIteratorItem>> items;
@@ -930,7 +950,7 @@ Status SizeTieredCompactionEngine::MergeZones(
     item->reader = std::make_unique<SstReader>(inputs[i].path);
     Status s = item->reader->Open();
     if (!s.ok()) {
-      return s;
+      continue;  // 跳过缺失或损坏的文件
     }
     
     item->iterator = std::unique_ptr<SstReader::Iterator>(item->reader->NewIterator());
@@ -967,6 +987,10 @@ Status SizeTieredCompactionEngine::MergeZones(
   key_buffer.reserve(kBatchSize);
   value_buffer.reserve(kBatchSize);
   
+  // Dedup tracking
+  CedarKey last_key;
+  bool has_last = false;
+  
   // 归并循环
   while (!min_heap.empty()) {
     auto top = min_heap.top();
@@ -977,12 +1001,32 @@ Status SizeTieredCompactionEngine::MergeZones(
     CedarKey key = min_item->current_key;
     Descriptor value = min_item->current_value;
     
-    // 处理相同 Key 的去重（保留最新版本）
-    // 注：CedarKey 包含 timestamp 和 sequence，相同逻辑 Key 会有不同 timestamp
-    // 这里我们假设输入已经按 timestamp 降序排列，所以遇到相同 Key 跳过即可
+    // Dedup: skip entries with identical logical key (same entity_id, timestamp,
+    // target_id, column_id, entity_type). The first occurrence has the latest
+    // data because inputs are sorted by timestamp descending.
+    if (has_last && last_key.entity_id() == key.entity_id() &&
+        last_key.timestamp().value() == key.timestamp().value() &&
+        last_key.target_id() == key.target_id() &&
+        last_key.column_id() == key.column_id() &&
+        last_key.entity_type() == key.entity_type()) {
+      // Skip duplicate, advance this stream
+      min_item->Next();
+      if (min_item->valid) {
+        min_heap.push({min_idx, min_item->current_key});
+      }
+      continue;
+    }
     
-    // 处理 Tombstone（在较低层级可以清理）
-    // output_level 传递需要重构 CompactionMerger 接口
+    // Tombstone filtering for deep levels
+    if (ShouldDropTombstone(key, output_level)) {
+      last_key = key;
+      has_last = true;
+      min_item->Next();
+      if (min_item->valid) {
+        min_heap.push({min_idx, min_item->current_key});
+      }
+      continue;
+    }
     
     // 处理 Blob 引用
     if (value.AsExternalRef().has_value()) {
@@ -992,6 +1036,8 @@ Status SizeTieredCompactionEngine::MergeZones(
     // 添加到缓冲区
     key_buffer.push_back(key);
     value_buffer.push_back(value);
+    last_key = key;
+    has_last = true;
     
     // 批量写入
     if (key_buffer.size() >= kBatchSize) {
@@ -1023,6 +1069,14 @@ bool SizeTieredCompactionEngine::ShouldDropTombstone(const CedarKey& key, int ou
   // L0-L2: 永不物理删除（保证快照读）
   if (output_level < config_.tombstone_cleanup_level) {
     return false;
+  }
+  
+  // GC safe point check: in multi-replica setups, only remove tombstones
+  // whose timestamp is older than the GC safe point. This ensures all replicas
+  // have applied operations beyond this point before the tombstone is removed.
+  uint64_t safe_point = gc_safe_point_.load();
+  if (safe_point > 0 && key.timestamp().value() >= safe_point) {
+    return false;  // Tombstone is too new, keep it
   }
   
   // L3+: Allow tombstone cleanup when disk usage > 70%.
@@ -1168,6 +1222,20 @@ void SizeTieredCompactionEngine::RemoveFileFromLevelInternal(uint64_t file_numbe
       
       files.erase(it);
       break;
+    }
+  }
+}
+
+void SizeTieredCompactionEngine::RemoveFileMetadataOnly(uint64_t file_number, int level) {
+  // Caller must hold levels_mutex_
+  auto& files = levels_[level].files;
+  for (auto it = files.begin(); it != files.end(); ++it) {
+    if (it->file_number == file_number) {
+      if (it->blob_file_number != 0) {
+        blob_manager_.RemoveReference(it->blob_file_number, file_number);
+      }
+      files.erase(it);
+      return;
     }
   }
 }

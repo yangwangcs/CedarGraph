@@ -93,6 +93,15 @@ bool CedarCompactionFilter::ShouldRemoveTombstone(const CedarKey& key) const {
   }
   
   uint64_t key_time = key.timestamp().value();
+  
+  // GC safe point check (preferred in multi-replica setups):
+  // Only remove tombstones whose timestamp is strictly older than the safe point.
+  // This ensures all replicas have applied operations beyond this point.
+  if (options_.gc_safe_point > 0) {
+    return key_time < options_.gc_safe_point;
+  }
+  
+  // Fallback: wall-clock-based retention (single-replica only)
   uint64_t threshold = options_.current_time_us - options_.min_retention_us;
   
   // 只有当墓碑的创建时间早于保留期阈值时，才能删除

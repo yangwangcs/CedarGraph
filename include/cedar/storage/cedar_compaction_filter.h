@@ -64,6 +64,11 @@ class CedarCompactionFilter {
     
     // 是否启用冷存储
     bool enable_cold_storage = false;
+    
+    // GC safe point: Raft logical timestamp.
+    // When set (>0), tombstones with timestamps >= gc_safe_point are NEVER removed.
+    // This replaces wall-clock-based retention in multi-replica setups.
+    uint64_t gc_safe_point = 0;
   };
   
   explicit CedarCompactionFilter(const Options& options);

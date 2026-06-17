@@ -58,12 +58,8 @@ LsmEngine::LsmEngine(const std::string& db_path,
   
   // ========== SST 配置 ==========
   // 默认使用 Zone-Columnar 格式（256KB Block，稀疏索引）
-  // 默认使用更大的 SST 文件
   if (compaction_config_.l0_file_size < 64 * 1024 * 1024) {
     compaction_config_.l0_file_size = 64 * 1024 * 1024;  // 64MB
-  }
-  if (compaction_config_.l0_max_files < 8) {
-    compaction_config_.l0_max_files = 8;  // L0 最多 8 个文件
   }
 }
 
@@ -122,6 +118,9 @@ Status LsmEngine::Open() {
   if (!s.ok()) {
     return Status::IOError("LsmEngine", "Failed to open compaction engine: " + s.ToString());
   }
+  
+  // 共享文件号计数器，避免 compaction 输出与 flush 输出文件号冲突
+  compaction_engine_->SetSharedFileNumber(&next_file_number_);
   
   // 启动自动 Compaction 后台线程
   auto_compaction_enabled_.store(true);
@@ -2957,11 +2956,19 @@ Status LsmEngine::LoadSstFiles() {
 
   std::cerr << "[LoadSstFiles] Loading from: " << db_path_ << std::endl;
   int loaded_count = 0;
+  int cleaned_count = 0;
 
   for (const auto& entry : std::filesystem::directory_iterator(db_path_)) {
     if (entry.is_regular_file() && entry.path().extension() == ".sst") {
       std::string filename = entry.path().filename().string();
-      std::cerr << "[LoadSstFiles] Found SST: " << filename << std::endl;
+      
+      // 清理 0 字节或过小的无效 SST 文件（compaction 失败残留）
+      if (entry.file_size() < 64) {
+        std::error_code ec;
+        std::filesystem::remove(entry.path(), ec);
+        cleaned_count++;
+        continue;
+      }
       
       size_t dot_pos = filename.find('.');
       if (dot_pos == std::string::npos) continue;
@@ -3006,8 +3013,14 @@ Status LsmEngine::LoadSstFiles() {
       meta.temporal_filter_metadata = reader.GetTemporalFilterData();
 
       levels_[0].push_back(meta);
+      loaded_count++;
     }
   }
+  
+  if (cleaned_count > 0) {
+    std::cerr << "[LoadSstFiles] Cleaned " << cleaned_count << " invalid SST files" << std::endl;
+  }
+  std::cerr << "[LoadSstFiles] Loaded " << loaded_count << " valid SST files" << std::endl;
 
   return Status::OK();
 }
@@ -3099,6 +3112,15 @@ std::vector<uint64_t> LsmEngine::GetCandidateFiles(uint64_t entity_id,
 
 void LsmEngine::AutoCompactionThread() {
   while (auto_compaction_enabled_.load()) {
+    // Check if compaction is paused (for snapshot safety)
+    {
+      std::unique_lock<std::mutex> pause_lock(compaction_pause_mutex_);
+      compaction_pause_cv_.wait(pause_lock, [this] {
+        return !compaction_paused_.load() || !auto_compaction_enabled_.load();
+      });
+    }
+    if (!auto_compaction_enabled_.load()) break;
+
     // 如果后台合并被禁用，跳过执行但保持线程运行
     if (!options_.size_tiered_config.enable_background_compaction) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -3120,6 +3142,19 @@ void LsmEngine::AutoCompactionThread() {
     // 休眠一段时间再检查
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
+}
+
+void LsmEngine::PauseCompaction() {
+  compaction_paused_.store(true);
+  // Wait for any in-flight compaction to finish
+  if (compaction_engine_) {
+    compaction_engine_->WaitForCompactions();
+  }
+}
+
+void LsmEngine::ResumeCompaction() {
+  compaction_paused_.store(false);
+  compaction_pause_cv_.notify_all();
 }
 
 void LsmEngine::MigrateExistingSstFiles() {
