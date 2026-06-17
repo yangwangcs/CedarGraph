@@ -29,6 +29,12 @@ storaged:
   data_dir: "/var/lib/cedar/storaged"
   meta_server: "127.0.0.1:9559"
   heartbeat_interval_sec: 10
+  # Storage mode: "partitioned" (per-partition independent storage) or "shared" (all partitions share one LSM-Tree)
+  storage_mode: "partitioned"
+  # Partitioned mode config
+  max_open_partitions: 256
+  per_partition_memtable_mb: 16
+  enable_lru_eviction: true
 
 # =============================================================================
 # GraphD - Graph Query Router

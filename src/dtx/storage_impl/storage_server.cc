@@ -62,6 +62,10 @@ Status StorageServer::Initialize(const StorageServerConfig& config) {
   StoragePartitionManager::PartitionConfig pm_config;
   pm_config.data_root = config.data_root;
   pm_config.max_partitions = config.max_partitions;
+  pm_config.storage_mode = "partitioned";  // Use per-partition storage (default)
+  pm_config.max_open_partitions = 256;     // Max simultaneously open partitions
+  pm_config.per_partition_memtable_mb = 16;
+  pm_config.enable_lru_eviction = true;
   
   partition_manager_.SetRaftManager(raft_manager_.get());
   partition_manager_.SetFailoverManager(GetGlobalFailoverManager());

@@ -198,8 +198,8 @@ class StoragePartitionManager {
     std::string data_root = "/tmp/cedar_storage";
     size_t max_partitions = 1024;
     size_t max_disk_usage = 0;  // 0 = unlimited
-    // Storage mode: "shared" (default) or "partitioned"
-    std::string storage_mode = "shared";
+    // Storage mode: "partitioned" (default) or "shared"
+    std::string storage_mode = "partitioned";
     // Partitioned mode config
     size_t max_open_partitions = 256;
     size_t per_partition_memtable_mb = 16;
