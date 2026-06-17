@@ -312,24 +312,32 @@ void MetaServiceGrpcImpl::OnPartitionChange(const PartitionMapChange& change) {
     proto_change.set_timestamp_unix(
         std::chrono::system_clock::to_time_t(change.timestamp));
     
-    std::lock_guard<std::mutex> lock(watchers_mutex_);
-    bool has_active = false;
-    for (auto it = active_watchers_.begin(); it != active_watchers_.end();) {
-        auto stream = it->lock();
-        if (!stream) {
-            it = active_watchers_.erase(it);
-            continue;
+    // Collect streams to notify, then notify outside the lock
+    std::vector<std::shared_ptr<WatchStream>> to_notify;
+    {
+        std::lock_guard<std::mutex> lock(watchers_mutex_);
+        bool has_active = false;
+        for (auto it = active_watchers_.begin(); it != active_watchers_.end();) {
+            auto stream = it->lock();
+            if (!stream) {
+                it = active_watchers_.erase(it);
+                continue;
+            }
+            {
+                std::lock_guard<std::mutex> stream_lock(stream->mutex);
+                stream->pending_changes.push(proto_change);
+            }
+            to_notify.push_back(stream);
+            has_active = true;
+            ++it;
         }
-        {
-            std::lock_guard<std::mutex> stream_lock(stream->mutex);
-            stream->pending_changes.push(proto_change);
+        if (!has_active) {
+            pending_broadcasts_.push(proto_change);
         }
-        stream->cv.notify_one();
-        has_active = true;
-        ++it;
     }
-    if (!has_active) {
-        pending_broadcasts_.push(proto_change);
+    // Notify outside the lock to avoid priority inversion
+    for (auto& stream : to_notify) {
+        stream->cv.notify_one();
     }
 }
 

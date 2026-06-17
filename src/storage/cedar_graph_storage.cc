@@ -1051,12 +1051,15 @@ Status CedarGraphStorage::PutStaticVertex(uint64_t vertex_id,
 }
 
 void CedarGraphStorage::RegisterPropertyName(uint16_t column_id, const std::string& name) {
-  std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
-  rep_->column_id_to_name[column_id] = name;
-  CEDAR_LOG_INFO() << "RegisterPropertyName: col_id=" << column_id << " name=" << name;
-  
-  // Persist to disk (unlock first to avoid deadlock)
-  lock.unlock();
+  // Make a copy of the data before unlocking to avoid race condition
+  std::unordered_map<uint16_t, std::string> names_copy;
+  {
+    std::unique_lock<std::shared_mutex> lock(rep_->mutex_);
+    rep_->column_id_to_name[column_id] = name;
+    names_copy = rep_->column_id_to_name;
+    CEDAR_LOG_INFO() << "RegisterPropertyName: col_id=" << column_id << " name=" << name;
+  }
+  // Save to disk outside the lock
   SavePropertyNames();
 }
 
