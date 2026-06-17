@@ -8,6 +8,7 @@
 #include <butil/logging.h>
 #include <fstream>
 #include <filesystem>
+#include <braft/raft.h>
 
 namespace cedar {
 namespace dtx {
@@ -116,6 +117,22 @@ void PartitionRaftStateMachine::on_apply(braft::Iterator& iter) {
     }
     
     last_applied_index_.store(iter.index());
+    
+    // Update GC safe point on leader: tombstones at deep levels can only be
+    // dropped after all replicas have applied beyond this index. The committed
+    // index is the high-water mark guaranteed by Raft consensus.
+    if (storage_) {
+      auto* shared = storage_->GetSharedStorage();
+      if (shared) {
+        auto* engine = shared->GetLsmEngine();
+        if (engine) {
+          auto* compaction = engine->GetCompactionEngine();
+          if (compaction) {
+            compaction->SetGCSafePoint(iter.index());
+          }
+        }
+      }
+    }
   }
 }
 
@@ -152,43 +169,44 @@ void PartitionRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
                                                   braft::Closure* done) {
   braft::AsyncClosureGuard done_guard(done);
   
-  if (!storage_) {
-    LOG(WARNING) << "Storage not available for snapshot save";
-    return;
-  }
-  
-  auto* shared_storage = storage_->GetSharedStorage();
-  
-  // Step 1: Pause compaction to prevent SST file deletion during copy
-  if (shared_storage) {
-    shared_storage->PauseCompaction();
-  }
-  
-  // Step 2: Flush underlying storage to ensure all data is on disk
-  if (shared_storage) {
-    auto flush_status = shared_storage->ForceFlush();
-    if (!flush_status.ok()) {
-      LOG(WARNING) << "ForceFlush failed during snapshot: " << flush_status.ToString();
-    }
-  }
-  
-  // Step 3: Copy data files from storage data_root to snapshot directory
-  std::string data_root = storage_->GetDataRoot();
-  std::string snapshot_path = writer->get_path();
-  std::vector<std::string> copied_files;
   try {
-    copied_files = CopyDirectoryContents(data_root, snapshot_path + "/data");
-  } catch (...) {
+    if (!storage_) {
+      LOG(WARNING) << "Storage not available for snapshot save";
+      return;
+    }
+    
+    auto* shared_storage = storage_->GetSharedStorage();
+    
+    // Step 1: Pause compaction to prevent SST file deletion during copy
+    if (shared_storage) {
+      shared_storage->PauseCompaction();
+    }
+    
+    // Step 2: Flush underlying storage to ensure all data is on disk
+    if (shared_storage) {
+      auto flush_status = shared_storage->ForceFlush();
+      if (!flush_status.ok()) {
+        LOG(WARNING) << "ForceFlush failed during snapshot: " << flush_status.ToString();
+      }
+    }
+    
+    // Step 3: Copy data files from storage data_root to snapshot directory
+    std::string data_root = storage_->GetDataRoot();
+    std::string snapshot_path = writer->get_path();
+    std::vector<std::string> copied_files;
+    try {
+      copied_files = CopyDirectoryContents(data_root, snapshot_path + "/data");
+    } catch (...) {
+      if (shared_storage) {
+        shared_storage->ResumeCompaction();
+      }
+      throw;
+    }
+    
+    // Step 4: Resume compaction
     if (shared_storage) {
       shared_storage->ResumeCompaction();
     }
-    throw;
-  }
-  
-  // Step 4: Resume compaction
-  if (shared_storage) {
-    shared_storage->ResumeCompaction();
-  }
   
   // Register copied data files with snapshot writer
   for (const auto& rel_path : copied_files) {
@@ -222,6 +240,17 @@ void PartitionRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
   
   LOG(INFO) << "Snapshot saved for partition " << storage_->GetPartitionId()
             << " with " << copied_files.size() << " data files";
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "Exception during snapshot save: " << e.what();
+    if (done) {
+      done->status().set_error(EIO, std::string("Exception during snapshot save: ") + e.what());
+    }
+  } catch (...) {
+    LOG(ERROR) << "Unknown exception during snapshot save";
+    if (done) {
+      done->status().set_error(EIO, "Unknown exception during snapshot save");
+    }
+  }
 }
 
 int PartitionRaftStateMachine::on_snapshot_load(braft::SnapshotReader* reader) {

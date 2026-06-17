@@ -432,6 +432,20 @@ void StoragePartitionStateMachine::on_apply(braft::Iterator& iter) {
     }
 
     last_term_ = iter.term();
+    
+    // Update GC safe point for multi-replica tombstone safety
+    if (storage_) {
+      auto* shared = storage_->GetSharedStorage();
+      if (shared) {
+        auto* engine = shared->GetLsmEngine();
+        if (engine) {
+          auto* compaction = engine->GetCompactionEngine();
+          if (compaction) {
+            compaction->SetGCSafePoint(iter.index());
+          }
+        }
+      }
+    }
   }
 }
 
