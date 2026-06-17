@@ -196,6 +196,18 @@ grpc::Status MetaServiceGrpcImpl::RegisterNode(grpc::ServerContext* context,
     cedar::meta::RegisterNodeResponse* response) {
     if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
     if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    
+    // Leader check: redirect to leader if this is a follower
+    if (!meta_service_->IsLeader()) {
+        std::string leader_addr = meta_service_->GetLeaderAddress();
+        response->set_success(false);
+        response->set_error_msg("Not a leader");
+        if (!leader_addr.empty()) {
+            response->set_leader_address(leader_addr);
+        }
+        return grpc::Status::OK;
+    }
+    
     NodeInfo info;
     info.node_id = request->node_info().node_id();
     info.address = request->node_info().address();

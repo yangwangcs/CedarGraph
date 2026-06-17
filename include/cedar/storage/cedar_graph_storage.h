@@ -115,6 +115,15 @@ class CedarGraphStorage {
                 uint64_t tx_time,
                 Timestamp txn_version);
 
+  // Batch write - single WAL write for multiple entries (much faster for bulk operations)
+  struct WriteBatchEntry {
+    uint64_t entity_id;
+    uint64_t tx_time;
+    Descriptor descriptor;
+    Timestamp txn_version;
+  };
+  Status WriteBatch(const std::vector<WriteBatchEntry>& entries);
+
   // If the database contains an entry for the key, store the
   // corresponding descriptor in *descriptor and return OK.
   // If there is no entry for the key, return Status::NotFound()

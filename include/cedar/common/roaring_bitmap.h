@@ -43,6 +43,11 @@ class RoaringBitmap {
     return values_;
   }
   
+  // Get reference to internal vector (avoids copy)
+  const std::vector<uint16_t>& Values() const {
+    return values_;
+  }
+  
   // Get number of values
   size_t Size() const {
     return values_.size();

@@ -135,6 +135,9 @@ class BRaftNode {
   // Get current leader node ID
   std::optional<NodeID> GetLeaderId() const;
   
+  // Get current leader address (IP:port)
+  std::string GetLeaderAddress() const;
+  
   // Propose command to Raft (only leader can propose)
   Status Propose(const RaftCommand& command);
   

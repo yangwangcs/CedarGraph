@@ -357,7 +357,7 @@ Status SizeTieredCompactionEngine::AddSSTFile(const ZoneSstMeta& meta) {
   bool needs_compact = false;
   
   {
-    std::lock_guard<std::mutex> lock(levels_mutex_);
+    std::unique_lock<std::shared_mutex> lock(levels_mutex_);
     
     if (meta.level < 0 || meta.level >= config_.max_levels) {
       return Status::InvalidArgument("SizeTieredCompactionEngine", "Invalid level");
@@ -416,7 +416,7 @@ Status SizeTieredCompactionEngine::RemoveSSTFile(uint64_t file_number) {
   std::vector<uint32_t> orphaned_blob_files;
   
   {
-    std::lock_guard<std::mutex> lock(levels_mutex_);
+    std::unique_lock<std::shared_mutex> lock(levels_mutex_);
     
     for (int level = 0; level < config_.max_levels; ++level) {
       auto& files = levels_[level].files;
@@ -461,7 +461,7 @@ Status SizeTieredCompactionEngine::RemoveSSTFile(uint64_t file_number) {
 }
 
 std::vector<ZoneSstMeta> SizeTieredCompactionEngine::GetLevelFiles(int level) const {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   if (level < 0 || level >= config_.max_levels) {
     return {};
   }
@@ -469,7 +469,7 @@ std::vector<ZoneSstMeta> SizeTieredCompactionEngine::GetLevelFiles(int level) co
 }
 
 std::vector<LevelState> SizeTieredCompactionEngine::GetAllLevels() const {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   return levels_;
 }
 
@@ -478,7 +478,7 @@ std::vector<LevelState> SizeTieredCompactionEngine::GetAllLevels() const {
 // =============================================================================
 
 bool SizeTieredCompactionEngine::NeedsCompaction() const {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   
   for (int i = 0; i < config_.max_levels - 1; ++i) {
     if (levels_[i].needs_compaction(config_)) {
@@ -490,7 +490,7 @@ bool SizeTieredCompactionEngine::NeedsCompaction() const {
 }
 
 std::optional<CompactionTask> SizeTieredCompactionEngine::PickNextCompaction() {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   
   // ========== 优先：小文件合并（L0 层特殊处理）==========
   if (levels_[0].files.size() > 1) {
@@ -847,7 +847,7 @@ Status SizeTieredCompactionEngine::DoZoneCompaction(const CompactionTask& task) 
   
   // Step 1: Update in-memory metadata (add output, remove inputs/overlaps)
   {
-    std::lock_guard<std::mutex> lock(levels_mutex_);
+    std::unique_lock<std::shared_mutex> lock(levels_mutex_);
     levels_[task.output_level].files.push_back(output_meta);
     for (const auto& f : task.input_files) {
       RemoveFileFromLevel(f.file_number, task.input_level);
@@ -1064,7 +1064,7 @@ std::vector<ZoneSstMeta> SizeTieredCompactionEngine::GetOverlappingFiles(
     uint64_t min_entity, uint64_t max_entity,
     uint64_t min_ts, uint64_t max_ts,
     uint16_t column_id, uint8_t entity_type) const {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   
   std::vector<ZoneSstMeta> result;
   
@@ -1090,7 +1090,7 @@ std::vector<ZoneSstMeta> SizeTieredCompactionEngine::GetOverlappingFiles(
 
 std::vector<ZoneSstMeta> SizeTieredCompactionEngine::GetFilesForEntity(
     uint64_t entity_id, uint16_t column_id, uint8_t entity_type) const {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::shared_lock<std::shared_mutex> lock(levels_mutex_);
   
   std::vector<ZoneSstMeta> result;
   
@@ -1141,7 +1141,7 @@ Status SizeTieredCompactionEngine::TriggerBlobGC() {
 // =============================================================================
 
 void SizeTieredCompactionEngine::AddFileToLevel(const ZoneSstMeta& meta, int level) {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   if (level >= 0 && level < config_.max_levels) {
     levels_[level].files.push_back(meta);
   }
@@ -1152,7 +1152,7 @@ void SizeTieredCompactionEngine::RemoveFileFromLevel(uint64_t file_number, int l
     return;
   }
   
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   
   auto& files = levels_[level].files;
   for (auto it = files.begin(); it != files.end(); ++it) {
@@ -1181,7 +1181,7 @@ Status SizeTieredCompactionEngine::SaveManifest() {
     return Status::IOError("SizeTieredCompactionEngine", "Cannot open manifest for writing");
   }
   
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   
   // 写入下一个文件编号
   uint64_t next_file = next_file_number_.load();
@@ -1327,7 +1327,7 @@ Status SizeTieredCompactionEngine::LoadManifest() {
 }
 
 std::optional<ZoneSstMeta> SizeTieredCompactionEngine::FindFile(uint64_t file_number) const {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   
   for (const auto& level : levels_) {
     for (const auto& f : level.files) {
@@ -1354,7 +1354,7 @@ std::string SizeTieredCompactionEngine::GetManifestPath() const {
 }
 
 uint64_t SizeTieredCompactionEngine::GetTotalSize() const {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   uint64_t total = 0;
   for (const auto& level : levels_) {
     total += level.total_size();
@@ -1363,7 +1363,7 @@ uint64_t SizeTieredCompactionEngine::GetTotalSize() const {
 }
 
 std::vector<uint64_t> SizeTieredCompactionEngine::GetLevelSizes() const {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   std::vector<uint64_t> sizes;
   for (const auto& level : levels_) {
     sizes.push_back(level.total_size());
@@ -1372,7 +1372,7 @@ std::vector<uint64_t> SizeTieredCompactionEngine::GetLevelSizes() const {
 }
 
 std::string SizeTieredCompactionEngine::LevelSummary() const {
-  std::lock_guard<std::mutex> lock(levels_mutex_);
+  std::unique_lock<std::shared_mutex> lock(levels_mutex_);
   
   std::ostringstream oss;
   oss << "=== Level Summary ===" << std::endl;

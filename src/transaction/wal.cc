@@ -110,6 +110,14 @@ void WalBatch::Delete(const CedarKey& key, Timestamp txn_version) {
   ops_.emplace_back(WalRecordType::kDelete, key, Descriptor::Tombstone(0), txn_version);
 }
 
+void WalBatch::Commit(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version) {
+  ops_.emplace_back(WalRecordType::kCommit, key, descriptor, txn_version);
+}
+
+void WalBatch::Abort(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version) {
+  ops_.emplace_back(WalRecordType::kAbort, key, descriptor, txn_version);
+}
+
 void WalBatch::Clear() {
   ops_.clear();
 }
@@ -443,14 +451,14 @@ Status WalWriter::WriteInternal(const WalBatch& batch) {
     CEDAR_RETURN_IF_ERROR(s);
   }
   
-  // 写入文件
-  cedar::Slice header_slice(header_str);
-  cedar::Slice data_slice(data);
+  // 写入文件（合并 header + data 为一次写入，减少系统调用）
+  std::string combined;
+  combined.reserve(header_str.size() + data.size());
+  combined.append(header_str);
+  combined.append(data);
   
-  cedar::Status s = current_file_->Append(header_slice);
-  if (!s.ok()) return Status::IOError("WalWriter", s.ToString());
-  
-  s = current_file_->Append(data_slice);
+  cedar::Slice combined_slice(combined);
+  cedar::Status s = current_file_->Append(combined_slice);
   if (!s.ok()) return Status::IOError("WalWriter", s.ToString());
   
   // 更新统计
@@ -580,14 +588,36 @@ void WalWriter::ProcessGroupCommit() {
       }
     }
     
-    // 批量 fsync — 必须在设置 promise 之前完成，确保调用者能感知 sync 失败
+    // 批量 fsync — 使用 sync_interval_ms 和 sync_threshold 控制频率
     Status final_status = write_status;
     if (write_status.ok() && !batch.empty() && current_file_) {
-      cedar::Status sync_status = current_file_->Sync();
-      if (!sync_status.ok()) {
-        final_status = Status::IOError("WalWriter", sync_status.ToString());
-      } else {
-        stats_.syncs.fetch_add(1, std::memory_order_relaxed);
+      bool need_sync = false;
+      
+      if (options_.sync_on_write) {
+        need_sync = true;
+      } else if (options_.sync_interval_ms > 0 || options_.sync_threshold > 0) {
+        uint32_t unsynced = unsynced_writes_.fetch_add(batch.size(), std::memory_order_relaxed) + batch.size();
+        
+        std::lock_guard<std::mutex> sync_lock(sync_mutex_);
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_sync_time_).count();
+        
+        if ((options_.sync_threshold > 0 && unsynced >= options_.sync_threshold) ||
+            (options_.sync_interval_ms > 0 && elapsed_ms >= static_cast<int64_t>(options_.sync_interval_ms))) {
+          need_sync = true;
+          last_sync_time_ = now;
+          unsynced_writes_.store(0, std::memory_order_relaxed);
+        }
+      }
+      
+      if (need_sync) {
+        cedar::Status sync_status = current_file_->Sync();
+        if (!sync_status.ok()) {
+          final_status = Status::IOError("WalWriter", sync_status.ToString());
+        } else {
+          stats_.syncs.fetch_add(1, std::memory_order_relaxed);
+        }
       }
     }
     

@@ -88,7 +88,7 @@ LockedVSL::LockedVSL() : max_height_(1), size_(0), rnd_(0) {
 }
 
 LockedVSL::~LockedVSL() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::shared_mutex> lock(mutex_);
   LFNode* node = head_->Next(0);
   while (node != tail_) {
     LFNode* next = node->Next(0);
@@ -101,7 +101,7 @@ LockedVSL::~LockedVSL() {
 
 // 单线程 Insert
 bool LockedVSL::Insert(const CedarKey& key, const Descriptor& value, Timestamp txn_version) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::shared_mutex> lock(mutex_);
   int height = RandomHeight();
   LFNode* new_node = new LFNode(key, value, height, txn_version);
   
@@ -275,7 +275,7 @@ LFNode* LockedVSL::FindLatestVersion(uint64_t entity_id,
 std::optional<Descriptor> LockedVSL::GetAtTime(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id, 
     Timestamp timestamp) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   LFNode* node = FindLatestVersion(entity_id, entity_type, column_id);
   
   if (node == nullptr) {
@@ -298,7 +298,7 @@ std::optional<Descriptor> LockedVSL::GetAtTime(
 std::optional<Descriptor> LockedVSL::GetAtTime(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id,
     uint64_t target_id, Timestamp timestamp) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   LFNode* node = FindLatestVersion(entity_id, entity_type, column_id, target_id);
   
   if (node == nullptr) {
@@ -319,7 +319,7 @@ std::optional<Descriptor> LockedVSL::GetAtTime(
 
 std::optional<Descriptor> LockedVSL::GetLatest(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   LFNode* node = FindLatestVersion(entity_id, entity_type, column_id);
   if (node != nullptr) {
     return node->descriptor();
@@ -331,7 +331,7 @@ std::optional<Descriptor> LockedVSL::GetLatest(
 std::optional<Descriptor> LockedVSL::GetLatest(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id,
     uint64_t target_id) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   LFNode* node = FindLatestVersion(entity_id, entity_type, column_id, target_id);
   if (node != nullptr) {
     return node->descriptor();
@@ -342,7 +342,7 @@ std::optional<Descriptor> LockedVSL::GetLatest(
 std::vector<LockedVSL::VersionInfo> LockedVSL::ScanRange(
     uint64_t entity_id, EntityType entity_type, uint16_t column_id,
     Timestamp start, Timestamp end) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   std::vector<VersionInfo> results;
   
   // 找到所有不同的 target_id，对每个 target 获取其版本链

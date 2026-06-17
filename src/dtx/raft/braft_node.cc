@@ -312,6 +312,18 @@ public:
         meta_service_ = meta_service;
         
         state_machine_ = std::make_unique<MetaRaftStateMachine>(meta_service);
+
+        // Start brpc server first — braft requires the RPC server to be
+        // listening before the raft node can be initialized.
+        server_ = std::make_unique<brpc::Server>();
+        if (braft::add_service(server_.get(), options.listen_address.c_str()) != 0) {
+            return ::cedar::Status::IOError(
+                "Failed to add braft service to brpc server on " + options.listen_address);
+        }
+        if (server_->Start(options.listen_address.c_str(), nullptr) != 0) {
+            return ::cedar::Status::IOError(
+                "Failed to start brpc server on " + options.listen_address);
+        }
         
         braft::NodeOptions node_options;
         node_options.election_timeout_ms = options.election_timeout_ms;
@@ -356,6 +368,11 @@ public:
                 node_ = nullptr;
             }
         }
+        if (server_) {
+            server_->Stop(0);
+            server_->Join();
+            server_.reset();
+        }
         initialized_ = false;
     }
     
@@ -374,6 +391,20 @@ public:
             return std::nullopt;
         }
         return leader.idx;
+    }
+    
+    std::string GetLeaderAddress() const {
+        std::lock_guard<std::mutex> lock(node_mutex_);
+        if (!node_) {
+            return "";
+        }
+        braft::PeerId leader = node_->leader_id();
+        if (leader.is_empty()) {
+            return "";
+        }
+        std::ostringstream oss;
+        oss << leader.addr;
+        return oss.str();
     }
     
     class ProposeClosure : public braft::Closure {
@@ -507,6 +538,7 @@ public:
     
 private:
     braft::Node* node_;
+    std::unique_ptr<brpc::Server> server_;
     mutable std::mutex node_mutex_;
     MetadataService* meta_service_;
     std::unique_ptr<MetaRaftStateMachine> state_machine_;
@@ -537,6 +569,10 @@ bool BRaftNode::IsLeader() const {
 
 std::optional<NodeID> BRaftNode::GetLeaderId() const {
     return impl_->GetLeaderId();
+}
+
+std::string BRaftNode::GetLeaderAddress() const {
+    return impl_->GetLeaderAddress();
 }
 
 ::cedar::Status BRaftNode::Propose(const RaftCommand& command) {

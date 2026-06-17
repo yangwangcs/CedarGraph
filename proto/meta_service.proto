@@ -118,6 +118,7 @@ message RegisterNodeRequest {
 message RegisterNodeResponse {
     bool success = 1;
     string error_msg = 2;
+    string leader_address = 3;  // Set when follower redirects to leader
 }
 
 message HeartbeatRequest {

@@ -380,6 +380,66 @@ Status LsmEngine::Put(const CedarKey& key, const Descriptor& descriptor, Timesta
   return Status::OK();
 }
 
+Status LsmEngine::WriteBatch(const std::vector<WriteBatchEntry>& entries) {
+  if (!opened_) {
+    return Status::InvalidArgument("LsmEngine", "not opened");
+  }
+  if (entries.empty()) {
+    return Status::OK();
+  }
+
+  // Build a single WAL batch for all entries (one fsync for entire batch)
+  if (wal_writer_) {
+    WalBatch wal_batch;
+    for (const auto& entry : entries) {
+      wal_batch.Put(entry.key, entry.descriptor, entry.txn_version);
+    }
+    Status wal_status = wal_writer_->WriteBatch(wal_batch);
+    if (!wal_status.ok()) {
+      return wal_status;
+    }
+  }
+
+  // Update MemTable for all entries (under single lock acquisition)
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    
+    for (const auto& entry : entries) {
+      Status s = mem_->Put(entry.key, entry.descriptor, entry.txn_version);
+      if (!s.ok()) {
+        return s;
+      }
+      
+      InvalidateQueryCache(entry.key.entity_id());
+      
+      if (!disable_column_tracking_) {
+        TrackColumnId(entry.key.entity_id(), entry.key.column_id());
+      }
+
+      uint16_t col_id = entry.key.column_id() & ~key_flags::kIsStaticColumn;
+      if (col_id == kLabelColumnId) {
+        std::string label = DescriptorToIndexString(entry.descriptor);
+        if (!label.empty()) {
+          IndexLabel(entry.key.entity_id(), label);
+        }
+      } else if (entry.key.entity_type() == EntityType::Vertex && !entry.descriptor.IsTombstone()) {
+        std::string val = DescriptorToIndexString(entry.descriptor);
+        if (!val.empty()) {
+          UpdatePropertyIndex(entry.key.entity_id(), col_id, val);
+        }
+      }
+    }
+    
+    // Auto-flush check
+    if (mem_->ApproximateMemoryUsage() >= options_.memtable_threshold) {
+      lock.unlock();
+      MaybeScheduleFlush();
+    }
+  }
+  
+  return Status::OK();
+}
+
 Status LsmEngine::Put(uint64_t entity_id, uint64_t tx_time, const Slice& value, Timestamp txn_version) {
   CedarKey key(entity_id, EntityType::Vertex, 0, Timestamp(tx_time));
   auto desc_opt = Descriptor::InlineShortStr(0, value);
@@ -532,7 +592,7 @@ std::vector<MemTableEntry> LsmEngine::GetAll(uint64_t entity_id,
 
   // 3. Query Accumulated Buffer (for accumulated flush mode)
   if (!accumulated_entries_.empty()) {
-    std::lock_guard<std::mutex> lock(accumulated_mutex_);
+    std::unique_lock<std::shared_mutex> lock(accumulated_mutex_);
     for (const auto& [key, descriptor, txn_version] : accumulated_entries_) {
       if (key.entity_id() != entity_id) continue;
       if (static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
@@ -620,13 +680,13 @@ std::optional<Descriptor> LsmEngine::GetAtTime(uint64_t entity_id,
     return std::nullopt;
   }
 
-  // Check query cache first
-  if (query_cache_) {
-    auto cached = query_cache_->Get(entity_id, column_id, timestamp.value());
-    if (cached.has_value()) {
-      return cached.value();
-    }
-  }
+  // Check query cache first (disabled for performance testing)
+  // if (query_cache_) {
+  //   auto cached = query_cache_->Get(entity_id, column_id, timestamp.value());
+  //   if (cached.has_value()) {
+  //     return cached.value();
+  //   }
+  // }
 
   std::shared_lock<std::shared_mutex> lock(mutex_);
 
@@ -921,7 +981,7 @@ std::vector<MemTableEntry> LsmEngine::GetRange(uint64_t entity_id,
 
   // 3. Query Accumulated Buffer (for accumulated flush mode)
   if (!accumulated_entries_.empty()) {
-    std::lock_guard<std::mutex> lock(accumulated_mutex_);
+    std::unique_lock<std::shared_mutex> lock(accumulated_mutex_);
     for (const auto& [key, descriptor, txn_version] : accumulated_entries_) {
       if (key.entity_id() != entity_id) continue;
       if (static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
@@ -1038,7 +1098,7 @@ std::vector<MemTableEntry> LsmEngine::GetRangeLimit(uint64_t entity_id,
   
   // 3. Query Accumulated Buffer (for accumulated flush mode)
   if (result.size() < max_results && !accumulated_entries_.empty()) {
-    std::lock_guard<std::mutex> lock(accumulated_mutex_);
+    std::unique_lock<std::shared_mutex> lock(accumulated_mutex_);
     for (const auto& [key, descriptor, txn_version] : accumulated_entries_) {
       if (result.size() >= max_results) break;
       if (key.entity_id() != entity_id) continue;
@@ -1622,20 +1682,20 @@ Status LsmEngine::Compact() {
 // ============================================================================
 
 void LsmEngine::EnableAccumulatedFlush(size_t target_size_bytes) {
-  std::lock_guard<std::mutex> lock(accumulated_mutex_);
+  std::unique_lock<std::shared_mutex> lock(accumulated_mutex_);
   accumulated_flush_enabled_ = true;
   accumulated_flush_target_size_ = target_size_bytes;
   // Accumulated flush enabled
 }
 
 void LsmEngine::DisableAccumulatedFlush() {
-  std::lock_guard<std::mutex> lock(accumulated_mutex_);
+  std::unique_lock<std::shared_mutex> lock(accumulated_mutex_);
   accumulated_flush_enabled_ = false;
   // Accumulated flush disabled
 }
 
 size_t LsmEngine::GetAccumulatedSize() const {
-  std::lock_guard<std::mutex> lock(accumulated_mutex_);
+  std::unique_lock<std::shared_mutex> lock(accumulated_mutex_);
   return accumulated_bytes_;
 }
 
@@ -1644,7 +1704,7 @@ std::optional<std::pair<CedarKey, Descriptor>> LsmEngine::QueryAccumulatedBuffer
     EntityType entity_type,
     uint16_t column_id,
     Timestamp timestamp) const {
-  std::lock_guard<std::mutex> lock(accumulated_mutex_);
+  std::unique_lock<std::shared_mutex> lock(accumulated_mutex_);
 
   if (accumulated_entries_.empty()) {
     return std::nullopt;
@@ -1669,7 +1729,7 @@ std::optional<std::pair<CedarKey, Descriptor>> LsmEngine::QueryAccumulatedBuffer
 }
 
 Status LsmEngine::FlushAccumulated() {
-  std::unique_lock<std::mutex> lock(accumulated_mutex_);
+  std::unique_lock<std::shared_mutex> lock(accumulated_mutex_);
   
   if (accumulated_entries_.empty()) {
     return Status::OK();
@@ -2333,7 +2393,7 @@ std::vector<EdgeScanEntry> LsmEngine::ScanEdgesWithFolding(
   for (uint16_t col_id : column_ids) {
     // Query Accumulated Buffer
     if (!accumulated_entries_.empty()) {
-      std::lock_guard<std::mutex> lock(accumulated_mutex_);
+      std::unique_lock<std::shared_mutex> lock(accumulated_mutex_);
       for (const auto& [key, descriptor, txn_version] : accumulated_entries_) {
         (void)txn_version;
         if (key.entity_id() != vertex_id) continue;
@@ -2468,7 +2528,7 @@ Status LsmEngine::FlushMemTable(VSLMemTable* mem) {
   
   // ========== 累积 Flush 模式（生成大 SST 文件）==========
   if (options_.enable_accumulated_flush) {
-    std::unique_lock<std::mutex> lock(accumulated_mutex_);
+    std::unique_lock<std::shared_mutex> lock(accumulated_mutex_);
     
     // 添加到累积缓冲区
     size_t new_bytes = all_entries.size() * 40;  // 估算 40 bytes/entry

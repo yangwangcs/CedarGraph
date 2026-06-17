@@ -461,7 +461,7 @@ class SizeTieredCompactionEngine {
   Env* env_;
   
   // 层级状态（L0-L6）
-  mutable std::mutex levels_mutex_;
+  mutable std::shared_mutex levels_mutex_;  // Read-write lock for concurrent reads
   std::vector<LevelState> levels_;  // index = level
   
   // Blob 引用管理

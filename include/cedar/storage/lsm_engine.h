@@ -110,6 +110,14 @@ class LsmEngine {
   // Put with new types
   Status Put(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version);
 
+  // Batch write - single WAL write for multiple entries (much faster for bulk operations)
+  struct WriteBatchEntry {
+    CedarKey key;
+    Descriptor descriptor;
+    Timestamp txn_version;
+  };
+  Status WriteBatch(const std::vector<WriteBatchEntry>& entries);
+
   // Delete a key (legacy interface)
   Status Delete(uint64_t entity_id, uint64_t tx_time, Timestamp txn_version);
 
@@ -753,7 +761,7 @@ class LsmEngine {
   std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> accumulated_entries_;
   
   // 累积缓冲区互斥锁
-  mutable std::mutex accumulated_mutex_;
+  mutable std::shared_mutex accumulated_mutex_;  // Read-write lock for concurrent reads
   
   // 累积统计
   size_t accumulated_bytes_ = 0;

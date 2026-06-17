@@ -400,14 +400,38 @@ Status CedarGraphStorage::Delete(const WriteOptions& options,
   return s;
 }
 
-std::optional<Descriptor> CedarGraphStorage::Get(uint64_t entity_id, uint64_t tx_time) {
-  // Use GetEntityColumnIds to find which columns have data (like ScanLimit does)
-  // This avoids the bug where Get() only checked columns 0-10 but properties
-  // are stored at hash-based column IDs (0-4095)
-  auto column_ids = rep_->engine->GetEntityColumnIds(entity_id, EntityType::Vertex);
+Status CedarGraphStorage::WriteBatch(const std::vector<WriteBatchEntry>& entries) {
+  if (!rep_->engine) {
+    return Status::InvalidArgument("CedarGraphStorage", "Storage engine not opened");
+  }
+
+  std::vector<LsmEngine::WriteBatchEntry> lsm_entries;
+  lsm_entries.reserve(entries.size());
   
+  for (const auto& entry : entries) {
+    uint16_t part_id = ComputePartition(entry.entity_id);
+    uint8_t flags = PackCreateFlags(true);
+    CedarKey key = CedarKey::Vertex(entry.entity_id, 
+                                    VertexColumnId(entry.descriptor.GetColumnId()), 
+                                    Timestamp(entry.tx_time), 0, part_id, 0, flags);
+    lsm_entries.push_back({key, entry.descriptor, entry.txn_version});
+  }
+  
+  return rep_->engine->WriteBatch(lsm_entries);
+}
+
+std::optional<Descriptor> CedarGraphStorage::Get(uint64_t entity_id, uint64_t tx_time) {
+  // Fast path: try column_id=0 first (most common case)
+  auto result = Get(entity_id, EntityType::Vertex, 0, Timestamp(tx_time));
+  if (result.has_value()) {
+    return result;
+  }
+  
+  // Slow path: check other columns via GetEntityColumnIds
+  auto column_ids = rep_->engine->GetEntityColumnIds(entity_id, EntityType::Vertex);
   for (uint16_t col : column_ids) {
-    auto result = Get(entity_id, EntityType::Vertex, col, Timestamp(tx_time));
+    if (col == 0) continue;  // Already checked
+    result = Get(entity_id, EntityType::Vertex, col, Timestamp(tx_time));
     if (result.has_value()) {
       return result;
     }

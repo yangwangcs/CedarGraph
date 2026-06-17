@@ -43,13 +43,14 @@
 #include <functional>
 #include <optional>
 #include <unordered_map>
+#include <shared_mutex>
 
 #include "cedar/core/status.h"
 #include "cedar/core/slice.h"
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"
-#include "cedar/sst/zone_columnar_format.h"
 #include "cedar/sst/zone_columnar_format_v2.h"
+#include "cedar/sst/bloom_filter.h"
 
 // V2 Block Header (44 bytes)
 struct BlockHeader {
@@ -309,8 +310,8 @@ class ZoneColumnarSstReader {
   uint64_t MinEntityId() const { return header_.min_entity_id; }
   uint64_t MaxEntityId() const { return header_.max_entity_id; }
   
-  const ZoneColumnarHeaderV2& Header() const { return header_; }
-  const ZoneColumnarFooterV2& Footer() const { return footer_; }
+  const ZoneColumnarHeader& Header() const { return header_; }
+  const ZoneColumnarFooter& Footer() const { return footer_; }
 
  private:
   // 加载文件元数据
@@ -344,8 +345,8 @@ class ZoneColumnarSstReader {
   std::unique_ptr<RandomAccessFile> file_;
   
   // 文件元数据 (V2 格式)
-  ZoneColumnarHeaderV2 header_;
-  ZoneColumnarFooterV2 footer_;
+  ZoneColumnarHeader header_;
+  ZoneColumnarFooter footer_;
   std::vector<BlockIndexEntry> block_index_;
   std::vector<ZoneRestartPoint> restart_points_;
   
@@ -371,8 +372,8 @@ class ZoneColumnarSstReader {
   
   // Block 缓存（LRU，可配置大小）
   mutable std::unordered_map<uint32_t, std::shared_ptr<BlockCacheEntry>> block_cache_;
-  mutable std::mutex block_cache_mutex_;
-  static constexpr size_t kMaxCachedBlocks = 16;
+  mutable std::shared_mutex block_cache_mutex_;  // Changed from std::mutex for read concurrency
+  static constexpr size_t kMaxCachedBlocks = 256;  // Increased from 16 for better cache hit rate
   
   // 内存缓冲区模式（用于测试）
   const char* buffer_data_ = nullptr;

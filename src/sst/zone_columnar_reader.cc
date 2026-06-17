@@ -92,12 +92,12 @@ Status ZoneColumnarSstReader::LoadMetadata() {
   CEDAR_RETURN_IF_ERROR(s);
   
   // V2: Header 64 bytes + Footer 64 bytes = 128 bytes minimum
-  if (file_size < ZoneColumnarHeaderV2::kEncodedSize + ZoneColumnarFooterV2::kEncodedSize) {
+  if (file_size < ZoneColumnarHeader::kEncodedSize + ZoneColumnarFooter::kEncodedSize) {
     return Status::Corruption("SST file too small");
   }
   
   // 读取 Header (64 bytes)
-  char header_buf[ZoneColumnarHeaderV2::kEncodedSize];
+  char header_buf[ZoneColumnarHeader::kEncodedSize];
   Slice header_result;
   s = file_->Read(0, sizeof(header_buf), &header_result, header_buf);
   CEDAR_RETURN_IF_ERROR(s);
@@ -117,7 +117,7 @@ Status ZoneColumnarSstReader::LoadMetadata() {
   }
   
   // 读取 Footer (64 bytes at end of file; backward compat for old 48-byte footers)
-  char footer_buf[ZoneColumnarFooterV2::kEncodedSize];
+  char footer_buf[ZoneColumnarFooter::kEncodedSize];
   Slice footer_result;
   s = file_->Read(file_size - sizeof(footer_buf), sizeof(footer_buf), 
                   &footer_result, footer_buf);
@@ -169,8 +169,8 @@ Status ZoneColumnarSstReader::LoadMetadata() {
   }
 
   // 验证 data_checksum: header 之后到 footer 之前的所有数据
-  size_t data_start = ZoneColumnarHeaderV2::kEncodedSize;
-  size_t data_end = file_size - ZoneColumnarFooterV2::kEncodedSize;
+  size_t data_start = ZoneColumnarHeader::kEncodedSize;
+  size_t data_end = file_size - ZoneColumnarFooter::kEncodedSize;
   if (data_end > data_start) {
     size_t data_len = data_end - data_start;
     std::string data_buf;
@@ -196,10 +196,23 @@ std::optional<Descriptor> ZoneColumnarSstReader::Get(const CedarKey& key) const 
   }
   
   // Step 2: 在 Block Index 中查找可能包含该 entity 的 Block
-  for (size_t i = 0; i < block_index_.size(); ++i) {
+  // 使用二分查找（block_index_ 按 min_entity_id 排序）
+  auto it = std::lower_bound(block_index_.begin(), block_index_.end(), key.entity_id(),
+    [](const BlockIndexEntry& entry, uint64_t eid) {
+      return entry.max_entity_id < eid;
+    });
+  
+  // 从找到的位置向前扫描（因为 lower_bound 找到的是 max_entity_id >= eid 的第一个）
+  // 但也需要检查前面的 block（如果 entity 跨 block）
+  for (size_t i = (it != block_index_.begin() ? 
+                   std::distance(block_index_.begin(), it - 1) : 0); 
+       i < block_index_.size(); ++i) {
     const auto& entry = block_index_[i];
-    if (key.entity_id() < entry.min_entity_id || key.entity_id() > entry.max_entity_id) {
-      continue;  // Skip blocks that don't contain this entity
+    if (key.entity_id() < entry.min_entity_id) {
+      break;  // 后面的 block 都不会包含这个 entity（已排序）
+    }
+    if (key.entity_id() > entry.max_entity_id) {
+      continue;
     }
     
     // Load the block and search for the key
@@ -228,18 +241,42 @@ std::optional<Descriptor> ZoneColumnarSstReader::GetAtTime(
     Timestamp timestamp) const {
   if (!opened_) return std::nullopt;
   
-  // Get all versions and find the one at specified time
-  auto range_results = GetRange(entity_id, entity_type, column_id, 
-                                Timestamp(0), timestamp);
+  // Direct point query: scan blocks and track best version inline
+  // No sorting, no fetching all versions
+  std::optional<Descriptor> best_descriptor;
+  uint64_t best_ts = 0;
+  uint64_t query_ts = timestamp.value();
   
-  for (const auto& [key, desc, txn_version] : range_results) {
-    (void)txn_version;
-    if (key.timestamp().value() <= timestamp.value()) {
-      return desc;  // First match (newest due to descending order)
+  auto it = std::lower_bound(block_index_.begin(), block_index_.end(), entity_id,
+    [](const BlockIndexEntry& entry, uint64_t eid) {
+      return entry.max_entity_id < eid;
+    });
+  
+  for (size_t i = (it != block_index_.begin() ? std::distance(block_index_.begin(), it - 1) : 0);
+       i < block_index_.size(); ++i) {
+    const auto& entry = block_index_[i];
+    if (entity_id < entry.min_entity_id) break;
+    if (entity_id > entry.max_entity_id) continue;
+    
+    auto block = LoadBlock(i);
+    if (!block) continue;
+    
+    for (uint32_t row = 0; row < entry.row_count; ++row) {
+      CedarKey key = ReconstructKeyFromBlock(*block, row);
+      if (key.entity_id() != entity_id) continue;
+      if (static_cast<uint8_t>(entity_type) != 0 &&
+          static_cast<uint8_t>(key.entity_type()) != static_cast<uint8_t>(entity_type)) continue;
+      if (column_id != UINT16_MAX && key.column_id() != column_id) continue;
+      
+      uint64_t ts = key.timestamp().value();
+      if (ts <= query_ts && ts > best_ts) {
+        best_ts = ts;
+        best_descriptor = GetValueByRow(*block, row);
+      }
     }
   }
   
-  return std::nullopt;
+  return best_descriptor;
 }
 
 std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> ZoneColumnarSstReader::GetRange(
@@ -252,12 +289,22 @@ std::vector<std::tuple<CedarKey, Descriptor, Timestamp>> ZoneColumnarSstReader::
   
   if (!opened_) return results;
   
-  // Find blocks that may contain this entity
-  for (size_t block_idx = 0; block_idx < block_index_.size(); ++block_idx) {
+  // 使用二分查找定位可能包含该 entity 的 Block
+  auto it = std::lower_bound(block_index_.begin(), block_index_.end(), entity_id,
+    [](const BlockIndexEntry& entry, uint64_t eid) {
+      return entry.max_entity_id < eid;
+    });
+  
+  // 从找到的位置向前扫描
+  for (size_t block_idx = (it != block_index_.begin() ? 
+                           std::distance(block_index_.begin(), it - 1) : 0); 
+       block_idx < block_index_.size(); ++block_idx) {
     const auto& entry = block_index_[block_idx];
     
-    // Skip if entity not in this block's range
-    if (entity_id < entry.min_entity_id || entity_id > entry.max_entity_id) {
+    if (entity_id < entry.min_entity_id) {
+      break;  // 后面的 block 都不会包含这个 entity
+    }
+    if (entity_id > entry.max_entity_id) {
       continue;
     }
     
@@ -313,7 +360,7 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   
   // Check cache first
   {
-    std::lock_guard<std::mutex> lock(block_cache_mutex_);
+    std::shared_lock<std::shared_mutex> lock(block_cache_mutex_);
     auto it = block_cache_.find(block_id);
     if (it != block_cache_.end()) {
       return it->second;
@@ -376,9 +423,14 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
     return nullptr;
   }
   
-  // Add to cache
+  // Add to cache (double-check after loading to prevent thundering herd)
   {
-    std::lock_guard<std::mutex> lock(block_cache_mutex_);
+    std::unique_lock<std::shared_mutex> lock(block_cache_mutex_);
+    // Another thread may have loaded this block while we were reading
+    auto it = block_cache_.find(block_id);
+    if (it != block_cache_.end()) {
+      return it->second;  // Already loaded by another thread
+    }
     if (block_cache_.size() >= kMaxCachedBlocks) {
       block_cache_.erase(block_cache_.begin());  // Simple eviction
     }
@@ -486,12 +538,12 @@ std::optional<Descriptor> ZoneColumnarSstReader::GetValueByRow(
 
 Status ZoneColumnarSstReader::LoadMetadataFromBuffer() {
   // Similar to LoadMetadata but from memory buffer
-  if (buffer_size_ < ZoneColumnarHeaderV2::kEncodedSize + ZoneColumnarFooterV2::kEncodedSize) {
+  if (buffer_size_ < ZoneColumnarHeader::kEncodedSize + ZoneColumnarFooter::kEncodedSize) {
     return Status::Corruption("Buffer too small");
   }
   
   // Parse header from buffer
-  Slice header_input(buffer_data_, ZoneColumnarHeaderV2::kEncodedSize);
+  Slice header_input(buffer_data_, ZoneColumnarHeader::kEncodedSize);
   Status s = header_.DecodeFrom(&header_input);
   CEDAR_RETURN_IF_ERROR(s);
   
@@ -500,8 +552,8 @@ Status ZoneColumnarSstReader::LoadMetadataFromBuffer() {
   }
   
   // Parse footer from end of buffer
-  const char* footer_data = buffer_data_ + buffer_size_ - ZoneColumnarFooterV2::kEncodedSize;
-  Slice footer_input(footer_data, ZoneColumnarFooterV2::kEncodedSize);
+  const char* footer_data = buffer_data_ + buffer_size_ - ZoneColumnarFooter::kEncodedSize;
+  Slice footer_input(footer_data, ZoneColumnarFooter::kEncodedSize);
   s = footer_.DecodeFrom(&footer_input);
   CEDAR_RETURN_IF_ERROR(s);
   
@@ -524,8 +576,8 @@ Status ZoneColumnarSstReader::LoadMetadataFromBuffer() {
   }
 
   // 验证 data_checksum from buffer
-  size_t data_start = ZoneColumnarHeaderV2::kEncodedSize;
-  size_t data_end = buffer_size_ - ZoneColumnarFooterV2::kEncodedSize;
+  size_t data_start = ZoneColumnarHeader::kEncodedSize;
+  size_t data_end = buffer_size_ - ZoneColumnarFooter::kEncodedSize;
   if (data_end > data_start) {
     size_t data_len = data_end - data_start;
     uint64_t computed = ComputeCRC64(buffer_data_ + data_start, data_len);

@@ -11,6 +11,7 @@
 #include <functional>
 #include <optional>
 #include <mutex>
+#include <shared_mutex>
 
 #include "cedar/types/descriptor.h"
 #include "cedar/types/cedar_key.h"
@@ -160,7 +161,7 @@ class LockedVSL {
   std::atomic<int> max_height_;
   std::atomic<size_t> size_;
   std::atomic<uint32_t> rnd_;
-  mutable std::mutex mutex_;
+  mutable std::shared_mutex mutex_;  // Read-write lock for concurrent reads
 };
 
 }  // namespace cedar

@@ -80,6 +80,8 @@ class WalBatch {
   // 添加操作
   void Put(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version);
   void Delete(const CedarKey& key, Timestamp txn_version);
+  void Commit(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version);
+  void Abort(const CedarKey& key, const Descriptor& descriptor, Timestamp txn_version);
   
   // 清空
   void Clear();
@@ -103,7 +105,7 @@ struct WalOptions {
   size_t max_file_size = 64 * 1024 * 1024;
   
   // 组提交超时 (微秒)，0 表示不启用组提交
-  uint32_t group_commit_timeout_us = 1000;  // 1ms
+  uint32_t group_commit_timeout_us = 1000;  // 1ms (was 100μs) — allow more batching
   
   // 组提交最大批次大小
   size_t group_commit_max_batch = 1000;
@@ -121,7 +123,7 @@ struct WalOptions {
   size_t preallocate_size = 64 * 1024 * 1024;
   
   // 是否在每次写入后自动调用 fsync (默认 true，保证安全)
-  bool sync_on_write = true;
+  bool sync_on_write = false;  // Changed from true: use batch sync for performance
 };
 
 // WAL 统计

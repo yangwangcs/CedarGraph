@@ -220,7 +220,7 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   if (env_wal_dir) {
     txn_wal_dir_ = env_wal_dir;
   } else {
-    txn_wal_dir_ = "/var/lib/cedar/graphd/txn_wal";
+    txn_wal_dir_ = "./data/graphd/txn_wal";
   }
   std::filesystem::create_directories(txn_wal_dir_);
   
@@ -311,8 +311,8 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   
   // Detect EXPLAIN/PROFILE prefix in Cypher query
   std::string effective_query = request->query();
-  bool effective_explain = effective_explain;
-  bool effective_profile = effective_profile;
+  bool effective_explain = false;
+  bool effective_profile = false;
   {
     // Trim leading whitespace
     size_t start = effective_query.find_first_not_of(" \t\n\r");
@@ -419,116 +419,64 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
   
   ResultSet result_set;
   
-  // 检测写操作（简化：关键词匹配）
-  if (IsWriteQuery(request->query())) {
-    std::unique_lock<std::mutex> txn_lock(active_txns_mutex_);
-    std::shared_lock<std::shared_mutex> engine_lock(engine_mutex_);
-    if (!two_pc_engine_) {
-      stats_.failed_queries++;
-      response->set_success(false);
-      response->set_error_msg("Write operations require distributed transaction engine, which is not initialized");
-      return grpc::Status::OK;
-    }
-    // 构建简化的 write_set（使用 route_ctx 中的 entity_ids）
-    std::vector<::cedar::CedarKey> read_set;
-    std::vector<::cedar::CedarKey> write_set;
-    // Use system_clock for globally meaningful timestamps (steady_clock is monotonic but not synchronized)
-    auto now_ts = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    for (uint64_t entity_id : route_ctx.entity_ids) {
-      write_set.emplace_back(entity_id, ::cedar::EntityType::Vertex, 0,
-                             ::cedar::Timestamp(now_ts), 0, 0, 0,
-                             CalculatePartition(entity_id));
+  // For both read and write queries: send to storaged via DistributedExecutor
+  // so that CypherEngine (with proper CreateOperator/SetOperator) handles them.
+  // This ensures properties are stored with correct column_ids.
+  if (distributed_executor_ && !effective_explain) {
+    cedar::queryd::DistributedExecutionContext ctx;
+    ctx.timeout_ms = request->timeout_ms() > 0 ? request->timeout_ms() : 30000;
+    
+    cedar::cypher::ResultSet result;
+    std::unordered_map<std::string, cedar::cypher::Value> parameters;
+    for (const auto& p : request->parameters().params()) {
+      parameters[p.first] = ProtoValueToCypher(p.second);
     }
     
-    // 检查是否在显式事务中
-    std::string txn_id_str(request->txn_id().begin(), request->txn_id().end());
-    if (!txn_id_str.empty()) {
-      // 显式事务模式：累积 write_set 到事务上下文（active_txns_mutex_ 已由外层持有）
-      auto it = active_transactions_.find(txn_id_str);
-      if (it == active_transactions_.end()) {
-        stats_.failed_queries++;
-        response->set_success(false);
-        response->set_error_msg("Transaction not found: " + txn_id_str);
-        return grpc::Status::OK;
-      }
-      it->second.write_set.insert(it->second.write_set.end(),
-                                   write_set.begin(), write_set.end());
-      it->second.has_writes = true;
-      result_set.set_total_rows(static_cast<int32_t>(route_ctx.entity_ids.size()));
-    } else {
-      // 自动事务模式（autocommit）：立即执行 2PC
-      auto txn_id = next_txn_id_.fetch_add(1);
-      // Use current time as read_timestamp for autocommit
-      auto read_ts = ::cedar::Timestamp(now_ts);
-      auto write_status = two_pc_engine_->Execute2PC(txn_id, read_set, write_set,
-                                                       ::cedar::Timestamp(now_ts), read_ts);
-      if (!write_status.ok()) {
-        stats_.failed_queries++;
-        response->set_success(false);
-        response->set_error_msg("Distributed write failed: " + write_status.ToString());
-        return grpc::Status::OK;
-      }
+    auto s = distributed_executor_->Execute(request->query(), parameters, &ctx, &result);
+    
+    response->set_success(s.ok());
+    auto* stats = response->mutable_stats();
+    stats->set_execution_time_us(ctx.stats.execution_time_us.load());
+    stats->set_rows_scanned(ctx.stats.rows_scanned.load());
+    stats->set_rows_returned(ctx.stats.rows_returned.load());
+    stats->set_storage_nodes_accessed(ctx.stats.storage_nodes_accessed.load());
+    stats->set_network_roundtrips(ctx.stats.network_roundtrips.load());
+    
+    if (s.ok()) {
       // Invalidate cache after successful write
-      if (query_cache_ != nullptr) {
+      if (IsWriteQuery(request->query()) && query_cache_ != nullptr) {
         std::string fp_prefix = cedar::cypher::ComputeFingerprint(request->query());
         query_cache_->InvalidateByPrefix(fp_prefix);
       }
-      result_set.set_total_rows(static_cast<int32_t>(route_ctx.entity_ids.size()));
+      for (const auto& record : result.records) {
+        RecordToRow(record, response->mutable_result_set()->add_rows());
+      }
+      response->mutable_result_set()->set_total_rows(
+          static_cast<int32_t>(result.records.size()));
+      stats->set_rows_returned(static_cast<int32_t>(result.records.size()));
+    } else {
+      response->set_error_msg(s.ToString());
     }
+    
+    auto end_time = std::chrono::steady_clock::now();
+    auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time).count();
+    stats_.total_latency_us += latency_us;
+    RecordLatency(static_cast<uint64_t>(latency_us));
+    
+    if (!effective_explain && query_cache_ != nullptr && !IsWriteQuery(request->query()) && !is_transactional) {
+      cedar::query::CacheKey cache_key;
+      cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
+          request->query(), request->parameters().params(), 0);
+      cache_key.partition_hash = route_ctx.target_partitions.empty() ? 0 : route_ctx.target_partitions[0];
+      cache_key.as_of_timestamp = 0;
+      query_cache_->Put(cache_key, response->result_set());
+    }
+    
+    return s.ok() ? grpc::Status::OK
+                  : grpc::Status(grpc::StatusCode::INTERNAL, s.ToString());
   } else {
-    // Merged from QueryD: use DistributedExecutor for parallel execution
-    if (distributed_executor_ && !effective_explain) {
-      cedar::queryd::DistributedExecutionContext ctx;
-      ctx.timeout_ms = request->timeout_ms() > 0 ? request->timeout_ms() : 30000;
-
-      cedar::cypher::ResultSet result;
-      std::unordered_map<std::string, cedar::cypher::Value> parameters;
-      for (const auto& p : request->parameters().params()) {
-        parameters[p.first] = ProtoValueToCypher(p.second);
-      }
-
-      auto s = distributed_executor_->Execute(request->query(), parameters, &ctx, &result);
-
-      response->set_success(s.ok());
-      auto* stats = response->mutable_stats();
-      stats->set_execution_time_us(ctx.stats.execution_time_us.load());
-      stats->set_rows_scanned(ctx.stats.rows_scanned.load());
-      stats->set_rows_returned(ctx.stats.rows_returned.load());
-      stats->set_storage_nodes_accessed(ctx.stats.storage_nodes_accessed.load());
-      stats->set_network_roundtrips(ctx.stats.network_roundtrips.load());
-
-      if (s.ok()) {
-        for (const auto& record : result.records) {
-          RecordToRow(record, response->mutable_result_set()->add_rows());
-        }
-        response->mutable_result_set()->set_total_rows(
-            static_cast<int32_t>(result.records.size()));
-        stats->set_rows_returned(static_cast<int32_t>(result.records.size()));
-      } else {
-        response->set_error_msg(s.ToString());
-      }
-
-      auto end_time = std::chrono::steady_clock::now();
-      auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
-          end_time - start_time).count();
-      stats_.total_latency_us += latency_us;
-      RecordLatency(static_cast<uint64_t>(latency_us));
-
-      if (!effective_explain && query_cache_ != nullptr && !is_write && !is_transactional) {
-        cedar::query::CacheKey cache_key;
-        cache_key.query_fingerprint = ComputeCacheKeyFingerprint(
-            request->query(), request->parameters().params(), 0);
-        cache_key.partition_hash = route_ctx.target_partitions.empty() ? 0 : route_ctx.target_partitions[0];
-        cache_key.as_of_timestamp = 0;
-        query_cache_->Put(cache_key, response->result_set());
-      }
-
-      return s.ok() ? grpc::Status::OK
-                    : grpc::Status(grpc::StatusCode::INTERNAL, s.ToString());
-    }
-
-    // Fallback: sequential per-partition execution
+    // Fallback: sequential per-partition execution (when distributed_executor_ is not available)
     if (route_ctx.target_partitions.empty()) {
       // 无特定分区：SCAN / AGGREGATE 需要广播到所有已知分区
       if (route_ctx.query_type == QueryType::SCAN ||
