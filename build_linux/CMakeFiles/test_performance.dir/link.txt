@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -march=native -ffast-math CMakeFiles/test_performance.dir/tools/test_performance.cc.o CMakeFiles/test_performance.dir/generated_proto/query_service.pb.cc.o CMakeFiles/test_performance.dir/generated_proto/query_service.grpc.pb.cc.o -o test_performance  -lgRPC::grpc++ /usr/lib/aarch64-linux-gnu/libprotobuf.so -lpthread 
