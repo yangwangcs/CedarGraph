@@ -8,7 +8,7 @@
 using namespace cedar;
 
 int main() {
-  std::string data_dir = "/tmp/test_kind_field";
+  std::string data_dir = (std::filesystem::temp_directory_path() / "test_kind_field").string();
   std::filesystem::remove_all(data_dir);
   std::filesystem::create_directories(data_dir);
 

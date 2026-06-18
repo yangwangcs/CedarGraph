@@ -27,8 +27,8 @@ class StorageInterfaceTest : public ::testing::Test {
   CedarGraphStorage* storage_ = nullptr;
 
   void SetUp() override {
-    db_path_ = "/tmp/test_storage_interface_" +
-               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    db_path_ = (std::filesystem::temp_directory_path() / ("test_storage_interface_" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))).string();
     std::filesystem::remove_all(db_path_);
     
     CedarOptions options;

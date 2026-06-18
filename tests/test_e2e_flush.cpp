@@ -63,7 +63,7 @@ static std::map<std::string, std::string> SimulateNodeScan(
 }
 
 int main() {
-  std::string data_dir = "/tmp/test_e2e_flush";
+  std::string data_dir = (std::filesystem::temp_directory_path() / "test_e2e_flush").string();
   std::filesystem::remove_all(data_dir);
   std::filesystem::create_directories(data_dir);
 

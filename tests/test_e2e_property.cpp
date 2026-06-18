@@ -47,7 +47,7 @@ static Descriptor ValueToDescriptor(const std::string& prop_name,
 }
 
 int main() {
-  std::string data_dir = "/tmp/test_e2e_property";
+  std::string data_dir = (std::filesystem::temp_directory_path() / "test_e2e_property").string();
   std::filesystem::remove_all(data_dir);
   std::filesystem::create_directories(data_dir);
 

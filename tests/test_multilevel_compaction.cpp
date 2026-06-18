@@ -11,7 +11,7 @@
 int main() {
   std::cout << "=== Multi-Level Compaction Test (L0→L1→L2) ===" << std::endl;
   
-  std::string db_path = "/tmp/test_multilevel_compaction";
+  std::string db_path = (std::filesystem::temp_directory_path() / "test_multilevel_compaction").string();
   std::filesystem::remove_all(db_path);
   std::filesystem::create_directories(db_path);
   

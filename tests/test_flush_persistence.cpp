@@ -9,7 +9,7 @@
 int main() {
   std::cout << "=== Testing ForceFlush and Persistence ===" << std::endl;
   
-  std::string db_path = "/tmp/test_flush_db";
+  std::string db_path = (std::filesystem::temp_directory_path() / "test_flush_db").string();
   
   // Clean up
   std::filesystem::remove_all(db_path);

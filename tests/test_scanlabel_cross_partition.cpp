@@ -85,8 +85,8 @@ int main() {
   // ============================================================
   // Setup: two isolated storage instances
   // ============================================================
-  std::string dir0 = "/tmp/test_scanlabel_node0";
-  std::string dir1 = "/tmp/test_scanlabel_node1";
+  std::string dir0 = (std::filesystem::temp_directory_path() / "test_scanlabel_node0").string();
+  std::string dir1 = (std::filesystem::temp_directory_path() / "test_scanlabel_node1").string();
   std::filesystem::remove_all(dir0);
   std::filesystem::remove_all(dir1);
   std::filesystem::create_directories(dir0);

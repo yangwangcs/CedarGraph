@@ -68,7 +68,7 @@ void TestLoadFromFile() {
   std::cout << "\n=== Test Load From File ===" << std::endl;
   
   // 创建临时配置文件
-  const char* temp_file = "/tmp/test_partition_config.yaml";
+  std::string temp_file = (std::filesystem::temp_directory_path() / "test_partition_config.yaml").string();
   {
     std::ofstream file(temp_file);
     file << "partition:\n";
@@ -98,7 +98,7 @@ void TestLoadFromFile() {
   std::cout << "  mode: AUTO" << std::endl;
   
   // 清理临时文件
-  std::remove(temp_file);
+  std::remove(temp_file.c_str());
 }
 
 void TestSaveToFile() {
@@ -112,7 +112,7 @@ void TestSaveToFile() {
   config.sketch_width = 128;
   config.fast_path_threshold = 0.75;
   
-  const char* temp_file = "/tmp/test_partition_config_save.yaml";
+  std::string temp_file = (std::filesystem::temp_directory_path() / "test_partition_config_save.yaml").string();
   
   // 保存配置
   Status status = PartitionConfigLoader::SaveToFile(temp_file, config, 2000);
@@ -141,7 +141,7 @@ void TestSaveToFile() {
   }
   
   // 清理
-  std::remove(temp_file);
+  std::remove(temp_file.c_str());
 }
 
 void TestDefaultConfig() {

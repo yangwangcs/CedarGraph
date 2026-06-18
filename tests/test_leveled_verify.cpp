@@ -11,7 +11,7 @@
 int main() {
   std::cout << "=== Leveled Compaction Verification ===" << std::endl;
 
-  std::string db_path = "/tmp/test_leveled_verify";
+  std::string db_path = (std::filesystem::temp_directory_path() / "test_leveled_verify").string();
   std::filesystem::remove_all(db_path);
   std::filesystem::create_directories(db_path);
 

@@ -32,7 +32,7 @@ static void PrintSstFiles(const std::string& db_path, const std::string& label) 
 int main() {
   std::cout << "=== L0→L1→L2 Level Compaction Test ===" << std::endl;
 
-  std::string db_path = "/tmp/test_level_compaction";
+  std::string db_path = (std::filesystem::temp_directory_path() / "test_level_compaction").string();
   std::filesystem::remove_all(db_path);
   std::filesystem::create_directories(db_path);
 

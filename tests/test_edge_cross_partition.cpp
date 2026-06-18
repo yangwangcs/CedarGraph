@@ -64,8 +64,8 @@ static std::vector<EdgeScanEntry> ScanInEdges(CedarGraphStorage* storage,
 }
 
 int main() {
-  std::string dir0 = "/tmp/test_edge_partition0";
-  std::string dir1 = "/tmp/test_edge_partition1";
+  std::string dir0 = (std::filesystem::temp_directory_path() / "test_edge_partition0").string();
+  std::string dir1 = (std::filesystem::temp_directory_path() / "test_edge_partition1").string();
   std::filesystem::remove_all(dir0);
   std::filesystem::remove_all(dir1);
   std::filesystem::create_directories(dir0);

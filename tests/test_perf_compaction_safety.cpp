@@ -13,7 +13,7 @@
 
 using namespace cedar;
 namespace fs = std::filesystem;
-static const std::string kDbPath = "/tmp/test_perf_compaction_safety";
+static const std::string kDbPath = (std::filesystem::temp_directory_path() / "test_perf_compaction_safety").string();
 
 void Cleanup() {
   std::error_code ec;
