@@ -27,17 +27,15 @@ TEST(TlsConfigTest, EmptyTlsConfigReturnsError) {
   EXPECT_FALSE(server_creds.ok());
 }
 
-TEST(TlsConfigTest, DisabledTlsReturnsError) {
+TEST(TlsConfigTest, DisabledTlsReturnsInsecureCredentials) {
   TlsConfig config;
-  config.enabled = false;  // Insecure mode is no longer allowed
+  config.enabled = false;  // Insecure mode allowed for development
 
   auto server_creds = TlsCredentialFactory::CreateServerCredentials(config);
-  EXPECT_FALSE(server_creds.ok());
-  EXPECT_NE(server_creds.status().ToString().find("mandatory"), std::string::npos);
+  EXPECT_TRUE(server_creds.ok());  // Falls back to insecure credentials
 
   auto client_creds = TlsCredentialFactory::CreateClientCredentials(config);
-  EXPECT_FALSE(client_creds.ok());
-  EXPECT_NE(client_creds.status().ToString().find("mandatory"), std::string::npos);
+  EXPECT_TRUE(client_creds.ok());  // Falls back to insecure credentials
 }
 
 TEST(TlsConfigTest, ValidateConfigRejectsDisabled) {

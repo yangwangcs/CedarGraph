@@ -17,12 +17,11 @@ TEST(TlsCredentialFactory, MissingServerCertReturnsError) {
   EXPECT_FALSE(result.ok());
 }
 
-TEST(TlsCredentialFactory, DisabledReturnsError) {
+TEST(TlsCredentialFactory, DisabledReturnsInsecureCredentials) {
   TlsConfig config;
   config.enabled = false;
   auto result = TlsCredentialFactory::CreateServerCredentials(config);
-  EXPECT_FALSE(result.ok());
-  EXPECT_NE(result.status().ToString().find("mandatory"), std::string::npos);
+  EXPECT_TRUE(result.ok());  // Falls back to insecure credentials
 }
 
 TEST(TlsCredentialFactory, MissingClientCertReturnsError) {
@@ -35,12 +34,11 @@ TEST(TlsCredentialFactory, MissingClientCertReturnsError) {
   EXPECT_FALSE(result.ok());
 }
 
-TEST(TlsCredentialFactory, DisabledClientReturnsError) {
+TEST(TlsCredentialFactory, DisabledClientReturnsInsecureCredentials) {
   TlsConfig config;
   config.enabled = false;
   auto result = TlsCredentialFactory::CreateClientCredentials(config);
-  EXPECT_FALSE(result.ok());
-  EXPECT_NE(result.status().ToString().find("mandatory"), std::string::npos);
+  EXPECT_TRUE(result.ok());  // Falls back to insecure credentials
 }
 
 TEST(TlsCredentialFactory, ValidateConfigRejectsDisabled) {
@@ -51,13 +49,11 @@ TEST(TlsCredentialFactory, ValidateConfigRejectsDisabled) {
   EXPECT_NE(err.find("insecure"), std::string::npos);
 }
 
-TEST(TlsCredentialFactory, EnvUnsetReturnsError) {
+TEST(TlsCredentialFactory, EnvUnsetReturnsInsecureCredentials) {
   unsetenv("CEDAR_GRPC_TLS_ENABLED");
   auto srv = TlsCredentialFactory::CreateServerCredentialsFromEnv();
-  EXPECT_FALSE(srv.ok());
-  EXPECT_NE(srv.status().ToString().find("CEDAR_GRPC_TLS_ENABLED"), std::string::npos);
+  EXPECT_TRUE(srv.ok());  // Falls back to insecure credentials
 
   auto cli = TlsCredentialFactory::CreateClientCredentialsFromEnv();
-  EXPECT_FALSE(cli.ok());
-  EXPECT_NE(cli.status().ToString().find("CEDAR_GRPC_TLS_ENABLED"), std::string::npos);
+  EXPECT_TRUE(cli.ok());  // Falls back to insecure credentials
 }

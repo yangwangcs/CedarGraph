@@ -126,9 +126,7 @@ TEST_F(DistributedCrudTest, CrudWorkflow) {
   s = storage_->Delete(entity_id, tx_time + 2, Timestamp(3));
   ASSERT_TRUE(s.ok());
 
-  // Read after delete - should be tombstone or not found
+  // Read after delete - should be not found (tombstone filtered by Get)
   result = storage_->Get(entity_id, tx_time + 2);
-  if (result.has_value()) {
-    EXPECT_TRUE(result->IsTombstone());
-  }
+  EXPECT_FALSE(result.has_value());
 }

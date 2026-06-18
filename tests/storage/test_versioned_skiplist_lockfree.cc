@@ -64,8 +64,8 @@ TEST(LFNodeTest, VersionChainPointers) {
 TEST(LFNodeTest, MarkDeleted) {
   CedarKey k = CedarKey::Vertex(1, 0, Timestamp(100));
   LFNode node(k, Descriptor::InlineInt(0, 1), 4, Timestamp(1));
-  // MarkDeleted is a stub: returns true but IsMarked is not yet implemented
-  EXPECT_TRUE(node.MarkDeleted());
+  EXPECT_FALSE(node.MarkDeleted());  // Returns previous value (false = was not deleted)
+  EXPECT_TRUE(node.MarkDeleted());   // Returns previous value (true = was already deleted)
 }
 
 TEST(LockedVSLTest, InsertAndGetLatest) {

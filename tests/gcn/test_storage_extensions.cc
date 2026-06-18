@@ -88,7 +88,9 @@ class StorageExtensionsTest : public ::testing::Test {
   }
 
   void InsertTestEdges() {
-    auto* storage = partition_manager_->GetSharedStorage();
+    auto* partition = partition_manager_->GetPartition(0);
+    ASSERT_NE(partition, nullptr);
+    auto* storage = partition->GetEffectiveStorage();
     ASSERT_NE(storage, nullptr);
 
     // Insert outgoing edges from entity 100 to various targets

@@ -159,22 +159,17 @@ Value ExpressionEvaluator::EvaluateLogical(const LogicalExpr& expr,
     // NULL AND false = false
     // true AND NULL = NULL
     // false AND NULL = false
-    // true AND true = true
-    // true AND false = false
-    // false AND true = false
-    // false AND false = false
     
     bool left_null = left_val.IsNull();
     bool right_null = right_val.IsNull();
     bool left_bool = left_null ? false : left_val.GetBool();
     bool right_bool = right_null ? false : right_val.GetBool();
     
-    if (!left_bool || !right_bool) {
-      return Value(false);  // Short-circuit: false AND anything = false
-    }
-    if (left_null || right_null) {
-      return Value::Null();  // true AND NULL = NULL
-    }
+    // Short-circuit: false AND anything = false (regardless of NULL)
+    if (!left_bool && !left_null) return Value(false);
+    if (!right_bool && !right_null) return Value(false);
+    // Both sides are either true or NULL
+    if (left_null || right_null) return Value::Null();
     return Value(true);
   } else {  // OR
     // NULL OR NULL = NULL
@@ -182,22 +177,17 @@ Value ExpressionEvaluator::EvaluateLogical(const LogicalExpr& expr,
     // NULL OR false = NULL
     // true OR NULL = true
     // false OR NULL = NULL
-    // true OR true = true
-    // true OR false = true
-    // false OR true = true
-    // false OR false = false
     
     bool left_null = left_val.IsNull();
     bool right_null = right_val.IsNull();
     bool left_bool = left_null ? false : left_val.GetBool();
     bool right_bool = right_null ? false : right_val.GetBool();
     
-    if (left_bool || right_bool) {
-      return Value(true);  // Short-circuit: true OR anything = true
-    }
-    if (left_null || right_null) {
-      return Value::Null();  // false OR NULL = NULL
-    }
+    // Short-circuit: true OR anything = true (regardless of NULL)
+    if (left_bool) return Value(true);
+    if (right_bool) return Value(true);
+    // Both sides are either false or NULL
+    if (left_null || right_null) return Value::Null();
     return Value(false);
   }
 }

@@ -15,8 +15,10 @@
 // =============================================================================
 // Expression Evaluator Null Safety Test
 // =============================================================================
-// Verifies that EvaluateLogical and EvaluateNot handle null values safely
-// without throwing std::bad_variant_access.
+// Verifies Cypher 3-valued logic (3VL) for NULL handling:
+//   NOT NULL = NULL
+//   NULL AND NULL = NULL, NULL AND false = false, NULL AND true = NULL
+//   NULL OR NULL = NULL, NULL OR true = true, NULL OR false = NULL
 // =============================================================================
 
 #include <gtest/gtest.h>
@@ -39,7 +41,7 @@ TEST(ExpressionNullSafetyTest, NullAndFalse) {
 
   auto result = evaluator.Evaluate(*expr, record);
   EXPECT_TRUE(result.IsBool());
-  EXPECT_FALSE(result.GetBool());
+  EXPECT_FALSE(result.GetBool());  // NULL AND false = false
 }
 
 TEST(ExpressionNullSafetyTest, NullOrTrue) {
@@ -53,7 +55,7 @@ TEST(ExpressionNullSafetyTest, NullOrTrue) {
 
   auto result = evaluator.Evaluate(*expr, record);
   EXPECT_TRUE(result.IsBool());
-  EXPECT_TRUE(result.GetBool());
+  EXPECT_TRUE(result.GetBool());  // NULL OR true = true
 }
 
 TEST(ExpressionNullSafetyTest, NotNull) {
@@ -65,8 +67,7 @@ TEST(ExpressionNullSafetyTest, NotNull) {
   auto expr = std::make_shared<NotExpr>(null_lit);
 
   auto result = evaluator.Evaluate(*expr, record);
-  EXPECT_TRUE(result.IsBool());
-  EXPECT_TRUE(result.GetBool());
+  EXPECT_TRUE(result.IsNull());  // NOT NULL = NULL (3VL)
 }
 
 TEST(ExpressionNullSafetyTest, NullAndNull) {
@@ -78,8 +79,7 @@ TEST(ExpressionNullSafetyTest, NullAndNull) {
   auto expr = std::make_shared<LogicalExpr>(LogicalExpr::Op::AND, null_lit, null_lit);
 
   auto result = evaluator.Evaluate(*expr, record);
-  EXPECT_TRUE(result.IsBool());
-  EXPECT_FALSE(result.GetBool());
+  EXPECT_TRUE(result.IsNull());  // NULL AND NULL = NULL (3VL)
 }
 
 TEST(ExpressionNullSafetyTest, NullOrNull) {
@@ -91,8 +91,7 @@ TEST(ExpressionNullSafetyTest, NullOrNull) {
   auto expr = std::make_shared<LogicalExpr>(LogicalExpr::Op::OR, null_lit, null_lit);
 
   auto result = evaluator.Evaluate(*expr, record);
-  EXPECT_TRUE(result.IsBool());
-  EXPECT_FALSE(result.GetBool());
+  EXPECT_TRUE(result.IsNull());  // NULL OR NULL = NULL (3VL)
 }
 
 TEST(ExpressionNullSafetyTest, TrueAndNull) {
@@ -105,8 +104,7 @@ TEST(ExpressionNullSafetyTest, TrueAndNull) {
   auto expr = std::make_shared<LogicalExpr>(LogicalExpr::Op::AND, true_lit, null_lit);
 
   auto result = evaluator.Evaluate(*expr, record);
-  EXPECT_TRUE(result.IsBool());
-  EXPECT_FALSE(result.GetBool());
+  EXPECT_TRUE(result.IsNull());  // true AND NULL = NULL (3VL)
 }
 
 TEST(ExpressionNullSafetyTest, FalseOrNull) {
@@ -119,8 +117,7 @@ TEST(ExpressionNullSafetyTest, FalseOrNull) {
   auto expr = std::make_shared<LogicalExpr>(LogicalExpr::Op::OR, false_lit, null_lit);
 
   auto result = evaluator.Evaluate(*expr, record);
-  EXPECT_TRUE(result.IsBool());
-  EXPECT_FALSE(result.GetBool());
+  EXPECT_TRUE(result.IsNull());  // false OR NULL = NULL (3VL)
 }
 
 TEST(ExpressionNullSafetyTest, GetBoolOnNullReturnsFalse) {

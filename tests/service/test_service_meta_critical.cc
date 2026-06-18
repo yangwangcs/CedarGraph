@@ -118,11 +118,12 @@ TEST_F(ServiceMetaCriticalTest, SnapshotRoundtripUsesProtobuf) {
   auto snapshot_data = meta_service_.SerializeState();
   EXPECT_FALSE(snapshot_data.empty());
 
-  // Verify magic and version 2
+  // Verify magic and version 3 (added indexes serialization)
   EXPECT_EQ(snapshot_data.substr(0, 4), "CMSN");
-  uint32_t version;
+
+  uint32_t version = 0;
   std::memcpy(&version, snapshot_data.data() + 4, sizeof(version));
-  EXPECT_EQ(version, 2u);
+  EXPECT_EQ(version, 3u);
 
   MetadataService restored;
   MetaServiceConfig config;

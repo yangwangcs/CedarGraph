@@ -92,6 +92,12 @@ TEST(FailoverConsensusTest, ConsensusCallbackIsInvoked) {
       return Status::OK();
     });
 
+  // Register a quorum verification callback (required for leader switch)
+  controller.SetQuorumVerificationCallback(
+    [](PartitionID pid, NodeID new_leader, std::chrono::milliseconds timeout) -> Status {
+      return Status::OK();  // Always approve in tests
+    });
+
   // Attempt leader switch -- callback should be invoked
   Status s = controller.TriggerManualFailover(42, 2);
   EXPECT_TRUE(s.ok());
