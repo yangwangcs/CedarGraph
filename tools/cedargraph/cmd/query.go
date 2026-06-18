@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cedar-graph/cedargraph-cli/internal/client"
+	"github.com/cedar-graph/cedargraph-cli/internal/display"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +38,20 @@ var queryCmd = &cobra.Command{
 			return fmt.Errorf("query error: %s", result.Error)
 		}
 
-		fmt.Printf("  %d row(s) returned\n", len(result.Rows))
+		if len(result.Columns) > 0 {
+			display.PrintQueryResult(result.Columns, result.Rows)
+		} else {
+			fmt.Println("OK")
+		}
+
+		if result.Stats != nil {
+			fmt.Printf("  Time: %.2fms | Scanned: %d | Returned: %d | Nodes: %d\n",
+				float64(result.Stats.ExecutionTimeUs)/1000.0,
+				result.Stats.RowsScanned,
+				result.Stats.RowsReturned,
+				result.Stats.StorageNodesUsed)
+		}
+
 		return nil
 	},
 }

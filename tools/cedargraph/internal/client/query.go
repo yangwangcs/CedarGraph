@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 
+	pb "github.com/cedar-graph/cedargraph-cli/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 type GraphClient struct {
 	conn   *grpc.ClientConn
+	client pb.QueryServiceClient
 	addr   string
 }
 
@@ -17,6 +19,14 @@ type QueryResult struct {
 	Columns []string
 	Rows    [][]string
 	Error   string
+	Stats   *ExecutionStats
+}
+
+type ExecutionStats struct {
+	ExecutionTimeUs  uint64
+	RowsScanned      uint64
+	RowsReturned     uint64
+	StorageNodesUsed uint32
 }
 
 func NewGraphClient(addr string) (*GraphClient, error) {
@@ -27,7 +37,11 @@ func NewGraphClient(addr string) (*GraphClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
-	return &GraphClient{conn: conn, addr: addr}, nil
+	return &GraphClient{
+		conn:   conn,
+		client: pb.NewQueryServiceClient(conn),
+		addr:   addr,
+	}, nil
 }
 
 func (c *GraphClient) Close() error {
@@ -38,10 +52,69 @@ func (c *GraphClient) Close() error {
 }
 
 func (c *GraphClient) ExecuteQuery(ctx context.Context, query string) (*QueryResult, error) {
-	// TODO: Wire up actual GraphD gRPC client once query_service.proto is generated.
-	// For now, return a placeholder that shows the connection works.
-	return &QueryResult{
-		Columns: []string{"status"},
-		Rows:    [][]string{{"connected to " + c.addr + " — gRPC query not yet wired"}},
-	}, nil
+	resp, err := c.client.ExecuteQuery(ctx, &pb.ExecuteQueryRequest{
+		Query: query,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rpc: %w", err)
+	}
+
+	result := &QueryResult{}
+
+	if !resp.Success {
+		result.Error = resp.GetErrorMsg()
+		return result, nil
+	}
+
+	rs := resp.GetResultSet()
+	if rs == nil {
+		return result, nil
+	}
+
+	result.Columns = rs.Columns
+
+	for _, row := range rs.GetRows() {
+		var cells []string
+		for _, val := range row.GetValues() {
+			cells = append(cells, formatValue(val))
+		}
+		result.Rows = append(result.Rows, cells)
+	}
+
+	if stats := resp.GetStats(); stats != nil {
+		result.Stats = &ExecutionStats{
+			ExecutionTimeUs:  stats.ExecutionTimeUs,
+			RowsScanned:      stats.RowsScanned,
+			RowsReturned:     stats.RowsReturned,
+			StorageNodesUsed: stats.StorageNodesAccessed,
+		}
+	}
+
+	return result, nil
+}
+
+func formatValue(v *pb.Value) string {
+	switch val := v.GetValueType().(type) {
+	case *pb.Value_BoolVal:
+		if val.BoolVal {
+			return "true"
+		}
+		return "false"
+	case *pb.Value_IntVal:
+		return fmt.Sprintf("%d", val.IntVal)
+	case *pb.Value_FloatVal:
+		return fmt.Sprintf("%g", val.FloatVal)
+	case *pb.Value_StringVal:
+		return val.StringVal
+	case *pb.Value_BytesVal:
+		return fmt.Sprintf("<bytes:%d>", len(val.BytesVal))
+	case *pb.Value_NullVal:
+		return "NULL"
+	case *pb.Value_ListVal:
+		return "[...]"
+	case *pb.Value_MapVal:
+		return "{...}"
+	default:
+		return "?"
+	}
 }
