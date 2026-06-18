@@ -681,6 +681,11 @@ target_link_directories(test_partition_router_leader_only PRIVATE /opt/homebrew/
 target_link_libraries(test_partition_router_leader_only ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_partition_router_leader_only)
 
+add_executable(test_follower_read_routing test_follower_read_routing.cc)
+target_link_directories(test_follower_read_routing PRIVATE /opt/homebrew/lib)
+target_link_libraries(test_follower_read_routing ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_follower_read_routing)
+
 add_executable(test_cypher_validator test_cypher_validator.cc)
 target_link_directories(test_cypher_validator PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_cypher_validator ${CEDAR_TEST_LIBS} cedar_queryd)
