@@ -51,7 +51,7 @@ var shellCmd = &cobra.Command{
 
 			switch strings.ToLower(line) {
 			case "quit", "exit", ":quit", ":q":
-				fmt.Println("Bye!")
+				fmt.Println("Disconnected.")
 				return nil
 			case "help", ":help", ":h":
 				printShellHelp()
