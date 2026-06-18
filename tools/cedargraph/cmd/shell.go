@@ -86,16 +86,12 @@ var shellCmd = &cobra.Command{
 }
 
 func printShellHelp() {
-	fmt.Println(`
+	fmt.Print(`
 Commands:
   help, :h          Show this help
   quit, :q          Exit shell
   clear, :clear     Clear screen
 
-Cypher Examples:
-  MATCH (n) RETURN n LIMIT 10
-  CREATE (n:Person {name: 'Alice'})
-  MATCH (n:Person) WHERE n.name = 'Alice' RETURN n
 `)
 }
 
