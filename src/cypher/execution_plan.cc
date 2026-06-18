@@ -409,13 +409,6 @@ std::shared_ptr<Record> NodeScan::Next() {
       if (col_id == 0 || col_id == LsmEngine::kLabelColumnId || col_id == 0xFFE) {
         continue;
       }
-      // Skip blob reference auxiliary columns (base_col+1000, base_col+2000)
-      if (col_id >= 1000 && col_id < 2000) {
-        continue;  // blob_hi_col
-      }
-      if (col_id >= 2000 && col_id < 3000) {
-        continue;  // blob_lo_col
-      }
       // Use reverse mapping from storage (column_id -> property_name)
       std::string matched_name = context_->storage->GetPropertyName(col_id);
       
@@ -623,13 +616,6 @@ std::shared_ptr<Record> IndexScan::Next() {
         uint16_t col_id = desc.GetColumnId();
         if (col_id == 0 || col_id == LsmEngine::kLabelColumnId || col_id == 0xFFE) {
           continue;
-        }
-        // Skip blob reference auxiliary columns (base_col+1000, base_col+2000)
-        if (col_id >= 1000 && col_id < 2000) {
-          continue;  // blob_hi_col
-        }
-        if (col_id >= 2000 && col_id < 3000) {
-          continue;  // blob_lo_col
         }
         // Use reverse mapping from storage (column_id -> property_name)
         std::string matched_name = context_->storage->GetPropertyName(col_id);

@@ -145,19 +145,22 @@ func (m *Manager) GetNodeStatus(name string, cfg NodeConfig) NodeInfo {
 		Port:    cfg.Port,
 	}
 
-	pidFile := filepath.Join(m.pidDir, name+".pid")
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		info.Status = "stopped"
-		return info
-	}
-	pid, _ := strconv.Atoi(string(data))
-	info.PID = pid
-
+	// Check port first (works regardless of how the process was started)
 	if m.IsPortOpen(cfg.Port) {
 		info.Status = "online"
 	} else {
-		info.Status = "unreachable"
+		info.Status = "stopped"
 	}
+
+	// Try to get PID from our pid file
+	pidFile := filepath.Join(m.pidDir, name+".pid")
+	data, err := os.ReadFile(pidFile)
+	if err == nil {
+		pid, _ := strconv.Atoi(string(data))
+		if pid > 0 {
+			info.PID = pid
+		}
+	}
+
 	return info
 }
