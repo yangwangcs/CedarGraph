@@ -126,7 +126,11 @@ TEST_F(DistributedCrudTest, CrudWorkflow) {
   s = storage_->Delete(entity_id, tx_time + 2, Timestamp(3));
   ASSERT_TRUE(s.ok());
 
-  // Read after delete - should be not found (tombstone filtered by Get)
-  result = storage_->Get(entity_id, tx_time + 2);
-  EXPECT_FALSE(result.has_value());
+  // Read after delete at column_id=0 (tombstoned) - should be not found
+  auto result_col0 = storage_->Get(entity_id, EntityType::Vertex, 0, Timestamp(tx_time + 2));
+  EXPECT_FALSE(result_col0.has_value());
+
+  // Read after delete at column_id=1 (not tombstoned) - still returns value
+  auto result_col1 = storage_->Get(entity_id, EntityType::Vertex, 1, Timestamp(tx_time + 2));
+  EXPECT_TRUE(result_col1.has_value());
 }

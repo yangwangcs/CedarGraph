@@ -311,9 +311,9 @@ Status PartitionMigrator::CopyData(MigrationTask& task) {
   }
 
   // 1. Force flush to ensure all data is in SST files
-  auto* shared_storage = source_storage->GetSharedStorage();
-  if (shared_storage) {
-    auto s = shared_storage->ForceFlush();
+  auto* effective_storage = source_storage->GetEffectiveStorage();
+  if (effective_storage) {
+    auto s = effective_storage->ForceFlush();
     if (!s.ok()) {
       return Status::IOError("ForceFlush failed: " + s.ToString());
     }
@@ -682,18 +682,18 @@ Status PartitionMigrator::CalculateChecksum(PartitionID pid,
     return Status::NotFound("Partition", std::to_string(pid));
   }
 
-  auto* shared_storage = storage->GetSharedStorage();
-  if (!shared_storage) {
-    return Status::IOError("Partition", "No shared storage");
+  auto* effective_storage = storage->GetEffectiveStorage();
+  if (!effective_storage) {
+    return Status::IOError("Partition", "No storage available");
   }
 
   // Flush memtable to ensure all data is in SST files
-  Status s = shared_storage->ForceFlush();
+  Status s = effective_storage->ForceFlush();
   if (!s.ok()) {
     return Status::IOError("ForceFlush failed", s.ToString());
   }
 
-  auto* lsm = shared_storage->GetLsmEngine();
+  auto* lsm = effective_storage->GetLsmEngine();
   if (!lsm) {
     return Status::IOError("Partition", "No LSM engine");
   }

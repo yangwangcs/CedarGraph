@@ -88,7 +88,13 @@ class StorageExtensionsTest : public ::testing::Test {
   }
 
   void InsertTestEdges() {
-    auto* partition = partition_manager_->GetPartition(0);
+    // Entity 100 maps to partition 100 (low 16 bits), not partition 0
+    auto* partition = partition_manager_->GetPartition(100);
+    if (!partition) {
+      // Add partition 100 if not already present
+      ASSERT_TRUE(partition_manager_->AddPartition(100).ok());
+      partition = partition_manager_->GetPartition(100);
+    }
     ASSERT_NE(partition, nullptr);
     auto* storage = partition->GetEffectiveStorage();
     ASSERT_NE(storage, nullptr);

@@ -1447,7 +1447,16 @@ grpc::Status StorageServiceImpl::GetRangeForCompute(
     return st;
   }
 
-  auto* storage = partition_manager_->GetSharedStorage();
+  // Compute partition from entity_id (same as CedarGraphStorage::ComputePartition)
+  PartitionID pid = static_cast<PartitionID>(request->entity_id() & 0xFFFF);
+  auto* partition = partition_manager_->GetPartition(pid);
+  if (!partition) {
+    // Partition not found - return empty results (entity doesn't exist)
+    response->set_served_version(0);
+    response->set_truncated(false);
+    return grpc::Status::OK;
+  }
+  auto* storage = partition->GetEffectiveStorage();
   if (!storage) {
     return grpc::Status(grpc::StatusCode::INTERNAL, "Storage not available");
   }
