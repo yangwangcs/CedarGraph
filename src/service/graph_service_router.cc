@@ -94,10 +94,24 @@ static cedar::query::Value ConvertToProtoValue(const cedar::cypher::Value& value
 }
 
 // Helper: convert cypher::Record to proto Row (merged from QueryD)
-static void RecordToRow(const cedar::cypher::Record& record, cedar::query::Row* out_row) {
-  for (const auto& [key, value] : record.values) {
-    (void)key;
-    *out_row->add_values() = ConvertToProtoValue(value);
+static void RecordToRow(const cedar::cypher::Record& record,
+                        const std::vector<std::string>& columns,
+                        cedar::query::Row* out_row) {
+  if (columns.empty()) {
+    // Fallback: iterate map (alphabetical order)
+    for (const auto& [key, value] : record.values) {
+      (void)key;
+      *out_row->add_values() = ConvertToProtoValue(value);
+    }
+  } else {
+    for (const auto& col : columns) {
+      auto it = record.values.find(col);
+      if (it != record.values.end()) {
+        *out_row->add_values() = ConvertToProtoValue(it->second);
+      } else {
+        out_row->add_values();  // NULL placeholder
+      }
+    }
   }
 }
 
@@ -449,8 +463,12 @@ grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
         std::string fp_prefix = cedar::cypher::ComputeFingerprint(request->query());
         query_cache_->InvalidateByPrefix(fp_prefix);
       }
+      // Set column names from Cypher result
+      for (const auto& col : result.columns) {
+        response->mutable_result_set()->add_columns(col);
+      }
       for (const auto& record : result.records) {
-        RecordToRow(record, response->mutable_result_set()->add_rows());
+        RecordToRow(record, result.columns, response->mutable_result_set()->add_rows());
       }
       response->mutable_result_set()->set_total_rows(
           static_cast<int32_t>(result.records.size()));
@@ -1106,7 +1124,7 @@ grpc::Status GraphServiceRouter::StreamQuery(grpc::ServerContext* context,
          &client_disconnected, request](
             const cedar::cypher::Record& record) -> bool {
           auto* row = current_batch.mutable_batch()->add_rows();
-          RecordToRow(record, row);
+          RecordToRow(record, {}, row);
           rows_in_current_batch++;
 
           if (rows_in_current_batch >= kRowsPerBatch) {
