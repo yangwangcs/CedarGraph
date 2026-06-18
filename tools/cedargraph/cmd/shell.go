@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cedar-graph/cedargraph-cli/internal/client"
+	"github.com/cedar-graph/cedargraph-cli/internal/display"
 	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
 )
@@ -32,65 +33,177 @@ var shellCmd = &cobra.Command{
 		}
 		defer rl.Close()
 
+		shell := &ShellSession{
+			client: c,
+			rl:     rl,
+			format: display.FormatTable,
+		}
+
 		fmt.Println()
 		fmt.Println("\033[1mCedarGraph Interactive Shell\033[0m")
 		fmt.Printf("Connected to %s\n", graphdAddr)
-		fmt.Println("Type Cypher queries, 'help' for commands, 'quit' to exit")
+		fmt.Println("Type 'help' for commands, 'quit' to exit")
 		fmt.Println()
 
-		for {
-			line, err := rl.Readline()
+		return shell.Run()
+	},
+}
+
+type ShellSession struct {
+	client *client.GraphClient
+	rl     *readline.Instance
+	format display.OutputFormat
+}
+
+func (s *ShellSession) Run() error {
+	for {
+		line, err := s.rl.Readline()
+		if err != nil {
+			break
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Handle multi-line input (accumulate until semicolon)
+		query := line
+		for !strings.HasSuffix(query, ";") && !strings.HasPrefix(strings.ToLower(query), ":") {
+			s.rl.SetPrompt("\033[36m  ..>\033[0m ")
+			line, err = s.rl.Readline()
 			if err != nil {
 				break
 			}
-
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-
-			switch strings.ToLower(line) {
-			case "quit", "exit", ":quit", ":q":
-				fmt.Println("Disconnected.")
-				return nil
-			case "help", ":help", ":h":
-				printShellHelp()
-				continue
-			case "clear", ":clear":
-				fmt.Print("\033[2J\033[H")
-				continue
-			}
-
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			result, err := c.ExecuteQuery(ctx, line)
-			cancel()
-
-			if err != nil {
-				fmt.Printf("\033[31mError: %v\033[0m\n", err)
-				continue
-			}
-
-			if result.Error != "" {
-				fmt.Printf("\033[31m%s\033[0m\n", result.Error)
-				continue
-			}
-
-			if len(result.Columns) > 0 {
-				printShellResult(result)
-			} else {
-				fmt.Printf("OK (%d rows)\n", len(result.Rows))
-			}
+			query += " " + strings.TrimSpace(line)
 		}
-		return nil
-	},
+		s.rl.SetPrompt("\033[36mcedar>\033[0m ")
+
+		query = strings.TrimRight(query, ";")
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+
+		if s.handleCommand(query) {
+			continue
+		}
+
+		s.executeQuery(query)
+	}
+	return nil
+}
+
+func (s *ShellSession) handleCommand(cmd string) bool {
+	lower := strings.ToLower(cmd)
+
+	switch {
+	case lower == "quit" || lower == "exit" || lower == ":quit" || lower == ":q":
+		fmt.Println("Disconnected.")
+		return true
+
+	case lower == "help" || lower == ":help" || lower == ":h" || lower == "?":
+		printShellHelp()
+		return true
+
+	case lower == "clear" || lower == ":clear":
+		fmt.Print("\033[2J\033[H")
+		return true
+
+	case strings.HasPrefix(lower, ":format"):
+		parts := strings.Fields(cmd)
+		if len(parts) < 2 {
+			fmt.Printf("Current format: %s\n", s.format)
+			fmt.Println("Available: table, json, csv")
+			return true
+		}
+		switch parts[1] {
+		case "table", "json", "csv":
+			s.format = display.OutputFormat(parts[1])
+			fmt.Printf("Output format: %s\n", s.format)
+		default:
+			fmt.Println("Unknown format. Available: table, json, csv")
+		}
+		return true
+
+	case lower == ":status":
+		s.showStatus()
+		return true
+
+	case lower == ":timing":
+		fmt.Println("Timing is always shown in table mode")
+		return true
+	}
+
+	return false
+}
+
+func (s *ShellSession) executeQuery(query string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	result, err := s.client.ExecuteQuery(ctx, query)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		fmt.Printf("\033[31mError: %v\033[0m\n", err)
+		return
+	}
+
+	if result.Error != "" {
+		fmt.Printf("\033[31m%s\033[0m\n", result.Error)
+		return
+	}
+
+	if len(result.Columns) > 0 {
+		display.PrintResult(result.Columns, result.Rows, s.format)
+	} else if s.format != display.FormatJSON {
+		fmt.Printf("OK (%d rows)\n", len(result.Rows))
+	}
+
+	if s.format == display.FormatTable {
+		fmt.Printf("  Time: %.2fms\n", float64(elapsed.Microseconds())/1000.0)
+	}
+}
+
+func (s *ShellSession) showStatus() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := s.client.ExecuteQuery(ctx, "SHOW PARTITIONS")
+	if err != nil {
+		fmt.Printf("\033[31mError: %v\033[0m\n", err)
+		return
+	}
+
+	if result.Error != "" {
+		fmt.Printf("\033[31m%s\033[0m\n", result.Error)
+		return
+	}
+
+	if len(result.Columns) > 0 {
+		display.PrintResult(result.Columns, result.Rows, s.format)
+	}
 }
 
 func printShellHelp() {
 	fmt.Print(`
 Commands:
-  help, :h          Show this help
+  help, :h, ?       Show this help
   quit, :q          Exit shell
   clear, :clear     Clear screen
+  :format [fmt]     Set output format (table, json, csv)
+  :status           Show cluster status
+
+Cypher:
+  Enter any Cypher statement followed by semicolon or newline
+  Multi-line queries are supported (end with ;)
+
+Examples:
+  MATCH (n) RETURN n LIMIT 10;
+  CREATE (n:Person {name: 'Alice', age: 30});
+  MATCH (n:Person) WHERE n.name = 'Alice' RETURN n;
 
 `)
 }

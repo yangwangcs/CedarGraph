@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"time"
 
 	pb "github.com/cedar-graph/cedargraph-cli/proto"
 	"google.golang.org/grpc"
@@ -29,19 +30,51 @@ type ExecutionStats struct {
 	StorageNodesUsed uint32
 }
 
-func NewGraphClient(addr string) (*GraphClient, error) {
-	conn, err := grpc.Dial(addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", addr, err)
+type ConnectOptions struct {
+	Timeout     time.Duration
+	MaxRetries  int
+	RetryDelay  time.Duration
+}
+
+func DefaultConnectOptions() ConnectOptions {
+	return ConnectOptions{
+		Timeout:    5 * time.Second,
+		MaxRetries: 3,
+		RetryDelay: 1 * time.Second,
 	}
-	return &GraphClient{
-		conn:   conn,
-		client: pb.NewQueryServiceClient(conn),
-		addr:   addr,
-	}, nil
+}
+
+func NewGraphClient(addr string) (*GraphClient, error) {
+	return NewGraphClientWithOptions(addr, DefaultConnectOptions())
+}
+
+func NewGraphClientWithOptions(addr string, opts ConnectOptions) (*GraphClient, error) {
+	var lastErr error
+
+	for attempt := 0; attempt <= opts.MaxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(opts.RetryDelay)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
+		conn, err := grpc.DialContext(ctx, addr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(),
+		)
+		cancel()
+
+		if err == nil {
+			return &GraphClient{
+				conn:   conn,
+				client: pb.NewQueryServiceClient(conn),
+				addr:   addr,
+			}, nil
+		}
+
+		lastErr = err
+	}
+
+	return nil, fmt.Errorf("connect to %s after %d retries: %w", addr, opts.MaxRetries, lastErr)
 }
 
 func (c *GraphClient) Close() error {
@@ -49,6 +82,10 @@ func (c *GraphClient) Close() error {
 		return c.conn.Close()
 	}
 	return nil
+}
+
+func (c *GraphClient) Addr() string {
+	return c.addr
 }
 
 func (c *GraphClient) ExecuteQuery(ctx context.Context, query string) (*QueryResult, error) {

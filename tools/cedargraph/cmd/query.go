@@ -10,7 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var graphdAddr string
+var (
+	graphdAddr string
+	outputFmt  string
+)
 
 var queryCmd = &cobra.Command{
 	Use:   "query [cypher statement]",
@@ -38,13 +41,14 @@ var queryCmd = &cobra.Command{
 			return fmt.Errorf("query error: %s", result.Error)
 		}
 
+		format := display.OutputFormat(outputFmt)
 		if len(result.Columns) > 0 {
-			display.PrintQueryResult(result.Columns, result.Rows)
-		} else {
+			display.PrintResult(result.Columns, result.Rows, format)
+		} else if format != display.FormatJSON {
 			fmt.Println("OK")
 		}
 
-		if result.Stats != nil {
+		if result.Stats != nil && format == display.FormatTable {
 			fmt.Printf("  Time: %.2fms | Scanned: %d | Returned: %d | Nodes: %d\n",
 				float64(result.Stats.ExecutionTimeUs)/1000.0,
 				result.Stats.RowsScanned,
@@ -59,4 +63,5 @@ var queryCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(queryCmd)
 	queryCmd.Flags().StringVar(&graphdAddr, "graphd", "127.0.0.1:9669", "GraphD address")
+	queryCmd.Flags().StringVarP(&outputFmt, "format", "f", "table", "Output format: table, json, csv")
 }
