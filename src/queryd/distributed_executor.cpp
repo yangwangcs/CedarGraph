@@ -879,6 +879,26 @@ Status DistributedExecutor::TemporalQuery(
   std::vector<std::pair<Timestamp, Descriptor>> results;
   Status s = node_client->ScanEntity(entity_id, entity_type, 0, 
                                       Timestamp::Max(), &results);
+  
+  // Follower retry: if follower has high lag, try a different follower
+  if (!s.ok() && consistency == DistributedExecutionContext::Consistency::kEventual
+      && IsFollowerLagError(s)) {
+    constexpr int kMaxFollowerRetries = 2;
+    std::string prev_address = storage_address;
+    for (int retry = 0; retry < kMaxFollowerRetries; ++retry) {
+      std::string new_address;
+      Status rs2 = router_->GetFollowerNode(partition_id, &new_address, prev_address);
+      if (!rs2.ok()) break;
+      auto retry_client = storage_client_->GetNodeClient(partition_id, new_address);
+      if (!retry_client) break;
+      retry_client->SetReadConsistency(true);
+      s = retry_client->ScanEntity(entity_id, entity_type, 0, Timestamp::Max(), &results);
+      if (s.ok()) break;
+      if (!IsFollowerLagError(s)) break;
+      prev_address = new_address;
+    }
+  }
+  
   if (!s.ok()) {
     return s;
   }
@@ -1054,6 +1074,12 @@ bool DistributedExecutor::IsSinglePartitionQuery(
   return true;
 }
 
+bool DistributedExecutor::IsFollowerLagError(const Status& s) {
+  std::string msg = s.ToString();
+  return msg.find("Follower lag") != std::string::npos ||
+         msg.find("follower lag") != std::string::npos;
+}
+
 Status DistributedExecutor::ExecuteSinglePartition(
     const std::string& query,
     const std::unordered_map<std::string, cypher::Value>& parameters,
@@ -1088,6 +1114,26 @@ Status DistributedExecutor::ExecuteSinglePartition(
 
   // Execute query on the single partition
   Status s = node_client->ExecuteSubQuery(query, parameters, result);
+  
+  // Follower retry: if follower has high lag, try a different follower
+  if (!s.ok() && ctx->consistency == DistributedExecutionContext::Consistency::kEventual
+      && IsFollowerLagError(s)) {
+    constexpr int kMaxFollowerRetries = 2;
+    std::string prev_address = storage_address;
+    for (int retry = 0; retry < kMaxFollowerRetries; ++retry) {
+      std::string new_address;
+      Status rs2 = router_->GetFollowerNode(partition_id, &new_address, prev_address);
+      if (!rs2.ok()) break;
+      auto retry_client = storage_client_->GetNodeClient(partition_id, new_address);
+      if (!retry_client) break;
+      retry_client->SetReadConsistency(true);
+      s = retry_client->ExecuteSubQuery(query, parameters, result);
+      if (s.ok()) break;
+      if (!IsFollowerLagError(s)) break;
+      prev_address = new_address;
+    }
+  }
+  
   if (!s.ok()) {
       return Status::IOError("Query execution failed on partition " +
                              std::to_string(partition_id) + ": " + s.ToString());

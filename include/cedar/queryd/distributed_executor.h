@@ -316,6 +316,9 @@ class DistributedExecutor {
       const std::string& query,
       const std::unordered_map<std::string, cypher::Value>& parameters,
       uint32_t* partition_id);
+
+  // Check if an error indicates follower lag (eligible for retry on different follower)
+  static bool IsFollowerLagError(const Status& s);
   
   // Execute single-partition query (optimized path)
   Status ExecuteSinglePartition(
