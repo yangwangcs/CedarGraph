@@ -34,9 +34,11 @@ var shellCmd = &cobra.Command{
 		defer rl.Close()
 
 		shell := &ShellSession{
-			client: c,
-			rl:     rl,
-			format: display.FormatTable,
+			client:  c,
+			rl:      rl,
+			format:  display.FormatTable,
+			timeout: shellTimeout,
+			verbose: shellVerbose,
 		}
 
 		fmt.Println()
@@ -50,9 +52,11 @@ var shellCmd = &cobra.Command{
 }
 
 type ShellSession struct {
-	client *client.GraphClient
-	rl     *readline.Instance
-	format display.OutputFormat
+	client  *client.GraphClient
+	rl      *readline.Instance
+	format  display.OutputFormat
+	timeout time.Duration
+	verbose bool
 }
 
 func (s *ShellSession) Run() error {
@@ -133,13 +137,33 @@ func (s *ShellSession) handleCommand(cmd string) bool {
 	case lower == ":timing":
 		fmt.Println("Timing is always shown in table mode")
 		return true
+
+	case strings.HasPrefix(lower, ":timeout"):
+		parts := strings.Fields(cmd)
+		if len(parts) < 2 {
+			fmt.Printf("Current timeout: %v\n", s.timeout)
+			return true
+		}
+		d, err := time.ParseDuration(parts[1])
+		if err != nil {
+			fmt.Printf("Invalid duration: %s (e.g. 5s, 1m, 30s)\n", parts[1])
+			return true
+		}
+		s.timeout = d
+		fmt.Printf("Timeout: %v\n", s.timeout)
+		return true
+
+	case lower == ":verbose":
+		s.verbose = !s.verbose
+		fmt.Printf("Verbose: %v\n", s.verbose)
+		return true
 	}
 
 	return false
 }
 
 func (s *ShellSession) executeQuery(query string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
 
 	start := time.Now()
@@ -147,7 +171,11 @@ func (s *ShellSession) executeQuery(query string) {
 	elapsed := time.Since(start)
 
 	if err != nil {
-		fmt.Printf("\033[31mError: %v\033[0m\n", err)
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Printf("\033[31mError: query timeout after %v\033[0m\n", s.timeout)
+		} else {
+			fmt.Printf("\033[31mError: %v\033[0m\n", err)
+		}
 		return
 	}
 
@@ -163,7 +191,19 @@ func (s *ShellSession) executeQuery(query string) {
 	}
 
 	if s.format == display.FormatTable {
-		fmt.Printf("  Time: %.2fms\n", float64(elapsed.Microseconds())/1000.0)
+		serverTime := result.Stats.ExecutionTimeUs
+		if s.verbose && serverTime > 0 {
+			networkOverhead := elapsed.Microseconds() - int64(serverTime)
+			fmt.Printf("  Time: %.2fms (server: %.2fms, network: %.2fms) | Rows: %d\n",
+				float64(elapsed.Microseconds())/1000.0,
+				float64(serverTime)/1000.0,
+				float64(networkOverhead)/1000.0,
+				len(result.Rows))
+		} else {
+			fmt.Printf("  Time: %.2fms | Rows: %d\n",
+				float64(elapsed.Microseconds())/1000.0,
+				len(result.Rows))
+		}
 	}
 }
 
@@ -194,6 +234,8 @@ Commands:
   quit, :q          Exit shell
   clear, :clear     Clear screen
   :format [fmt]     Set output format (table, json, csv)
+  :timeout [dur]    Set query timeout (e.g. 5s, 1m)
+  :verbose          Toggle verbose timing
   :status           Show cluster status
 
 Cypher:
@@ -261,7 +303,14 @@ func printShellResult(result *client.QueryResult) {
 	fmt.Printf("  %d row(s)\n", len(result.Rows))
 }
 
+var (
+	shellTimeout time.Duration
+	shellVerbose bool
+)
+
 func init() {
 	rootCmd.AddCommand(shellCmd)
 	shellCmd.Flags().StringVar(&graphdAddr, "graphd", "127.0.0.1:9669", "GraphD address")
+	shellCmd.Flags().DurationVarP(&shellTimeout, "timeout", "t", 60*time.Second, "Query timeout")
+	shellCmd.Flags().BoolVarP(&shellVerbose, "verbose", "v", false, "Show detailed timing")
 }
