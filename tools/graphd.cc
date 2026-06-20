@@ -15,6 +15,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include "cedar/service/graph_service_router.h"
+#include "cedar/service/graphd_registrar.h"
 #include "cedar/governance/health_checker.h"
 #include "cedar/governance/config_manager.h"
 #include "cedar/dtx/storage/metrics_collector.h"
@@ -209,6 +210,22 @@ int main(int argc, char* argv[]) {
   }
   
   std::cout << "[GraphD] gRPC server listening on " << server_address << std::endl;
+  
+  // Register with MetaD for load balancing
+  cedar::service::GraphDRegistrar::Config registrar_config;
+  registrar_config.meta_address = config.meta_server;
+  registrar_config.graphd_address = config.bind_address;
+  registrar_config.graphd_port = config.port;
+  registrar_config.heartbeat_interval_seconds = 10;
+  registrar_config.max_qps = 10000;
+  
+  cedar::service::GraphDRegistrar registrar(registrar_config);
+  if (registrar.Start()) {
+    std::cout << "[GraphD] Registered with MetaD as " << registrar.GetNodeId() << std::endl;
+  } else {
+    std::cerr << "[GraphD] Warning: Failed to register with MetaD (load balancing disabled)" << std::endl;
+  }
+  
   std::cout << "[GraphD] Ready for queries. Press Ctrl+C to stop." << std::endl;
   std::cout << std::endl;
 

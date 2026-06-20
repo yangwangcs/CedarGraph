@@ -464,6 +464,7 @@ target_link_libraries(cedar_queryd
 add_executable(graphd
     tools/graphd.cc
     src/service/graph_service_router.cc
+    src/service/graphd_registrar.cc
     src/service/query_result_aggregator.cc
     ${PROTO_OUT_DIR}/query_service.pb.cc
     ${PROTO_OUT_DIR}/query_service.grpc.pb.cc
