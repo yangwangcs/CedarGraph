@@ -185,6 +185,69 @@ message QueryDHeartbeatResponse {
     string error_msg = 2;
 }
 
+// ============================================================================
+// GraphD 管理 - 支持多实例负载均衡
+// ============================================================================
+
+message GraphDNodeInfo {
+    string address = 1;
+    uint32 port = 2;
+    string version = 3;
+    uint32 max_qps = 4;           // 最大 QPS 容量
+    uint32 current_qps = 5;       // 当前 QPS
+    uint32 active_queries = 6;    // 活跃查询数
+    uint32 queued_queries = 7;    // 排队查询数
+    double cpu_usage = 8;         // CPU 使用率
+    double memory_usage = 9;      // 内存使用率
+    int64 registered_at_unix = 10;
+    int64 last_heartbeat_unix = 11;
+    string state = 12;            // ONLINE, OFFLINE, BUSY
+    map<string, string> metadata = 13;  // 扩展元数据
+}
+
+message RegisterGraphDRequest {
+    GraphDNodeInfo node_info = 1;
+}
+
+message RegisterGraphDResponse {
+    bool success = 1;
+    string error_msg = 2;
+    string node_id = 3;           // MetaD 分配的节点 ID
+}
+
+message GraphDHeartbeatRequest {
+    string node_id = 1;
+    uint32 current_qps = 2;
+    uint32 active_queries = 3;
+    uint32 queued_queries = 4;
+    double cpu_usage = 5;
+    double memory_usage = 6;
+}
+
+message GraphDHeartbeatResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
+message GetGraphDNodesRequest {
+    string state_filter = 1;  // "ONLINE", "BUSY", "" (all)
+}
+
+message GetGraphDNodesResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated GraphDNodeInfo nodes = 3;
+}
+
+message UnregisterGraphDRequest {
+    string node_id = 1;
+}
+
+message UnregisterGraphDResponse {
+    bool success = 1;
+    string error_msg = 2;
+}
+
 // Watch 请求 - 流式响应
 message WatchPartitionMapRequest {
     string space_name = 1;
@@ -267,6 +330,12 @@ service MetaService {
     // QueryD 管理
     rpc RegisterQueryD(RegisterQueryDRequest) returns (RegisterQueryDResponse);
     rpc QueryDHeartbeat(QueryDHeartbeatRequest) returns (QueryDHeartbeatResponse);
+    
+    // GraphD 管理 - 支持多实例负载均衡
+    rpc RegisterGraphD(RegisterGraphDRequest) returns (RegisterGraphDResponse);
+    rpc GraphDHeartbeat(GraphDHeartbeatRequest) returns (GraphDHeartbeatResponse);
+    rpc GetGraphDNodes(GetGraphDNodesRequest) returns (GetGraphDNodesResponse);
+    rpc UnregisterGraphD(UnregisterGraphDRequest) returns (UnregisterGraphDResponse);
     
     // Watch 接口 - 流式
     rpc WatchPartitionMap(WatchPartitionMapRequest) returns (stream PartitionMapChange);

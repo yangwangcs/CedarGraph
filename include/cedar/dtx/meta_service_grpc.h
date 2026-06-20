@@ -125,8 +125,25 @@ public:
                              cedar::meta::ReportCacheResponse* response) override;
 
     grpc::Status GcnHeartbeat(grpc::ServerContext* context,
-                              const cedar::meta::GcnHeartbeatRequest* request,
-                              cedar::meta::GcnHeartbeatResponse* response) override;
+                               const cedar::meta::GcnHeartbeatRequest* request,
+                               cedar::meta::GcnHeartbeatResponse* response) override;
+
+    // GraphD 管理 - 支持多实例负载均衡
+    grpc::Status RegisterGraphD(grpc::ServerContext* context,
+                                 const cedar::meta::RegisterGraphDRequest* request,
+                                 cedar::meta::RegisterGraphDResponse* response) override;
+
+    grpc::Status GraphDHeartbeat(grpc::ServerContext* context,
+                                  const cedar::meta::GraphDHeartbeatRequest* request,
+                                  cedar::meta::GraphDHeartbeatResponse* response) override;
+
+    grpc::Status GetGraphDNodes(grpc::ServerContext* context,
+                                 const cedar::meta::GetGraphDNodesRequest* request,
+                                 cedar::meta::GetGraphDNodesResponse* response) override;
+
+    grpc::Status UnregisterGraphD(grpc::ServerContext* context,
+                                   const cedar::meta::UnregisterGraphDRequest* request,
+                                   cedar::meta::UnregisterGraphDResponse* response) override;
 
 private:
     MetadataService* meta_service_;
@@ -144,6 +161,16 @@ private:
     std::queue<cedar::meta::PartitionMapChange> pending_broadcasts_;
     
     void OnPartitionChange(const PartitionMapChange& change);
+    
+    // GraphD 节点管理
+    struct GraphDNodeEntry {
+        std::string node_id;
+        cedar::meta::GraphDNodeInfo info;
+        std::chrono::steady_clock::time_point last_heartbeat;
+    };
+    mutable std::mutex graphd_nodes_mutex_;
+    std::unordered_map<std::string, GraphDNodeEntry> graphd_nodes_;
+    std::atomic<uint64_t> graphd_node_counter_{0};
     
     // 类型转换 helpers
     SpaceDef FromProto(const cedar::meta::SpaceDef& proto);

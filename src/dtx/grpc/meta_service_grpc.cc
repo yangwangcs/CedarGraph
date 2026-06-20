@@ -623,6 +623,129 @@ grpc::Status MetaServiceGrpcImpl::GcnHeartbeat(grpc::ServerContext* context,
 }
 
 // =============================================================================
+// GraphD 管理 - 支持多实例负载均衡
+// =============================================================================
+
+grpc::Status MetaServiceGrpcImpl::RegisterGraphD(
+    grpc::ServerContext* context,
+    const cedar::meta::RegisterGraphDRequest* request,
+    cedar::meta::RegisterGraphDResponse* response) {
+    
+    const auto& node_info = request->node_info();
+    
+    // 生成节点 ID
+    std::string node_id = "graphd-" + std::to_string(graphd_node_counter_.fetch_add(1));
+    
+    GraphDNodeEntry entry;
+    entry.node_id = node_id;
+    entry.info = node_info;
+    entry.last_heartbeat = std::chrono::steady_clock::now();
+    
+    {
+        std::lock_guard<std::mutex> lock(graphd_nodes_mutex_);
+        graphd_nodes_[node_id] = entry;
+    }
+    
+    response->set_success(true);
+    response->set_node_id(node_id);
+    
+    LOG(INFO) << "[MetaD] GraphD registered: " << node_id 
+              << " at " << node_info.address() << ":" << node_info.port();
+    
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::GraphDHeartbeat(
+    grpc::ServerContext* context,
+    const cedar::meta::GraphDHeartbeatRequest* request,
+    cedar::meta::GraphDHeartbeatResponse* response) {
+    
+    std::string node_id = request->node_id();
+    
+    std::lock_guard<std::mutex> lock(graphd_nodes_mutex_);
+    auto it = graphd_nodes_.find(node_id);
+    if (it == graphd_nodes_.end()) {
+        response->set_success(false);
+        response->set_error_msg("GraphD node not found: " + node_id);
+        return grpc::Status::OK;
+    }
+    
+    // 更新节点状态
+    it->second.info.set_current_qps(request->current_qps());
+    it->second.info.set_active_queries(request->active_queries());
+    it->second.info.set_queued_queries(request->queued_queries());
+    it->second.info.set_cpu_usage(request->cpu_usage());
+    it->second.info.set_memory_usage(request->memory_usage());
+    it->second.info.set_last_heartbeat_unix(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    it->second.last_heartbeat = std::chrono::steady_clock::now();
+    
+    // 根据负载判断状态
+    if (request->active_queries() > 100 || request->cpu_usage() > 80.0) {
+        it->second.info.set_state("BUSY");
+    } else {
+        it->second.info.set_state("ONLINE");
+    }
+    
+    response->set_success(true);
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::GetGraphDNodes(
+    grpc::ServerContext* context,
+    const cedar::meta::GetGraphDNodesRequest* request,
+    cedar::meta::GetGraphDNodesResponse* response) {
+    
+    std::string state_filter = request->state_filter();
+    
+    std::lock_guard<std::mutex> lock(graphd_nodes_mutex_);
+    for (const auto& [node_id, entry] : graphd_nodes_) {
+        // 检查心跳超时（30秒）
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            now - entry.last_heartbeat).count();
+        
+        if (elapsed > 30) {
+            continue;  // 跳过超时节点
+        }
+        
+        // 状态过滤
+        if (!state_filter.empty() && entry.info.state() != state_filter) {
+            continue;
+        }
+        
+        *response->add_nodes() = entry.info;
+    }
+    
+    response->set_success(true);
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::UnregisterGraphD(
+    grpc::ServerContext* context,
+    const cedar::meta::UnregisterGraphDRequest* request,
+    cedar::meta::UnregisterGraphDResponse* response) {
+    
+    std::string node_id = request->node_id();
+    
+    std::lock_guard<std::mutex> lock(graphd_nodes_mutex_);
+    auto it = graphd_nodes_.find(node_id);
+    if (it == graphd_nodes_.end()) {
+        response->set_success(false);
+        response->set_error_msg("GraphD node not found: " + node_id);
+        return grpc::Status::OK;
+    }
+    
+    graphd_nodes_.erase(it);
+    response->set_success(true);
+    
+    LOG(INFO) << "[MetaD] GraphD unregistered: " << node_id;
+    
+    return grpc::Status::OK;
+}
+
+// =============================================================================
 // MetaServiceGrpcServer
 // =============================================================================
 
