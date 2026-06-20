@@ -150,7 +150,7 @@ int ConnectionPool::GetAvailableConnections() const {
 }
 
 int ConnectionPool::GetTotalConnections() const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  // Note: No lock here - caller must hold mutex_ if needed
   return connections_.size();
 }
 

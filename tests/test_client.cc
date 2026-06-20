@@ -183,10 +183,10 @@ TEST_F(ClientTest, ConnectionPool) {
   
   ConnectionPool pool(config);
   
-  // Check pool stats
+  // Check pool stats - connections are created lazily
   EXPECT_EQ(pool.GetActiveConnections(), 0);
-  EXPECT_EQ(pool.GetAvailableConnections(), 5);
-  EXPECT_EQ(pool.GetTotalConnections(), 5);
+  EXPECT_EQ(pool.GetAvailableConnections(), 0);
+  EXPECT_EQ(pool.GetTotalConnections(), 0);
   EXPECT_TRUE(pool.IsHealthy());
 }
 

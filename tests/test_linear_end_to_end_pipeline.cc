@@ -104,7 +104,7 @@ TEST_F(LinearEndToEndPipelineTest, FlushAndRestartPreservesData) {
   ASSERT_TRUE(partition->Commit(txn_id, Timestamp(2000)).ok());
 
   // Flush to disk
-  ASSERT_TRUE(storage_->ForceFlush().ok());
+  ASSERT_TRUE(partition->GetEffectiveStorage()->ForceFlush().ok());
 
   // Simulate process restart: close everything
   partition_manager_->Shutdown();
@@ -131,7 +131,7 @@ TEST_F(LinearEndToEndPipelineTest, FlushAndRestartPreservesData) {
   ASSERT_NE(partition_after_restart, nullptr);
 
   std::vector<std::pair<Timestamp, Descriptor>> versions;
-  status = storage_->ScanNode(456, Timestamp::Max(), &versions);
+  status = partition_after_restart->GetEffectiveStorage()->ScanNode(456, Timestamp::Max(), &versions);
   ASSERT_TRUE(status.ok()) << "ScanNode failed: " << status.ToString();
   ASSERT_FALSE(versions.empty()) << "No versions found after restart";
 
@@ -174,7 +174,7 @@ TEST_F(LinearEndToEndPipelineTest, CompleteLinearPipeline) {
   // ========================================================================
   {
     std::vector<std::pair<Timestamp, Descriptor>> versions;
-    auto status = partition_manager_->GetSharedStorage()->ScanNode(789, Timestamp::Max(), &versions);
+    auto status = partition->GetEffectiveStorage()->ScanNode(789, Timestamp::Max(), &versions);
     ASSERT_TRUE(status.ok());
     ASSERT_FALSE(versions.empty());
 
@@ -186,7 +186,7 @@ TEST_F(LinearEndToEndPipelineTest, CompleteLinearPipeline) {
   // ========================================================================
   // Phase 4: Flush to Disk
   // ========================================================================
-  ASSERT_TRUE(partition_manager_->GetSharedStorage()->ForceFlush().ok());
+  ASSERT_TRUE(partition->GetEffectiveStorage()->ForceFlush().ok());
 
   // ========================================================================
   // Phase 5: Restart (simulate crash + recovery)
@@ -206,13 +206,17 @@ TEST_F(LinearEndToEndPipelineTest, CompleteLinearPipeline) {
   config.data_root = data_dir_;
   ASSERT_TRUE(partition_manager_->Initialize(config).ok());
   ASSERT_TRUE(partition_manager_->AddPartition(1).ok());
+  
+  // Update partition pointer after restart
+  partition = partition_manager_->GetPartition(1);
+  ASSERT_NE(partition, nullptr);
 
   // ========================================================================
   // Phase 6: Post-Restart Read Verification
   // ========================================================================
   {
     std::vector<std::pair<Timestamp, Descriptor>> versions;
-    auto status = partition_manager_->GetSharedStorage()->ScanNode(789, Timestamp::Max(), &versions);
+    auto status = partition->GetEffectiveStorage()->ScanNode(789, Timestamp::Max(), &versions);
     ASSERT_TRUE(status.ok());
     ASSERT_FALSE(versions.empty()) << "Data lost after restart!";
 

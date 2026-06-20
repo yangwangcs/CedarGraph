@@ -112,7 +112,7 @@ TEST_F(MultiThreadedConcurrentTest, ConcurrentIndependentWriters) {
       << "Not all writes succeeded. Expected " << kTotalWrites;
 
   // Flush to ensure writes are persisted
-  ASSERT_TRUE(partition_manager_->GetSharedStorage()->ForceFlush().ok());
+  ASSERT_TRUE(partition_->GetEffectiveStorage()->ForceFlush().ok());
 
   // Verify all entities are readable
   for (int t = 0; t < kNumThreads; ++t) {
@@ -121,7 +121,7 @@ TEST_F(MultiThreadedConcurrentTest, ConcurrentIndependentWriters) {
       int32_t expected_value = static_cast<int32_t>(entity_id * 100);
 
       std::vector<std::pair<Timestamp, Descriptor>> versions;
-      auto status = partition_manager_->GetSharedStorage()->ScanNode(entity_id, Timestamp::Max(), &versions);
+      auto status = partition_->GetEffectiveStorage()->ScanNode(entity_id, Timestamp::Max(), &versions);
       ASSERT_TRUE(status.ok()) << "ScanNode failed for entity " << entity_id;
       ASSERT_FALSE(versions.empty()) << "Entity " << entity_id << " not found";
 
@@ -187,7 +187,7 @@ TEST_F(MultiThreadedConcurrentTest, WriteWriteConflictDetection) {
   t2.join();
 
   // Verify only T1's value was committed
-  auto* shared = partition_manager_->GetSharedStorage();
+  auto* shared = partition_->GetEffectiveStorage();
   ASSERT_NE(shared, nullptr);
   std::vector<std::pair<Timestamp, Descriptor>> versions;
   auto status = shared->ScanNode(999, Timestamp::Max(), &versions);
@@ -257,7 +257,7 @@ TEST_F(MultiThreadedConcurrentTest, ConcurrentReadWriteMix) {
         // Read a random entity from the pre-seeded range
         uint64_t entity_id = 1 + (i % 20);
         std::vector<std::pair<Timestamp, Descriptor>> versions;
-        auto status = partition_manager_->GetSharedStorage()->ScanNode(entity_id, Timestamp::Max(), &versions);
+        auto status = partition_->GetEffectiveStorage()->ScanNode(entity_id, Timestamp::Max(), &versions);
 
         // We don't assert on specific values here — the goal is to verify
         // that concurrent reads don't crash or corrupt the storage.
@@ -283,7 +283,7 @@ TEST_F(MultiThreadedConcurrentTest, ConcurrentReadWriteMix) {
     for (int i = 0; i < kWritesPerThread; ++i) {
       uint64_t entity_id = 100 + t * kWritesPerThread + i;
       std::vector<std::pair<Timestamp, Descriptor>> versions;
-      auto status = partition_manager_->GetSharedStorage()->ScanNode(entity_id, Timestamp::Max(), &versions);
+      auto status = partition_->GetEffectiveStorage()->ScanNode(entity_id, Timestamp::Max(), &versions);
       EXPECT_TRUE(status.ok());
       EXPECT_FALSE(versions.empty()) << "Entity " << entity_id << " not found after concurrent mix";
     }
@@ -331,7 +331,7 @@ TEST_F(MultiThreadedConcurrentTest, ConcurrentFlushRestartConsistency) {
   EXPECT_EQ(success_count.load(), kNumThreads * kWritesPerThread);
 
   // Flush while no writers are active
-  ASSERT_TRUE(partition_manager_->GetSharedStorage()->ForceFlush().ok());
+  ASSERT_TRUE(partition_->GetEffectiveStorage()->ForceFlush().ok());
 
   // Restart
   partition_manager_->Shutdown();
@@ -350,6 +350,10 @@ TEST_F(MultiThreadedConcurrentTest, ConcurrentFlushRestartConsistency) {
   config.data_root = data_dir_;
   ASSERT_TRUE(partition_manager_->Initialize(config).ok());
   ASSERT_TRUE(partition_manager_->AddPartition(1).ok());
+  
+  // Update partition pointer after restart
+  partition_ = partition_manager_->GetPartition(1);
+  ASSERT_NE(partition_, nullptr);
 
   // Verify all data after restart
   for (int t = 0; t < kNumThreads; ++t) {
@@ -358,7 +362,7 @@ TEST_F(MultiThreadedConcurrentTest, ConcurrentFlushRestartConsistency) {
       int32_t expected_value = static_cast<int32_t>(entity_id * 7);
 
       std::vector<std::pair<Timestamp, Descriptor>> versions;
-      status = partition_manager_->GetSharedStorage()->ScanNode(entity_id, Timestamp::Max(), &versions);
+      status = partition_->GetEffectiveStorage()->ScanNode(entity_id, Timestamp::Max(), &versions);
       ASSERT_TRUE(status.ok()) << "ScanNode failed for entity " << entity_id;
       ASSERT_FALSE(versions.empty()) << "Entity " << entity_id << " lost after restart";
 

@@ -42,14 +42,14 @@ ResultSet CypherEngine::Execute(const std::string& query) {
       return result;
     }
     
-    // Execute
+    // Execute FIRST, then cache (avoid use-after-free)
     ExecutionContext ctx;
     ctx.graph = graph_.get();
     ctx.storage = storage_;
     ctx.gcn_traversal_callback = gcn_traversal_callback_;
-    auto* raw_plan = plan.get();
+    auto result = plan->Execute(&ctx);
     CachePlan(fingerprint, std::move(plan));
-    return raw_plan->Execute(&ctx);
+    return result;
   };
 
   ResultSet result = do_execute();
@@ -73,7 +73,22 @@ ResultSet CypherEngine::Execute(const std::string& query,
   auto start = std::chrono::steady_clock::now();
 
   auto do_execute = [&]() -> ResultSet {
-    // Parse and create new plan (cache disabled for debugging)
+    // Compute fingerprint for cache key
+    auto fingerprint = ComputeFingerprint(query);
+
+    // Check cache first
+    if (auto cached = GetCachedPlan(fingerprint)) {
+      ExecutionContext ctx;
+      ctx.graph = graph_.get();
+      ctx.storage = storage_;
+      ctx.gcn_traversal_callback = gcn_traversal_callback_;
+      for (const auto& [k, v] : parameters) {
+        ctx.SetVariable(k, v);
+      }
+      return cached->Clone()->Execute(&ctx);
+    }
+    
+    // Parse and create new plan
     auto plan = ParseAndPlan(query);
     if (!plan) {
       ResultSet result;
@@ -90,8 +105,10 @@ ResultSet CypherEngine::Execute(const std::string& query,
       ctx.SetVariable(k, v);
     }
     
-    // Execute plan
-    return plan->Execute(&ctx);
+    // Execute FIRST, then cache (avoid use-after-free)
+    auto result = plan->Execute(&ctx);
+    CachePlan(fingerprint, std::move(plan));
+    return result;
   };
 
   ResultSet result = do_execute();

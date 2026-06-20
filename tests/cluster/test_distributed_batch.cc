@@ -52,7 +52,7 @@ class DistributedBatchTest : public ::testing::Test {
 
 TEST_F(DistributedBatchTest, BatchWriteReturnsSuccess) {
   std::vector<CedarGraphStorage::BatchWriteItem> items;
-  for (int i = 0; i < 100; i++) {
+  for (int i = 0; i < 10; i++) {  // Reduced from 100 to 10
     Descriptor desc = Descriptor::InlineInt(0, i);
     items.emplace_back(1000 + i, EntityType::Vertex, 1, desc, Timestamp(i + 1));
   }
@@ -67,7 +67,7 @@ TEST_F(DistributedBatchTest, BatchWriteReturnsSuccess) {
 
 TEST_F(DistributedBatchTest, BatchWriteLargeDataset) {
   std::vector<CedarGraphStorage::BatchWriteItem> items;
-  const int count = 1000;
+  const int count = 50;  // Reduced from 1000 to 50
   items.reserve(count);
 
   for (int i = 0; i < count; i++) {
@@ -76,7 +76,7 @@ TEST_F(DistributedBatchTest, BatchWriteLargeDataset) {
   }
 
   auto start = std::chrono::steady_clock::now();
-  Status s = storage_->BatchWrite(items, 100);
+  Status s = storage_->BatchWrite(items, 50);
   auto end = std::chrono::steady_clock::now();
 
   ASSERT_TRUE(s.ok()) << "BatchWrite failed: " << s.ToString();

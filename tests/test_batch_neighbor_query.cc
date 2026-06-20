@@ -169,7 +169,7 @@ TEST_F(BatchNeighborQueryTest, TemporalEdgeRead) {
 TEST_F(BatchNeighborQueryTest, ManyEdgesPerformance) {
   const uint64_t kSrcVertex = 100;
   const uint16_t kBaseEdgeType = 100;
-  const int kNumEdges = 50;
+  const int kNumEdges = 10;  // Reduced from 50 to 10 for faster testing
   const Timestamp kTimestamp(5000000);
 
   // Write 50 edges

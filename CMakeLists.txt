@@ -200,7 +200,6 @@ set(CEDAR_STORAGE_SOURCES
     src/storage/compaction_merger_v2.cc
     src/storage/vsl_memtable.cc
     src/storage/versioned_skiplist_lockfree.cc
-    src/storage/query_cache.cc
     src/storage/async_index_builder.cc
     src/storage/cedar_graph_storage.cc
     src/storage/entity_lifecycle.cc

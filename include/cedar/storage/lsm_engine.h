@@ -34,7 +34,6 @@
 #include "cedar/transaction/wal.h"
 #include "cedar/transaction/occ_transaction.h"
 #include "cedar/storage/vsl_memtable.h"
-#include "cedar/storage/query_cache.h"
 #include "cedar/storage/size_tiered_compaction.h"
 #include "cedar/storage/sst_reader_cache.h"
 #include "cedar/common/roaring_bitmap.h"
@@ -362,10 +361,6 @@ class LsmEngine {
   // 同步 WAL
   Status SyncWAL();
   
-  // Query cache operations
-  QueryCache* GetQueryCache() const { return query_cache_.get(); }
-  void InvalidateQueryCache(uint64_t entity_id);
-  
   // Get database path
   std::string GetDbPath() const { return db_path_; }
   
@@ -502,9 +497,6 @@ class LsmEngine {
   // OPTIMIZATION: 查询模式追踪 - 用于识别热数据
   void TrackQueryPattern(uint64_t entity_id, EntityType entity_type, uint16_t column_id);
 
-  
-  // Query result cache
-  std::unique_ptr<QueryCache> query_cache_;
   
   // OPTIMIZATION: 跨查询缓存 - 缓存热数据的查询结果
   // 格式: (entity_id, column_id) -> vector<MemTableEntry>
@@ -781,7 +773,6 @@ class LsmEngine {
  public:
   // Enable/disable optimizations for bulk import
   void SetBulkImportMode(bool enabled) {
-    disable_query_cache_invalidate_ = enabled;
     disable_column_tracking_ = enabled;
     batch_tracking_enabled_ = enabled;
   }
@@ -791,7 +782,6 @@ class LsmEngine {
   
  private:
   // Optimization flags
-  bool disable_query_cache_invalidate_ = false;  // Skip cache invalidate during import
   bool disable_column_tracking_ = false;         // Skip column tracking during import
   bool batch_tracking_enabled_ = false;          // Use batch tracking
   

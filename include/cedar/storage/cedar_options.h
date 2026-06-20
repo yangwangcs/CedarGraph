@@ -195,6 +195,10 @@ struct CedarOptions {
   // Column ID for this database (default: 0)
   uint16_t column_id = 0;
   
+  // 分区数量配置（默认: 65536）
+  // 注意：创建后不可更改，需根据未来集群规模预估
+  uint32_t partition_count = 65536;
+  
   // Environment for file operations
   cedar::Env* env = nullptr;
   

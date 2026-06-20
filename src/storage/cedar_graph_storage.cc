@@ -45,12 +45,34 @@ namespace cedar {
 // 辅助函数
 // =============================================================================
 
-/// 计算分区 ID: Hash(entity_id) % MaxPartitions (65536)
+/// MurmurHash2 - 提供更好的分布均匀性
+static uint64_t MurmurHash2(uint64_t key) {
+  const uint64_t m = 0xc6a4a7935bd1e995ULL;
+  const int r = 47;
+  uint64_t h = 0x8445d61a4e774912ULL ^ (8 * m);
+  
+  uint64_t k = key;
+  k *= m;
+  k ^= k >> r;
+  k *= m;
+  
+  h ^= k;
+  h *= m;
+  h ^= h >> r;
+  h *= m;
+  h ^= h >> r;
+  
+  return h;
+}
+
+/// 计算分区 ID: MurmurHash2(entity_id) % partition_count
 /// 确保同一实体的所有历史版本落在同一物理分片
-static constexpr uint16_t ComputePartition(uint64_t entity_id) {
-  // 默认使用 65536 (2^16) 个分区，直接取低 16 位
-  // 这等价于 entity_id % 65536
-  return static_cast<uint16_t>(entity_id);
+/// 使用 MurmurHash2 提高分布均匀性，避免连续 ID 导致的热点
+static uint16_t ComputePartition(uint64_t entity_id, uint32_t partition_count = 65536) {
+  // 使用 MurmurHash2 进行哈希，然后取模
+  // 这提供了更好的分布均匀性，避免连续 ID 的热点问题
+  uint64_t hash = MurmurHash2(entity_id);
+  return static_cast<uint16_t>(hash % partition_count);
 }
 
 /// 打包 flags：OpType + Distributed 标记
@@ -328,7 +350,7 @@ Status CedarGraphStorage::Put(const WriteOptions& options,
                              uint64_t tx_time, 
                              const Descriptor& descriptor,
                              Timestamp txn_version) {
-  uint16_t part_id = ComputePartition(entity_id);
+  uint16_t part_id = ComputePartition(entity_id, rep_->options.partition_count);
   
   // 构造 Key with partition ID
   uint8_t flags = PackCreateFlags(true);
@@ -365,7 +387,7 @@ Status CedarGraphStorage::Delete(const WriteOptions& options,
                                 uint64_t entity_id, 
                                 uint64_t tx_time,
                                 Timestamp txn_version) {
-  uint16_t part_id = ComputePartition(entity_id);
+  uint16_t part_id = ComputePartition(entity_id, rep_->options.partition_count);
   
   // 构造 Tombstone Key with partition ID
   uint8_t flags = PackDeleteFlags(true);
@@ -409,7 +431,7 @@ Status CedarGraphStorage::WriteBatch(const std::vector<WriteBatchEntry>& entries
   lsm_entries.reserve(entries.size());
   
   for (const auto& entry : entries) {
-    uint16_t part_id = ComputePartition(entry.entity_id);
+    uint16_t part_id = ComputePartition(entry.entity_id, rep_->options.partition_count);
     uint8_t flags = PackCreateFlags(true);
     CedarKey key = CedarKey::Vertex(entry.entity_id, 
                                     VertexColumnId(entry.descriptor.GetColumnId()), 
@@ -445,7 +467,7 @@ std::optional<Descriptor> CedarGraphStorage::Get(uint64_t entity_id,
                                                 Timestamp timestamp) {
   // Use DTX client if in distributed mode (RPC should not hold local lock)
   if (rep_->is_distributed && rep_->dtx_client && rep_->is_connected) {
-    uint16_t part_id = ComputePartition(entity_id);
+    uint16_t part_id = ComputePartition(entity_id, rep_->options.partition_count);
     uint8_t flags = PackCreateFlags(true);
     uint64_t extension = (static_cast<uint64_t>(entity_type) << 16) | column_id;
     
@@ -1047,7 +1069,7 @@ Status CedarGraphStorage::PutStaticVertex(uint64_t vertex_id,
   }
   
   // 计算分区 ID
-  uint16_t part_id = ComputePartition(vertex_id);
+  uint16_t part_id = ComputePartition(vertex_id, rep_->options.partition_count);
   
   // 使用 Timestamp::Static() (值为1) 表示静态属性
   // 设置 column_id 的 is_static 位 (0x8000)，扫描时可跳过
@@ -1115,7 +1137,7 @@ Status CedarGraphStorage::PutDynamicVertex(uint64_t vertex_id,
   }
   
   // 计算分区 ID
-  uint16_t part_id = ComputePartition(vertex_id);
+  uint16_t part_id = ComputePartition(vertex_id, rep_->options.partition_count);
   
   // 动态属性不设置 is_static 标记
   uint8_t flags = PackCreateFlags(true);
@@ -1181,7 +1203,7 @@ Status CedarGraphStorage::PutStaticEdge(uint64_t src_id,
   }
   
   // 计算分区 ID（按 src_id 分区）
-  uint16_t part_id = ComputePartition(src_id);
+  uint16_t part_id = ComputePartition(src_id, rep_->options.partition_count);
   
   // 使用 Timestamp::Static() 表示静态属性
   // 设置 column_id 的 is_static 位 (0x8000)
@@ -1235,7 +1257,7 @@ Status CedarGraphStorage::PutDynamicEdge(uint64_t src_id,
   }
   
   // 计算分区 ID（按 src_id 分区）
-  uint16_t part_id = ComputePartition(src_id);
+  uint16_t part_id = ComputePartition(src_id, rep_->options.partition_count);
   
   // 动态属性不设置 is_static 标记
   uint8_t flags = PackCreateFlags(true);
@@ -1397,7 +1419,7 @@ Status CedarGraphStorage::MarkEntityCreated(uint64_t entity_id, EntityType type,
     }
     
     // 计算分区 ID
-    uint16_t part_id = ComputePartition(entity_id);
+    uint16_t part_id = ComputePartition(entity_id, rep_->options.partition_count);
     uint8_t flags = PackCreateFlags(true);
     
     Descriptor lifecycle_desc = LifecycleDescriptor::Create(LifecycleEvent::Created);
@@ -1425,7 +1447,7 @@ Status CedarGraphStorage::MarkEntityDeleted(uint64_t entity_id, EntityType type,
     }
     
     // 计算分区 ID
-    uint16_t part_id = ComputePartition(entity_id);
+    uint16_t part_id = ComputePartition(entity_id, rep_->options.partition_count);
     // DELETE 操作：设置 delta_op=10，不设置 kTombstone
     uint8_t flags = PackDeleteFlags(true);
     
@@ -1452,7 +1474,7 @@ Status CedarGraphStorage::MarkEntityRecreated(uint64_t entity_id, EntityType typ
     }
     
     // 计算分区 ID
-    uint16_t part_id = ComputePartition(entity_id);
+    uint16_t part_id = ComputePartition(entity_id, rep_->options.partition_count);
     uint8_t flags = PackCreateFlags(true);  // Recreated 也是 CREATE 语义
     
     Descriptor lifecycle_desc = LifecycleDescriptor::Create(LifecycleEvent::Recreated);
@@ -1688,7 +1710,7 @@ Status CedarGraphStorage::BatchWrite(const std::vector<BatchWriteItem>& items,
         continue;
       }
       
-      uint16_t part_id = ComputePartition(item.entity_id);
+      uint16_t part_id = ComputePartition(item.entity_id, rep_->options.partition_count);
       uint8_t flags = PackCreateFlags(true);
       
       // Handle static column id
