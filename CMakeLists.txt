@@ -986,3 +986,9 @@ add_executable(test_sharded_memtable
     tests/benchmark/test_sharded_memtable.cc
 )
 target_link_libraries(test_sharded_memtable cedar)
+
+# GraphD Load Balancer Test
+add_executable(test_graphd_load_balancer
+    tests/client/test_graphd_load_balancer.cc
+)
+target_link_libraries(test_graphd_load_balancer cedar cedar_client gtest gtest_main)

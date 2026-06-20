@@ -51,6 +51,12 @@ class GraphDLoadBalancer {
   // Select a GraphD node based on load balancing strategy
   GraphDNode SelectNode();
 
+  // Select a node with failover support (retries on failure)
+  GraphDNode SelectNodeWithFailover();
+
+  // Mark a node as failed (for failover)
+  void MarkNodeFailed(const std::string& address, int port);
+
   // Get all available nodes
   std::vector<GraphDNode> GetAvailableNodes();
 
@@ -72,6 +78,17 @@ class GraphDLoadBalancer {
   std::unique_ptr<cedar::meta::MetaService::Stub> stub_;
   std::unique_ptr<std::thread> refresh_thread_;
   std::atomic<bool> running_{false};
+  
+  // Failover tracking
+  struct FailedNode {
+    std::string address;
+    int port;
+    std::chrono::steady_clock::time_point failed_at;
+    int retry_count;
+  };
+  std::vector<FailedNode> failed_nodes_;
+  static constexpr int kMaxRetries = 3;
+  static constexpr int kRetryDelaySeconds = 5;
 };
 
 }  // namespace client

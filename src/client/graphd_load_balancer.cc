@@ -142,5 +142,64 @@ GraphDNode GraphDLoadBalancer::SelectRandom() {
   return nodes_[dist(gen)];
 }
 
+GraphDNode GraphDLoadBalancer::SelectNodeWithFailover() {
+  // Try to select a node, excluding failed nodes
+  for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
+    try {
+      GraphDNode node = SelectNode();
+      
+      // Check if this node is in the failed list
+      bool is_failed = false;
+      {
+        std::lock_guard<std::mutex> lock(nodes_mutex_);
+        for (const auto& failed : failed_nodes_) {
+          if (failed.address == node.address && failed.port == node.port) {
+            // Check if enough time has passed for retry
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                now - failed.failed_at).count();
+            if (elapsed < kRetryDelaySeconds * failed.retry_count) {
+              is_failed = true;
+              break;
+            }
+          }
+        }
+      }
+      
+      if (!is_failed) {
+        return node;
+      }
+    } catch (const std::exception& e) {
+      // No nodes available, wait and retry
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+  }
+  
+  // If all retries failed, try to refresh nodes and select again
+  RefreshNodes();
+  return SelectNode();
+}
+
+void GraphDLoadBalancer::MarkNodeFailed(const std::string& address, int port) {
+  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  
+  // Check if already in failed list
+  for (auto& failed : failed_nodes_) {
+    if (failed.address == address && failed.port == port) {
+      failed.retry_count++;
+      failed.failed_at = std::chrono::steady_clock::now();
+      return;
+    }
+  }
+  
+  // Add to failed list
+  FailedNode failed;
+  failed.address = address;
+  failed.port = port;
+  failed.failed_at = std::chrono::steady_clock::now();
+  failed.retry_count = 1;
+  failed_nodes_.push_back(failed);
+}
+
 }  // namespace client
 }  // namespace cedar
