@@ -172,6 +172,11 @@ private:
     std::unordered_map<std::string, GraphDNodeEntry> graphd_nodes_;
     std::atomic<uint64_t> graphd_node_counter_{0};
     
+    // GraphD 节点清理线程
+    std::unique_ptr<std::thread> graphd_cleanup_thread_;
+    std::atomic<bool> graphd_cleanup_running_{false};
+    void GraphDCleanupLoop();
+    
     // 类型转换 helpers
     SpaceDef FromProto(const cedar::meta::SpaceDef& proto);
     cedar::meta::SpaceDef ToProto(const SpaceDef& space);

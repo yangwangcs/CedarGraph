@@ -63,6 +63,35 @@ MetaServiceGrpcImpl::MetaServiceGrpcImpl(MetadataService* meta_service)
             this->OnPartitionChange(change);
         });
     }
+    
+    // Start GraphD cleanup thread
+    graphd_cleanup_running_ = true;
+    graphd_cleanup_thread_ = std::make_unique<std::thread>(&MetaServiceGrpcImpl::GraphDCleanupLoop, this);
+}
+
+void MetaServiceGrpcImpl::GraphDCleanupLoop() {
+    while (graphd_cleanup_running_) {
+        std::this_thread::sleep_for(std::chrono::seconds(10));  // Check every 10 seconds
+        
+        if (!graphd_cleanup_running_) break;
+        
+        std::lock_guard<std::mutex> lock(graphd_nodes_mutex_);
+        auto now = std::chrono::steady_clock::now();
+        
+        for (auto it = graphd_nodes_.begin(); it != graphd_nodes_.end();) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                now - it->second.last_heartbeat).count();
+            
+            if (elapsed > 30) {
+                // Node is stale, remove it
+                std::cout << "[MetaD] GraphD node timeout, removing: " << it->first 
+                          << " (last heartbeat " << elapsed << "s ago)" << std::endl;
+                it = graphd_nodes_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
 }
 
 grpc::Status MetaServiceGrpcImpl::CreateSpace(grpc::ServerContext* context,
