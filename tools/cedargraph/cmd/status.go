@@ -35,6 +35,12 @@ var statusCmd = &cobra.Command{
 			mgr.GetNodeStatus("GraphD", config.GraphD),
 		}
 
+		// Add additional GraphD instances
+		for i, gd := range config.GraphDList {
+			name := fmt.Sprintf("GraphD-%d", i+1)
+			nodeInfos = append(nodeInfos, mgr.GetNodeStatus(name, gd))
+		}
+
 		var nodes []display.NodeStatus
 		for _, ni := range nodeInfos {
 			nodes = append(nodes, display.NodeStatus{

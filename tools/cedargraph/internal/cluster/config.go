@@ -8,9 +8,10 @@ import (
 )
 
 type ClusterConfig struct {
-	MetaD    NodeConfig `yaml:"metad"`
-	StorageD NodeConfig `yaml:"storaged"`
-	GraphD   NodeConfig `yaml:"graphd"`
+	MetaD      NodeConfig   `yaml:"metad"`
+	StorageD   NodeConfig   `yaml:"storaged"`
+	GraphD     NodeConfig   `yaml:"graphd"`
+	GraphDList []NodeConfig `yaml:"graphd_instances"` // Multiple GraphD instances
 }
 
 type NodeConfig struct {
