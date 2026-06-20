@@ -920,6 +920,7 @@ endif()
 # =============================================================================
 set(CEDAR_CLIENT_SOURCES
     src/client/connection_pool.cc
+    src/client/graphd_load_balancer.cc
     src/client/service_discovery.cc
     src/client/load_balancer.cc
     src/client/query_router.cc
