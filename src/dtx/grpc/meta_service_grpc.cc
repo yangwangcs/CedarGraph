@@ -84,7 +84,7 @@ void MetaServiceGrpcImpl::GraphDCleanupLoop() {
             
             if (elapsed > 30) {
                 // Node is stale, remove it
-                std::cout << "[MetaD] GraphD node timeout, removing: " << it->first 
+                std::cerr << "[MetaD] GraphD node timeout, removing: " << it->first 
                           << " (last heartbeat " << elapsed << "s ago)" << std::endl;
                 it = graphd_nodes_.erase(it);
             } else {
