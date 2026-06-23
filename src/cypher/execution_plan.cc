@@ -285,7 +285,7 @@ bool NodeScan::Init(ExecutionContext* ctx) {
       auto* literal = static_cast<LiteralExpr*>(id_it->second.get());
       if (literal->value.IsInt()) {
         int64_t id_val = literal->value.GetInt();
-        if (id_val > 0) {
+        if (id_val >= 0) {
           uint64_t node_id = static_cast<uint64_t>(id_val);
           // If graph or storage is available, verify the node actually exists
           bool exists = true;

@@ -54,6 +54,8 @@ struct TemporalWindow {
   
   // 检查两个窗口是否重叠
   bool Overlaps(const TemporalWindow& other) const {
+    // Empty window never overlaps
+    if (IsEmpty() || other.IsEmpty()) return false;
     // 如果任一方是无上限的（end=0），只检查start
     if (end.value() == 0 || other.end.value() == 0) {
       return other.start.value() <= (end.value() == 0 ? 

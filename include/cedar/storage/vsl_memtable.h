@@ -78,7 +78,7 @@ class VSLMemTable {
  private:
   std::unique_ptr<LockedVSL> skiplist_;
   std::atomic<size_t> size_{0};
-  bool bulk_import_mode_ = false;
+  std::atomic<bool> bulk_import_mode_{false};
 };
 
 }  // namespace cedar

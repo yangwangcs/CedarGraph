@@ -214,6 +214,7 @@ bool ParallelCompactionEngine::ScheduleIfNeeded() {
   // 计算优先级
   PrioritizedCompactionTask ptask;
   ptask.task = task.value();
+  if (ptask.task.input_files.empty()) return false;
   ptask.column_key = std::to_string(ptask.task.input_files[0].entity_type) + ":" +
                      std::to_string(ptask.task.input_files[0].column_id);
   

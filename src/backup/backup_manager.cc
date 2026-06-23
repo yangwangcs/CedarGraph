@@ -110,6 +110,16 @@ std::vector<BackupMetadata> BackupManager::ListBackups() const {
     if (entry.is_directory()) {
       BackupMetadata metadata;
       metadata.backup_id = entry.path().filename();
+      metadata.timestamp = std::to_string(
+          std::chrono::system_clock::now().time_since_epoch().count());
+      // Calculate directory size
+      uint64_t total_size = 0;
+      for (auto& file_entry : std::filesystem::recursive_directory_iterator(entry.path())) {
+        if (file_entry.is_regular_file()) {
+          total_size += file_entry.file_size();
+        }
+      }
+      metadata.total_size_bytes = total_size;
       backups.push_back(metadata);
     }
   }
@@ -204,8 +214,10 @@ std::string BackupManager::CalculateChecksum(const std::string& backup_dir) cons
 std::string BackupManager::GenerateBackupId() const {
   auto now = std::chrono::system_clock::now();
   auto time = std::chrono::system_clock::to_time_t(now);
+  struct tm tm_buf;
+  localtime_r(&time, &tm_buf);
   std::stringstream ss;
-  ss << "backup_" << std::put_time(std::localtime(&time), "%Y%m%d_%H%M%S");
+  ss << "backup_" << std::put_time(&tm_buf, "%Y%m%d_%H%M%S");
   return ss.str();
 }
 

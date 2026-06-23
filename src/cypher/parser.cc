@@ -167,9 +167,12 @@ std::shared_ptr<QueryStatement> CypherParser::ParseStatement() {
 
 bool CypherParser::IsValid() {
   size_t save_pos = pos_;
+  std::string save_error = error_;
   auto stmt = ParseStatement();
+  bool valid = stmt != nullptr && error_.empty();
   pos_ = save_pos;
-  return stmt != nullptr && error_.empty();
+  error_ = save_error;
+  return valid;
 }
 
 // ============================================================================

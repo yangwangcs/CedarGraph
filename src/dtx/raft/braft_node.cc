@@ -56,7 +56,7 @@ class RaftCircuitBreaker {
 
  private:
   size_t consecutive_failures_ = 0;
-  std::chrono::steady_clock::time_point open_until_;
+  std::chrono::steady_clock::time_point open_until_{std::chrono::steady_clock::time_point::min()};
 };
 
 }  // namespace

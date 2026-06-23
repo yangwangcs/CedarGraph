@@ -137,7 +137,8 @@ bool QueryValidator::ValidateRelationshipPattern(const RelationshipPattern& rel)
 
 bool QueryValidator::ValidateWhereClause(const WhereClause& clause) {
   auto inferred = InferExpressionType(*clause.condition);
-  if (!inferred.has_value() || inferred.value() != ValueType::kBool) {
+  // nullopt means type unknown (e.g., variable/property) — accept as possibly valid
+  if (inferred.has_value() && inferred.value() != ValueType::kBool) {
     last_error_ = "WHERE clause must evaluate to a boolean";
     return false;
   }
@@ -241,7 +242,7 @@ std::optional<ValueType> QueryValidator::InferExpressionType(const Expression& e
       return static_cast<const LiteralExpr&>(expr).value.Type();
     case ExprType::VARIABLE:
     case ExprType::PROPERTY:
-      return ValueType::kString;
+      return std::nullopt;  // Type unknown at validation time
     case ExprType::COMPARISON:
       return ValueType::kBool;
     case ExprType::AND:

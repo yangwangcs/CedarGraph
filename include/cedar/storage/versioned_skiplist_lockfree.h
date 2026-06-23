@@ -81,9 +81,10 @@ class LFNode {
   std::atomic<LFNode*> newer_version_;
 };
 
-// Lock-Free Versioned SkipList
-// LockedVSL: a versioned skiplist with a single global mutex.
-// Not actually lock-free; renamed to avoid misleading operators.
+// Versioned SkipList with global mutex
+// LockedVSL: thread-safe versioned skiplist protected by a shared_mutex.
+// The LFNode class uses atomic pointers for forward compatibility, but
+// all operations are serialized through the mutex.
 class LockedVSL {
  public:
   static constexpr int kMaxHeight = 16;
