@@ -45,17 +45,18 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake pkg-config liblz4-dev libprotobuf-dev protobuf-compiler libgrpc++-dev libgtest-dev
+        sudo apt-get install -y cmake pkg-config liblz4-dev libzstd-dev libprotobuf-dev protobuf-compiler libgrpc++-dev libgtest-dev
 
     - name: Install dependencies on macOS
       if: runner.os == 'macOS'
       run: |
-        brew install cmake pkg-config lz4 grpc googletest
+        brew install cmake pkg-config lz4 zstd grpc googletest
 
     - name: Generate build config
       run: >-
         cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}"
         -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5
         -DBUILD_EXAMPLES=ON
         -DBUILD_TESTS=ON
 
