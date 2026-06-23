@@ -48,6 +48,10 @@ temp/
 *.tmp
 .superpowers/
 .worktrees/
+test_mimo_api.py
+test_models.sh
+MIMO_API_SETUP_SUMMARY.md
+tools/cedargraph/cedargraph
 
 # Runtime data
 data/
