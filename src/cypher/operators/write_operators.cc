@@ -8,6 +8,7 @@
 #include "cedar/storage/lsm_engine.h"
 #include "cedar/core/logging.h"
 #include "cedar/utils/hash_utils.h"
+#include "cedar/common/id_generator.h"
 
 #include <chrono>
 #include <cerrno>
@@ -61,13 +62,11 @@ CreateOperator::CreateOperator(std::shared_ptr<CreateClause> create_clause)
       pattern_index_(0),
       element_index_(0),
       initialized_(false),
-      done_(false),
-      id_counter_(0) {}
+      done_(false) {}
 
 uint64_t CreateOperator::GenerateId() {
-  auto now = std::chrono::steady_clock::now().time_since_epoch();
-  auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
-  return static_cast<uint64_t>(ns) + (++id_counter_);
+  static IdGenerator gen(0);  // node_id=0 for single-node; distributed: use actual node_id
+  return gen.NextId();
 }
 
 bool CreateOperator::Init(ExecutionContext* ctx) {
@@ -143,7 +142,7 @@ std::shared_ptr<Record> CreateOperator::Next() {
   auto id_it = node.properties.find("id");
   if (id_it != node.properties.end() && id_it->second) {
     Value id_val = evaluator.Evaluate(*id_it->second, dummy_record);
-    if (id_val.IsInt() && id_val.GetInt() > 0) {
+    if (id_val.IsInt() && id_val.GetInt() >= 0) {
       node_id = static_cast<uint64_t>(id_val.GetInt());
     }
   }
@@ -306,7 +305,6 @@ std::unique_ptr<PhysicalOperator> CreateOperator::Clone() const {
   clone->element_index_ = 0;
   clone->initialized_ = false;
   clone->done_ = false;
-  clone->id_counter_ = 0;
   clone->result_record_.reset();
   return clone;
 }
@@ -533,13 +531,11 @@ std::unique_ptr<PhysicalOperator> DeleteOperator::Clone() const {
 MergeOperator::MergeOperator(std::shared_ptr<MergeClause> merge_clause)
     : merge_clause_(std::move(merge_clause)),
       initialized_(false),
-      done_(false),
-      id_counter_(0) {}
+      done_(false) {}
 
 uint64_t MergeOperator::GenerateId() {
-  auto now = std::chrono::steady_clock::now().time_since_epoch();
-  auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
-  return static_cast<uint64_t>(ns) + (++id_counter_);
+  static IdGenerator gen(0);  // node_id=0 for single-node; distributed: use actual node_id
+  return gen.NextId();
 }
 
 bool MergeOperator::Init(ExecutionContext* ctx) {
@@ -618,14 +614,27 @@ cedar::Status MergeOperator::MergeNode(const NodePattern& node, Record* record) 
     return cedar::Status::InvalidArgument("No storage available for MERGE");
   }
 
-  uint64_t node_id = GenerateId();
+  uint64_t node_id = 0;
+  ExpressionEvaluator evaluator(context_);
+  Record dummy_record;
+
+  // 优先使用用户提供的 ID
+  auto id_it = node.properties.find("id");
+  if (id_it != node.properties.end() && id_it->second) {
+    Value id_val = evaluator.Evaluate(*id_it->second, dummy_record);
+    if (id_val.IsInt() && id_val.GetInt() >= 0) {
+      node_id = static_cast<uint64_t>(id_val.GetInt());
+    }
+  }
+  if (node_id == 0) {
+    node_id = GenerateId();
+  }
+
   Node created_node;
   created_node.id = node_id;
   created_node.labels = node.labels;
 
   std::vector<CedarGraphStorage::BatchWriteItem> items;
-  ExpressionEvaluator evaluator(context_);
-  Record dummy_record;
 
   for (const auto& [prop_name, expr] : node.properties) {
     Value prop_value = Value::Null();
@@ -754,7 +763,6 @@ std::unique_ptr<PhysicalOperator> MergeOperator::Clone() const {
   }
   clone->initialized_ = false;
   clone->done_ = false;
-  clone->id_counter_ = 0;
   clone->result_record_.reset();
   return clone;
 }

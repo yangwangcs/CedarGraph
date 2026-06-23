@@ -695,7 +695,6 @@ class CreateOperator : public PhysicalOperator {
   bool initialized_ = false;
   bool done_ = false;
   std::shared_ptr<Record> result_record_;
-  uint64_t id_counter_ = 0;
   
   uint64_t GenerateId();
   cedar::Status CreateNode(const NodePattern& node, Record* record);

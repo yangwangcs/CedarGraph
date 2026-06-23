@@ -254,12 +254,12 @@ class alignas(8) CedarKey {
                         Timestamp ts,
                         uint16_t seq = 0,
                         uint16_t part_id = 0,
-                        uint64_t extension = 0,
+                        uint64_t target_id = 0,
                         uint8_t flags = 0) {
     CedarKey key;
     key.entity_id_ = cedar_htobe64(vertex_id);
     key.timestamp_be_ = ts.EncodeForStorage();
-    key.target_id_ = cedar_htobe64(extension);  // 点使用 target_id 存储扩展数据
+    key.target_id_ = cedar_htobe64(target_id);
     key.column_id_ = cedar_htobe16(col.value);
     key.sequence_ = cedar_htobe16(seq);
     key.entity_type_ = static_cast<uint8_t>(EntityType::Vertex);
