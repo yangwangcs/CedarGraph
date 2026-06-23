@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_cedar_basic_persistence[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_cedar_basic_persistence[1]_tests.cmake")
-else()
-  add_test(test_cedar_basic_persistence_NOT_BUILT test_cedar_basic_persistence_NOT_BUILT)
-endif()

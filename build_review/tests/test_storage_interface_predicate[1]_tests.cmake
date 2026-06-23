@@ -1,3 +1,0 @@
-add_test([=[StorageInterfacePredicateStub.CompileAndLink]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_storage_interface_predicate [==[--gtest_filter=StorageInterfacePredicateStub.CompileAndLink]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[StorageInterfacePredicateStub.CompileAndLink]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/test_storage_interface_predicate.cc:6 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  test_storage_interface_predicate_TESTS StorageInterfacePredicateStub.CompileAndLink)

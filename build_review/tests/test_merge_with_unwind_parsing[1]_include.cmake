@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_merge_with_unwind_parsing[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_merge_with_unwind_parsing[1]_tests.cmake")
-else()
-  add_test(test_merge_with_unwind_parsing_NOT_BUILT test_merge_with_unwind_parsing_NOT_BUILT)
-endif()

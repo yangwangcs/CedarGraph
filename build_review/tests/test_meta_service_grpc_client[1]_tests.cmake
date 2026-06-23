@@ -1,3 +1,0 @@
-add_test([=[MetaServiceGrpcClientTest.GetSpacePartitionMapReturnsAssignments]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_meta_service_grpc_client [==[--gtest_filter=MetaServiceGrpcClientTest.GetSpacePartitionMapReturnsAssignments]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[MetaServiceGrpcClientTest.GetSpacePartitionMapReturnsAssignments]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/unit/test_meta_service_grpc_client.cc:53 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  test_meta_service_grpc_client_TESTS MetaServiceGrpcClientTest.GetSpacePartitionMapReturnsAssignments)

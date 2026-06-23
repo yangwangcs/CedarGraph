@@ -1,5 +1,6 @@
 # Build directories
 build/
+build_review/
 cmake-build-*/
 out/
 
@@ -47,3 +48,14 @@ temp/
 *.tmp
 .superpowers/
 .worktrees/
+
+# Runtime data
+data/
+logs/
+Testing/
+test_results/
+
+# Unrelated projects
+academic-research-skills-codex-main/
+superpowers/
+web/

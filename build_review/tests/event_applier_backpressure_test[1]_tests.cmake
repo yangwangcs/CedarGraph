@@ -1,3 +1,0 @@
-add_test([=[EventApplierBackpressureTest.BlocksOnFullBuffer]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/event_applier_backpressure_test [==[--gtest_filter=EventApplierBackpressureTest.BlocksOnFullBuffer]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[EventApplierBackpressureTest.BlocksOnFullBuffer]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/gcn/event_applier_backpressure_test.cc:12 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  event_applier_backpressure_test_TESTS EventApplierBackpressureTest.BlocksOnFullBuffer)

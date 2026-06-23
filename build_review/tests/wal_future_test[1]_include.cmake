@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/wal_future_test[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/wal_future_test[1]_tests.cmake")
-else()
-  add_test(wal_future_test_NOT_BUILT wal_future_test_NOT_BUILT)
-endif()

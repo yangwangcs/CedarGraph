@@ -1,3 +1,0 @@
-add_test([=[HybridLogicalClockTest.ClockSkewDoesNotBlockForever]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_hybrid_logical_clock [==[--gtest_filter=HybridLogicalClockTest.ClockSkewDoesNotBlockForever]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[HybridLogicalClockTest.ClockSkewDoesNotBlockForever]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/test_hybrid_logical_clock.cc:5 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  test_hybrid_logical_clock_TESTS HybridLogicalClockTest.ClockSkewDoesNotBlockForever)

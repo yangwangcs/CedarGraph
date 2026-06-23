@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_2pc_pipeline_race[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_2pc_pipeline_race[1]_tests.cmake")
-else()
-  add_test(test_2pc_pipeline_race_NOT_BUILT test_2pc_pipeline_race_NOT_BUILT)
-endif()

@@ -1,3 +1,0 @@
-add_test([=[ParallelCompactionSchedulerTest.ScheduleIfNeededEnqueuesTask]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_parallel_compaction_scheduler [==[--gtest_filter=ParallelCompactionSchedulerTest.ScheduleIfNeededEnqueuesTask]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[ParallelCompactionSchedulerTest.ScheduleIfNeededEnqueuesTask]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/storage/test_parallel_compaction_scheduler.cc:41 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  test_parallel_compaction_scheduler_TESTS ParallelCompactionSchedulerTest.ScheduleIfNeededEnqueuesTask)

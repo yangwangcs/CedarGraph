@@ -1,5 +1,0 @@
-add_test([=[StorageBackfillTest.BackfillVertexAndScan]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_storage_backfill [==[--gtest_filter=StorageBackfillTest.BackfillVertexAndScan]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[StorageBackfillTest.BackfillVertexAndScan]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/gcn/test_storage_backfill.cc:53 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-add_test([=[StorageBackfillTest.BackfillRange]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_storage_backfill [==[--gtest_filter=StorageBackfillTest.BackfillRange]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[StorageBackfillTest.BackfillRange]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/gcn/test_storage_backfill.cc:75 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  test_storage_backfill_TESTS StorageBackfillTest.BackfillVertexAndScan StorageBackfillTest.BackfillRange)

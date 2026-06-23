@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_end_to_end_partition[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_end_to_end_partition[1]_tests.cmake")
-else()
-  add_test(test_end_to_end_partition_NOT_BUILT test_end_to_end_partition_NOT_BUILT)
-endif()

@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_numa_arena[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_numa_arena[1]_tests.cmake")
-else()
-  add_test(test_numa_arena_NOT_BUILT test_numa_arena_NOT_BUILT)
-endif()

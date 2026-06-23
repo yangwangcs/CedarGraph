@@ -1,3 +1,0 @@
-add_test([=[MemTableIteratorRaceTest.ConcurrentWritersAndReaders]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_memtable_iterator_race [==[--gtest_filter=MemTableIteratorRaceTest.ConcurrentWritersAndReaders]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[MemTableIteratorRaceTest.ConcurrentWritersAndReaders]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/db/test_memtable_iterator_race.cc:26 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  test_memtable_iterator_race_TESTS MemTableIteratorRaceTest.ConcurrentWritersAndReaders)

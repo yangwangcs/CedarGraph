@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_descriptor_schema_version[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_descriptor_schema_version[1]_tests.cmake")
-else()
-  add_test(test_descriptor_schema_version_NOT_BUILT test_descriptor_schema_version_NOT_BUILT)
-endif()

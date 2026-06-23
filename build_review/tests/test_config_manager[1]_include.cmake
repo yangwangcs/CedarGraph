@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_config_manager[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_config_manager[1]_tests.cmake")
-else()
-  add_test(test_config_manager_NOT_BUILT test_config_manager_NOT_BUILT)
-endif()

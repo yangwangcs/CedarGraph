@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_distributed_crud[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_distributed_crud[1]_tests.cmake")
-else()
-  add_test(test_distributed_crud_NOT_BUILT test_distributed_crud_NOT_BUILT)
-endif()

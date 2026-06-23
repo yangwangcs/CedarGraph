@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_meta_service_grpc_client[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_meta_service_grpc_client[1]_tests.cmake")
-else()
-  add_test(test_meta_service_grpc_client_NOT_BUILT test_meta_service_grpc_client_NOT_BUILT)
-endif()

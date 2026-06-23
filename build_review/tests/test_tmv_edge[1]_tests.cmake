@@ -1,7 +1,0 @@
-add_test([=[TMVEdgeTest.SizeAndAlignment]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_tmv_edge [==[--gtest_filter=TMVEdgeTest.SizeAndAlignment]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[TMVEdgeTest.SizeAndAlignment]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/gcn/test_tmv_edge.cc:7 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-add_test([=[TMVEdgeTest.FieldOffsets]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_tmv_edge [==[--gtest_filter=TMVEdgeTest.FieldOffsets]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[TMVEdgeTest.FieldOffsets]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/gcn/test_tmv_edge.cc:12 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-add_test([=[TMVEdgeTest.EdgeOpValues]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_tmv_edge [==[--gtest_filter=TMVEdgeTest.EdgeOpValues]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[TMVEdgeTest.EdgeOpValues]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/gcn/test_tmv_edge.cc:34 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  test_tmv_edge_TESTS TMVEdgeTest.SizeAndAlignment TMVEdgeTest.FieldOffsets TMVEdgeTest.EdgeOpValues)

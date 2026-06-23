@@ -1,3 +1,0 @@
-add_test([=[StorageRaftStateMachine.ConstructsWithoutCrash]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_storaged_raft_stub [==[--gtest_filter=StorageRaftStateMachine.ConstructsWithoutCrash]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[StorageRaftStateMachine.ConstructsWithoutCrash]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/test_storaged_raft_stub.cc:4 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  test_storaged_raft_stub_TESTS StorageRaftStateMachine.ConstructsWithoutCrash)

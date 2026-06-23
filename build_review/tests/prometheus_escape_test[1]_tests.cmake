@@ -1,3 +1,0 @@
-add_test([=[PrometheusEscapeTest.EscapesQuotesAndBackslashes]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/prometheus_escape_test [==[--gtest_filter=PrometheusEscapeTest.EscapesQuotesAndBackslashes]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[PrometheusEscapeTest.EscapesQuotesAndBackslashes]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/metrics/prometheus_escape_test.cc:32 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  prometheus_escape_test_TESTS PrometheusEscapeTest.EscapesQuotesAndBackslashes)

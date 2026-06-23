@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_concurrent_plan_execution[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_concurrent_plan_execution[1]_tests.cmake")
-else()
-  add_test(test_concurrent_plan_execution_NOT_BUILT test_concurrent_plan_execution_NOT_BUILT)
-endif()

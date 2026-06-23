@@ -1,3 +1,0 @@
-add_test([=[SecurityManagerTest.AuditLoggerShortPathDoesNotCrash]=]  /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_security_manager [==[--gtest_filter=SecurityManagerTest.AuditLoggerShortPathDoesNotCrash]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[SecurityManagerTest.AuditLoggerShortPathDoesNotCrash]=]  PROPERTIES DEF_SOURCE_LINE /Users/wangyang/Desktop/CedarGraph-Core/tests/dtx/test_security_manager.cc:4 WORKING_DIRECTORY /Users/wangyang/Desktop/CedarGraph-Core/build_review/tests SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  test_security_manager_TESTS SecurityManagerTest.AuditLoggerShortPathDoesNotCrash)

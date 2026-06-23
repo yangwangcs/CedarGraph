@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_pushdown_predicate[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_pushdown_predicate[1]_tests.cmake")
-else()
-  add_test(test_pushdown_predicate_NOT_BUILT test_pushdown_predicate_NOT_BUILT)
-endif()

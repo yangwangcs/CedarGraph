@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/audit_log_test[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/audit_log_test[1]_tests.cmake")
-else()
-  add_test(audit_log_test_NOT_BUILT audit_log_test_NOT_BUILT)
-endif()

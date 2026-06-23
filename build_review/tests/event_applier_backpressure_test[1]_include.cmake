@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/event_applier_backpressure_test[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/event_applier_backpressure_test[1]_tests.cmake")
-else()
-  add_test(event_applier_backpressure_test_NOT_BUILT event_applier_backpressure_test_NOT_BUILT)
-endif()

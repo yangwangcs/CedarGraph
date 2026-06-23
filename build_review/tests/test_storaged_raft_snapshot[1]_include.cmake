@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_storaged_raft_snapshot[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_storaged_raft_snapshot[1]_tests.cmake")
-else()
-  add_test(test_storaged_raft_snapshot_NOT_BUILT test_storaged_raft_snapshot_NOT_BUILT)
-endif()

@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_memtable_iterator_race[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_memtable_iterator_race[1]_tests.cmake")
-else()
-  add_test(test_memtable_iterator_race_NOT_BUILT test_memtable_iterator_race_NOT_BUILT)
-endif()

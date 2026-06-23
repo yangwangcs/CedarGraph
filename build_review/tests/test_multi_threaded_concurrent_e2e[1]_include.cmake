@@ -1,5 +1,0 @@
-if(EXISTS "/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_multi_threaded_concurrent_e2e[1]_tests.cmake")
-  include("/Users/wangyang/Desktop/CedarGraph-Core/build_review/tests/test_multi_threaded_concurrent_e2e[1]_tests.cmake")
-else()
-  add_test(test_multi_threaded_concurrent_e2e_NOT_BUILT test_multi_threaded_concurrent_e2e_NOT_BUILT)
-endif()
