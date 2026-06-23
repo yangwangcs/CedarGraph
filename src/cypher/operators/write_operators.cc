@@ -105,7 +105,15 @@ std::shared_ptr<Record> CreateOperator::Next() {
         }
       } else if (std::holds_alternative<RelationshipPattern>(element)) {
         const auto& rel = std::get<RelationshipPattern>(element);
-        auto status = CreateEdge(rel, *result_record_);
+        // Extract start and end node variable names from pattern elements
+        std::string from_var, to_var;
+        if (element_index_ > 0 && std::holds_alternative<NodePattern>(pattern.elements[element_index_ - 1])) {
+          from_var = std::get<NodePattern>(pattern.elements[element_index_ - 1]).variable;
+        }
+        if (element_index_ + 1 < pattern.elements.size() && std::holds_alternative<NodePattern>(pattern.elements[element_index_ + 1])) {
+          to_var = std::get<NodePattern>(pattern.elements[element_index_ + 1]).variable;
+        }
+        auto status = CreateEdge(rel, *result_record_, from_var, to_var);
         if (!status.ok()) {
           CEDAR_LOG_WARN() << "CreateOperator: failed to create edge: " << status.ToString();
         }
@@ -196,35 +204,39 @@ std::shared_ptr<Record> CreateOperator::Next() {
 }
 
 cedar::Status CreateOperator::CreateEdge(const RelationshipPattern& rel,
-                                          const Record& record) {
+                                          const Record& record,
+                                          const std::string& from_var,
+                                          const std::string& to_var) {
   if (!context_ || !context_->storage) {
     return cedar::Status::InvalidArgument("No storage available for CREATE edge");
   }
   
-  // Resolve start and end node IDs from the current record
-  auto from_val = record.Get(rel.variable);  // Not used for endpoint lookup
-  (void)from_val;
-  
-  // For CREATE patterns, endpoints are typically the immediately preceding/following nodes.
-  // We look them up by variable name from the pattern context.
-  // Simplified: we require the nodes to already be bound in the record.
-  // In a full CREATE (a)-[r]->(b), a and b are created just before r.
-  
-  // Find the node variables that this edge connects.
-  // For MVP we assume the pattern is (from_var)-[rel]->(to_var)
-  // and both node variables exist in the record.
+  // Resolve start and end node IDs from the record using pattern variable names
   uint64_t start_id = 0;
   uint64_t end_id = 0;
   
-  // Heuristic: search the record for nodes that were most recently created.
-  // For a 3-element pattern [Node, Rel, Node], the rel connects the two nodes.
-  // We store the last two node IDs seen during processing.
-  for (const auto& [key, val] : record.values) {
-    if (val.IsNode()) {
-      if (start_id == 0) {
-        start_id = val.GetNode().id;
-      } else {
-        end_id = val.GetNode().id;
+  if (!from_var.empty()) {
+    auto val = record.Get(from_var);
+    if (val && val->IsNode()) {
+      start_id = val->GetNode().id;
+    }
+  }
+  if (!to_var.empty()) {
+    auto val = record.Get(to_var);
+    if (val && val->IsNode()) {
+      end_id = val->GetNode().id;
+    }
+  }
+  
+  // Fallback: if pattern variables not found, use first two nodes in record
+  if (start_id == 0 || end_id == 0) {
+    for (const auto& [key, val] : record.values) {
+      if (val.IsNode()) {
+        if (start_id == 0) {
+          start_id = val.GetNode().id;
+        } else if (end_id == 0) {
+          end_id = val.GetNode().id;
+        }
       }
     }
   }

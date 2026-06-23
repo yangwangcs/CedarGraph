@@ -406,19 +406,14 @@ std::shared_ptr<BlockCacheEntry> ZoneColumnarSstReader::LoadBlock(uint32_t block
   
   // Check cache first
   {
-    std::shared_lock<std::shared_mutex> lock(block_cache_mutex_);
+    std::unique_lock<std::shared_mutex> lock(block_cache_mutex_);
     auto it = block_cache_.find(block_id);
     if (it != block_cache_.end()) {
-      // Move to front of LRU list (upgrade to unique_lock for modification)
-      lock.unlock();
-      std::unique_lock<std::shared_mutex> wlock(block_cache_mutex_);
-      auto lit = block_cache_.find(block_id);
-      if (lit != block_cache_.end()) {
-        block_lru_list_.remove(block_id);
-        block_lru_list_.push_front(block_id);
-        lit->second->access_time = std::chrono::steady_clock::now();
-        return lit->second;
-      }
+      // Move to front of LRU list
+      block_lru_list_.remove(block_id);
+      block_lru_list_.push_front(block_id);
+      it->second->access_time = std::chrono::steady_clock::now();
+      return it->second;
     }
   }
   

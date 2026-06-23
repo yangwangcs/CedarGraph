@@ -700,11 +700,6 @@ class ProposeClosure : public braft::Closure {
       : promise_(std::move(promise)), data_(std::move(data)) {}
 
   void Run() override {
-    bool expected = false;
-    if (!done_.compare_exchange_strong(expected, true)) {
-      delete this;
-      return;
-    }
     if (status().ok()) {
       promise_->set_value(::cedar::Status::OK());
     } else {
@@ -717,7 +712,6 @@ class ProposeClosure : public braft::Closure {
  private:
   std::shared_ptr<std::promise<::cedar::Status>> promise_;
   std::shared_ptr<butil::IOBuf> data_;  // Keep IOBuf alive until braft is done
-  std::atomic<bool> done_{false};
 };
 
 // =============================================================================

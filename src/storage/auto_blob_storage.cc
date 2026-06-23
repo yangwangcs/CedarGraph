@@ -4,6 +4,7 @@
 #include "cedar/storage/auto_blob_storage.h"
 
 #include <cstring>
+#include <iostream>
 
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/storage/lsm_engine.h"

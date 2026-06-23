@@ -123,7 +123,7 @@ TEST_F(ColumnFilterBenchmark, PredicatePushdownBasic) {
 
 TEST_F(ColumnFilterBenchmark, CBOCostEstimation) {
   // Test CBO cost estimation for different plans
-  CostOptimizer optimizer;
+  CostBasedOptimizer optimizer;
   
   // Create a simple plan: NodeScan → Project
   auto scan = std::make_shared<NodeScan>("n", std::nullopt, 
@@ -131,25 +131,23 @@ TEST_F(ColumnFilterBenchmark, CBOCostEstimation) {
       std::unordered_set<std::string>{"n.name", "n.age"});
   
   // Estimate cost
-  auto cost = optimizer.EstimateCost(scan.get());
+  auto cost = optimizer.EstimateCost(scan.get(), nullptr);
   
   std::cout << "NodeScan with 2 columns:" << std::endl;
   std::cout << "  I/O cost: " << cost.io_cost << std::endl;
   std::cout << "  CPU cost: " << cost.cpu_cost << std::endl;
   std::cout << "  Memory cost: " << cost.memory_cost << std::endl;
-  std::cout << "  Total cost: " << cost.total_cost << std::endl;
-  std::cout << "  Estimated rows: " << cost.estimated_rows << std::endl;
+  std::cout << "  Total cost: " << cost.TotalCost() << std::endl;
   
   // Compare with full scan
   auto full_scan = std::make_shared<NodeScan>("n");
-  auto full_cost = optimizer.EstimateCost(full_scan.get());
+  auto full_cost = optimizer.EstimateCost(full_scan.get(), nullptr);
   
   std::cout << "\nNodeScan with all columns:" << std::endl;
   std::cout << "  I/O cost: " << full_cost.io_cost << std::endl;
   std::cout << "  CPU cost: " << full_cost.cpu_cost << std::endl;
   std::cout << "  Memory cost: " << full_cost.memory_cost << std::endl;
-  std::cout << "  Total cost: " << full_cost.total_cost << std::endl;
-  std::cout << "  Estimated rows: " << full_cost.estimated_rows << std::endl;
+  std::cout << "  Total cost: " << full_cost.TotalCost() << std::endl;
 }
 
 TEST_F(ColumnFilterBenchmark, ExplainOutputComparison) {

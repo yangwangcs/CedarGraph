@@ -611,6 +611,18 @@ std::optional<CompactionTask> SizeTieredCompactionEngine::PickNextCompaction() {
     if (level + 1 < config_.max_levels) {
       task.overlapping_files = levels_[level + 1].FindOverlapping(
           min_entity, max_entity, min_ts, max_ts);
+      
+      // 检查重叠文件是否正在被合并
+      for (const auto& f : task.overlapping_files) {
+        std::lock_guard<std::mutex> compact_lock(compacting_mutex_);
+        if (compacting_files_.count(f.file_number) > 0) {
+          files_available = false;
+          break;
+        }
+      }
+      if (!files_available) {
+        continue;
+      }
     }
     
     // 计算预估输出大小
@@ -1084,22 +1096,25 @@ Status SizeTieredCompactionEngine::MergeZones(
 }
 
 bool SizeTieredCompactionEngine::ShouldDropTombstone(const CedarKey& key, int output_level) {
+  // Append-only 时态数据库：只物理删除真正的墓碑标记，保留所有历史版本
+  
+  // 非墓碑条目（CREATE/UPDATE）永不删除 — 这是时态历史数据
+  if (!key.IsTombstone()) {
+    return false;
+  }
+  
   // L0-L2: 永不物理删除（保证快照读）
   if (output_level < config_.tombstone_cleanup_level) {
     return false;
   }
   
-  // GC safe point: use wall-clock retention to prevent premature deletion.
-  // Tombstones newer than retention_period are kept regardless of level.
-  // Note: gc_safe_point_ was previously set to Raft log index which is in a
-  // different domain than entity timestamps. Now using wall-clock comparison.
-  constexpr uint64_t kTombstoneRetentionUsec = 7ULL * 24 * 3600 * 1000000;  // 7 days
+  // GC safe point: 墓碑在保留期内不删除
   uint64_t safe_point = gc_safe_point_.load();
   if (safe_point > 0 && key.timestamp().value() >= safe_point) {
-    return false;  // Tombstone is too new, keep it
+    return false;
   }
   
-  // 最底层总是清理 Tombstone
+  // 最底层清理过期墓碑
   if (output_level == config_.max_levels - 1) {
     return true;
   }

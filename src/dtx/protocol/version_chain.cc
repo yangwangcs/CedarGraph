@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <future>
+#include <iostream>
 #include <thread>
 
 #include "cedar/dtx/txn_context.h"
@@ -492,14 +493,14 @@ ValidationResult DistributedValidationCoordinator::ValidatePartition(
                                    Timestamp(commit_ts));
   }
 
-  // 4. Remote partition: check if RPC client is available
-  if (rpc_client_ == nullptr) {
-    return ValidationResult::kTimeout;  // Network unavailable
-  }
-
-  // TODO: Implement remote validation via RPC when DTxRpcClient::Validate
-  // is available. For now, assume valid for reachable partitions.
-  return ValidationResult::kValid;
+  // 4. Remote partition: RPC validation not yet implemented
+  // Conservatively return kConflict to prevent unsafe commits of
+  // cross-partition transactions without proper validation.
+  // Single-partition transactions are unaffected (handled at step 3).
+  std::cerr << "[WARN] DistributedValidation: Skipping remote partition "
+            << partition_id << " validation (RPC not implemented), "
+            << "returning kInvalid for safety" << std::endl;
+  return ValidationResult::kInvalid;
 }
 
 ValidationResult DistributedValidationCoordinator::CoordinateValidation(

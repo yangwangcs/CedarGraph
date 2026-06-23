@@ -14,6 +14,7 @@
 
 #include "cedar/transaction/occ_transaction.h"
 
+#include <iostream>
 
 #include "cedar/storage/cedar_memtable.h"
 #include "cedar/storage/lsm_engine.h"

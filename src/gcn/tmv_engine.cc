@@ -13,6 +13,7 @@ cedar::Status TMVEngine::BootstrapVertex(uint64_t entity_id,
                                          const std::vector<TMVEdge>& edges,
                                          bool reverse) {
   TMVVertexEntry* entry = index_.FindOrCreate(entity_id);
+  std::lock_guard<std::mutex> guard(entry->list_mutex);
 
   std::atomic<TMVChunk*>* head_ptr =
       (dir == Direction::kOut) ? &entry->out_chunk_head : &entry->in_chunk_head;
@@ -166,6 +167,7 @@ bool TMVEngine::AppendToEntry(TMVVertexEntry* entry,
                               const TMVEdge& edge,
                               TMVChunk** out_new_chunk,
                               TMVChunk** out_old_tail) {
+  std::lock_guard<std::mutex> guard(entry->list_mutex);
   std::atomic<TMVChunk*>* head_ptr =
       (dir == Direction::kOut) ? &entry->out_chunk_head : &entry->in_chunk_head;
   std::atomic<TMVChunk*>* tail_ptr =
@@ -246,7 +248,7 @@ std::vector<TMVEdge> TMVEngine::ScanAtTime(uint64_t entity_id,
 
   uint32_t shard_idx = static_cast<uint32_t>(entity_id) & (TMVIndex::kNumShards - 1);
   TMVIndex::Shard& shard = index_.shards_[shard_idx];
-  absl::base_internal::SpinLockHolder holder{shard.lock};
+  std::lock_guard<std::mutex> holder{shard.lock};
 
   auto it = shard.entries.find(entity_id);
   if (it == shard.entries.end()) {
@@ -313,9 +315,9 @@ std::vector<TMVEdge> TMVEngine::ScanAtTime(uint64_t entity_id,
     }
 
     const TMVEdge& best = candidates[best_idx];
-    // Discard if deleted (valid_to != MAX and valid_to <= query_time)
+    // Discard if deleted (valid_to != MAX and valid_to <= effective_query_time)
     if (best.valid_to == std::numeric_limits<uint32_t>::max() ||
-        best.valid_to > query_time) {
+        best.valid_to > effective_query_time) {
       result.push_back(best);
     }
 
@@ -328,7 +330,7 @@ std::vector<TMVEdge> TMVEngine::ScanAtTime(uint64_t entity_id,
 size_t TMVEngine::DropChunksBelowWatermark(std::atomic<TMVChunk*>* head_ptr,
                                            std::atomic<TMVChunk*>* tail_ptr,
                                            uint64_t watermark) {
-  TMVChunk* head = head_ptr->load(std::memory_order_relaxed);
+  TMVChunk* head = head_ptr->load(std::memory_order_acquire);
   if (!head) {
     return 0;
   }
@@ -368,9 +370,10 @@ size_t TMVEngine::DropBelowWatermark(uint64_t watermark) {
 
   for (uint32_t s = 0; s < TMVIndex::kNumShards; ++s) {
     TMVIndex::Shard& shard = index_.shards_[s];
-    absl::base_internal::SpinLockHolder holder{shard.lock};
+    std::lock_guard<std::mutex> holder{shard.lock};
 
     for (auto& [id, entry] : shard.entries) {
+      std::lock_guard<std::mutex> entry_guard(entry.list_mutex);
       dropped +=
           DropChunksBelowWatermark(&entry.out_chunk_head, &entry.out_chunk_tail,
                                    watermark);
@@ -386,7 +389,7 @@ size_t TMVEngine::DropBelowWatermark(uint64_t watermark) {
 size_t TMVEngine::InvalidateVertex(uint64_t entity_id) {
   uint32_t shard_idx = static_cast<uint32_t>(entity_id) & (TMVIndex::kNumShards - 1);
   TMVIndex::Shard& shard = index_.shards_[shard_idx];
-  absl::base_internal::SpinLockHolder holder{shard.lock};
+  std::lock_guard<std::mutex> holder{shard.lock};
 
   auto it = shard.entries.find(entity_id);
   if (it == shard.entries.end()) {
@@ -394,8 +397,10 @@ size_t TMVEngine::InvalidateVertex(uint64_t entity_id) {
   }
 
   size_t freed = 0;
+  auto& entry = it->second;
+  std::lock_guard<std::mutex> entry_guard(entry.list_mutex);
   // Free outgoing edge chunks
-  TMVChunk* chunk = it->second.out_chunk_head.load(std::memory_order_relaxed);
+  TMVChunk* chunk = entry.out_chunk_head.load(std::memory_order_acquire);
   while (chunk) {
     TMVChunk* next = chunk->next.load(std::memory_order_acquire);
     pool_.Free(chunk);
@@ -419,7 +424,7 @@ size_t TMVEngine::VertexCount() const {
   size_t count = 0;
   for (uint32_t s = 0; s < TMVIndex::kNumShards; ++s) {
     const TMVIndex::Shard& shard = index_.shards_[s];
-    absl::base_internal::SpinLockHolder holder{shard.lock};
+    std::lock_guard<std::mutex> holder{shard.lock};
     count += shard.entries.size();
   }
   return count;

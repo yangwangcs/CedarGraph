@@ -69,6 +69,14 @@ MetaServiceGrpcImpl::MetaServiceGrpcImpl(MetadataService* meta_service)
     graphd_cleanup_thread_ = std::make_unique<std::thread>(&MetaServiceGrpcImpl::GraphDCleanupLoop, this);
 }
 
+MetaServiceGrpcImpl::~MetaServiceGrpcImpl() {
+    // Stop the GraphD cleanup thread
+    graphd_cleanup_running_ = false;
+    if (graphd_cleanup_thread_ && graphd_cleanup_thread_->joinable()) {
+        graphd_cleanup_thread_->join();
+    }
+}
+
 void MetaServiceGrpcImpl::GraphDCleanupLoop() {
     while (graphd_cleanup_running_) {
         std::this_thread::sleep_for(std::chrono::seconds(10));  // Check every 10 seconds
@@ -830,6 +838,7 @@ grpc::Status MetaServiceGrpcClient::RetryRpcOnNotLeader(
         return (stub.get()->*rpc)(&context, request, response);
       }
     }
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Retry after Not-leader failed");
   }
   return grpc::Status::OK;
 }

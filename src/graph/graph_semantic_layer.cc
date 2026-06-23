@@ -14,11 +14,12 @@
 
 #include "cedar/graph/graph_semantic_layer.h"
 
-#include <thread>
-#include <vector>
 #include <algorithm>
 #include <chrono>
 #include <future>
+#include <iostream>
+#include <thread>
+#include <vector>
 
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/core/env.h"

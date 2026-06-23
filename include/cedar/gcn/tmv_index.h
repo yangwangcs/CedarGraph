@@ -1,9 +1,8 @@
 #pragma once
 
 #include <cstdint>
-
-#include "absl/base/internal/spinlock.h"
-#include "absl/container/flat_hash_map.h"
+#include <mutex>
+#include <map>
 
 #include "cedar/gcn/tmv_vertex_entry.h"
 
@@ -16,8 +15,8 @@ class TMVIndex {
   static constexpr uint32_t kNumShards = 1 << kShardBits;
 
   struct Shard {
-    mutable absl::base_internal::SpinLock lock;
-    absl::flat_hash_map<uint64_t, TMVVertexEntry> entries;
+    mutable std::mutex lock;
+    std::map<uint64_t, TMVVertexEntry> entries;  // std::map for pointer stability
   };
 
   friend class TMVEngine;
@@ -28,7 +27,7 @@ class TMVIndex {
     uint32_t shard_idx = ShardIndex(entity_id);
     Shard& shard = shards_[shard_idx];
 
-    absl::base_internal::SpinLockHolder holder{shard.lock};
+    std::lock_guard<std::mutex> holder{shard.lock};
     auto it = shard.entries.find(entity_id);
     if (it != shard.entries.end()) {
       return &it->second;
@@ -43,7 +42,7 @@ class TMVIndex {
     uint32_t shard_idx = ShardIndex(entity_id);
     const Shard& shard = shards_[shard_idx];
 
-    absl::base_internal::SpinLockHolder holder{shard.lock};
+    std::lock_guard<std::mutex> holder{shard.lock};
     auto it = shard.entries.find(entity_id);
     if (it != shard.entries.end()) {
       return const_cast<TMVVertexEntry*>(&it->second);
@@ -57,8 +56,7 @@ class TMVIndex {
       per_shard = 4;
     }
     for (uint32_t i = 0; i < kNumShards; ++i) {
-      absl::base_internal::SpinLockHolder holder{shards_[i].lock};
-      shards_[i].entries.reserve(per_shard);
+      std::lock_guard<std::mutex> holder{shards_[i].lock};
     }
   }
 

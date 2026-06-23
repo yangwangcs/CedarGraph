@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 
 #include "cedar/gcn/tmv_chunk.h"
 
@@ -11,6 +12,8 @@ namespace gcn {
 
 struct TMVVertexEntry {
   uint64_t entity_id = 0;
+
+  mutable std::mutex list_mutex;  // Protects linked list mutations
 
   std::atomic<TMVChunk*> out_chunk_head{nullptr};
   std::atomic<TMVChunk*> out_chunk_tail{nullptr};
@@ -26,7 +29,7 @@ struct TMVVertexEntry {
 
   TMVVertexEntry() = default;
 
-  // Move constructor (required for flat_hash_map rehashing)
+  // Move constructor (required for std::map compatibility)
   TMVVertexEntry(TMVVertexEntry&& other) noexcept
       : entity_id(other.entity_id),
         out_chunk_head(

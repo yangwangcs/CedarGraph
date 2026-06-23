@@ -16,6 +16,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <queue>
 
 #include "cedar/sst/zone_columnar_reader.h"

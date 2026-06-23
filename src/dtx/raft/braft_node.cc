@@ -441,23 +441,23 @@ public:
         task.data = data.get();
 
         auto promise = std::make_shared<std::promise<::cedar::Status>>();
-        task.done = new ProposeClosure(promise, data);  // Closure holds shared_ptr
-
-        // Acquire lock, verify leadership AND node_ validity, then apply atomically
+        auto future = promise->get_future();
+        
+        // Acquire lock, verify leadership, apply task, then release before waiting
         {
             std::lock_guard<std::mutex> lock(node_mutex_);
             if (!node_ || !node_->is_leader()) {
                 return ::cedar::Status::InvalidArgument("Not a leader");
             }
+            task.done = new ProposeClosure(promise, data);
             node_->apply(task);
         }
         
-        auto future = promise->get_future();
+        // Wait for Raft apply outside the lock
         if (future.wait_for(std::chrono::milliseconds(FLAGS_raft_propose_timeout_ms)) == std::future_status::timeout) {
           circuit_breaker_.RecordFailure();
           return ::cedar::Status::IOError("BRaftNode", "propose timeout");
         }
-        
         auto status = future.get();
         if (!status.ok()) {
           circuit_breaker_.RecordFailure();

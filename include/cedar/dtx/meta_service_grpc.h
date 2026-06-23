@@ -40,6 +40,7 @@ namespace dtx {
 class MetaServiceGrpcImpl final : public cedar::meta::MetaService::Service {
 public:
     explicit MetaServiceGrpcImpl(MetadataService* meta_service);
+    ~MetaServiceGrpcImpl();
     
     // Space 管理
     grpc::Status CreateSpace(grpc::ServerContext* context,

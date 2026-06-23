@@ -278,11 +278,7 @@ DDLResult CedarClient::CreateTag(const std::string& space_name, const std::strin
                                    const std::unordered_map<std::string, std::string>& properties) {
   DDLResult result;
   result.success = false;
-  
-  // TODO: Implement using MetaD proto stubs
-  // Note: CreateTag is not in the current proto definition
-  result.success = true;
-  
+  result.error_message = "CreateTag not yet implemented (MetaD proto stub missing)";
   return result;
 }
 
@@ -290,11 +286,7 @@ DDLResult CedarClient::CreateEdge(const std::string& space_name, const std::stri
                                     const std::unordered_map<std::string, std::string>& properties) {
   DDLResult result;
   result.success = false;
-  
-  // TODO: Implement using MetaD proto stubs
-  // Note: CreateEdge is not in the current proto definition
-  result.success = true;
-  
+  result.error_message = "CreateEdge not yet implemented (MetaD proto stub missing)";
   return result;
 }
 
@@ -344,9 +336,8 @@ DDLResult CedarClient::CreateIndex(const std::string& space_name, const std::str
 }
 
 bool CedarClient::DropSpace(const std::string& space_name) {
-  // TODO: Implement using MetaD proto stubs
-  // Note: DropSpace is not in the current proto definition
-  return true;
+  // DropSpace not yet implemented (MetaD proto stub missing)
+  return false;
 }
 
 bool CedarClient::DropIndex(const std::string& space_name, const std::string& index_name) {
@@ -609,10 +600,26 @@ ServiceNode CedarClient::SelectGraphDNode() {
     return {};
   }
   
-  // Use load balancer
-  LoadBalancerNode lb_node;
-  lb_node.host = nodes[0].host;
-  lb_node.port = nodes[0].port;
+  // Update load balancer with discovered nodes
+  std::vector<LoadBalancerNode> lb_nodes;
+  for (const auto& node : nodes) {
+    LoadBalancerNode lb_node;
+    lb_node.host = node.host;
+    lb_node.port = node.port;
+    lb_node.healthy = true;
+    lb_nodes.push_back(lb_node);
+  }
+  load_balancer_->UpdateNodes(lb_nodes);
+  
+  // Use load balancer to select node
+  LoadBalancerNode selected = load_balancer_->SelectNode();
+  
+  // Find matching ServiceNode
+  for (const auto& node : nodes) {
+    if (node.host == selected.host && node.port == selected.port) {
+      return node;
+    }
+  }
   
   return nodes[0];
 }

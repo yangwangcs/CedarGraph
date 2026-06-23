@@ -2,6 +2,7 @@
 
 #include "cedar/cypher/value.h"
 #include <cmath>
+#include <ctime>
 #include <functional>
 #include <iostream>
 #include <string>
@@ -613,9 +614,17 @@ Value Value::TimeValue(int hour, int minute, int second) {
 
 Value Value::DateTimeValue(int year, int month, int day,
                            int hour, int minute, int second) {
-  // Approximate: convert to timestamp (simplified)
-  (void)year; (void)month; (void)day; (void)hour; (void)minute; (void)second;
-  return Value(DateTime(Timestamp(0), 0));
+  struct tm tm{};
+  tm.tm_year = year - 1900;
+  tm.tm_mon = month - 1;
+  tm.tm_mday = day;
+  tm.tm_hour = hour;
+  tm.tm_min = minute;
+  tm.tm_sec = second;
+  tm.tm_isdst = 0;
+  time_t epoch = timegm(&tm);
+  int64_t micros = static_cast<int64_t>(epoch) * 1000000;
+  return Value(DateTime(Timestamp(micros), 0));
 }
 
 Value Value::DurationValue(int64_t microseconds) {
@@ -627,9 +636,14 @@ std::string Record::ToString() const {
 }
 
 Date Date::FromYMD(int year, int month, int day) {
-  // Simplified stub: approximate days since epoch (not accounting for leap years correctly)
-  (void)year; (void)month; (void)day;
-  return Date(0);
+  struct tm tm{};
+  tm.tm_year = year - 1900;
+  tm.tm_mon = month - 1;
+  tm.tm_mday = day;
+  tm.tm_isdst = 0;
+  time_t epoch = timegm(&tm);
+  int64_t days = epoch / 86400;
+  return Date(days);
 }
 
 Time Time::FromHMS(int hour, int minute, int second, int nanosecond) {

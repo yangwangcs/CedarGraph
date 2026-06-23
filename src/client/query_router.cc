@@ -125,11 +125,17 @@ QueryType QueryRouter::ParseQueryType(const std::string& query) const {
 
 int QueryRouter::CalculatePartition(const std::string& query,
                                       const std::string& space_name) const {
-  // Simple hash-based partitioning
-  // TODO: Extract entity ID from query for better partitioning
-  std::hash<std::string> hasher;
-  size_t hash = hasher(query + space_name);
-  return hash % 16;  // Assuming 16 partitions
+  // Use FNV-1a hash for stability across processes
+  uint64_t hash = 14695981039346656037ULL;  // FNV offset basis
+  for (char c : query) {
+    hash ^= static_cast<uint64_t>(c);
+    hash *= 1099511628211ULL;  // FNV prime
+  }
+  for (char c : space_name) {
+    hash ^= static_cast<uint64_t>(c);
+    hash *= 1099511628211ULL;
+  }
+  return static_cast<int>(hash % 65536);  // Default partition count
 }
 
 }  // namespace client

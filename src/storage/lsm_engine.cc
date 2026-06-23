@@ -15,6 +15,7 @@
 #include "cedar/dtx/partition_index.h"
 
 #include <filesystem>
+#include <fstream>
 #include <thread>
 #include <future>
 #include <chrono>
@@ -186,26 +187,25 @@ Status LsmEngine::Close() {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     if (imm_) {
       std::cerr << "[LsmEngine::Close] Flushing imm_" << std::endl;
-      auto* imm = imm_.get();
+      auto local_imm = std::move(imm_);
       lock.unlock();
-      Status s = FlushMemTableWithRetry(imm);
+      Status s = FlushMemTableWithRetry(local_imm.get());
       lock.lock();
-      if (s.ok()) {
-        imm_.reset();
-      } else {
+      if (!s.ok()) {
         std::cerr << "[LsmEngine::Close] Failed to flush imm_: " << s.ToString() << std::endl;
-        // Preserve imm_ to avoid data loss
+        imm_ = std::move(local_imm);  // Preserve on failure
       }
     }
 
     if (mem_ && !mem_->IsEmpty()) {
       std::cerr << "[LsmEngine::Close] Flushing mem_" << std::endl;
-      auto* mem = mem_.get();
+      auto local_mem = std::move(mem_);
       lock.unlock();
-      Status s = FlushMemTableWithRetry(mem);
+      Status s = FlushMemTableWithRetry(local_mem.get());
       lock.lock();
       if (!s.ok()) {
         std::cerr << "[LsmEngine::Close] Failed to flush mem_: " << s.ToString() << std::endl;
+        mem_ = std::move(local_mem);  // Preserve on failure
       }
     } else {
       std::cerr << "[LsmEngine::Close] mem_ is empty or null" << std::endl;
@@ -1124,91 +1124,76 @@ std::vector<MemTableEntry> LsmEngine::GetRangeLimit(uint64_t entity_id,
   }
 
   // 4. Query SST files via Size-Tiered Compaction Engine
+  // Collect SST file metadata under lock, then release lock before I/O
+  struct SstQuery {
+    std::string path;
+    uint64_t min_ts;
+    uint64_t max_ts;
+    uint64_t overlap;
+  };
+  std::vector<SstQuery> sst_queries;
+  
   if (result.size() < max_results && compaction_engine_) {
     auto files = compaction_engine_->GetFilesForEntity(
         entity_id, column_id, static_cast<uint8_t>(entity_type));
     
-    // OPTIMIZATION: 按时间戳范围排序文件，优先查询时间范围匹配度高的文件
-    // 同时限制最大查询文件数，避免扫描过多文件
-    std::vector<std::pair<ZoneSstMeta, uint64_t>> files_with_overlap;
-    files_with_overlap.reserve(files.size());
-    
     for (const auto& file_meta : files) {
-      // 快速范围检查: entity_id
       if (entity_id < file_meta.min_entity_id || 
           entity_id > file_meta.max_entity_id) {
         continue;
       }
-      
-      // 快速范围检查: 时间戳范围
       if (file_meta.max_timestamp < start.value() || 
           file_meta.min_timestamp > end.value()) {
         continue;
       }
-      
-      // Temporal Bloom Filter 检查: 快速排除不包含该 entity 时间范围的文件
       if (!file_meta.temporal_filter_metadata.empty()) {
         auto filter_opt = TemporalBloomFilter::Deserialize(file_meta.temporal_filter_metadata);
         if (filter_opt.has_value() && 
             !filter_opt.value().MayExistInRange(entity_id, start, end)) {
-          continue;  // 该文件肯定不包含目标数据
-        }
-      }
-      
-      // 计算时间范围重叠度（用于排序）
-      uint64_t overlap_start = std::max(file_meta.min_timestamp, start.value());
-      uint64_t overlap_end = std::min(file_meta.max_timestamp, end.value());
-      uint64_t overlap = (overlap_end > overlap_start) ? (overlap_end - overlap_start) : 0;
-      
-      files_with_overlap.push_back({file_meta, overlap});
-    }
-    
-    // 按时间范围重叠度降序排序（优先查询重叠度高的文件）
-    std::sort(files_with_overlap.begin(), files_with_overlap.end(),
-              [](const auto& a, const auto& b) { return a.second > b.second; });
-    
-    // OPTIMIZATION: 限制最大查询文件数
-    // 对于时间范围查询，通常只需要检查最近的几个文件
-    const size_t kMaxFilesToQuery = 10;
-    size_t files_queried = 0;
-    
-    for (const auto& [file_meta, overlap] : files_with_overlap) {
-      if (result.size() >= max_results) {
-        break;
-      }
-      
-      if (++files_queried > kMaxFilesToQuery) {
-        break;  // 已达到最大文件查询限制
-      }
-      
-      // OPTIMIZATION: 使用缓存的 Reader（如果可用）
-      std::shared_ptr<SstReader> reader;
-      if (sst_reader_cache_) {
-        reader = sst_reader_cache_->Get(file_meta.path);
-      }
-      if (!reader) {
-        reader = std::make_shared<SstReader>(file_meta.path);
-        if (!reader->Open().ok()) {
           continue;
         }
       }
-      
-      auto range_results = reader->GetRange(entity_id, entity_type, column_id, start, end);
-      
-      // 释放 Reader
-      if (sst_reader_cache_) {
-        sst_reader_cache_->Release(file_meta.path);
-      }
-      
-      for (const auto& [key, descriptor, txn_version] : range_results) {
-        if (result.size() >= max_results) {
-          break;
-        }
-        std::optional<uint64_t> dst_id = (key.target_id() != 0) 
-            ? std::optional<uint64_t>(key.target_id()) 
-            : std::nullopt;
-        result.emplace_back(key.timestamp(), descriptor, dst_id, txn_version);
-      }
+      uint64_t overlap_start = std::max(file_meta.min_timestamp, start.value());
+      uint64_t overlap_end = std::min(file_meta.max_timestamp, end.value());
+      uint64_t overlap = (overlap_end > overlap_start) ? (overlap_end - overlap_start) : 0;
+      sst_queries.push_back({file_meta.path, file_meta.min_timestamp, file_meta.max_timestamp, overlap});
+    }
+    
+    std::sort(sst_queries.begin(), sst_queries.end(),
+              [](const auto& a, const auto& b) { return a.overlap > b.overlap; });
+  }
+  
+  // Release lock before SST I/O
+  lock.unlock();
+  
+  const size_t kMaxFilesToQuery = 10;
+  size_t files_queried = 0;
+  
+  for (const auto& sq : sst_queries) {
+    if (result.size() >= max_results) break;
+    if (++files_queried > kMaxFilesToQuery) break;
+    
+    std::shared_ptr<SstReader> reader;
+    if (sst_reader_cache_) {
+      reader = sst_reader_cache_->Get(sq.path);
+    }
+    if (!reader) {
+      reader = std::make_shared<SstReader>(sq.path);
+      if (!reader->Open().ok()) continue;
+    }
+    
+    auto range_results = reader->GetRange(entity_id, entity_type, column_id, start, end);
+    
+    if (sst_reader_cache_) {
+      sst_reader_cache_->Release(sq.path);
+    }
+    
+    for (const auto& [key, descriptor, txn_version] : range_results) {
+      if (result.size() >= max_results) break;
+      std::optional<uint64_t> dst_id = (key.target_id() != 0) 
+          ? std::optional<uint64_t>(key.target_id()) 
+          : std::nullopt;
+      result.emplace_back(key.timestamp(), descriptor, dst_id, txn_version);
     }
   }
   
@@ -1676,9 +1661,7 @@ void LsmEngine::MaybeScheduleFlush() {
   };
 
   try {
-    // Do NOT store in a single flush_future_ — it would overwrite an active task.
-    // active_flush_count_ already tracks concurrency. Just launch and forget.
-    std::async(std::launch::async, flush_task);
+    std::thread(flush_task).detach();
   } catch (const std::exception& e) {
     std::cerr << "[MaybeScheduleFlush] std::async failed: " << e.what()
               << " — falling back to sync flush" << std::endl;
@@ -2062,35 +2045,8 @@ LsmEngine::CapacityInfo LsmEngine::GetCapacityInfo() const {
 }
 
 void LsmEngine::TrackColumnId(uint64_t entity_id, uint16_t column_id) {
-  if (batch_tracking_enabled_) {
-    // Use CAS loop to prevent TOCTOU race on batch_buffer_index_
-    size_t idx;
-    do {
-      idx = batch_buffer_index_.load(std::memory_order_relaxed);
-      if (idx >= kTrackBatchSize) {
-        return;  // Buffer full, skip
-      }
-    } while (!batch_buffer_index_.compare_exchange_weak(idx, idx + 1, 
-                                                         std::memory_order_relaxed));
-    batch_buffer_[idx] = {entity_id, column_id};
-    return;
-  }
-  
   std::unique_lock<std::shared_mutex> lock(column_map_mutex_);
   entity_column_map_[entity_id].Add(column_id);
-}
-
-void LsmEngine::FlushColumnIdBatch() {
-  if (!batch_tracking_enabled_) return;
-  
-  size_t count = batch_buffer_index_.load();
-  if (count == 0) return;
-  
-  std::unique_lock<std::shared_mutex> lock(column_map_mutex_);
-  for (size_t i = 0; i < count && i < kTrackBatchSize; i++) {
-    entity_column_map_[batch_buffer_[i].first].Add(batch_buffer_[i].second);
-  }
-  batch_buffer_index_.store(0);
 }
 
 Status LsmEngine::InitWAL() {
@@ -3448,10 +3404,12 @@ void LsmEngine::CleanupTimeRangeCache() {
 // TTL Data Expiration
 // =============================================================================
 
-void LsmEngine::SetTTLConfig(uint64_t retention_period_us, bool enable_auto_cleanup) {
+void LsmEngine::SetTTLConfig(uint64_t retention_period_us, bool enable_auto_cleanup,
+                             const std::string& archive_dir) {
   std::lock_guard<std::mutex> lock(ttl_mutex_);
   ttl_retention_period_us_ = retention_period_us;
   ttl_auto_cleanup_enabled_ = enable_auto_cleanup;
+  archive_dir_ = archive_dir;
 }
 
 uint64_t LsmEngine::GetTTLConfig() const {
@@ -3471,27 +3429,53 @@ int64_t LsmEngine::ExpireOldData() {
 
   std::lock_guard<std::mutex> lock(ttl_mutex_);
   
-  // Get current time
   auto now = std::chrono::system_clock::now();
   auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
       now.time_since_epoch()).count();
   
-  // Calculate expiration threshold
   uint64_t expiration_threshold = now_us - ttl_retention_period_us_;
   
-  int64_t expired_count = 0;
+  int64_t archived_count = 0;
   
-  // Scan memtable for expired entries
-  // Note: In a real implementation, this would scan the memtable and mark entries for deletion
-  // For now, we just count how many entries would be expired
+  std::shared_lock<std::shared_mutex> engine_lock(mutex_);
+  if (mem_) {
+    std::vector<std::tuple<uint64_t, uint8_t, uint16_t, uint64_t>> expired_entries;
+    
+    mem_->Traverse([&](const CedarKey& key, const Descriptor& desc, Timestamp ts) {
+      if (ts.value() < expiration_threshold) {
+        expired_entries.emplace_back(
+            key.entity_id(),
+            static_cast<uint8_t>(key.entity_type()),
+            key.column_id(),
+            ts.value());
+      }
+      return true;  // continue traversal
+    });
+    
+    archived_count = static_cast<int64_t>(expired_entries.size());
+    
+    if (!archive_dir_.empty() && archived_count > 0) {
+      std::filesystem::create_directories(archive_dir_);
+      std::string archive_file = archive_dir_ + "/archive_" +
+          std::to_string(now_us) + ".log";
+      std::ofstream ofs(archive_file, std::ios::binary | std::ios::app);
+      for (const auto& [eid, etype, cid, ts] : expired_entries) {
+        ofs.write(reinterpret_cast<const char*>(&eid), sizeof(eid));
+        ofs.write(reinterpret_cast<const char*>(&etype), sizeof(etype));
+        ofs.write(reinterpret_cast<const char*>(&cid), sizeof(cid));
+        ofs.write(reinterpret_cast<const char*>(&ts), sizeof(ts));
+      }
+      ofs.close();
+    }
+  }
   
-  // TODO: Implement actual expiration logic
-  // 1. Scan memtable for entries with timestamp < expiration_threshold
-  // 2. Mark them for deletion
-  // 3. Trigger compaction to physically remove them
-  
-  expired_data_count_ += expired_count;
-  return expired_count;
+  expired_data_count_ += archived_count;
+  archived_data_count_ += archived_count;
+  return archived_count;
+}
+
+int64_t LsmEngine::GetArchivedDataCount() const {
+  return archived_data_count_.load();
 }
 
 void LsmEngine::StartTTLCleanupThread(int interval_seconds) {

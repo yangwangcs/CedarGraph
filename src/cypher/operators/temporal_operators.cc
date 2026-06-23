@@ -117,24 +117,24 @@ bool TemporalNodeScan::MatchesTemporalConstraint(const Node& node) const {
 }
 
 bool TemporalNodeScan::MatchesAsOf(const Node& node) const {
-  (void)node;
-  // Without node-level temporal metadata, all nodes match
-  return true;
+  uint64_t ts = query_start_.value();
+  return node.valid_from.value() <= ts && node.valid_to.value() > ts;
 }
 
 bool TemporalNodeScan::MatchesBetween(const Node& node) const {
-  (void)node;
-  return true;
+  uint64_t start = query_start_.value();
+  uint64_t end = query_end_.value();
+  return node.valid_from.value() < end && node.valid_to.value() > start;
 }
 
 bool TemporalNodeScan::MatchesContainedIn(const Node& node) const {
-  (void)node;
-  return true;
+  uint64_t start = query_start_.value();
+  uint64_t end = query_end_.value();
+  return node.valid_from.value() >= start && node.valid_to.value() <= end;
 }
 
 bool TemporalNodeScan::MatchesVersion(const Node& node) const {
-  (void)node;
-  return true;
+  return node.version == version_number_;
 }
 
 std::unique_ptr<PhysicalOperator> TemporalNodeScan::Clone() const {

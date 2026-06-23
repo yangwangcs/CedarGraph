@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iostream>
 #include <cstring>
 #include <regex>
 #include <sstream>

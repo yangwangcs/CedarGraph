@@ -20,6 +20,7 @@
 #define CEDAR_DTX_TEMPORAL_WINDOW_H_
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <algorithm>
 
@@ -166,15 +167,18 @@ struct TemporalWindow {
   // 序列化到缓冲区
   void SerializeTo(void* buffer) const {
     uint8_t* p = static_cast<uint8_t*>(buffer);
-    *reinterpret_cast<uint64_t*>(p) = start.value();
-    *reinterpret_cast<uint64_t*>(p + sizeof(uint64_t)) = end.value();
+    uint64_t s = start.value();
+    uint64_t e = end.value();
+    std::memcpy(p, &s, sizeof(uint64_t));
+    std::memcpy(p + sizeof(uint64_t), &e, sizeof(uint64_t));
   }
   
   // 从缓冲区反序列化
   static TemporalWindow DeserializeFrom(const void* buffer) {
     const uint8_t* p = static_cast<const uint8_t*>(buffer);
-    uint64_t s = *reinterpret_cast<const uint64_t*>(p);
-    uint64_t e = *reinterpret_cast<const uint64_t*>(p + sizeof(uint64_t));
+    uint64_t s, e;
+    std::memcpy(&s, p, sizeof(uint64_t));
+    std::memcpy(&e, p + sizeof(uint64_t), sizeof(uint64_t));
     return TemporalWindow(Timestamp(s), Timestamp(e));
   }
 };

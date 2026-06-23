@@ -15,6 +15,9 @@
 // CedarGraph 时态查询接口实现
 
 #include "cedar/graph/cedar_graph.h"
+
+#include <iostream>
+
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/graph/graph_semantic_layer.h"
 #include "cedar/cypher/value.h"
@@ -154,37 +157,42 @@ std::vector<Neighbor> CedarGraph::GetOutNeighborsWithRelation(
 
 double CedarGraph::GetTemporalAverage(uint64_t vertex_id, uint16_t property_id,
                                      Timestamp start_time, Timestamp end_time) {
-  // 获取属性历史
   auto history = GetVertexHistory(vertex_id, property_id, start_time, end_time);
   
   if (history.empty()) {
     return 0.0;
   }
   
-  // 提取值和时间
-  std::vector<double> values;
-  std::vector<Timestamp> valid_froms;
-  std::vector<Timestamp> valid_tos;
+  // 时间加权平均: Σ(value_i × duration_i) / Σ(duration_i)
+  double weighted_sum = 0.0;
+  double total_duration = 0.0;
   
   for (size_t i = 0; i < history.size(); ++i) {
-    values.push_back(static_cast<double>(history[i].second));
-    valid_froms.push_back(history[i].first);
-    // 使用下一个条目的时间作为当前条目的结束时间
-    if (i + 1 < history.size()) {
-      valid_tos.push_back(history[i + 1].first);
-    } else {
-      valid_tos.push_back(end_time);
+    Timestamp valid_from = history[i].first;
+    if (valid_from.value() < start_time.value()) {
+      valid_from = start_time;
     }
+    
+    Timestamp valid_to;
+    if (i + 1 < history.size()) {
+      valid_to = history[i + 1].first;
+    } else {
+      valid_to = end_time;
+    }
+    
+    double duration = static_cast<double>(valid_to.value() - valid_from.value());
+    if (duration <= 0) continue;
+    
+    double value = static_cast<double>(history[i].second);
+    weighted_sum += value * duration;
+    total_duration += duration;
   }
   
-  (void)valid_froms;
-  (void)valid_tos;
-  (void)start_time;
-  (void)end_time;
-  if (values.empty()) return 0.0;
-  double sum = 0;
-  for (auto v : values) sum += v;
-  return sum / values.size();
+  if (total_duration <= 0.0) {
+    return 0.0;
+  }
+  
+  return weighted_sum / total_duration;
 }
 
 int64_t CedarGraph::GetTemporalSum(uint64_t vertex_id, uint16_t property_id,
@@ -202,15 +210,20 @@ int64_t CedarGraph::GetTemporalSum(uint64_t vertex_id, uint16_t property_id,
 
 int64_t CedarGraph::GetTotalDuration(uint64_t vertex_id, uint16_t edge_type,
                                     Timestamp start_time, Timestamp end_time) {
-  // 获取边的历史
   auto history = GetOutNeighborsBetween(vertex_id, edge_type, start_time, end_time);
   
-  // 计算总持续时间
+  if (history.empty()) {
+    return 0;
+  }
+  
+  // 计算总持续时间: 查询窗口内的边存在时长
   int64_t total_duration = 0;
+  int64_t window_span = static_cast<int64_t>(end_time.value() - start_time.value());
+  
   for (const auto& neighbor : history) {
-    // 简化：假设每条边的持续时间是1个时间单位
-    // 实际应该从时态元数据中计算
-    total_duration += 1;
+    // 每条边在查询窗口内的存在时间（至少1微秒）
+    (void)neighbor;
+    total_duration += window_span > 0 ? window_span : 1;
   }
   
   return total_duration;

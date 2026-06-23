@@ -428,6 +428,7 @@ set(CEDAR_CYPHER_SOURCES
     src/cypher/fingerprint.cc
     src/cypher/temporal_dialect.cc
     src/cypher/cost_optimizer.cc
+    src/cypher/cost_optimizer.cc
     src/cypher/operators/temporal_operators.cc
     src/cypher/operators/write_operators.cc
     src/cypher/validator.cc
@@ -921,6 +922,7 @@ endif()
 set(CEDAR_CLIENT_SOURCES
     src/client/connection_pool.cc
     src/client/graphd_load_balancer.cc
+    src/backup/backup_manager.cc
     src/client/service_discovery.cc
     src/client/load_balancer.cc
     src/client/query_router.cc

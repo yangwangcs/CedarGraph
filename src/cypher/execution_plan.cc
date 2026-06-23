@@ -1481,7 +1481,7 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
   
   // 2. WHERE → Filter (with predicate pushdown into scan)
   if (where_clause && where_clause->condition && root) {
-    auto analysis = AnalyzePredicates(*where_clause->condition);
+    auto analysis = AnalyzePredicates(where_clause->condition);
 
     // Try to push predicates into the leaf scan operator
     if (!analysis.pushable.empty()) {
@@ -1580,10 +1580,10 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::Build(
   
   // Apply CBO optimization if we have a valid plan
   if (root) {
-    CostOptimizer optimizer;
-    auto optimized = optimizer.Optimize(root);
-    if (optimized) {
-      root = optimized;
+    CostBasedOptimizer optimizer;
+    auto optimized = optimizer.SelectBestPlan({root.get()}, nullptr);
+    if (optimized && optimized != root.get()) {
+      root = std::shared_ptr<PhysicalOperator>(optimized);
     }
   }
   
@@ -2476,13 +2476,15 @@ static std::optional<PushablePredicate> TryExtractPushable(
   return pp;
 }
 
-PredicateAnalysis AnalyzePredicates(const Expression& expr) {
+PredicateAnalysis AnalyzePredicates(std::shared_ptr<Expression> expr) {
   PredicateAnalysis result;
 
-  if (expr.expr_type == ExprType::AND) {
-    const auto& logical = static_cast<const LogicalExpr&>(expr);
-    auto left = AnalyzePredicates(*logical.left);
-    auto right = AnalyzePredicates(*logical.right);
+  if (!expr) return result;
+
+  if (expr->expr_type == ExprType::AND) {
+    const auto& logical = static_cast<const LogicalExpr&>(*expr);
+    auto left = AnalyzePredicates(logical.left);
+    auto right = AnalyzePredicates(logical.right);
 
     result.pushable.insert(result.pushable.end(),
                            left.pushable.begin(), left.pushable.end());
@@ -2500,8 +2502,8 @@ PredicateAnalysis AnalyzePredicates(const Expression& expr) {
     return result;
   }
 
-  if (expr.expr_type == ExprType::COMPARISON) {
-    const auto& comp = static_cast<const ComparisonExpr&>(expr);
+  if (expr->expr_type == ExprType::COMPARISON) {
+    const auto& comp = static_cast<const ComparisonExpr&>(*expr);
     auto pushable = TryExtractPushable(comp);
     if (pushable) {
       result.pushable.push_back(*pushable);
@@ -2509,10 +2511,8 @@ PredicateAnalysis AnalyzePredicates(const Expression& expr) {
     }
   }
 
-  // Not pushable — keep the whole expression as remaining
-  result.remaining = std::shared_ptr<Expression>(
-      const_cast<Expression*>(&expr),
-      [](Expression*) {});  // Non-owning, just a view
+  // Not pushable — keep the whole expression as remaining (proper ownership)
+  result.remaining = expr;
   return result;
 }
 

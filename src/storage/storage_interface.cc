@@ -1,6 +1,9 @@
 // Copyright (c) 2025 The Cedar Authors. All rights reserved.
 
 #include "cedar/storage/storage_interface.h"
+
+#include <iostream>
+
 #include "cedar/storage/cedar_graph_storage.h"
 
 namespace cedar {

@@ -400,16 +400,19 @@ EntitySnapshot CedarUpdate::GetEntitySnapshot(CedarGraphStorage* storage,
   (void)query_time;
   EntitySnapshot snapshot;
   
-  // 查询实体的所有版本，获取最早创建时间
-  auto versions = storage->Scan(entity_id, Timestamp::Min(), Timestamp::Max());
-  if (!versions.empty()) {
-    snapshot.exists = true;
-    snapshot.create_time = versions.back().first;  // 最早版本（降序排列）
-    snapshot.latest_version_time = versions.front().first;  // 最新版本
-  } else {
+  // 查询实体的所有版本（判断是否曾存在、获取创建时间）
+  auto all_versions = storage->Scan(entity_id, Timestamp::Min(), Timestamp::Max());
+  if (all_versions.empty()) {
     snapshot.exists = false;
     snapshot.create_time = Timestamp::Max();
+    return snapshot;
   }
+  
+  // 实体曾存在 — exists 表示"曾存在"，不是"在 query_time 时刻存在"
+  // 时态约束检查由 CheckTemporalConstraint 负责
+  snapshot.exists = true;
+  snapshot.create_time = all_versions.back().first;
+  snapshot.latest_version_time = all_versions.front().first;
   
   return snapshot;
 }

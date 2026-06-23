@@ -587,12 +587,14 @@ class LsmEngine {
   
   // TTL Data Expiration
   // Configures automatic data expiration based on timestamp
-  void SetTTLConfig(uint64_t retention_period_us, bool enable_auto_cleanup = true);
+  void SetTTLConfig(uint64_t retention_period_us, bool enable_auto_cleanup = true,
+                    const std::string& archive_dir = "");
   uint64_t GetTTLConfig() const;
   bool IsTTLEnabled() const;
   
-  // Expire data older than retention period
+  // 归档过期数据（不物理删除，移到归档目录）
   int64_t ExpireOldData();
+  int64_t GetArchivedDataCount() const;
   
   // Background cleanup thread
   void StartTTLCleanupThread(int interval_seconds = 3600);
@@ -624,12 +626,14 @@ class LsmEngine {
   std::map<std::pair<uint16_t, std::string>, std::vector<uint64_t>> property_index_;
   mutable std::shared_mutex index_mutex_;
 
-  // TTL Configuration
+  // TTL Configuration — 归档模式，不物理删除
   uint64_t ttl_retention_period_us_ = 0;  // 0 = disabled
   bool ttl_auto_cleanup_enabled_ = false;
+  std::string archive_dir_;  // 归档目录路径
   std::thread ttl_cleanup_thread_;
   std::atomic<bool> ttl_running_{false};
   std::atomic<int64_t> expired_data_count_{0};
+  std::atomic<int64_t> archived_data_count_{0};
   mutable std::mutex ttl_mutex_;
 
   // Internal helpers
@@ -774,21 +778,10 @@ class LsmEngine {
   // Enable/disable optimizations for bulk import
   void SetBulkImportMode(bool enabled) {
     disable_column_tracking_ = enabled;
-    batch_tracking_enabled_ = enabled;
   }
   
-  // Flush batched column ID tracking
-  void FlushColumnIdBatch();
-  
  private:
-  // Optimization flags
-  bool disable_column_tracking_ = false;         // Skip column tracking during import
-  bool batch_tracking_enabled_ = false;          // Use batch tracking
-  
-  // Batch tracking buffer for column IDs
-  static constexpr size_t kTrackBatchSize = 100000;
-  std::vector<std::pair<uint64_t, uint16_t>> batch_buffer_{kTrackBatchSize};
-  std::atomic<size_t> batch_buffer_index_{0};
+  bool disable_column_tracking_ = false;
   
   // ========== Size-Tiered Compaction 引擎 ==========
   std::unique_ptr<SizeTieredCompactionEngine> compaction_engine_;

@@ -123,7 +123,16 @@ Value ExpressionEvaluator::EvaluateComparison(const ComparisonExpr& expr,
   auto right_val = Evaluate(*expr.right, record);
 
   // Cypher 3-valued logic: NULL comparison yields unknown (NULL)
+  // Exception: IS NULL / IS NOT NULL (EQ/NE with literal NULL)
+  if (left_val.IsNull() && right_val.IsNull()) {
+    if (expr.op == ComparisonExpr::EQ || expr.op == ComparisonExpr::NE) {
+      return Value(expr.op == ComparisonExpr::NE);
+    }
+    return Value::Null();
+  }
   if (left_val.IsNull() || right_val.IsNull()) {
+    if (expr.op == ComparisonExpr::EQ) return Value(false);
+    if (expr.op == ComparisonExpr::NE) return Value(true);
     return Value::Null();
   }
 
@@ -208,6 +217,10 @@ Value ExpressionEvaluator::EvaluateArithmetic(const ArithmeticExpr& expr,
   auto left_val = Evaluate(*expr.left, record);
   auto right_val = Evaluate(*expr.right, record);
 
+  if (left_val.IsNull() || right_val.IsNull()) {
+    return Value();
+  }
+
   // Numeric operations
   if (left_val.IsInt() && right_val.IsInt()) {
     int64_t a = left_val.GetInt();
@@ -239,8 +252,8 @@ Value ExpressionEvaluator::EvaluateArithmetic(const ArithmeticExpr& expr,
     case ArithmeticExpr::ADD: return Value(a + b);
     case ArithmeticExpr::SUB: return Value(a - b);
     case ArithmeticExpr::MUL: return Value(a * b);
-    case ArithmeticExpr::DIV: return Value(b != 0 ? a / b : 0.0);
-    case ArithmeticExpr::MOD: return Value(std::fmod(a, b));
+    case ArithmeticExpr::DIV: return b != 0 ? Value(a / b) : Value();
+    case ArithmeticExpr::MOD: return b != 0.0 ? Value(std::fmod(a, b)) : Value();
     default:
       std::cerr << "[ExpressionEvaluator] Unknown arithmetic op" << std::endl;
       return Value();

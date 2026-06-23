@@ -699,7 +699,9 @@ class CreateOperator : public PhysicalOperator {
   
   uint64_t GenerateId();
   cedar::Status CreateNode(const NodePattern& node, Record* record);
-  cedar::Status CreateEdge(const RelationshipPattern& rel, const Record& record);
+  cedar::Status CreateEdge(const RelationshipPattern& rel, const Record& record,
+                           const std::string& from_var = "",
+                           const std::string& to_var = "");
   uint16_t PropertyNameToColumnId(const std::string& name) const;
   cedar::Descriptor ValueToDescriptor(const Value& value, uint16_t col_id) const;
 };
@@ -936,7 +938,7 @@ struct PredicateAnalysis {
   std::shared_ptr<Expression> remaining;  // nullptr if everything pushed
 };
 
-PredicateAnalysis AnalyzePredicates(const Expression& expr);
+PredicateAnalysis AnalyzePredicates(std::shared_ptr<Expression> expr);
 
 }  // namespace cypher
 }  // namespace cedar
