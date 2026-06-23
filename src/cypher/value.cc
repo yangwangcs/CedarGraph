@@ -408,6 +408,14 @@ size_t Value::Hash() const {
       }
       return h;
     }
+    case ValueType::kDate:
+      return h ^ std::hash<int32_t>{}(std::get<Date>(value_).days_since_epoch);
+    case ValueType::kTime:
+      return h ^ std::hash<int64_t>{}(std::get<Time>(value_).nanos_since_midnight);
+    case ValueType::kDateTime:
+      return h ^ std::hash<uint64_t>{}(std::get<DateTime>(value_).timestamp.value());
+    case ValueType::kDuration:
+      return h ^ std::hash<int64_t>{}(std::get<Duration>(value_).microseconds);
     default:
       return h;
   }

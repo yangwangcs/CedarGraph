@@ -482,6 +482,7 @@ std::string NodeScan::GetDetails() const {
 
 std::unique_ptr<PhysicalOperator> NodeScan::Clone() const {
   auto clone = std::make_unique<NodeScan>(variable_, label_, properties_);
+  clone->SetRequiredColumns(required_columns_);
   for (const auto& child : children_) {
     clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
   }
@@ -913,6 +914,7 @@ std::string Expand::GetDetails() const {
 std::unique_ptr<PhysicalOperator> Expand::Clone() const {
   auto clone = std::make_unique<Expand>(
       from_variable_, rel_variable_, to_variable_, direction_, rel_type_);
+  clone->SetRequiredColumns(required_columns_);
   for (const auto& child : children_) {
     clone->AddChild(std::shared_ptr<PhysicalOperator>(child->Clone()));
   }
@@ -988,11 +990,13 @@ void VariableLengthExpand::ExpandCurrentRecord() {
 
   uint64_t start_id = from_val->GetNode().id;
 
-  // Bounded BFS
+  // Bounded BFS with cycle detection
   std::deque<BfsState> queue;
   queue.push_back({start_id, {}, 0});
 
-  std::unordered_set<uint64_t> visited_at_depth;
+  // Track visited (node_id, depth) pairs to prevent revisiting at same depth
+  std::unordered_set<uint64_t> visited;
+  visited.insert(start_id);
 
   while (!queue.empty()) {
     BfsState state = queue.front();
@@ -1002,6 +1006,9 @@ void VariableLengthExpand::ExpandCurrentRecord() {
 
     auto neighbors = GetNeighbors(state.node_id);
     for (const auto& [rel_id, target_id] : neighbors) {
+      // Cycle detection: skip already-visited nodes
+      if (visited.count(target_id) && state.depth + 1 < max_hops_) continue;
+      
       auto new_path = state.path;
       new_path.push_back({rel_id, target_id});
 
@@ -1028,6 +1035,7 @@ void VariableLengthExpand::ExpandCurrentRecord() {
       }
 
       if (new_depth < max_hops_) {
+        visited.insert(target_id);
         queue.push_back({target_id, new_path, new_depth});
       }
     }
@@ -1164,6 +1172,7 @@ bool Filter::EvaluatePredicate(const Record& record) {
   if (!predicate_) return true;
   ExpressionEvaluator evaluator(context_);
   auto result = evaluator.Evaluate(*predicate_, record);
+  if (result.IsNull()) return false;  // Cypher 3VL: NULL → exclude row
   return result.GetBool();
 }
 

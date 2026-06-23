@@ -159,43 +159,33 @@ Value ExpressionEvaluator::EvaluateComparison(const ComparisonExpr& expr,
 Value ExpressionEvaluator::EvaluateLogical(const LogicalExpr& expr,
                                             const Record& record) {
   auto left_val = Evaluate(*expr.left, record);
-  auto right_val = Evaluate(*expr.right, record);
 
   // Cypher 3-valued logic for NULL handling
   if (expr.op == LogicalExpr::Op::AND) {
-    // NULL AND NULL = NULL
-    // NULL AND true = NULL
-    // NULL AND false = false
-    // true AND NULL = NULL
-    // false AND NULL = false
-    
+    // Short-circuit: false AND anything = false
+    if (!left_val.IsNull() && !left_val.GetBool()) return Value(false);
+    // Evaluate right only if needed
+    auto right_val = Evaluate(*expr.right, record);
     bool left_null = left_val.IsNull();
     bool right_null = right_val.IsNull();
     bool left_bool = left_null ? false : left_val.GetBool();
     bool right_bool = right_null ? false : right_val.GetBool();
-    
-    // Short-circuit: false AND anything = false (regardless of NULL)
     if (!left_bool && !left_null) return Value(false);
     if (!right_bool && !right_null) return Value(false);
-    // Both sides are either true or NULL
     if (left_null || right_null) return Value::Null();
     return Value(true);
   } else {  // OR
-    // NULL OR NULL = NULL
-    // NULL OR true = true
-    // NULL OR false = NULL
-    // true OR NULL = true
-    // false OR NULL = NULL
-    
+    // Short-circuit: true OR anything = true
+    if (!left_val.IsNull() && left_val.GetBool()) return Value(true);
+    // Evaluate right only if needed
+    auto right_val = Evaluate(*expr.right, record);
     bool left_null = left_val.IsNull();
     bool right_null = right_val.IsNull();
     bool left_bool = left_null ? false : left_val.GetBool();
     bool right_bool = right_null ? false : right_val.GetBool();
-    
-    // Short-circuit: true OR anything = true (regardless of NULL)
     if (left_bool) return Value(true);
     if (right_bool) return Value(true);
-    // Both sides are either false or NULL
+    if (left_null || right_null) return Value::Null();
     if (left_null || right_null) return Value::Null();
     return Value(false);
   }
@@ -444,6 +434,18 @@ Value ExpressionEvaluator::EvaluateFunctionCall(const FunctionCallExpr& expr,
         return Value(static_cast<int64_t>(std::floor(val)));
       }
       return Value(static_cast<int64_t>(std::ceil(val)));
+    }
+    return Value();
+  }
+
+  // element_at: list[index]
+  if (lower_name == "element_at") {
+    if (args.size() >= 2 && args[0].IsList() && args[1].IsInt()) {
+      const auto& list = args[0].GetList();
+      int64_t idx = args[1].GetInt();
+      if (idx >= 0 && static_cast<size_t>(idx) < list.size()) {
+        return list[idx];
+      }
     }
     return Value();
   }
