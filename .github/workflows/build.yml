@@ -73,12 +73,12 @@ jobs:
     - name: Install Helm
       uses: azure/setup-helm@v4
       with:
-        version: v4.2.2
+        version: v3.15.4
 
     - name: Install kubectl
       uses: azure/setup-kubectl@v4
       with:
-        version: v1.35.0
+        version: v1.30.5
 
     - name: Verify preflight tools
       shell: bash

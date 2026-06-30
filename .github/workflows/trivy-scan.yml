@@ -35,6 +35,7 @@ jobs:
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
         if: always()
+        continue-on-error: true
         with:
           sarif_file: 'trivy-fs-results.sarif'
           category: 'trivy-fs'
@@ -59,6 +60,7 @@ jobs:
       - name: Upload Trivy config scan results
         uses: github/codeql-action/upload-sarif@v3
         if: always()
+        continue-on-error: true
         with:
           sarif_file: 'trivy-config-results.sarif'
           category: 'trivy-config'
@@ -85,6 +87,7 @@ jobs:
       - name: Upload Docker scan results
         uses: github/codeql-action/upload-sarif@v3
         if: always()
+        continue-on-error: true
         with:
           sarif_file: 'trivy-docker-results.sarif'
           category: 'trivy-docker'
