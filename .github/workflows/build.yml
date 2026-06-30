@@ -26,11 +26,6 @@ jobs:
             cc: clang
             cxx: clang++
             build_type: Release
-          - os: macos-13
-            compiler: clang
-            cc: clang
-            cxx: clang++
-            build_type: Release
 
     env:
       CMAKE_BUILD_DIR: ${{ github.workspace }}/build
