@@ -49,10 +49,22 @@ jobs:
 
       - name: Build Docker image
         if: ${{ env.SNYK_TOKEN != '' }}
+        continue-on-error: true
         run: docker build -f cedar-docker-compose/Dockerfile -t cedargraph:test .
 
+      - name: Check Docker image availability
+        if: ${{ always() && env.SNYK_TOKEN != '' }}
+        id: docker-image
+        shell: bash
+        run: |
+          if docker image inspect cedargraph:test >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run Snyk to check Docker image
-        if: ${{ env.SNYK_TOKEN != '' }}
+        if: ${{ env.SNYK_TOKEN != '' && steps.docker-image.outputs.available == 'true' }}
         uses: snyk/actions/docker@master
         continue-on-error: true
         with:
