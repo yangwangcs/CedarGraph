@@ -54,8 +54,21 @@ MetaD 地址列表
 */}}
 {{- define "cedargraph.metad.endpoints" -}}
 {{- $fullname := include "cedargraph.fullname" . }}
-{{- $port := .Values.metad.service.port }}
+{{- $port := .Values.metad.service.grpcPort }}
 {{- range $i := until (int .Values.metad.replicas) }}
 {{- if $i }},{{ end }}{{$fullname}}-metad-{{$i}}.{{$fullname}}-metad:{{$port}}
+{{- end }}
+{{- end }}
+
+{{/*
+MetaD Raft peers for cedar-metad --peer.
+*/}}
+{{- define "cedargraph.metad.raftPeerArgs" -}}
+{{- $fullname := include "cedargraph.fullname" . }}
+{{- $port := .Values.metad.service.port }}
+{{- range $i := until (int .Values.metad.replicas) }}
+{{- $nodeID := add $i 1 }}
+--peer "{{ $nodeID }}:{{ $fullname }}-metad-{{ $i }}.{{ $fullname }}-metad:{{ $port }}"{{ if lt (add $i 1) (int $.Values.metad.replicas) }} \
+{{ end }}
 {{- end }}
 {{- end }}

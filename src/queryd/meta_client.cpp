@@ -69,15 +69,22 @@ uint32_t ClusterState::GetPartitionForEntity(uint64_t entity_id) const {
 QueryMetaClient::QueryMetaClient(const Options& options) : options_(options) {}
 
 QueryMetaClient::~QueryMetaClient() {
+  Stop();
+}
+
+void QueryMetaClient::Stop() {
   running_ = false;
+  stop_cv_.notify_all();
   if (refresh_thread_.joinable()) {
     refresh_thread_.join();
   }
 }
 
 Status QueryMetaClient::Init() {
+  Stop();
+
   // Create gRPC channel with mandatory TLS
-  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
   if (!creds.ok()) {
     return Status::IOError(
         "Failed to create TLS credentials for MetaD: " + creds.status().ToString());
@@ -176,7 +183,8 @@ Status QueryMetaClient::WatchClusterChanges(
       }
     }
     
-    std::this_thread::sleep_for(seconds(1));
+    std::unique_lock<std::mutex> lock(stop_mutex_);
+    stop_cv_.wait_for(lock, seconds(1), [this]() { return !running_.load(); });
   }
   
   return Status::OK();
@@ -242,9 +250,14 @@ const ClusterState* QueryMetaClient::GetCachedClusterState() const {
 
 void QueryMetaClient::RefreshLoop() {
   while (running_) {
-    std::this_thread::sleep_for(options_.refresh_interval);
+    std::unique_lock<std::mutex> wait_lock(stop_mutex_);
+    stop_cv_.wait_for(wait_lock, options_.refresh_interval,
+                      [this]() { return !running_.load(); });
+    wait_lock.unlock();
 
-    if (!running_) break;
+    if (!running_) {
+      break;
+    }
 
     FetchSchemaFromMeta(&cached_schema_);
     {
@@ -252,6 +265,18 @@ void QueryMetaClient::RefreshLoop() {
       FetchClusterStateFromMeta(&cached_cluster_state_);
     }
   }
+}
+
+void QueryMetaClient::StartRefreshLoopForTesting() {
+  if (running_.exchange(true)) {
+    return;
+  }
+  refresh_thread_ = std::thread(&QueryMetaClient::RefreshLoop, this);
+}
+
+void QueryMetaClient::SetCachedClusterStateForTesting(const ClusterState& state) {
+  std::unique_lock<std::shared_mutex> lock(cluster_mutex_);
+  cached_cluster_state_ = state;
 }
 
 Status QueryMetaClient::FetchSchemaFromMeta(GraphSchema* schema) {

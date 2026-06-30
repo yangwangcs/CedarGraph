@@ -33,7 +33,7 @@ spec:
             - sh
             - -c
             - |
-              until nc -z {{ include "cedargraph.fullname" . }}-metad-0.{{ include "cedargraph.fullname" . }}-metad {{ .Values.metad.service.port }}; do
+              until nc -z {{ include "cedargraph.fullname" . }}-metad-0.{{ include "cedargraph.fullname" . }}-metad {{ .Values.metad.service.grpcPort }}; do
                 echo "Waiting for metad..."
                 sleep 2
               done
@@ -43,40 +43,108 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            - "--port"
+            - {{ .Values.graphd.service.ports.query | quote }}
+            - "--bind"
+            - "0.0.0.0"
+            - "--meta"
+            - {{ include "cedargraph.metad.endpoints" . | quote }}
+            - "--health_port"
+            - {{ .Values.graphd.service.ports.health | quote }}
+            - "--metrics_port"
+            - {{ .Values.graphd.service.ports.metrics | quote }}
           env:
             - name: NODE_ROLE
               value: "graphd"
             - name: META_SERVERS
               value: "{{ include "cedargraph.metad.endpoints" . }}"
+            - name: CEDAR_METAD_ENDPOINT
+              value: "{{ include "cedargraph.metad.endpoints" . }}"
             - name: QUERY_PORT
               value: "{{ .Values.graphd.service.ports.query }}"
-            - name: HTTP_PORT
-              value: "{{ .Values.graphd.service.ports.http }}"
+            - name: HEALTH_PORT
+              value: "{{ .Values.graphd.service.ports.health }}"
+            - name: METRICS_PORT
+              value: "{{ .Values.graphd.service.ports.metrics }}"
+            - name: CEDAR_GRAPHD_AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "graphd.auth.existingSecret is required" .Values.graphd.auth.existingSecret | quote }}
+                  key: {{ .Values.graphd.auth.keys.jwtSecret | quote }}
+            - name: CEDAR_GRAPHD_AUTH_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "graphd.auth.existingSecret is required" .Values.graphd.auth.existingSecret | quote }}
+                  key: {{ .Values.graphd.auth.keys.user | quote }}
+            - name: CEDAR_GRAPHD_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "graphd.auth.existingSecret is required" .Values.graphd.auth.existingSecret | quote }}
+                  key: {{ .Values.graphd.auth.keys.password | quote }}
+            - name: CEDAR_GRAPHD_AUTH_ROLE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "graphd.auth.existingSecret is required" .Values.graphd.auth.existingSecret | quote }}
+                  key: {{ .Values.graphd.auth.keys.role | quote }}
+                  optional: true
+            - name: CEDAR_GRPC_TLS_ENABLED
+              value: {{ ternary "1" "0" .Values.graphd.tls.enabled | quote }}
+            - name: CEDAR_GRPC_ALLOW_INSECURE
+              value: {{ ternary "0" "1" .Values.graphd.tls.enabled | quote }}
+            - name: CEDAR_GRPC_SERVER_CERT
+              value: "/etc/cedar/tls/tls.crt"
+            - name: CEDAR_GRPC_SERVER_KEY
+              value: "/etc/cedar/tls/tls.key"
+            - name: CEDAR_GRPC_CA_CERT
+              value: "/etc/cedar/tls/ca.crt"
+            - name: CEDAR_GRPC_MTLS_ENABLED
+              value: {{ ternary "1" "0" .Values.graphd.tls.mtlsEnabled | quote }}
+            - name: CEDAR_GRPC_CLIENT_CERT
+              value: "/etc/cedar/tls/client.crt"
+            - name: CEDAR_GRPC_CLIENT_KEY
+              value: "/etc/cedar/tls/client.key"
+            - name: CEDAR_TXN_WAL_DIR
+              value: "/data/graphd/txn_wal"
           ports:
             - name: query
               containerPort: {{ .Values.graphd.service.ports.query }}
               protocol: TCP
-            - name: http
-              containerPort: {{ .Values.graphd.service.ports.http }}
+            - name: health
+              containerPort: {{ .Values.graphd.service.ports.health }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.graphd.service.ports.metrics }}
               protocol: TCP
           resources:
             {{- toYaml .Values.graphd.resources | nindent 12 }}
           volumeMounts:
+            - name: data
+              mountPath: /data/graphd
             - name: logs
               mountPath: /logs
+            - name: graphd-tls
+              mountPath: /etc/cedar/tls
+              readOnly: true
           livenessProbe:
             tcpSocket:
-              port: query
+              port: health
             initialDelaySeconds: 30
             periodSeconds: 10
           readinessProbe:
             tcpSocket:
-              port: query
+              port: health
             initialDelaySeconds: 5
             periodSeconds: 5
       volumes:
+        - name: data
+          emptyDir: {}
         - name: logs
           emptyDir: {}
+        - name: graphd-tls
+          secret:
+            secretName: {{ required "graphd.tls.existingSecret is required" .Values.graphd.tls.existingSecret | quote }}
+            optional: {{ not .Values.graphd.tls.enabled }}
 
 ---
 apiVersion: v1
@@ -92,9 +160,13 @@ spec:
       port: {{ .Values.graphd.service.ports.query }}
       targetPort: query
       protocol: TCP
-    - name: http
-      port: {{ .Values.graphd.service.ports.http }}
-      targetPort: http
+    - name: health
+      port: {{ .Values.graphd.service.ports.health }}
+      targetPort: health
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.graphd.service.ports.metrics }}
+      targetPort: metrics
       protocol: TCP
   selector:
     {{- include "cedargraph.selectorLabels" . | nindent 4 }}

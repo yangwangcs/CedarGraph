@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <chrono>
+
 #include <gtest/gtest.h>
 #include "cedar/dtx/service_discovery.h"
 #include "cedar/dtx/meta_service.h"
@@ -89,6 +91,50 @@ TEST_F(ClusterInitializerRegistrationTest, RegisterEmptyNodesReturnsError) {
   std::vector<StorageNodeInfo> nodes;
   auto status = initializer.RegisterStorageNodes(nodes);
   EXPECT_FALSE(status.ok()) << "Expected error for empty node list";
+}
+
+TEST(ClusterInitializerConfigTest, WaitForMetaDRejectsEmptyServerList) {
+  ClusterInitializer::Config init_config;
+  init_config.meta_servers = {};
+  init_config.init_timeout_seconds = 1;
+  init_config.retry_interval_seconds = 1;
+
+  ClusterInitializer initializer(init_config);
+  auto status = initializer.WaitForMetaD();
+
+  EXPECT_TRUE(status.IsInvalidArgument()) << status.ToString();
+}
+
+TEST(ClusterInitializerConfigTest, WaitForMetaDRejectsNonPositiveIntervals) {
+  ClusterInitializer::Config init_config;
+  init_config.meta_servers = {"127.0.0.1:1"};
+  init_config.init_timeout_seconds = 0;
+  init_config.retry_interval_seconds = 1;
+
+  ClusterInitializer invalid_timeout(init_config);
+  EXPECT_TRUE(invalid_timeout.WaitForMetaD().IsInvalidArgument());
+
+  init_config.init_timeout_seconds = 1;
+  init_config.retry_interval_seconds = 0;
+  ClusterInitializer invalid_retry(init_config);
+  EXPECT_TRUE(invalid_retry.WaitForMetaD().IsInvalidArgument());
+}
+
+TEST(ClusterInitializerConfigTest, WaitForMetaDSkipsInvalidEndpointsAndTimesOut) {
+  ClusterInitializer::Config init_config;
+  init_config.meta_servers = {"localhost:not-a-port", "127.0.0.1:1"};
+  init_config.init_timeout_seconds = 1;
+  init_config.retry_interval_seconds = 1;
+
+  ClusterInitializer initializer(init_config);
+
+  auto start = std::chrono::steady_clock::now();
+  auto status = initializer.WaitForMetaD();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_FALSE(status.ok());
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            2000);
 }
 
 int main(int argc, char** argv) {

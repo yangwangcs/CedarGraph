@@ -9,10 +9,84 @@
 #include <fstream>
 #include <filesystem>
 #include <braft/raft.h>
+#include "cedar/storage/lsm_engine.h"
 
 namespace cedar {
 namespace dtx {
 namespace storage {
+
+namespace {
+
+class SnapshotLoadGuard {
+ public:
+  SnapshotLoadGuard(CedarGraphStorage* storage, LsmEngine* engine)
+      : storage_(storage), engine_(engine) {
+    if (storage_) {
+      storage_->PauseCompaction();
+      compaction_paused_ = true;
+    }
+    if (engine_) {
+      auto s = engine_->Close();
+      if (!s.ok()) {
+        LOG(WARNING) << "Failed to close engine before snapshot load: "
+                     << s.ToString();
+      }
+      engine_closed_ = true;
+    }
+  }
+
+  ~SnapshotLoadGuard() {
+    if (!released_) {
+      ReopenEngine();
+      ResumeCompaction();
+    }
+  }
+
+  SnapshotLoadGuard(const SnapshotLoadGuard&) = delete;
+  SnapshotLoadGuard& operator=(const SnapshotLoadGuard&) = delete;
+
+  Status ReopenEngine() {
+    if (!engine_closed_ || !engine_) {
+      return Status::OK();
+    }
+    Status s = engine_->Open();
+    if (!s.ok()) {
+      LOG(ERROR) << "Failed to reopen engine after snapshot load: "
+                 << s.ToString();
+      return s;
+    }
+    auto* compaction = engine_->GetCompactionEngine();
+    if (compaction) {
+      s = compaction->LoadManifest();
+      if (!s.ok()) {
+        LOG(ERROR) << "Failed to load manifest after snapshot: "
+                   << s.ToString();
+      }
+    }
+    engine_closed_ = false;
+    return Status::OK();
+  }
+
+  void ResumeCompaction() {
+    if (compaction_paused_ && storage_) {
+      storage_->ResumeCompaction();
+      compaction_paused_ = false;
+    }
+  }
+
+  void Release() {
+    released_ = true;
+  }
+
+ private:
+  CedarGraphStorage* storage_;
+  LsmEngine* engine_;
+  bool compaction_paused_ = false;
+  bool engine_closed_ = false;
+  bool released_ = false;
+};
+
+}  // namespace
 
 // =============================================================================
 // StorageRaftCommand Serialization
@@ -259,80 +333,73 @@ int PartitionRaftStateMachine::on_snapshot_load(braft::SnapshotReader* reader) {
     LOG(WARNING) << "Storage not available for snapshot load";
     return -1;
   }
-  
-  std::string snapshot_path = reader->get_path();
-  std::string data_root = storage_->GetDataRoot();
-  std::string snapshot_data_dir = snapshot_path + "/data";
-  
-  // Step 1: Pause compaction and close engine before touching files
+
   auto* shared_storage = storage_->GetSharedStorage();
-  if (shared_storage) {
-    shared_storage->PauseCompaction();
-    auto* engine = shared_storage->GetLsmEngine();
-    if (engine) {
-      engine->Close();
-    }
-  }
-  
-  // Step 2: Remove stale SST/blob/MANIFEST files
-  if (std::filesystem::exists(data_root)) {
-    for (const auto& entry : std::filesystem::directory_iterator(data_root)) {
-      if (entry.is_regular_file()) {
-        std::string filename = entry.path().filename().string();
-        if (filename.find(".sst") != std::string::npos ||
-            filename.find(".blob") != std::string::npos ||
-            filename.find("MANIFEST") != std::string::npos) {
-          std::error_code ec;
-          std::filesystem::remove(entry.path(), ec);
-          if (ec) {
-            LOG(WARNING) << "Failed to remove stale file " << filename << ": " << ec.message();
+  auto* engine = shared_storage ? shared_storage->GetLsmEngine() : nullptr;
+  SnapshotLoadGuard load_guard(shared_storage, engine);
+
+  try {
+    std::string snapshot_path = reader->get_path();
+    std::string data_root = storage_->GetDataRoot();
+    std::string snapshot_data_dir = snapshot_path + "/data";
+
+    // Step 1: Compaction is paused and engine is closed by SnapshotLoadGuard.
+
+    // Step 2: Remove stale SST/blob/MANIFEST files
+    if (std::filesystem::exists(data_root)) {
+      for (const auto& entry : std::filesystem::directory_iterator(data_root)) {
+        if (entry.is_regular_file()) {
+          std::string filename = entry.path().filename().string();
+          if (filename.find(".sst") != std::string::npos ||
+              filename.find(".blob") != std::string::npos ||
+              filename.find("MANIFEST") != std::string::npos) {
+            std::error_code ec;
+            std::filesystem::remove(entry.path(), ec);
+            if (ec) {
+              LOG(WARNING) << "Failed to remove stale file " << filename
+                           << ": " << ec.message();
+            }
           }
         }
       }
     }
-  }
-  
-  // Step 3: Restore data files from snapshot
-  if (std::filesystem::exists(snapshot_data_dir)) {
-    auto copied_files = CopyDirectoryContents(snapshot_data_dir, data_root);
-    LOG(INFO) << "Restored " << copied_files.size() << " data files from snapshot"
-              << " for partition " << storage_->GetPartitionId();
-  }
-  
-  // Step 4: Reopen engine and reload manifest
-  if (shared_storage) {
-    auto* engine = shared_storage->GetLsmEngine();
-    if (engine) {
-      Status s = engine->Open();
-      if (!s.ok()) {
-        LOG(ERROR) << "Failed to reopen engine after snapshot load: " << s.ToString();
-        shared_storage->ResumeCompaction();
-        return -1;
-      }
-      auto* compaction = engine->GetCompactionEngine();
-      if (compaction) {
-        s = compaction->LoadManifest();
-        if (!s.ok()) {
-          LOG(ERROR) << "Failed to load manifest after snapshot: " << s.ToString();
-        }
-      }
+
+    // Step 3: Restore data files from snapshot
+    if (std::filesystem::exists(snapshot_data_dir)) {
+      auto copied_files = CopyDirectoryContents(snapshot_data_dir, data_root);
+      LOG(INFO) << "Restored " << copied_files.size() << " data files from snapshot"
+                << " for partition " << storage_->GetPartitionId();
     }
-    shared_storage->ResumeCompaction();
-  }
-  
-  // Step 5: Restore prepared transaction state (2PC)
-  std::string txn_state_path = snapshot_path + "/txn_state";
-  if (std::filesystem::exists(txn_state_path)) {
-    auto status = storage_->LoadPreparedTxns(txn_state_path);
-    if (!status.ok()) {
-      LOG(ERROR) << "Failed to load prepared txns from snapshot: " << status.ToString();
+
+    // Step 4: Reopen engine and reload manifest
+    auto reopen_status = load_guard.ReopenEngine();
+    if (!reopen_status.ok()) {
       return -1;
     }
-    LOG(INFO) << "Loaded prepared txns from snapshot for partition "
-              << storage_->GetPartitionId();
+    load_guard.ResumeCompaction();
+    load_guard.Release();
+
+    // Step 5: Restore prepared transaction state (2PC)
+    std::string txn_state_path = snapshot_path + "/txn_state";
+    if (std::filesystem::exists(txn_state_path)) {
+      auto status = storage_->LoadPreparedTxns(txn_state_path);
+      if (!status.ok()) {
+        LOG(ERROR) << "Failed to load prepared txns from snapshot: "
+                   << status.ToString();
+        return -1;
+      }
+      LOG(INFO) << "Loaded prepared txns from snapshot for partition "
+                << storage_->GetPartitionId();
+    }
+
+    return 0;
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "Exception during snapshot load: " << e.what();
+    return -1;
+  } catch (...) {
+    LOG(ERROR) << "Unknown exception during snapshot load";
+    return -1;
   }
-  
-  return 0;
 }
 
 void PartitionRaftStateMachine::on_leader_start(int64_t term) {

@@ -57,6 +57,10 @@ class DockerComposeManager {
   std::string compose_file_;
   bool initialized_ = false;
 
+  bool IsValidServiceName(const std::string& service) const;
+  std::string ShellQuote(const std::string& arg) const;
+  std::string ComposeBaseCommand() const;
+
   // Execute docker-compose command
   std::string ExecuteComposeCommand(const std::string& command);
 

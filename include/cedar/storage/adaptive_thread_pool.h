@@ -24,6 +24,7 @@
 #ifndef CEDAR_ADAPTIVE_THREAD_POOL_H_
 #define CEDAR_ADAPTIVE_THREAD_POOL_H_
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -115,6 +116,10 @@ class AdaptiveThreadPool {
   using TaskResult = std::invoke_result_t<Task>;
   
   explicit AdaptiveThreadPool(const AdaptiveConfig& config) : config_(config) {
+    config_.min_threads = std::max(1, config_.min_threads);
+    config_.max_threads = std::max(config_.min_threads, config_.max_threads);
+    config_.initial_threads = std::clamp(
+        config_.initial_threads, config_.min_threads, config_.max_threads);
     metrics_.current_threads = 0;
     shutdown_ = false;
   }
@@ -137,6 +142,7 @@ class AdaptiveThreadPool {
   // 停止线程池
   void Shutdown() {
     shutdown_ = true;
+    adjuster_cv_.notify_all();
     task_cv_.notify_all();
     
     if (adjuster_thread_.joinable()) {
@@ -212,6 +218,7 @@ class AdaptiveThreadPool {
     
     if (it != workers_.end()) {
       (*it)->RequestShutdown();
+      task_cv_.notify_all();
       (*it)->Join();
       workers_.erase(it);
       metrics_.current_threads = workers_.size();
@@ -221,15 +228,25 @@ class AdaptiveThreadPool {
   void WorkLoop(int worker_id) {
     while (!shutdown_) {
       std::function<void()> task;
+      auto worker = FindWorker(worker_id);
+      if (worker && worker->GetState() == Worker::State::SHUTDOWN) {
+        return;
+      }
       
       {
         std::unique_lock<std::mutex> lock(task_mutex_);
         
         // 等待任务或关闭
-        auto pred = [this] { return shutdown_ || !task_queue_.empty(); };
+        auto pred = [this, worker] {
+          return shutdown_ || !task_queue_.empty() ||
+                 (worker && worker->GetState() == Worker::State::SHUTDOWN);
+        };
         task_cv_.wait(lock, pred);
         
         if (shutdown_ && task_queue_.empty()) {
+          return;
+        }
+        if (worker && worker->GetState() == Worker::State::SHUTDOWN) {
           return;
         }
         
@@ -242,7 +259,6 @@ class AdaptiveThreadPool {
       
       if (task) {
         // 更新状态
-        auto worker = FindWorker(worker_id);
         if (worker) {
           worker->SetState(Worker::State::BUSY);
           worker->UpdateActiveTime();
@@ -285,7 +301,10 @@ class AdaptiveThreadPool {
   
   void AdjustThreadCount() {
     while (!shutdown_) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(config_.adjust_interval_ms));
+      std::unique_lock<std::mutex> lock(adjuster_mutex_);
+      adjuster_cv_.wait_for(lock, std::chrono::milliseconds(config_.adjust_interval_ms),
+                            [this]() { return shutdown_.load(); });
+      lock.unlock();
       
       if (!config_.enable_adaptive || shutdown_) break;
       
@@ -334,6 +353,8 @@ class AdaptiveThreadPool {
   
   mutable std::mutex workers_mutex_;
   std::vector<std::unique_ptr<Worker>> workers_;
+  std::mutex adjuster_mutex_;
+  std::condition_variable adjuster_cv_;
   std::thread adjuster_thread_;
 };
 

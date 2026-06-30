@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <grpcpp/grpcpp.h>
+#define private public
 #include "cedar/service/graph_service_router.h"
+#undef private
 #include "cedar/dtx/security.h"
 
 using namespace cedar;
@@ -37,4 +39,20 @@ TEST_F(GraphServiceRouterTest, GetSchemaReturnsEmptyWhenNoMetaD) {
   EXPECT_TRUE(status.ok());
   EXPECT_FALSE(response.success());
   EXPECT_FALSE(response.error_msg().empty());
+}
+
+TEST_F(GraphServiceRouterTest, StopWakesPartitionRefreshBackoffPromptly) {
+  router_->partition_refresh_interval_ = std::chrono::seconds(1);
+
+  auto start_status = router_->Start();
+  ASSERT_TRUE(start_status.ok()) << start_status.ToString();
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+
+  auto start = std::chrono::steady_clock::now();
+  auto stop_status = router_->Stop();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  ASSERT_TRUE(stop_status.ok()) << stop_status.ToString();
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 500);
 }

@@ -80,6 +80,10 @@ class TlsCredentialFactory {
   // CEDAR_GRPC_SERVER_KEY, CEDAR_GRPC_CLIENT_CERT, CEDAR_GRPC_CLIENT_KEY
   static StatusOr<std::shared_ptr<grpc::ServerCredentials>> CreateServerCredentialsFromEnv();
   static StatusOr<std::shared_ptr<grpc::ChannelCredentials>> CreateClientCredentialsFromEnv();
+  static StatusOr<std::shared_ptr<grpc::ServerCredentials>> CreateServerCredentialsFromEnvStrict();
+  static StatusOr<std::shared_ptr<grpc::ChannelCredentials>> CreateClientCredentialsFromEnvStrict();
+  static bool EnvTlsEnabled();
+  static bool EnvAllowsInsecure();
 };
 
 }  // namespace raft

@@ -6,6 +6,8 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <memory>
 #include <grpcpp/grpcpp.h>
 #include "meta_service.grpc.pb.h"
@@ -48,6 +50,8 @@ class GraphDRegistrar {
   std::atomic<bool> registered_{false};
   std::atomic<bool> running_{false};
   std::unique_ptr<std::thread> heartbeat_thread_;
+  std::condition_variable heartbeat_cv_;
+  std::mutex heartbeat_cv_mutex_;
   std::unique_ptr<cedar::meta::MetaService::Stub> stub_;
 };
 

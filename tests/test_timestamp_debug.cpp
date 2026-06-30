@@ -22,7 +22,7 @@ int main() {
     req.mutable_key()->set_partition_id(0);
     cedar::Descriptor desc = cedar::Descriptor::InlineInt(1, 42);
     auto encoded = desc.Encode();
-    req.mutable_descriptor_()->set_data(encoded.data(), encoded.size());
+    req.mutable_value_descriptor()->set_data(encoded.data(), encoded.size());
     req.mutable_txn_version()->set_value(2000000);
     
     cedar::storage::PutResponse resp;
@@ -56,7 +56,7 @@ int main() {
     req.mutable_key()->set_partition_id(0);
     cedar::Descriptor desc = cedar::Descriptor::InlineInt(1, 43);
     auto encoded = desc.Encode();
-    req.mutable_descriptor_()->set_data(encoded.data(), encoded.size());
+    req.mutable_value_descriptor()->set_data(encoded.data(), encoded.size());
     req.mutable_txn_version()->set_value(5000000);
     
     cedar::storage::PutResponse resp;

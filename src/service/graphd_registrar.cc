@@ -2,6 +2,9 @@
 // GraphD Registrar Implementation
 
 #include "cedar/service/graphd_registrar.h"
+
+#include "cedar/dtx/raft/grpc_tls.h"
+
 #include <iostream>
 #include <chrono>
 
@@ -16,7 +19,13 @@ GraphDRegistrar::~GraphDRegistrar() {
 
 bool GraphDRegistrar::Start() {
   // Create gRPC channel to MetaD
-  auto channel = grpc::CreateChannel(config_.meta_address, grpc::InsecureChannelCredentials());
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+  if (!creds.ok()) {
+    std::cerr << "[GraphD] Failed to create MetaD client credentials: "
+              << creds.status().ToString() << std::endl;
+    return false;
+  }
+  auto channel = grpc::CreateChannel(config_.meta_address, creds.ValueOrDie());
   stub_ = cedar::meta::MetaService::NewStub(channel);
 
   // Register with MetaD
@@ -35,6 +44,7 @@ bool GraphDRegistrar::Start() {
 
 void GraphDRegistrar::Stop() {
   running_ = false;
+  heartbeat_cv_.notify_all();
   
   if (heartbeat_thread_ && heartbeat_thread_->joinable()) {
     heartbeat_thread_->join();
@@ -62,6 +72,7 @@ bool GraphDRegistrar::Register() {
 
   cedar::meta::RegisterGraphDResponse response;
   grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
 
   grpc::Status status = stub_->RegisterGraphD(&context, request, &response);
   if (!status.ok()) {
@@ -89,6 +100,7 @@ bool GraphDRegistrar::Unregister() {
 
   cedar::meta::UnregisterGraphDResponse response;
   grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
 
   grpc::Status status = stub_->UnregisterGraphD(&context, request, &response);
   if (!status.ok() || !response.success()) {
@@ -103,9 +115,12 @@ bool GraphDRegistrar::Unregister() {
 
 void GraphDRegistrar::HeartbeatLoop() {
   while (running_) {
-    std::this_thread::sleep_for(std::chrono::seconds(config_.heartbeat_interval_seconds));
-    
-    if (!running_) break;
+    {
+      std::unique_lock<std::mutex> lock(heartbeat_cv_mutex_);
+      heartbeat_cv_.wait_for(lock, std::chrono::seconds(config_.heartbeat_interval_seconds),
+                             [this]() { return !running_.load(); });
+      if (!running_) break;
+    }
 
     cedar::meta::GraphDHeartbeatRequest request;
     request.set_node_id(node_id_);
@@ -117,6 +132,7 @@ void GraphDRegistrar::HeartbeatLoop() {
 
     cedar::meta::GraphDHeartbeatResponse response;
     grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
 
     grpc::Status status = stub_->GraphDHeartbeat(&context, request, &response);
     if (!status.ok()) {

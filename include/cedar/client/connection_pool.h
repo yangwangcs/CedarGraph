@@ -26,6 +26,7 @@ struct ConnectionConfig {
   int max_connections = 10;
   int timeout_ms = 30000;  // 30 seconds idle timeout
   bool enable_tls = false;
+  bool mtls_enabled = false;
   std::string ca_cert_path;
   std::string client_cert_path;
   std::string client_key_path;

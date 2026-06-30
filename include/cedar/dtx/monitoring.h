@@ -162,6 +162,8 @@ class NetworkSink : public LogSink {
   Config config_;
   std::mutex mutex_;
   std::queue<LogEntry> buffer_;
+  std::condition_variable send_cv_;
+  std::mutex send_cv_mutex_;
   std::atomic<bool> running_{false};
   std::thread send_thread_;
 };
@@ -357,7 +359,7 @@ class AlertManager {
   
   // 设置指标提供者（用于规则评估）
   using MetricProvider = std::function<double(const std::string& metric_name)>;
-  void SetMetricProvider(MetricProvider provider) { metric_provider_ = std::move(provider); }
+  void SetMetricProvider(MetricProvider provider);
 
  private:
   AlertManager() = default;
@@ -373,7 +375,7 @@ class AlertManager {
   std::map<std::string, AlertRule> rules_;
   
   std::mutex notifiers_mutex_;
-  std::vector<std::unique_ptr<AlertNotifier>> notifiers_;
+  std::vector<std::shared_ptr<AlertNotifier>> notifiers_;
   
   mutable std::mutex alerts_mutex_;
   std::map<uint64_t, Alert> alerts_;
@@ -381,7 +383,10 @@ class AlertManager {
   std::atomic<uint64_t> next_alert_id_{1};
   
   std::thread eval_thread_;
+  std::condition_variable eval_cv_;
+  std::mutex eval_cv_mutex_;
   
+  std::mutex metric_provider_mutex_;
   MetricProvider metric_provider_;
 };
 

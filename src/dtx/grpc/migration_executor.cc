@@ -184,7 +184,7 @@ DTxRpcClient::GetMigrationStub(NodeID node_id) const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = nodes_.find(node_id);
   if (it == nodes_.end() || !it->second->available) return nullptr;
-  auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
   if (!client_creds.ok()) {
     return nullptr;
   }
@@ -364,6 +364,8 @@ Status MigrationTask::Execute(DTxRpcClient* rpc_client, PartitionManager* partit
     Status s = Phase_Prepare();
     if (!s.ok()) {
       Rollback();
+      UpdateState(cancelled_.load() ? MigrationState::kCancelled
+                                    : MigrationState::kFailed);
       return s;
     }
     
@@ -372,6 +374,8 @@ Status MigrationTask::Execute(DTxRpcClient* rpc_client, PartitionManager* partit
     s = Phase_SnapshotSync();
     if (!s.ok()) {
       Rollback();
+      UpdateState(cancelled_.load() ? MigrationState::kCancelled
+                                    : MigrationState::kFailed);
       return s;
     }
     
@@ -381,6 +385,8 @@ Status MigrationTask::Execute(DTxRpcClient* rpc_client, PartitionManager* partit
       s = Phase_DualWrite();
       if (!s.ok()) {
         Rollback();
+        UpdateState(cancelled_.load() ? MigrationState::kCancelled
+                                      : MigrationState::kFailed);
         return s;
       }
     }
@@ -390,6 +396,8 @@ Status MigrationTask::Execute(DTxRpcClient* rpc_client, PartitionManager* partit
     s = Phase_Cutover();
     if (!s.ok()) {
       Rollback();
+      UpdateState(cancelled_.load() ? MigrationState::kCancelled
+                                    : MigrationState::kFailed);
       return s;
     }
     
@@ -399,6 +407,8 @@ Status MigrationTask::Execute(DTxRpcClient* rpc_client, PartitionManager* partit
       s = Phase_Verify();
       if (!s.ok()) {
         Rollback();
+        UpdateState(cancelled_.load() ? MigrationState::kCancelled
+                                      : MigrationState::kFailed);
         return s;
       }
     }
@@ -408,6 +418,8 @@ Status MigrationTask::Execute(DTxRpcClient* rpc_client, PartitionManager* partit
     s = Phase_Complete();
     if (!s.ok()) {
       Rollback();
+      UpdateState(cancelled_.load() ? MigrationState::kCancelled
+                                    : MigrationState::kFailed);
       return s;
     }
     
@@ -427,6 +439,13 @@ Status MigrationTask::Execute(DTxRpcClient* rpc_client, PartitionManager* partit
 }
 
 Status MigrationTask::Phase_Prepare() {
+  if (cancelled_.load()) {
+    return Status::IOError("Migration cancelled");
+  }
+  if (!rpc_client_) {
+    return Status::InvalidArgument("Migration RPC client not initialized");
+  }
+
   // 1. Check source node health
   if (!rpc_client_->IsNodeAvailable(source_node_)) {
     return Status::IOError("Source node not available");
@@ -459,6 +478,10 @@ static std::string GetSnapshotDir(PartitionID partition_id) {
 }
 
 Status MigrationTask::Phase_SnapshotSync() {
+  if (!rpc_client_) {
+    return Status::InvalidArgument("Migration RPC client not initialized");
+  }
+
   // Transfer actual SST snapshot files from source to target
   std::string snapshot_dir = GetSnapshotDir(partition_id_);
   if (!std::filesystem::exists(snapshot_dir)) {
@@ -495,7 +518,8 @@ Status MigrationTask::Phase_SnapshotSync() {
     }
 
     if (ShouldThrottle()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      Status wait_status = WaitForControl(std::chrono::milliseconds(10));
+      if (!wait_status.ok()) return wait_status;
     }
   }
 
@@ -518,7 +542,8 @@ Status MigrationTask::Phase_DualWrite() {
   //   rpc_client_->EnableDualWrite(target_node_, partition_id_);
   
   // Wait for any in-flight writes to complete
-  std::this_thread::sleep_for(std::chrono::seconds(1));
+  Status wait_status = WaitForControl(std::chrono::seconds(1));
+  if (!wait_status.ok()) return wait_status;
   
   // Capture and replicate new writes
   auto deadline = std::chrono::steady_clock::now() + config_.dual_write_timeout;
@@ -528,11 +553,8 @@ Status MigrationTask::Phase_DualWrite() {
       return Status::IOError("Migration cancelled");
     }
     
-    if (paused_.load()) {
-      while (paused_.load() && !cancelled_.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
-    }
+    Status pause_status = WaitWhilePaused();
+    if (!pause_status.ok()) return pause_status;
     
     // Replicate recent writes from source to target
     // In production: Use WAL or change data capture for replication
@@ -541,7 +563,8 @@ Status MigrationTask::Phase_DualWrite() {
     // bool lag_acceptable = CheckReplicationLag();
     // if (lag_acceptable) break;
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_status = WaitForControl(std::chrono::milliseconds(100));
+    if (!wait_status.ok()) return wait_status;
   }
   
   return Status::OK();
@@ -569,6 +592,10 @@ Status MigrationTask::Phase_Cutover() {
 }
 
 Status MigrationTask::Phase_Verify() {
+  if (!rpc_client_) {
+    return Status::InvalidArgument("Migration RPC client not initialized");
+  }
+
   // Verify data consistency between source and target via gRPC checksum
   Status s = rpc_client_->VerifyMigration(source_node_, target_node_,
                                           partition_id_);
@@ -577,6 +604,10 @@ Status MigrationTask::Phase_Verify() {
 }
 
 Status MigrationTask::Phase_Complete() {
+  if (!rpc_client_) {
+    return Status::InvalidArgument("Migration RPC client not initialized");
+  }
+
   // 1. Finalize migration on target via gRPC
   Status s = rpc_client_->CompleteMigration(
       target_node_, external_migration_id_, partition_id_);
@@ -624,16 +655,44 @@ bool MigrationTask::ShouldThrottle() const {
   return config_.throttle_during_migration;
 }
 
+Status MigrationTask::WaitForControl(std::chrono::milliseconds delay) {
+  std::unique_lock<std::mutex> lock(control_mutex_);
+  control_cv_.wait_for(lock, delay, [this]() {
+    return cancelled_.load() || paused_.load();
+  });
+
+  if (cancelled_.load()) {
+    return Status::IOError("Migration cancelled");
+  }
+  return Status::OK();
+}
+
+Status MigrationTask::WaitWhilePaused() {
+  std::unique_lock<std::mutex> lock(control_mutex_);
+  control_cv_.wait(lock, [this]() {
+    return !paused_.load() || cancelled_.load();
+  });
+
+  if (cancelled_.load()) {
+    return Status::IOError("Migration cancelled");
+  }
+  return Status::OK();
+}
+
 void MigrationTask::Cancel() {
   cancelled_.store(true);
+  UpdateState(MigrationState::kCancelled);
+  control_cv_.notify_all();
 }
 
 void MigrationTask::Pause() {
   paused_.store(true);
+  control_cv_.notify_all();
 }
 
 void MigrationTask::Resume() {
   paused_.store(false);
+  control_cv_.notify_all();
 }
 
 // =============================================================================
@@ -648,8 +707,16 @@ MigrationExecutor::~MigrationExecutor() {
 }
 
 Status MigrationExecutor::Initialize(DTxRpcClient* rpc_client, PartitionManager* partition_mgr) {
+  if (config_.max_concurrent_migrations == 0) {
+    return Status::InvalidArgument("max_concurrent_migrations must be positive");
+  }
+  if (accepting_submissions_.exchange(true)) {
+    return Status::OK();
+  }
+
   rpc_client_ = rpc_client;
   partition_mgr_ = partition_mgr;
+  shutdown_.store(false);
   
   // Start worker threads
   for (size_t i = 0; i < config_.max_concurrent_migrations; i++) {
@@ -660,6 +727,7 @@ Status MigrationExecutor::Initialize(DTxRpcClient* rpc_client, PartitionManager*
 }
 
 void MigrationExecutor::Shutdown() {
+  accepting_submissions_.store(false);
   shutdown_.store(true);
   worker_cv_.notify_all();
   
@@ -668,6 +736,13 @@ void MigrationExecutor::Shutdown() {
       thread.join();
     }
   }
+  worker_threads_.clear();
+
+  std::lock_guard<std::mutex> lock(tasks_mutex_);
+  while (!pending_queue_.empty()) {
+    pending_queue_.pop();
+  }
+  active_migrations_.clear();
 }
 
 std::vector<uint64_t> MigrationExecutor::SubmitPlan(const MigrationPlan& plan) {
@@ -682,12 +757,19 @@ std::vector<uint64_t> MigrationExecutor::SubmitPlan(const MigrationPlan& plan) {
 }
 
 uint64_t MigrationExecutor::SubmitMigration(const MigrationPlan::Action& action) {
+  if (!accepting_submissions_.load() || shutdown_.load()) {
+    return 0;
+  }
+
   uint64_t id = next_migration_id_++;
   
   auto task = std::make_shared<MigrationTask>(id, action, config_);
   
   {
     std::lock_guard<std::mutex> lock(tasks_mutex_);
+    if (!accepting_submissions_.load() || shutdown_.load()) {
+      return 0;
+    }
     tasks_[id] = task;
     pending_queue_.push(task);
   }
@@ -831,16 +913,40 @@ void MigrationExecutor::ExecuteMigration(std::shared_ptr<MigrationTask> task) {
 }
 
 void MigrationExecutor::NotifyProgress(const MigrationProgress& progress) {
-  std::lock_guard<std::mutex> lock(callback_mutex_);
-  if (progress_callback_) {
-    progress_callback_(progress);
+  ProgressCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    callback = progress_callback_;
+  }
+  if (callback) {
+    try {
+      callback(progress);
+    } catch (const std::exception& e) {
+      std::cerr << "[MigrationExecutor] Progress callback exception: "
+                << e.what() << std::endl;
+    } catch (...) {
+      std::cerr << "[MigrationExecutor] Progress callback unknown exception"
+                << std::endl;
+    }
   }
 }
 
 void MigrationExecutor::NotifyCompletion(uint64_t id, bool success) {
-  std::lock_guard<std::mutex> lock(callback_mutex_);
-  if (completion_callback_) {
-    completion_callback_(id, success);
+  CompletionCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    callback = completion_callback_;
+  }
+  if (callback) {
+    try {
+      callback(id, success);
+    } catch (const std::exception& e) {
+      std::cerr << "[MigrationExecutor] Completion callback exception: "
+                << e.what() << std::endl;
+    } catch (...) {
+      std::cerr << "[MigrationExecutor] Completion callback unknown exception"
+                << std::endl;
+    }
   }
 }
 

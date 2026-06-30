@@ -1,5 +1,7 @@
 # CedarGraph Production Readiness Audit
 
+> **Historical archive note:** This audit records the repository state on 2026-05-10 and is not the current release verdict. Use `README.md`, `docs/user-manual/README.md`, and the latest `./scripts/preflight_release_gate.sh` result as the current readiness evidence.
+
 **Date:** 2026-05-10
 **Auditor:** Automated readiness check plan
 **Commit:** 44a57dea9e210e73ee81507482e880e0a9713c4f

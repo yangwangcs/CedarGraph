@@ -18,6 +18,7 @@
 #include <atomic>
 #include <future>
 #include <iostream>
+#include <mutex>
 #include <thread>
 
 #include "cedar/dtx/txn_context.h"

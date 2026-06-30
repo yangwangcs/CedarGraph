@@ -45,12 +45,48 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake pkg-config liblz4-dev libzstd-dev libprotobuf-dev protobuf-compiler libgrpc++-dev libgtest-dev
+        sudo apt-get install -y \
+          cmake \
+          pkg-config \
+          libcurl4-openssl-dev \
+          liblz4-dev \
+          libzstd-dev \
+          libleveldb-dev \
+          libgrpc++-dev \
+          protobuf-compiler-grpc \
+          libprotobuf-dev \
+          protobuf-compiler \
+          libprotoc-dev \
+          libssl-dev \
+          libyaml-cpp-dev \
+          libgflags-dev \
+          libgoogle-glog-dev \
+          nlohmann-json3-dev \
+          ripgrep \
+          libgtest-dev
 
     - name: Install dependencies on macOS
       if: runner.os == 'macOS'
       run: |
-        brew install cmake pkg-config lz4 zstd grpc googletest
+        brew install cmake pkg-config lz4 zstd grpc protobuf openssl yaml-cpp gflags glog leveldb nlohmann-json ripgrep googletest
+
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: v4.2.2
+
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: v1.35.0
+
+    - name: Verify preflight tools
+      shell: bash
+      run: |
+        rg --version
+        helm version --short
+        kubectl version --client=true --output=yaml
+        ruby --version
 
     - name: Generate build config
       run: >-
@@ -61,10 +97,35 @@ jobs:
         -DBUILD_TESTS=ON
 
     - name: Build
-      run: >-
-        cmake --build "${{ env.CMAKE_BUILD_DIR }}"
-        --config "${{ env.CMAKE_BUILD_TYPE }}"
-        --parallel
+      shell: bash
+      run: |
+        set -o pipefail
+        cmake --build "${{ env.CMAKE_BUILD_DIR }}" \
+          --config "${{ env.CMAKE_BUILD_TYPE }}" \
+          --parallel 2>&1 | tee "${{ runner.temp }}/cedar-build.log"
+
+    - name: Scan build diagnostics
+      shell: bash
+      run: |
+        if rg -n 'warning:|ld: warning|macro redefined|deprecated|duplicate librar|/opt/homebrew/include/butil|error:' "${{ runner.temp }}/cedar-build.log"; then
+          echo "Build log contains warning/error diagnostics" >&2
+          exit 1
+        fi
+
+    - name: Release manifest preflight
+      shell: bash
+      run: |
+        ./scripts/preflight_manifest_syntax.sh
+        ./scripts/preflight_deployment_static.sh
+        ./scripts/preflight_helm_static.sh
+        ./scripts/preflight_k8s_static.sh
+
+    - name: Docker static preflight
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        docker compose version
+        ./scripts/preflight_docker_static.sh
 
     - name: Run Tests
       working-directory: ${{ github.workspace }}/build

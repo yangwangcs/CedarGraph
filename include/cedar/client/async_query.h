@@ -36,10 +36,10 @@ enum class AsyncQueryStatus {
 
 // Async query result
 struct AsyncQueryResult {
-  AsyncQueryStatus status;
+  AsyncQueryStatus status = AsyncQueryStatus::PENDING;
   QueryResult result;
   std::string error_message;
-  int64_t execution_time_ms;
+  int64_t execution_time_ms = 0;
 };
 
 // Async query handle
@@ -71,14 +71,14 @@ class AsyncQuery {
   void SetCallback(AsyncQueryCallback callback);
 
   // Get future
-  std::future<AsyncQueryResult> GetFuture();
+  std::shared_future<AsyncQueryResult> GetFuture();
 
  private:
   std::string query_;
   std::string space_;
   std::atomic<AsyncQueryStatus> status_{AsyncQueryStatus::PENDING};
   std::promise<AsyncQueryResult> promise_;
-  std::future<AsyncQueryResult> future_;
+  std::shared_future<AsyncQueryResult> future_;
   AsyncQueryCallback callback_;
   mutable std::mutex mutex_;
 
@@ -120,6 +120,9 @@ class AsyncQueryPool {
   // Cancel all queries
   void CancelAll();
 
+  // Wait for all pending and active queries to finish
+  void WaitForAll();
+
   // Shutdown pool
   void Shutdown();
 
@@ -129,6 +132,7 @@ class AsyncQueryPool {
   std::queue<WorkItem> work_queue_;
   mutable std::mutex mutex_;
   std::condition_variable condition_;
+  std::condition_variable completion_cv_;
   std::atomic<bool> running_{true};
   std::atomic<int> active_queries_{0};
   std::atomic<int> total_queries_{0};

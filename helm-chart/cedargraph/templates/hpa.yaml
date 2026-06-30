@@ -1,4 +1,4 @@
-{{- if .Values.autoscaling.graphd.enabled }}
+{{- if and .Values.autoscaling.enabled .Values.autoscaling.graphd.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -28,7 +28,7 @@ spec:
           averageUtilization: {{ .Values.autoscaling.graphd.targetMemoryUtilizationPercentage }}
 ---
 {{- end }}
-{{- if .Values.autoscaling.storaged.enabled }}
+{{- if and .Values.autoscaling.enabled .Values.autoscaling.storaged.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

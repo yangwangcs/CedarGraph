@@ -35,7 +35,7 @@ spec:
             - sh
             - -c
             - |
-              until nc -z {{ include "cedargraph.fullname" . }}-metad-0.{{ include "cedargraph.fullname" . }}-metad {{ .Values.metad.service.port }}; do
+              until nc -z {{ include "cedargraph.fullname" . }}-metad-0.{{ include "cedargraph.fullname" . }}-metad {{ .Values.metad.service.grpcPort }}; do
                 echo "Waiting for metad..."
                 sleep 2
               done
@@ -45,6 +45,20 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              ordinal="${HOSTNAME##*-}"
+              exec /usr/local/bin/cedar-storaged \
+                --node_id "${ordinal}" \
+                --port "{{ .Values.storaged.service.ports.grpc }}" \
+                --bind "0.0.0.0" \
+                --advertise_address "${HOSTNAME}.{{ include "cedargraph.fullname" . }}-storaged" \
+                --data_dir "/data/storage" \
+                --meta "{{ include "cedargraph.metad.endpoints" . }}" \
+                --health_port "{{ .Values.storaged.service.ports.health }}" \
+                --metrics_port "{{ .Values.storaged.service.ports.metrics }}"
           env:
             - name: NODE_ROLE
               value: "storaged"
@@ -59,14 +73,36 @@ spec:
             - name: LOCAL_IP
               value: "$(POD_NAME).{{ include "cedargraph.fullname" . }}-storaged"
             - name: BIND_ADDRESS
-              value: "0.0.0.0:{{ .Values.storaged.service.port }}"
+              value: "0.0.0.0:{{ .Values.storaged.service.ports.grpc }}"
             - name: DATA_DIR
               value: "/data/storage"
             - name: AUTO_REGISTER
               value: "true"
+            - name: CEDAR_GRPC_TLS_ENABLED
+              value: {{ ternary "1" "0" .Values.graphd.tls.enabled | quote }}
+            - name: CEDAR_GRPC_ALLOW_INSECURE
+              value: {{ ternary "0" "1" .Values.graphd.tls.enabled | quote }}
+            - name: CEDAR_GRPC_SERVER_CERT
+              value: "/etc/cedar/tls/tls.crt"
+            - name: CEDAR_GRPC_SERVER_KEY
+              value: "/etc/cedar/tls/tls.key"
+            - name: CEDAR_GRPC_CA_CERT
+              value: "/etc/cedar/tls/ca.crt"
+            - name: CEDAR_GRPC_MTLS_ENABLED
+              value: {{ ternary "1" "0" .Values.graphd.tls.mtlsEnabled | quote }}
+            - name: CEDAR_GRPC_CLIENT_CERT
+              value: "/etc/cedar/tls/client.crt"
+            - name: CEDAR_GRPC_CLIENT_KEY
+              value: "/etc/cedar/tls/client.key"
           ports:
             - name: storaged
-              containerPort: {{ .Values.storaged.service.port }}
+              containerPort: {{ .Values.storaged.service.ports.grpc }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.storaged.service.ports.health }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.storaged.service.ports.metrics }}
               protocol: TCP
           resources:
             {{- toYaml .Values.storaged.resources | nindent 12 }}
@@ -75,16 +111,19 @@ spec:
               mountPath: /data/storage
             - name: logs
               mountPath: /logs
+            - name: grpc-tls
+              mountPath: /etc/cedar/tls
+              readOnly: true
           livenessProbe:
             tcpSocket:
-              port: {{ .Values.storaged.service.port }}
+              port: {{ .Values.storaged.service.ports.health }}
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             tcpSocket:
-              port: {{ .Values.storaged.service.port }}
+              port: {{ .Values.storaged.service.ports.health }}
             initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 3
@@ -92,6 +131,10 @@ spec:
       volumes:
         - name: logs
           emptyDir: {}
+        - name: grpc-tls
+          secret:
+            secretName: {{ required "graphd.tls.existingSecret is required" .Values.graphd.tls.existingSecret | quote }}
+            optional: {{ not .Values.graphd.tls.enabled }}
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -101,3 +144,31 @@ spec:
         resources:
           requests:
             storage: {{ .Values.storaged.persistence.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-storaged
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storaged
+spec:
+  type: {{ .Values.storaged.service.type }}
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: storaged
+      port: {{ .Values.storaged.service.ports.grpc }}
+      targetPort: storaged
+      protocol: TCP
+    - name: health
+      port: {{ .Values.storaged.service.ports.health }}
+      targetPort: health
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.storaged.service.ports.metrics }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "cedargraph.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: storaged

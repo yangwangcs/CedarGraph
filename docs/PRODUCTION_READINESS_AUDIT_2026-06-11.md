@@ -1,5 +1,7 @@
 # CedarGraph-Core Production Readiness Audit
 
+> **Historical archive note:** This audit records the repository state on 2026-06-11 and is not the current release verdict. Use `README.md`, `docs/user-manual/README.md`, and the latest `./scripts/preflight_release_gate.sh` result as the current readiness evidence.
+
 **Date:** 2026-06-11
 **Commit:** `2eef0fa`
 **Test Status:** 1285/1285 passed (100%), 0 failed

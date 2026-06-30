@@ -176,6 +176,8 @@ private:
     // GraphD 节点清理线程
     std::unique_ptr<std::thread> graphd_cleanup_thread_;
     std::atomic<bool> graphd_cleanup_running_{false};
+    std::condition_variable graphd_cleanup_cv_;
+    std::mutex graphd_cleanup_cv_mutex_;
     void GraphDCleanupLoop();
     
     // 类型转换 helpers
@@ -269,6 +271,10 @@ private:
     
     std::thread health_monitor_thread_;
     std::atomic<bool> health_monitor_running_{false};
+    std::condition_variable health_monitor_cv_;
+    std::mutex health_monitor_cv_mutex_;
+    std::mutex health_context_mutex_;
+    grpc::ClientContext* active_health_context_{nullptr};
     void HealthMonitorLoop();
     
     std::vector<std::string> meta_addresses_;

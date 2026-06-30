@@ -182,7 +182,7 @@ Status QueryStorageClient::ScanNode(
   versions->clear();
   for (const auto& item : resp.items()) {
     Descriptor desc;
-    const std::string& data = item.descriptor_().data();
+    const std::string& data = item.value_descriptor().data();
     if (data.size() >= sizeof(uint64_t)) {
       uint64_t raw;
       std::memcpy(&raw, data.data(), sizeof(uint64_t));
@@ -246,7 +246,7 @@ Status QueryStorageClient::ScanOutEdges(
   for (const auto& item : resp.items()) {
     EdgeScanEntry entry;
     entry.timestamp = Timestamp(item.timestamp());
-    const std::string& data = item.descriptor_().data();
+    const std::string& data = item.value_descriptor().data();
     if (data.size() >= sizeof(uint64_t)) {
       uint64_t raw;
       std::memcpy(&raw, data.data(), sizeof(uint64_t));
@@ -310,7 +310,7 @@ Status QueryStorageClient::ScanInEdges(
   for (const auto& item : resp.items()) {
     EdgeScanEntry entry;
     entry.timestamp = Timestamp(item.timestamp());
-    const std::string& data = item.descriptor_().data();
+    const std::string& data = item.value_descriptor().data();
     if (data.size() >= sizeof(uint64_t)) {
       uint64_t raw;
       std::memcpy(&raw, data.data(), sizeof(uint64_t));
@@ -545,11 +545,18 @@ class NodeClientImpl : public QueryStorageClient::NodeClient {
 
 // Helper: convert proto QueryValue to cypher::Value
 static cypher::Value ProtoValueToCypherValue(const cedar::storage::QueryValue& pv) {
-  if (pv.has_bool_val()) return cypher::Value(pv.bool_val());
-  if (pv.has_int_val()) return cypher::Value(pv.int_val());
-  if (pv.has_float_val()) return cypher::Value(pv.float_val());
-  if (pv.has_string_val()) return cypher::Value(pv.string_val());
-  return cypher::Value();
+  switch (pv.value_type_case()) {
+    case cedar::storage::QueryValue::kBoolVal:
+      return cypher::Value(pv.bool_val());
+    case cedar::storage::QueryValue::kIntVal:
+      return cypher::Value(pv.int_val());
+    case cedar::storage::QueryValue::kFloatVal:
+      return cypher::Value(pv.float_val());
+    case cedar::storage::QueryValue::kStringVal:
+      return cypher::Value(pv.string_val());
+    default:
+      return cypher::Value();
+  }
 }
 
 // Helper: convert cypher::Value to proto QueryValue
@@ -754,7 +761,7 @@ std::shared_ptr<QueryStorageClient::NodeClient> QueryStorageClient::GetNodeClien
   if (CheckCircuitBreaker(address)) {
     return std::make_shared<UnavailableNodeClient>(address);
   }
-  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
   if (!creds.ok()) {
     return GetNodeClient(partition_id);
   }
@@ -933,7 +940,7 @@ std::shared_ptr<grpc::Channel> QueryStorageClient::GetOrCreateChannel(
     }
     address = it->second;
   }
-  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
   if (!creds.ok()) {
     std::cerr << "[QueryStorageClient] TLS credential error: "
               << creds.status().ToString() << std::endl;

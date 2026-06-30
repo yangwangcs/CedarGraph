@@ -193,7 +193,10 @@ Status CedarGraphDBImpl::Close() {
         std::cerr << "[CedarGraphDBImpl::Close] ForceFlush attempt " << attempt
                   << " failed for cf " << cf->name << ": " << s.ToString() << std::endl;
         if (attempt < 3) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          std::unique_lock<std::mutex> lock(bg_mutex_);
+          bg_cv_.wait_for(lock, std::chrono::milliseconds(100), [this] {
+            return shutting_down_.load();
+          });
         }
       }
       if (!s.ok()) {

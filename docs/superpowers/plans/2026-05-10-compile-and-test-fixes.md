@@ -96,7 +96,7 @@ class DistributedCrudTest : public ::testing::Test {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target test_distributed_crud
 ./tests/test_distributed_crud
 ```
@@ -107,7 +107,7 @@ Expected: All 6 tests pass.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ctest -j8 -R "DistributedCrudTest" --output-on-failure
 ```
 
@@ -116,7 +116,7 @@ Expected: `100% tests passed, 0 tests failed` even under `-j8` parallelism.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/cluster/test_distributed_crud.cc
 git commit -m "test(crud): use unique temp dirs per test to fix parallel race"
 ```
@@ -131,7 +131,7 @@ git commit -m "test(crud): use unique temp dirs per test to fix parallel race"
 - [ ] **Step 1: Inspect current fixture**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 grep -n "test_batch\|SetUp\|TearDown" tests/cluster/test_distributed_batch.cc | head -20
 ```
 
@@ -160,7 +160,7 @@ Apply the same pattern as Task 1:
 - [ ] **Step 3: Build and verify**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target test_distributed_batch
 ctest -j8 -R "DistributedBatchTest" --output-on-failure
 ```
@@ -184,7 +184,7 @@ git commit -m "test(batch): use unique temp dirs per test to fix parallel race"
 - [ ] **Step 1: Inspect all fixed paths in the file**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 grep -n '"/tmp/test' tests/end_to_end/test_distributed_storage_api.cc
 ```
 
@@ -221,7 +221,7 @@ Do this for every test fixture in the file. Ensure `DestroyDB` and cleanup also 
 - [ ] **Step 3: Build and verify**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target test_distributed_storage_api
 ctest -j8 -R "DistributedStorageApiTest" --output-on-failure
 ```
@@ -300,7 +300,7 @@ set(CTEST_TEST_TIMEOUT 60)
 - [ ] **Step 3: Reconfigure and verify**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake ..
 ctest -j4 --output-on-failure
 ```
@@ -329,7 +329,7 @@ git commit -m "build(tests): set ctest timeout to 60s to prevent flaky performan
 After all tasks are complete, run the full verification:
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 rm -rf build && mkdir build && cd build
 cmake .. -DBUILD_TESTS=ON -DBUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)

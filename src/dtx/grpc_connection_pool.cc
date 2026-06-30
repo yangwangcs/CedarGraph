@@ -417,7 +417,7 @@ std::shared_ptr<PooledChannel> GrpcConnectionPool::CreateConnection(
   args.SetInt(GRPC_ARG_MAX_RECONNECT_BACKOFF_MS, 5000);
   
   // 创建通道
-  auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
   if (!client_creds.ok()) {
     CEDAR_LOG_ERROR() << "[ConnectionPool] TLS error: " << client_creds.status().ToString() << std::endl;
     return nullptr;

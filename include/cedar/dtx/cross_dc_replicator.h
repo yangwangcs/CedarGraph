@@ -17,12 +17,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -142,6 +144,7 @@ class CrossDCReplicator {
   void ProcessReplicationQueue();
   void ReconciliationLoop();
   void ReconcileKey(const CedarKey& key, const std::string& dc_id);
+  void EnqueueReconciliation(const CedarKey& key, const std::string& dc_id);
  protected:
   virtual Status ReplicateToDC(const ReplicationLog& log, const std::string& dc_id);
 
@@ -150,6 +153,10 @@ class CrossDCReplicator {
   Status SendToRemoteDC(const ReplicationLog& log, const std::string& dc_id);
   Status SendToRemoteDCWithRetry(const ReplicationLog& log,
                                   const std::string& dc_id);
+  bool WaitForRetryDelay(std::chrono::milliseconds delay);
+  void RegisterActiveContext(::grpc::ClientContext* context);
+  void UnregisterActiveContext(::grpc::ClientContext* context);
+  void TryCancelActiveContexts();
   void DrainPendingQueue();
   void UpdateLag(const std::string& dc_id);
   ReplicationLog CreateTimestampBasedResolution(
@@ -174,6 +181,7 @@ class CrossDCReplicator {
   };
   std::deque<ReconcileEntry> reconciliation_queue_;
   mutable std::mutex reconciliation_mutex_;
+  std::condition_variable reconciliation_cv_;
   std::thread reconciliation_thread_;
   std::atomic<size_t> reconciliation_retried_{0};
   std::atomic<size_t> reconciliation_resolved_{0};
@@ -193,10 +201,14 @@ class CrossDCReplicator {
   std::map<std::string, ReplicationStatus> dc_statuses_;
   
   std::atomic<bool> running_{false};
+  std::atomic<bool> stop_requested_{false};
   std::thread replication_thread_;
   
   std::map<std::string, std::shared_ptr<grpc::Channel>> dc_channels_;
   cedar::CedarGraphStorage* storage_ = nullptr;
+
+  mutable std::mutex active_contexts_mutex_;
+  std::set<::grpc::ClientContext*> active_contexts_;
 
   mutable std::mutex callback_mutex_;
   ReplicationCallback replication_callback_;

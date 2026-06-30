@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 #include <chrono>
+#include <future>
 #include <thread>
 #include "cedar/dtx/cross_dc_replicator.h"
 
@@ -147,9 +148,25 @@ TEST(CrossDCReplicationTest, BatchReplication) {
 // Mock replicator that lets us inject per-DC failure.
 class MockCrossDCReplicator : public CrossDCReplicator {
  public:
+  enum class Outcome {
+    kBase,
+    kSuccess,
+    kFail,
+  };
+
   void SetInjectFailureForDC(const std::string& dc, bool fail) {
     std::lock_guard<std::mutex> lock(inject_mutex_);
-    inject_failures_[dc] = fail;
+    outcomes_[dc] = fail ? Outcome::kFail : Outcome::kBase;
+  }
+
+  void SetOutcomeForDC(const std::string& dc, Outcome outcome) {
+    std::lock_guard<std::mutex> lock(inject_mutex_);
+    outcomes_[dc] = outcome;
+  }
+
+  void SetTombstoneOutcomeForDC(const std::string& dc, Outcome outcome) {
+    std::lock_guard<std::mutex> lock(inject_mutex_);
+    tombstone_outcomes_[dc] = outcome;
   }
 
   // Expose protected method for testing
@@ -161,8 +178,15 @@ class MockCrossDCReplicator : public CrossDCReplicator {
   Status ReplicateToDC(const ReplicationLog& log, const std::string& dc_id) override {
     {
       std::lock_guard<std::mutex> lock(inject_mutex_);
-      if (inject_failures_[dc_id]) {
-        return Status::IOError("Injected failure for " + dc_id);
+      auto& selected = log.value.IsTombstone() ? tombstone_outcomes_ : outcomes_;
+      auto it = selected.find(dc_id);
+      if (it != selected.end()) {
+        if (it->second == Outcome::kSuccess) {
+          return Status::OK();
+        }
+        if (it->second == Outcome::kFail) {
+          return Status::IOError("Injected failure for " + dc_id);
+        }
       }
     }
     return CrossDCReplicator::ReplicateToDC(log, dc_id);
@@ -170,7 +194,8 @@ class MockCrossDCReplicator : public CrossDCReplicator {
 
  private:
   std::mutex inject_mutex_;
-  std::map<std::string, bool> inject_failures_;
+  std::map<std::string, Outcome> outcomes_;
+  std::map<std::string, Outcome> tombstone_outcomes_;
 };
 
 TEST(CrossDCReplicationTest, SyncModeAllOrNothing) {
@@ -208,6 +233,54 @@ TEST(CrossDCReplicationTest, SyncPartialFailureDoesNotReturnOk) {
   s = replicator.Replicate("partial-key", desc, Timestamp(2000));
   EXPECT_FALSE(s.ok()) << "Expected failure when no DCs are reachable, got: "
                        << s.ToString();
+}
+
+TEST(CrossDCReplicationTest, SyncRollbackFailureEnqueuesReconciliation) {
+  DCReplicationConfig config;
+  config.mode = ReplicationMode::kSync;
+  config.max_reconciliation_queue_size = 5;
+
+  MockCrossDCReplicator replicator;
+  Status s = replicator.Initialize(config, "dc-local", {"dc-a", "dc-b"});
+  ASSERT_TRUE(s.ok());
+
+  replicator.SetOutcomeForDC("dc-a", MockCrossDCReplicator::Outcome::kSuccess);
+  replicator.SetOutcomeForDC("dc-b", MockCrossDCReplicator::Outcome::kFail);
+  replicator.SetTombstoneOutcomeForDC("dc-a", MockCrossDCReplicator::Outcome::kFail);
+
+  Descriptor desc = Descriptor::InlineInt(0, 123);
+  s = replicator.Replicate("partial-key", desc, Timestamp(2000));
+  EXPECT_FALSE(s.ok());
+
+  auto status = replicator.GetReconciliationStatus();
+  EXPECT_EQ(status.pending_count, 1u);
+}
+
+TEST(CrossDCReplicationTest, SyncCallbackRunsOutsideCallbackMutex) {
+  DCReplicationConfig config;
+  config.mode = ReplicationMode::kSync;
+
+  CrossDCReplicator replicator;
+  ASSERT_TRUE(replicator.Initialize(config, "dc-local", {"dc-remote"}).ok());
+
+  std::promise<void> callback_entered;
+  auto entered_future = callback_entered.get_future();
+  replicator.SetReplicationCallback(
+      [&replicator, &callback_entered](const ReplicationLog&, Status) {
+        replicator.SetReplicationCallback(nullptr);
+        callback_entered.set_value();
+      });
+
+  Descriptor desc = Descriptor::InlineInt(0, 1);
+  auto future = std::async(std::launch::async, [&] {
+    return replicator.Replicate("key", desc, Timestamp(1));
+  });
+
+  EXPECT_EQ(entered_future.wait_for(std::chrono::seconds(2)),
+            std::future_status::ready);
+  EXPECT_EQ(future.wait_for(std::chrono::seconds(2)),
+            std::future_status::ready);
+  EXPECT_FALSE(future.get().ok());
 }
 
 TEST(CrossDCReplicationTest, SequenceWraparoundAccepted) {
@@ -252,4 +325,70 @@ TEST(CrossDCReplicationTest, ReconciliationQueueBoundEnforced) {
   // the config is stored and the status reflects zero pending.
   auto status = replicator.GetReconciliationStatus();
   EXPECT_EQ(status.pending_count, 0u);
+}
+
+TEST(CrossDCReplicationTest, StopWakesIdleReconciliationThreadPromptly) {
+  DCReplicationConfig config;
+  config.mode = ReplicationMode::kSync;
+
+  CrossDCReplicator replicator;
+  ASSERT_TRUE(replicator.Initialize(config, "dc-local", {"dc-remote"}).ok());
+  ASSERT_TRUE(replicator.Start().ok());
+
+  auto start = std::chrono::steady_clock::now();
+  replicator.Stop();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            500);
+}
+
+TEST(CrossDCReplicationTest, TlsEnabledWithoutCaFailsInitialization) {
+  DCReplicationConfig config;
+  config.tls_enabled = true;
+  config.remote_dc_endpoints["dc-remote"] = "127.0.0.1:1";
+
+  CrossDCReplicator replicator;
+  auto status = replicator.Initialize(config, "dc-local", {"dc-remote"});
+
+  EXPECT_FALSE(status.ok());
+  EXPECT_TRUE(status.IsIOError());
+}
+
+TEST(CrossDCReplicationTest, StopInterruptsReplicationRetryBackoffPromptly) {
+  DCReplicationConfig config;
+  config.mode = ReplicationMode::kAsync;
+  config.allow_insecure = true;
+  config.remote_dc_endpoints["dc-remote"] = "127.0.0.1:1";
+  config.max_retry_attempts = 3;
+  config.retry_delay = std::chrono::seconds(30);
+
+  MockCrossDCReplicator replicator;
+  ASSERT_TRUE(replicator.Initialize(config, "dc-local", {"dc-remote"}).ok());
+  ASSERT_TRUE(replicator.Start().ok());
+
+  ReplicationLog log;
+  log.sequence_num = 1;
+  log.key.SetEntityId(1);
+  log.value = Descriptor::InlineInt(0, 1);
+  log.timestamp = Timestamp(1);
+  log.source_dc = "dc-local";
+  log.target_dcs = {"dc-remote"};
+
+  auto future = std::async(std::launch::async, [&]() {
+    return replicator.TestReplicateToDC(log, "dc-remote");
+  });
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  auto start = std::chrono::steady_clock::now();
+  replicator.Stop();
+
+  ASSERT_EQ(future.wait_for(std::chrono::milliseconds(500)),
+            std::future_status::ready);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+  auto status = future.get();
+
+  EXPECT_FALSE(status.ok());
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            500);
 }

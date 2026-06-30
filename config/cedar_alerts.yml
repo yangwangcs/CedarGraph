@@ -5,7 +5,7 @@ groups:
   - name: cedar_storage_alerts
     interval: 30s
     rules:
-      # Node Down Alert
+      # Storage scrape target down.
       - alert: CedarStorageNodeDown
         expr: up{job="cedar-storage"} == 0
         for: 1m
@@ -14,81 +14,61 @@ groups:
         annotations:
           summary: "CedarGraph storage node {{ $labels.instance }} is down"
           description: "Storage node has been down for more than 1 minute."
-          
-      # Disk Space Alert
+
+      # GraphD scrape target down.
+      - alert: CedarGraphDNodeDown
+        expr: up{job="cedar-graphd"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CedarGraph GraphD node {{ $labels.instance }} is down"
+          description: "GraphD metrics target has been down for more than 1 minute."
+
+      # Disk space is exported as total/free bytes by MetricsCollector.
       - alert: CedarDiskSpaceLow
-        expr: cedar_storage_disk_usage_percent > 80
+        expr: 100 * (1 - cedar_disk_free_bytes / cedar_disk_total_bytes) > 80
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "Storage node {{ $labels.instance }} disk space low"
           description: "Disk usage is above 80% (current: {{ $value }}%)"
-          
+
       - alert: CedarDiskSpaceCritical
-        expr: cedar_storage_disk_usage_percent > 90
+        expr: 100 * (1 - cedar_disk_free_bytes / cedar_disk_total_bytes) > 90
         for: 1m
         labels:
           severity: critical
         annotations:
           summary: "Storage node {{ $labels.instance }} disk space critical"
           description: "Disk usage is above 90% (current: {{ $value }}%)"
-          
-      # Memory Alert
+
+      # Process memory warning. Tune the absolute threshold per deployment size.
       - alert: CedarMemoryHigh
-        expr: cedar_storage_memory_usage_percent > 85
+        expr: cedar_process_memory_bytes > 8589934592
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Storage node {{ $labels.instance }} memory usage high"
-          description: "Memory usage is above 85% (current: {{ $value }}%)"
-          
-      # Recovery Events
-      - alert: CedarRecoveryFailed
-        expr: increase(cedar_recovery_failures_total[5m]) > 0
-        for: 0m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Recovery action failed on {{ $labels.instance }}"
-          description: "A recovery action has failed. Manual intervention may be required."
-          
-      - alert: CedarMultipleRecoveries
-        expr: increase(cedar_recovery_attempts_total[10m]) > 5
-        for: 0m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High recovery rate on {{ $labels.instance }}"
-          description: "More than 5 recovery attempts in 10 minutes."
-          
-      # Partition Health
-      - alert: CedarPartitionLeaderMissing
-        expr: cedar_storage_leader_partitions / cedar_storage_total_partitions < 0.5
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Too few leader partitions on {{ $labels.instance }}"
-          description: "Less than 50% of partitions have leaders."
-          
-      # Performance Degradation
-      - alert: CedarHighLatency
-        expr: cedar_storage_operation_latency_p99 > 1000000
+          summary: "CedarGraph process memory high on {{ $labels.instance }}"
+          description: "Process RSS is above 8GiB (current bytes: {{ $value }}). Tune threshold for larger nodes."
+
+      # Performance degradation using real histogram metrics.
+      - alert: CedarStoragePutLatencyHigh
+        expr: histogram_quantile(0.99, rate(cedar_storage_put_latency_seconds_bucket[5m])) > 1
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High operation latency on {{ $labels.instance }}"
-          description: "P99 latency is above 1 second."
-          
-      # Error Rate
-      - alert: CedarHighErrorRate
-        expr: rate(cedar_storage_errors_total[5m]) > 0.1
-        for: 2m
+          summary: "High StorageD put latency on {{ $labels.instance }}"
+          description: "P99 put latency is above 1 second."
+
+      - alert: CedarStorageGetLatencyHigh
+        expr: histogram_quantile(0.99, rate(cedar_storage_get_latency_seconds_bucket[5m])) > 1
+        for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High error rate on {{ $labels.instance }}"
-          description: "Error rate is above 10% in the last 5 minutes."
+          summary: "High StorageD get latency on {{ $labels.instance }}"
+          description: "P99 get latency is above 1 second."

@@ -64,16 +64,22 @@ class CedarGraphClient {
         for (int i = 0; i < row.values_size(); ++i) {
           if (i > 0) std::cout << ", ";
           const auto& val = row.values(i);
-          if (val.has_int_val()) {
-            std::cout << val.int_val();
-          } else if (val.has_float_val()) {
-            std::cout << val.float_val();
-          } else if (val.has_string_val()) {
-            std::cout << "\"" << val.string_val() << "\"";
-          } else if (val.has_bool_val()) {
-            std::cout << (val.bool_val() ? "true" : "false");
-          } else {
-            std::cout << "null";
+          switch (val.value_type_case()) {
+            case cedar::query::Value::kIntVal:
+              std::cout << val.int_val();
+              break;
+            case cedar::query::Value::kFloatVal:
+              std::cout << val.float_val();
+              break;
+            case cedar::query::Value::kStringVal:
+              std::cout << "\"" << val.string_val() << "\"";
+              break;
+            case cedar::query::Value::kBoolVal:
+              std::cout << (val.bool_val() ? "true" : "false");
+              break;
+            default:
+              std::cout << "null";
+              break;
           }
         }
         std::cout << "]" << std::endl;

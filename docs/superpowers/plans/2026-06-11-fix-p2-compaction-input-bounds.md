@@ -71,13 +71,13 @@ Replace the entire block (lines 830-860) with:
 - [ ] **Step 2: Build cedar target**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
 ```
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/storage/size_tiered_compaction.cc && git commit -m "fix(storage): save manifest before deleting old SST files during compaction"
+cd <repo-root> && git add src/storage/size_tiered_compaction.cc && git commit -m "fix(storage): save manifest before deleting old SST files during compaction"
 ```
 
 ---
@@ -126,14 +126,14 @@ In `SaveToFile`, add the `limits` section to the PrettyWriter output.
 - [ ] **Step 4: Build and run config tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target test_cedar_config -j$(sysctl -n hw.ncpu) && ./tests/test_cedar_config
+cd <repo-root>/build && cmake --build . --target test_cedar_config -j$(sysctl -n hw.ncpu) && ./tests/test_cedar_config
 ```
 Expected: all tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add include/cedar/storage/cedar_config.h src/storage/cedar_config.cc && git commit -m "feat(config): add configurable input limits for DoS protection"
+cd <repo-root> && git add include/cedar/storage/cedar_config.h src/storage/cedar_config.cc && git commit -m "feat(config): add configurable input limits for DoS protection"
 ```
 
 ---
@@ -184,13 +184,13 @@ After `CheckAuth` and before parsing, add:
 - [ ] **Step 3: Build cedar_graphd target**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_graphd -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_graphd -j$(sysctl -n hw.ncpu)
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/service/graph_service_router.cc && git commit -m "fix(graphd): add input bounds validation (query length, timeout, params)"
+cd <repo-root> && git add src/service/graph_service_router.cc && git commit -m "fix(graphd): add input bounds validation (query length, timeout, params)"
 ```
 
 ---
@@ -225,13 +225,13 @@ After `CheckAuth` and before processing:
 - [ ] **Step 3: Build cedar target**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/dtx/storage_impl/storage_service_impl.cc && git commit -m "fix(storage): add batch size limit validation"
+cd <repo-root> && git add src/dtx/storage_impl/storage_service_impl.cc && git commit -m "fix(storage): add batch size limit validation"
 ```
 
 ---
@@ -241,6 +241,6 @@ cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/dtx/storage_impl/stora
 - [ ] **Step 1: Run full test suite**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ctest --output-on-failure -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && ctest --output-on-failure -j$(sysctl -n hw.ncpu)
 ```
 Expected: 1285/1285 passed, 0 failed.

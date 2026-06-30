@@ -20,6 +20,7 @@
 
 #include <chrono>
 #include <ctime>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -191,6 +192,7 @@ NetworkSink::NetworkSink(const Config& config) : config_(config) {
 
 NetworkSink::~NetworkSink() {
   running_.store(false);
+  send_cv_.notify_all();
   if (send_thread_.joinable()) {
     send_thread_.join();
   }
@@ -210,9 +212,15 @@ void NetworkSink::Flush() {
 
 void NetworkSink::SendLoop() {
   while (running_.load()) {
-    std::this_thread::sleep_for(config_.flush_interval);
-    
-    if (!running_.load()) break;
+    std::unique_lock<std::mutex> wait_lock(send_cv_mutex_);
+    send_cv_.wait_for(wait_lock, config_.flush_interval, [this]() {
+      return !running_.load();
+    });
+    wait_lock.unlock();
+
+    if (!running_.load()) {
+      break;
+    }
     
     std::queue<LogEntry> to_send;
     {
@@ -271,8 +279,18 @@ Logger* Logger::GetInstance() {
 }
 
 Status Logger::Initialize(const Config& config) {
+  if (initialized_.load()) {
+    Shutdown();
+  }
+
   config_ = config;
   current_level_.store(config.min_level);
+  shutdown_.store(false);
+
+  {
+    std::lock_guard<std::mutex> lock(sinks_mutex_);
+    sinks_.clear();
+  }
   
   // 添加控制台 sink
   if (config.enable_console) {
@@ -529,7 +547,29 @@ AlertManager* AlertManager::GetInstance() {
 }
 
 Status AlertManager::Initialize(const Config& config) {
+  if (running_.load()) {
+    Shutdown();
+  }
+
   config_ = config;
+  {
+    std::lock_guard<std::mutex> lock(rules_mutex_);
+    rules_.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lock(notifiers_mutex_);
+    notifiers_.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lock(alerts_mutex_);
+    alerts_.clear();
+    active_alerts_.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lock(metric_provider_mutex_);
+    metric_provider_ = nullptr;
+  }
+  next_alert_id_.store(1);
   running_.store(true);
   
   // 添加默认的日志通知器
@@ -541,13 +581,33 @@ Status AlertManager::Initialize(const Config& config) {
 }
 
 void AlertManager::Shutdown() {
-  if (!running_.exchange(false)) {
-    return;
+  const bool was_running = running_.exchange(false);
+  if (was_running) {
+    eval_cv_.notify_all();
   }
   
   if (eval_thread_.joinable()) {
     eval_thread_.join();
   }
+
+  {
+    std::lock_guard<std::mutex> lock(rules_mutex_);
+    rules_.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lock(notifiers_mutex_);
+    notifiers_.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lock(alerts_mutex_);
+    alerts_.clear();
+    active_alerts_.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lock(metric_provider_mutex_);
+    metric_provider_ = nullptr;
+  }
+  next_alert_id_.store(1);
 }
 
 void AlertManager::AddRule(const AlertRule& rule) {
@@ -562,28 +622,30 @@ void AlertManager::RemoveRule(const std::string& name) {
 
 void AlertManager::AddNotifier(std::unique_ptr<AlertNotifier> notifier) {
   std::lock_guard<std::mutex> lock(notifiers_mutex_);
-  notifiers_.push_back(std::move(notifier));
+  notifiers_.push_back(std::shared_ptr<AlertNotifier>(std::move(notifier)));
 }
 
 void AlertManager::FireAlert(const std::string& rule_name,
                               const std::map<std::string, std::string>& labels) {
-  std::lock_guard<std::mutex> lock(rules_mutex_);
-  
-  auto it = rules_.find(rule_name);
-  if (it == rules_.end()) {
-    return;
-  }
-  
-  const auto& rule = it->second;
-  
   Alert alert;
-  alert.alert_id = next_alert_id_.fetch_add(1);
-  alert.rule_name = rule_name;
-  alert.severity = rule.severity;
-  alert.message = rule.description;
-  alert.labels = labels;
-  alert.fired_at = std::chrono::system_clock::now();
-  alert.is_resolved = false;
+  {
+    std::lock_guard<std::mutex> lock(rules_mutex_);
+
+    auto it = rules_.find(rule_name);
+    if (it == rules_.end()) {
+      return;
+    }
+
+    const auto& rule = it->second;
+
+    alert.alert_id = next_alert_id_.fetch_add(1);
+    alert.rule_name = rule_name;
+    alert.severity = rule.severity;
+    alert.message = rule.description;
+    alert.labels = labels;
+    alert.fired_at = std::chrono::system_clock::now();
+    alert.is_resolved = false;
+  }
   
   {
     std::lock_guard<std::mutex> alert_lock(alerts_mutex_);
@@ -595,18 +657,26 @@ void AlertManager::FireAlert(const std::string& rule_name,
 }
 
 void AlertManager::ResolveAlert(uint64_t alert_id) {
-  std::lock_guard<std::mutex> lock(alerts_mutex_);
-  
-  auto it = alerts_.find(alert_id);
-  if (it != alerts_.end() && !it->second.is_resolved) {
-    it->second.is_resolved = true;
-    it->second.resolved_at = std::chrono::system_clock::now();
-    
-    active_alerts_.erase(
-        std::remove(active_alerts_.begin(), active_alerts_.end(), alert_id),
-        active_alerts_.end());
-    
-    SendNotification(it->second);
+  Alert alert;
+  bool resolved = false;
+  {
+    std::lock_guard<std::mutex> lock(alerts_mutex_);
+
+    auto it = alerts_.find(alert_id);
+    if (it != alerts_.end() && !it->second.is_resolved) {
+      it->second.is_resolved = true;
+      it->second.resolved_at = std::chrono::system_clock::now();
+      active_alerts_.erase(
+          std::remove(active_alerts_.begin(), active_alerts_.end(), alert_id),
+          active_alerts_.end());
+
+      alert = it->second;
+      resolved = true;
+    }
+  }
+
+  if (resolved) {
+    SendNotification(alert);
   }
 }
 
@@ -646,15 +716,36 @@ std::vector<Alert> AlertManager::GetAlertHistory(const std::string& rule_name) c
 
 void AlertManager::EvaluationLoop() {
   while (running_.load()) {
-    std::this_thread::sleep_for(config_.evaluation_interval);
-    
-    if (!running_.load()) break;
-    
-    if (!metric_provider_) continue;
-    
-    std::lock_guard<std::mutex> lock(rules_mutex_);
-    for (const auto& [name, rule] : rules_) {
-      double value = metric_provider_(rule.condition_metric);
+    std::unique_lock<std::mutex> wait_lock(eval_cv_mutex_);
+    eval_cv_.wait_for(wait_lock, config_.evaluation_interval, [this]() {
+      return !running_.load();
+    });
+    wait_lock.unlock();
+
+    if (!running_.load()) {
+      break;
+    }
+
+    MetricProvider metric_provider;
+    {
+      std::lock_guard<std::mutex> lock(metric_provider_mutex_);
+      metric_provider = metric_provider_;
+    }
+    if (!metric_provider) {
+      continue;
+    }
+
+    std::vector<std::pair<std::string, AlertRule>> rules;
+    {
+      std::lock_guard<std::mutex> lock(rules_mutex_);
+      rules.reserve(rules_.size());
+      for (const auto& [name, rule] : rules_) {
+        rules.emplace_back(name, rule);
+      }
+    }
+
+    for (const auto& [name, rule] : rules) {
+      double value = metric_provider(rule.condition_metric);
       bool triggered = false;
       
       if (rule.comparison == ">") {
@@ -671,6 +762,7 @@ void AlertManager::EvaluationLoop() {
       
       // Check if already active
       bool already_active = false;
+      std::vector<uint64_t> alerts_to_resolve;
       {
         std::lock_guard<std::mutex> alert_lock(alerts_mutex_);
         for (uint64_t id : active_alerts_) {
@@ -678,12 +770,15 @@ void AlertManager::EvaluationLoop() {
           if (it != alerts_.end() && it->second.rule_name == name) {
             already_active = true;
             if (!triggered) {
-              // Auto-resolve if condition is no longer met
-              ResolveAlert(id);
+              alerts_to_resolve.push_back(id);
             }
             break;
           }
         }
+      }
+
+      for (uint64_t id : alerts_to_resolve) {
+        ResolveAlert(id);
       }
       
       if (triggered && !already_active) {
@@ -694,11 +789,28 @@ void AlertManager::EvaluationLoop() {
 }
 
 void AlertManager::SendNotification(const Alert& alert) {
-  std::lock_guard<std::mutex> lock(notifiers_mutex_);
-  
-  for (auto& notifier : notifiers_) {
-    notifier->Notify(alert);
+  std::vector<std::shared_ptr<AlertNotifier>> notifiers;
+  {
+    std::lock_guard<std::mutex> lock(notifiers_mutex_);
+    notifiers = notifiers_;
   }
+
+  for (const auto& notifier : notifiers) {
+    try {
+      notifier->Notify(alert);
+    } catch (const std::exception& e) {
+      std::cerr << "[AlertManager] notifier " << notifier->GetName()
+                << " failed: " << e.what() << std::endl;
+    } catch (...) {
+      std::cerr << "[AlertManager] notifier " << notifier->GetName()
+                << " failed with unknown exception" << std::endl;
+    }
+  }
+}
+
+void AlertManager::SetMetricProvider(MetricProvider provider) {
+  std::lock_guard<std::mutex> lock(metric_provider_mutex_);
+  metric_provider_ = std::move(provider);
 }
 
 }  // namespace monitoring

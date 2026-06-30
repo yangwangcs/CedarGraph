@@ -474,9 +474,23 @@ bool PartitionFailoverController::PerformActiveHealthCheck(NodeID node_id) {
 
     // Deep health probe: if a callback is registered, perform app-level checks
     if (healthy) {
-        std::lock_guard<std::mutex> probe_lock(callback_mutex_);
-        if (health_probe_callback_) {
-            healthy = health_probe_callback_(node_id, address);
+        HealthProbeCallback probe_callback;
+        {
+            std::lock_guard<std::mutex> probe_lock(callback_mutex_);
+            probe_callback = health_probe_callback_;
+        }
+        if (probe_callback) {
+            try {
+                healthy = probe_callback(node_id, address);
+            } catch (const std::exception& e) {
+                CEDAR_LOG_ERROR() << "[Failover] Health probe callback exception for node "
+                          << node_id << ": " << e.what() << std::endl;
+                healthy = false;
+            } catch (...) {
+                CEDAR_LOG_ERROR() << "[Failover] Health probe callback unknown exception for node "
+                          << node_id << std::endl;
+                healthy = false;
+            }
         }
     }
 
@@ -766,15 +780,23 @@ void PartitionFailoverController::HealthCheckLoop() {
           CEDAR_LOG_ERROR() << "[Failover] Predictive degradation triggered for node " << node_id
                     << ". Redirecting new read traffic." << std::endl;
           RouteUpdateCallback cb;
-          {
-            std::lock_guard<std::mutex> lock(callback_mutex_);
-            cb = route_update_callback_;
-          }
-          if (cb) {
-            // Use a reserved partition_id 0 to signal node-level degradation
-            cb(0, node_id);
-          }
-        }
+	          {
+	            std::lock_guard<std::mutex> lock(callback_mutex_);
+	            cb = route_update_callback_;
+	          }
+	          if (cb) {
+	            // Use a reserved partition_id 0 to signal node-level degradation
+	            try {
+	              cb(0, node_id);
+	            } catch (const std::exception& e) {
+	              CEDAR_LOG_ERROR() << "[Failover] Route update callback exception for degraded node "
+	                        << node_id << ": " << e.what() << std::endl;
+	            } catch (...) {
+	              CEDAR_LOG_ERROR() << "[Failover] Route update callback unknown exception for degraded node "
+	                        << node_id << std::endl;
+	            }
+	          }
+	        }
         if (was_degraded) {
           CEDAR_LOG_ERROR() << "[Failover] Predictive degradation cancelled for node " << node_id
                     << ". Restoring full traffic." << std::endl;
@@ -959,16 +981,24 @@ void PartitionFailoverController::TriggerGraduatedDegradation(NodeID node_id) {
               << ". Redirecting new read traffic." << std::endl;
     // Notify routing layer to deprioritize this node for new requests
     RouteUpdateCallback cb;
-    {
-      std::lock_guard<std::mutex> lock(callback_mutex_);
-      cb = route_update_callback_;
-    }
-    if (cb) {
-      // Use a reserved partition_id 0 to signal node-level degradation
-      cb(0, node_id);
-    }
-  }
-}
+	    {
+	      std::lock_guard<std::mutex> lock(callback_mutex_);
+	      cb = route_update_callback_;
+	    }
+	    if (cb) {
+	      // Use a reserved partition_id 0 to signal node-level degradation
+	      try {
+	        cb(0, node_id);
+	      } catch (const std::exception& e) {
+	        CEDAR_LOG_ERROR() << "[Failover] Route update callback exception for degraded node "
+	                  << node_id << ": " << e.what() << std::endl;
+	      } catch (...) {
+	        CEDAR_LOG_ERROR() << "[Failover] Route update callback unknown exception for degraded node "
+	                  << node_id << std::endl;
+	      }
+	    }
+	  }
+	}
 
 bool PartitionFailoverController::TriggerGraduatedDegradationLocked(NodeID node_id) {
   bool already_degraded = degraded_nodes_.find(node_id) != degraded_nodes_.end();
@@ -1297,10 +1327,14 @@ Status ClusterFailoverManager::RestartViaKubernetes(const FailureEvent& event) {
             "Failed to send SIGTERM to self after " +
             std::to_string(kMaxTermAttempts) + " attempts");
       }
-      std::this_thread::sleep_for(kTermDelay);
+      if (WaitForShutdown(std::chrono::duration_cast<std::chrono::milliseconds>(kTermDelay))) {
+        return Status::OK();
+      }
       continue;
     }
-    std::this_thread::sleep_for(kTermDelay);
+    if (WaitForShutdown(std::chrono::duration_cast<std::chrono::milliseconds>(kTermDelay))) {
+      return Status::OK();
+    }
     if (kill(pid, 0) != 0) {
       CEDAR_LOG_ERROR() << "[ClusterFailover] Process no longer responding to kill(0), "
                 << "assuming graceful shutdown is in progress." << std::endl;
@@ -1364,7 +1398,9 @@ Status ClusterFailoverManager::RestartViaSystemd(const FailureEvent& event) {
   CEDAR_LOG_ERROR() << "[ClusterFailover] systemd WATCHDOG=trigger sent successfully" << std::endl;
   
   // 同时发送 SIGTERM 以加速重启
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  if (WaitForShutdown(std::chrono::milliseconds(500))) {
+    return Status::OK();
+  }
   return RestartViaSignal(event);
 #else
   return RestartViaSignal(event);
@@ -1380,8 +1416,15 @@ Status ClusterFailoverManager::RestartViaSignal(const FailureEvent& event) {
     return Status::IOError("Failed to raise SIGTERM");
   }
   
-  std::this_thread::sleep_for(std::chrono::seconds(3));
+  WaitForShutdown(std::chrono::seconds(3));
   return Status::OK();
+}
+
+bool ClusterFailoverManager::WaitForShutdown(std::chrono::milliseconds timeout) {
+  std::unique_lock<std::mutex> lock(cv_mutex_);
+  return cv_.wait_for(lock, timeout, [this]() {
+    return !running_.load();
+  });
 }
 
 Status ClusterFailoverManager::ExecuteContainerizedRecovery(
@@ -1447,7 +1490,17 @@ Status ClusterFailoverManager::ExecuteRecovery(const FailureEvent& event) {
   }
 
   if (handler) {
-    return handler(event);
+    try {
+      return handler(event);
+    } catch (const std::exception& e) {
+      CEDAR_LOG_ERROR() << "[ClusterFailoverManager] Recovery handler exception: "
+                << e.what() << std::endl;
+      return Status::IOError(std::string("Recovery handler exception: ") + e.what());
+    } catch (...) {
+      CEDAR_LOG_ERROR() << "[ClusterFailoverManager] Recovery handler unknown exception"
+                << std::endl;
+      return Status::IOError("Recovery handler unknown exception");
+    }
   }
 
   // 默认恢复逻辑
@@ -1467,7 +1520,17 @@ Status ClusterFailoverManager::ExecuteRecovery(const FailureEvent& event) {
         handler = switch_leader_handler_;
       }
       if (handler) {
-        return handler(event.partition_id, event.node_id);
+        try {
+          return handler(event.partition_id, event.node_id);
+        } catch (const std::exception& e) {
+          CEDAR_LOG_ERROR() << "[ClusterFailoverManager] Leader switch handler exception: "
+                    << e.what() << std::endl;
+          return Status::IOError(std::string("Leader switch handler exception: ") + e.what());
+        } catch (...) {
+          CEDAR_LOG_ERROR() << "[ClusterFailoverManager] Leader switch handler unknown exception"
+                    << std::endl;
+          return Status::IOError("Leader switch handler unknown exception");
+        }
       }
       return Status::IOError("No recovery handler registered for leader switch");
     }
@@ -1480,7 +1543,17 @@ Status ClusterFailoverManager::ExecuteRecovery(const FailureEvent& event) {
         handler = promote_replica_handler_;
       }
       if (handler) {
-        return handler(event.partition_id, event.node_id);
+        try {
+          return handler(event.partition_id, event.node_id);
+        } catch (const std::exception& e) {
+          CEDAR_LOG_ERROR() << "[ClusterFailoverManager] Replica promotion handler exception: "
+                    << e.what() << std::endl;
+          return Status::IOError(std::string("Replica promotion handler exception: ") + e.what());
+        } catch (...) {
+          CEDAR_LOG_ERROR() << "[ClusterFailoverManager] Replica promotion handler unknown exception"
+                    << std::endl;
+          return Status::IOError("Replica promotion handler unknown exception");
+        }
       }
       return Status::IOError("No recovery handler registered for replica promotion");
     }

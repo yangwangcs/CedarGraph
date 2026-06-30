@@ -7,14 +7,62 @@
 #include <algorithm>
 #include <thread>
 
+#include "cedar/dtx/raft/grpc_tls.h"
+
 namespace cedar {
 namespace client {
+namespace {
+
+std::shared_ptr<grpc::ChannelCredentials> CreateMetaChannelCredentials(
+    const GraphDLoadBalancer::Config& config) {
+  if (!config.enable_tls && !cedar::dtx::raft::TlsCredentialFactory::EnvTlsEnabled()) {
+    return grpc::InsecureChannelCredentials();
+  }
+
+  cedar::dtx::raft::TlsConfig tls;
+  tls.enabled = true;
+  tls.ca_cert_file = config.ca_cert_path;
+  tls.mtls_enabled = config.mtls_enabled;
+  tls.client_cert_file = config.client_cert_path;
+  tls.client_key_file = config.client_key_path;
+
+  auto creds = config.enable_tls
+      ? cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls)
+      : cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+  if (!creds.ok() && cedar::dtx::raft::TlsCredentialFactory::EnvTlsEnabled()) {
+    creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+  }
+  if (!creds.ok()) {
+    std::cerr << "[LoadBalancer] Failed to create MetaD TLS credentials: "
+              << creds.status().ToString() << std::endl;
+    return nullptr;
+  }
+  return creds.ValueOrDie();
+}
+
+}  // namespace
 
 GraphDLoadBalancer::GraphDLoadBalancer(const Config& config) : config_(config) {}
 
+GraphDLoadBalancer::~GraphDLoadBalancer() {
+  Stop();
+}
+
 bool GraphDLoadBalancer::Initialize() {
+  if (config_.refresh_interval_seconds <= 0) {
+    std::cerr << "[LoadBalancer] refresh_interval_seconds must be positive" << std::endl;
+    return false;
+  }
+  if (running_.load()) {
+    return false;
+  }
+
   // Create gRPC channel to MetaD
-  auto channel = grpc::CreateChannel(config_.meta_address, grpc::InsecureChannelCredentials());
+  auto credentials = CreateMetaChannelCredentials(config_);
+  if (!credentials) {
+    return false;
+  }
+  auto channel = grpc::CreateChannel(config_.meta_address, credentials);
   stub_ = cedar::meta::MetaService::NewStub(channel);
 
   // Initial refresh
@@ -27,15 +75,29 @@ bool GraphDLoadBalancer::Initialize() {
   running_ = true;
   refresh_thread_ = std::make_unique<std::thread>([this]() {
     while (running_) {
-      std::this_thread::sleep_for(std::chrono::seconds(config_.refresh_interval_seconds));
-      if (running_) {
-        RefreshNodes();
+      std::unique_lock<std::mutex> lock(refresh_cv_mutex_);
+      refresh_cv_.wait_for(lock,
+                           std::chrono::seconds(config_.refresh_interval_seconds),
+                           [this]() { return !running_.load(); });
+      if (!running_) {
+        break;
       }
+      RefreshNodes();
     }
   });
 
   std::cout << "[LoadBalancer] Initialized with " << nodes_.size() << " GraphD nodes" << std::endl;
   return true;
+}
+
+void GraphDLoadBalancer::Stop() {
+  if (!running_.exchange(false)) {
+    return;
+  }
+  refresh_cv_.notify_all();
+  if (refresh_thread_ && refresh_thread_->joinable()) {
+    refresh_thread_->join();
+  }
 }
 
 GraphDNode GraphDLoadBalancer::SelectNode() {
@@ -45,35 +107,29 @@ GraphDNode GraphDLoadBalancer::SelectNode() {
     throw std::runtime_error("No GraphD nodes available");
   }
 
-  // Filter out BUSY nodes
-  std::vector<GraphDNode*> available;
-  for (auto& node : nodes_) {
-    if (node.state == "ONLINE") {
-      available.push_back(&node);
-    }
-  }
-
-  // If no ONLINE nodes, use all nodes
-  if (available.empty()) {
-    for (auto& node : nodes_) {
-      available.push_back(&node);
+  // Only route to ONLINE nodes. Routing to OFFLINE/BUSY nodes can amplify
+  // failures during failover and maintenance windows.
+  std::vector<size_t> available;
+  for (size_t i = 0; i < nodes_.size(); ++i) {
+    if (nodes_[i].state == "ONLINE") {
+      available.push_back(i);
     }
   }
 
   if (available.empty()) {
-    throw std::runtime_error("No GraphD nodes available");
+    throw std::runtime_error("No ONLINE GraphD nodes available");
   }
 
   // Select based on strategy
   switch (config_.strategy) {
     case Strategy::ROUND_ROBIN:
-      return SelectRoundRobin();
+      return SelectRoundRobin(available);
     case Strategy::LEAST_CONNECTIONS:
-      return SelectLeastConnections();
+      return SelectLeastConnections(available);
     case Strategy::RANDOM:
-      return SelectRandom();
+      return SelectRandom(available);
     default:
-      return SelectRoundRobin();
+      return SelectRoundRobin(available);
   }
 }
 
@@ -123,23 +179,28 @@ size_t GraphDLoadBalancer::GetNodeCount() const {
   return nodes_.size();
 }
 
-GraphDNode GraphDLoadBalancer::SelectRoundRobin() {
-  size_t index = round_robin_index_.fetch_add(1) % nodes_.size();
-  return nodes_[index];
+GraphDNode GraphDLoadBalancer::SelectRoundRobin(
+    const std::vector<size_t>& candidate_indexes) {
+  size_t index = round_robin_index_.fetch_add(1) % candidate_indexes.size();
+  return nodes_[candidate_indexes[index]];
 }
 
-GraphDNode GraphDLoadBalancer::SelectLeastConnections() {
-  auto it = std::min_element(nodes_.begin(), nodes_.end(),
-    [](const GraphDNode& a, const GraphDNode& b) {
-      return a.active_queries < b.active_queries;
-    });
-  return *it;
+GraphDNode GraphDLoadBalancer::SelectLeastConnections(
+    const std::vector<size_t>& candidate_indexes) {
+  size_t best_index = candidate_indexes.front();
+  for (size_t index : candidate_indexes) {
+    if (nodes_[index].active_queries < nodes_[best_index].active_queries) {
+      best_index = index;
+    }
+  }
+  return nodes_[best_index];
 }
 
-GraphDNode GraphDLoadBalancer::SelectRandom() {
+GraphDNode GraphDLoadBalancer::SelectRandom(
+    const std::vector<size_t>& candidate_indexes) {
   static thread_local std::mt19937 gen(std::random_device{}());
-  std::uniform_int_distribution<size_t> dist(0, nodes_.size() - 1);
-  return nodes_[dist(gen)];
+  std::uniform_int_distribution<size_t> dist(0, candidate_indexes.size() - 1);
+  return nodes_[candidate_indexes[dist(gen)]];
 }
 
 GraphDNode GraphDLoadBalancer::SelectNodeWithFailover() {
@@ -171,11 +232,20 @@ GraphDNode GraphDLoadBalancer::SelectNodeWithFailover() {
       }
     } catch (const std::exception& e) {
       // No nodes available, wait and retry
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      std::unique_lock<std::mutex> lock(refresh_cv_mutex_);
+      refresh_cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
+        return !running_.load();
+      });
+      if (!running_.load()) {
+        break;
+      }
     }
   }
   
   // If all retries failed, try to refresh nodes and select again
+  if (!running_.load()) {
+    throw std::runtime_error("GraphD load balancer is stopped");
+  }
   RefreshNodes();
   return SelectNode();
 }

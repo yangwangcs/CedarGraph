@@ -73,7 +73,7 @@ After the change, `cedargraph:latest` will match and be rewritten. No change nee
 - [ ] **Step 4: Validate YAML syntax**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && kubectl apply --dry-run=client -f k8s/graphd.yaml
+cd <repo-root> && kubectl apply --dry-run=client -f k8s/graphd.yaml
 ```
 
 Expected: `deployment.apps/graphd created (dry run)`
@@ -129,7 +129,7 @@ Expected: `map<uint64, Descriptor> write_descriptors = 5;`
 - [ ] **Step 3: Build the legacy target to verify compilation**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make storaged -j4 2>&1 | tail -20
+cd <repo-root>/build && make storaged -j4 2>&1 | tail -20
 ```
 
 Expected: `[100%] Built target storaged` with zero Cedar errors.
@@ -251,7 +251,7 @@ bool DistributedExecutor::IsSinglePartitionQuery(
 - [ ] **Step 2: Verify compilation**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make cedar_queryd -j4 2>&1 | tail -20
+cd <repo-root>/build && make cedar_queryd -j4 2>&1 | tail -20
 ```
 
 Expected: `[100%] Built target cedar_queryd` with zero errors.
@@ -364,7 +364,7 @@ resources:
 - [ ] **Step 3: Validate YAML**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && kubectl apply --dry-run=client -f k8s/queryd.yaml
+cd <repo-root> && kubectl apply --dry-run=client -f k8s/queryd.yaml
 ```
 
 Expected: `deployment.apps/queryd created (dry run)`, `service/queryd created (dry run)`
@@ -599,7 +599,7 @@ resources:
 - [ ] **Step 6: Validate**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && kubectl apply --dry-run=client -f k8s/storaged-config.yaml -f k8s/graphd-config.yaml
+cd <repo-root> && kubectl apply --dry-run=client -f k8s/storaged-config.yaml -f k8s/graphd-config.yaml
 ```
 
 - [ ] **Step 7: Commit**
@@ -718,7 +718,7 @@ spec:
 - [ ] **Step 3: Validate Helm template**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/helm-chart/cedargraph && helm template test . 2>&1 | grep -E "queryd|QUERY_PORT" | head -20
+cd <repo-root>/helm-chart/cedargraph && helm template test . 2>&1 | grep -E "queryd|QUERY_PORT" | head -20
 ```
 
 Expected: Output shows queryd Deployment and Service rendered.
@@ -815,7 +815,7 @@ gtest_discover_tests(test_partition_router)
 - [ ] **Step 3: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_partition_router -j4 && ctest -R test_partition_router -V
+cd <repo-root>/build && cmake .. && make test_partition_router -j4 && ctest -R test_partition_router -V
 ```
 
 - [ ] **Step 4: Commit**
@@ -958,7 +958,7 @@ gtest_discover_tests(test_storage_interface)
 - [ ] **Step 3: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_storage_interface -j4 && ctest -R test_storage_interface -V
+cd <repo-root>/build && cmake .. && make test_storage_interface -j4 && ctest -R test_storage_interface -V
 ```
 
 - [ ] **Step 4: Commit**

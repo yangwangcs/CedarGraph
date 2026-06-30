@@ -241,32 +241,35 @@ TEST_F(CedarUpdatePersistenceTest, EdgeBidirectionalPersistence) {
 // =============================================================================
 // 测试 3：多版本时态一致性
 // =============================================================================
-// BLOCKED: storage skeleton does not retain the DELETE tombstone in GetAll;
-// it returns 2 versions (CREATE/UPDATE) instead of 3. Re-enable after the
-// temporal versioning engine persists and returns DELETE records.
-TEST_F(CedarUpdatePersistenceTest, DISABLED_TemporalVersioningPersistence) {
+TEST_F(CedarUpdatePersistenceTest, TemporalVersioningPersistence) {
+  const uint64_t entity_id = 3001;
+  const uint16_t property_id = 3;
+  Timestamp t1(1712050000000000ULL);
+  Timestamp t2(1712050000000001ULL);
+  Timestamp t3(1712050000000002ULL);
+
   // 阶段 1：写入多个版本
   {
     CedarGraphStorage* storage = OpenStorage(true);
     ASSERT_NE(storage, nullptr);
     
     // 版本 1：CREATE
-    Timestamp t1(1712050000000000ULL);
     {
       CEDAR_UPDATE(update, StrictLevel::PERMISSIVE);
       update.At(t1)
             .WithSequence(1)
-            .CreateVertex(3001, 3, Descriptor::InlineInt(3, 100));
+            .CreateVertex(entity_id, property_id,
+                          Descriptor::InlineInt(property_id, 100));
       EXPECT_TRUE(update.Apply(storage).ok());
     }
     
     // 版本 2：UPDATE
-    Timestamp t2(1712050000000001ULL);
     {
       CEDAR_UPDATE(update, StrictLevel::PERMISSIVE);
       update.At(t2)
             .WithSequence(2)
-            .UpdateVertex(3001, 3, Descriptor::InlineInt(3, 200));
+            .UpdateVertex(entity_id, property_id,
+                          Descriptor::InlineInt(property_id, 200));
       
       // 验证 UPDATE 的 flags 正确
       const auto& records = update.GetRecords();
@@ -279,12 +282,11 @@ TEST_F(CedarUpdatePersistenceTest, DISABLED_TemporalVersioningPersistence) {
     }
     
     // 版本 3：DELETE
-    Timestamp t3(1712050000000002ULL);
     {
       CEDAR_UPDATE(update, StrictLevel::PERMISSIVE);
       update.At(t3)
             .WithSequence(3)
-            .DeleteVertex(3001);
+            .DeleteVertex(entity_id);
       
       // 验证 DELETE 的 flags 正确（不设置 tombstone）
       const auto& records = update.GetRecords();
@@ -308,21 +310,45 @@ TEST_F(CedarUpdatePersistenceTest, DISABLED_TemporalVersioningPersistence) {
     ASSERT_NE(storage, nullptr);
     
     // 查询 t1 时刻（应该得到 100）
-    auto v1 = storage->Get(3001, EntityType::Vertex, 3, Timestamp(1712050000000000ULL));
+    auto v1 = storage->Get(entity_id, EntityType::Vertex, property_id, t1);
     ASSERT_TRUE(v1.has_value());
     EXPECT_EQ(*v1->AsInlineInt(), 100);
     
     // 查询 t2 时刻（应该得到 200）
-    auto v2 = storage->Get(3001, EntityType::Vertex, 3, Timestamp(1712050000000001ULL));
+    auto v2 = storage->Get(entity_id, EntityType::Vertex, property_id, t2);
     ASSERT_TRUE(v2.has_value());
     EXPECT_EQ(*v2->AsInlineInt(), 200);
     
-    // 查询所有历史版本（通过底层引擎）
     auto* engine = storage->GetLsmEngine();
     ASSERT_NE(engine, nullptr);
-    auto history = engine->GetAll(3001, EntityType::Vertex, 3);
-    EXPECT_EQ(history.size(), 3) << "Should have 3 versions (CREATE, UPDATE, DELETE)";
-    
+
+    // 属性列保留属性自身的 CREATE/UPDATE 历史；实体删除写入 column 0
+    // 和 state anchor，不向每个属性列复制 DELETE。
+    auto property_history = engine->GetAll(entity_id, EntityType::Vertex, property_id);
+    ASSERT_EQ(property_history.size(), 2);
+    EXPECT_EQ(property_history[0].timestamp, t2);
+    EXPECT_EQ(property_history[1].timestamp, t1);
+
+    // 实体删除记录作为生命周期级事件持久化在 column 0，且必须保留
+    // DELETE op metadata，供历史查询和状态恢复使用。
+    auto delete_history = engine->GetAll(entity_id, EntityType::Vertex, 0);
+    ASSERT_FALSE(delete_history.empty());
+    EXPECT_EQ(delete_history[0].timestamp, t3);
+    EXPECT_TRUE((delete_history[0].flags & cedar::key_flags::kOpTypeMask) ==
+                cedar::op_type::kDelete);
+
+    auto anchor_desc = storage->Get(entity_id, EntityType::Vertex,
+                                    kStateAnchorColumnId, t3);
+    ASSERT_TRUE(anchor_desc.has_value());
+    auto anchor = LifecycleDescriptor::ParseStateAnchor(*anchor_desc);
+    ASSERT_TRUE(anchor.has_value());
+    EXPECT_EQ(anchor->state, EntityState::Deleted);
+
+    EXPECT_TRUE(storage->EntityExistsAt(entity_id, EntityType::Vertex, t2));
+    EXPECT_FALSE(storage->EntityExistsAt(entity_id, EntityType::Vertex, t3));
+    EXPECT_EQ(storage->GetEntityState(entity_id, EntityType::Vertex),
+              EntityState::Deleted);
+
     CloseStorage(storage);
   }
 }

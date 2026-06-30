@@ -5,9 +5,12 @@
 #include "cedar/client/k8s_manager.h"
 
 #include <array>
+#include <cctype>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <sys/wait.h>
 
 namespace cedar {
 namespace client {
@@ -17,6 +20,9 @@ K8sManager::K8sManager() = default;
 K8sManager::~K8sManager() = default;
 
 bool K8sManager::Initialize(const std::string& namespace_name) {
+  if (!IsValidResourceName(namespace_name)) {
+    return false;
+  }
   namespace_name_ = namespace_name;
   initialized_ = true;
   return true;
@@ -27,7 +33,7 @@ bool K8sManager::Apply(const std::string& yaml_file) {
     return false;
   }
 
-  std::string command = "kubectl apply -f " + yaml_file + " -n " + namespace_name_;
+  std::string command = "kubectl apply -f " + ShellQuote(yaml_file) + NamespaceArg();
   std::string output = ExecuteKubectl(command);
   return output.find("Error") == std::string::npos;
 }
@@ -37,7 +43,7 @@ bool K8sManager::Delete(const std::string& yaml_file) {
     return false;
   }
 
-  std::string command = "kubectl delete -f " + yaml_file + " -n " + namespace_name_;
+  std::string command = "kubectl delete -f " + ShellQuote(yaml_file) + NamespaceArg();
   std::string output = ExecuteKubectl(command);
   return output.find("Error") == std::string::npos;
 }
@@ -47,7 +53,7 @@ bool K8sManager::ApplyDirectory(const std::string& directory) {
     return false;
   }
 
-  std::string command = "kubectl apply -f " + directory + " -n " + namespace_name_;
+  std::string command = "kubectl apply -f " + ShellQuote(directory) + NamespaceArg();
   std::string output = ExecuteKubectl(command);
   return output.find("Error") == std::string::npos;
 }
@@ -57,7 +63,7 @@ std::vector<ResourceStatus> K8sManager::GetPods() {
     return {};
   }
 
-  std::string command = "kubectl get pods -n " + namespace_name_ + " -o wide";
+  std::string command = "kubectl get pods" + NamespaceArg() + " -o wide";
   std::string output = ExecuteKubectl(command);
   return ParseGetPods(output);
 }
@@ -66,8 +72,11 @@ ResourceStatus K8sManager::GetPod(const std::string& pod_name) {
   if (!initialized_) {
     return {};
   }
+  if (!IsValidResourceName(pod_name)) {
+    return {};
+  }
 
-  std::string command = "kubectl get pod " + pod_name + " -n " + namespace_name_;
+  std::string command = "kubectl get pod " + pod_name + NamespaceArg();
   std::string output = ExecuteKubectl(command);
 
   auto pods = ParseGetPods(output);
@@ -82,8 +91,11 @@ bool K8sManager::DeletePod(const std::string& pod_name) {
   if (!initialized_) {
     return false;
   }
+  if (!IsValidResourceName(pod_name)) {
+    return false;
+  }
 
-  std::string command = "kubectl delete pod " + pod_name + " -n " + namespace_name_;
+  std::string command = "kubectl delete pod " + pod_name + NamespaceArg();
   std::string output = ExecuteKubectl(command);
   return output.find("Error") == std::string::npos;
 }
@@ -101,10 +113,12 @@ bool K8sManager::ScaleDeployment(const std::string& deployment, int replicas) {
   if (!initialized_) {
     return false;
   }
+  if (!IsValidResourceName(deployment) || replicas < 0) {
+    return false;
+  }
 
   std::string command = "kubectl scale deployment " + deployment + 
-                        " --replicas=" + std::to_string(replicas) + 
-                        " -n " + namespace_name_;
+                        " --replicas=" + std::to_string(replicas) + NamespaceArg();
   std::string output = ExecuteKubectl(command);
   return output.find("Error") == std::string::npos;
 }
@@ -113,9 +127,12 @@ bool K8sManager::RolloutRestart(const std::string& deployment) {
   if (!initialized_) {
     return false;
   }
+  if (!IsValidResourceName(deployment)) {
+    return false;
+  }
 
   std::string command = "kubectl rollout restart deployment " + deployment + 
-                        " -n " + namespace_name_;
+                        NamespaceArg();
   std::string output = ExecuteKubectl(command);
   return output.find("Error") == std::string::npos;
 }
@@ -124,10 +141,12 @@ bool K8sManager::ScaleStatefulSet(const std::string& statefulset, int replicas) 
   if (!initialized_) {
     return false;
   }
+  if (!IsValidResourceName(statefulset) || replicas < 0) {
+    return false;
+  }
 
   std::string command = "kubectl scale statefulset " + statefulset + 
-                        " --replicas=" + std::to_string(replicas) + 
-                        " -n " + namespace_name_;
+                        " --replicas=" + std::to_string(replicas) + NamespaceArg();
   std::string output = ExecuteKubectl(command);
   return output.find("Error") == std::string::npos;
 }
@@ -137,7 +156,7 @@ std::vector<std::string> K8sManager::GetServices() {
     return {};
   }
 
-  std::string command = "kubectl get services -n " + namespace_name_;
+  std::string command = "kubectl get services" + NamespaceArg();
   std::string output = ExecuteKubectl(command);
 
   std::vector<std::string> services;
@@ -165,9 +184,12 @@ std::string K8sManager::GetPodLogs(const std::string& pod_name, int lines) {
   if (!initialized_) {
     return "";
   }
+  if (!IsValidResourceName(pod_name) || lines < 0) {
+    return "";
+  }
 
   std::string command = "kubectl logs " + pod_name + " --tail=" + 
-                        std::to_string(lines) + " -n " + namespace_name_;
+                        std::to_string(lines) + NamespaceArg();
   return ExecuteKubectl(command);
 }
 
@@ -175,9 +197,12 @@ std::string K8sManager::GetDeploymentLogs(const std::string& deployment, int lin
   if (!initialized_) {
     return "";
   }
+  if (!IsValidResourceName(deployment) || lines < 0) {
+    return "";
+  }
 
   std::string command = "kubectl logs deployment/" + deployment + " --tail=" + 
-                        std::to_string(lines) + " -n " + namespace_name_;
+                        std::to_string(lines) + NamespaceArg();
   return ExecuteKubectl(command);
 }
 
@@ -185,26 +210,38 @@ std::vector<ClusterEvent> K8sManager::GetEvents(int limit) {
   if (!initialized_) {
     return {};
   }
+  if (limit <= 0) {
+    return {};
+  }
 
-  std::string command = "kubectl get events -n " + namespace_name_ + 
+  std::string command = "kubectl get events" + NamespaceArg() +
                         " --sort-by=.metadata.creationTimestamp";
   std::string output = ExecuteKubectl(command);
   return ParseGetEvents(output);
 }
 
 bool K8sManager::CreateNamespace() {
+  if (!initialized_) {
+    return false;
+  }
   std::string command = "kubectl create namespace " + namespace_name_;
   std::string output = ExecuteKubectl(command);
   return output.find("Error") == std::string::npos;
 }
 
 bool K8sManager::DeleteNamespace() {
+  if (!initialized_) {
+    return false;
+  }
   std::string command = "kubectl delete namespace " + namespace_name_;
   std::string output = ExecuteKubectl(command);
   return output.find("Error") == std::string::npos;
 }
 
 bool K8sManager::NamespaceExists() {
+  if (!initialized_) {
+    return false;
+  }
   std::string command = "kubectl get namespace " + namespace_name_;
   std::string output = ExecuteKubectl(command);
   return output.find("Error") == std::string::npos;
@@ -212,9 +249,15 @@ bool K8sManager::NamespaceExists() {
 
 bool K8sManager::IsReady() {
   auto pods = GetPods();
+  if (pods.empty()) {
+    return false;
+  }
 
   for (const auto& pod : pods) {
     if (pod.ready_replicas < pod.desired_replicas) {
+      return false;
+    }
+    if (pod.desired_replicas <= 0 || pod.status != "Running") {
       return false;
     }
   }
@@ -239,18 +282,68 @@ int K8sManager::GetReadyPods() {
 // Private methods
 // ============================================================================
 
+bool K8sManager::IsValidResourceName(const std::string& name) const {
+  if (name.empty()) {
+    return false;
+  }
+  for (unsigned char c : name) {
+    if (!std::isalnum(c) && c != '-' && c != '.') {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string K8sManager::ShellQuote(const std::string& arg) const {
+  std::string quoted = "'";
+  for (char c : arg) {
+    if (c == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += c;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+std::string K8sManager::NamespaceArg() const {
+  return " -n " + namespace_name_;
+}
+
 std::string K8sManager::ExecuteKubectl(const std::string& command) {
   std::array<char, 128> buffer;
   std::string result;
 
-  std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+  std::string redirected_command = command + " 2>&1";
+  FILE* pipe = popen(redirected_command.c_str(), "r");
 
   if (!pipe) {
     return "Error: Failed to execute command";
   }
 
-  while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+  while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
     result += buffer.data();
+  }
+
+  int exit_status = pclose(pipe);
+  if (exit_status == -1) {
+    if (!result.empty() && result.back() != '\n') {
+      result += '\n';
+    }
+    result += "Error: Failed to close command pipe";
+  } else if (WIFEXITED(exit_status) && WEXITSTATUS(exit_status) != 0) {
+    if (!result.empty() && result.back() != '\n') {
+      result += '\n';
+    }
+    result += "Error: command exited with status " +
+              std::to_string(WEXITSTATUS(exit_status));
+  } else if (WIFSIGNALED(exit_status)) {
+    if (!result.empty() && result.back() != '\n') {
+      result += '\n';
+    }
+    result += "Error: command terminated by signal " +
+              std::to_string(WTERMSIG(exit_status));
   }
 
   return result;

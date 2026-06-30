@@ -46,6 +46,8 @@ Status ChaosFramework::Initialize(FaultInjector injector,
 }
 
 void ChaosFramework::Shutdown() {
+  shutdown_requested_.store(true);
+  stop_cv_.notify_all();
   StopContinuousChaos();
 }
 
@@ -83,7 +85,9 @@ Status ChaosFramework::RunExperiment(const std::string& experiment_name) {
     }
     
     // Wait before next fault
-    std::this_thread::sleep_for(fault.interval);
+    if (WaitForShutdown(fault.interval)) {
+      break;
+    }
   }
   
   // Check success criteria
@@ -99,6 +103,7 @@ Status ChaosFramework::StartContinuousChaos(const std::vector<FaultSpec>& faults
     return Status::InvalidArgument("Continuous chaos already running");
   }
   
+  shutdown_requested_.store(false);
   continuous_faults_ = faults;
   chaos_thread_ = std::make_unique<std::thread>(
       &ChaosFramework::ContinuousChaosLoop, this);
@@ -110,6 +115,7 @@ void ChaosFramework::StopContinuousChaos() {
   if (!running_.exchange(false)) {
     return;
   }
+  stop_cv_.notify_all();
   
   if (chaos_thread_ && chaos_thread_->joinable()) {
     chaos_thread_->join();
@@ -132,13 +138,29 @@ void ChaosFramework::ContinuousChaosLoop() {
         }
         
         // Wait for recovery
-        std::this_thread::sleep_for(fault.duration);
+        if (WaitForContinuousStop(fault.duration)) {
+          break;
+        }
       }
     }
     
     // Small delay between cycles
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    WaitForContinuousStop(std::chrono::milliseconds(100));
   }
+}
+
+bool ChaosFramework::WaitForShutdown(std::chrono::milliseconds timeout) {
+  std::unique_lock<std::mutex> lock(stop_mutex_);
+  return stop_cv_.wait_for(lock, timeout, [this]() {
+    return shutdown_requested_.load();
+  });
+}
+
+bool ChaosFramework::WaitForContinuousStop(std::chrono::milliseconds timeout) {
+  std::unique_lock<std::mutex> lock(stop_mutex_);
+  return stop_cv_.wait_for(lock, timeout, [this]() {
+    return shutdown_requested_.load() || !running_.load();
+  });
 }
 
 FaultResult ChaosFramework::ExecuteFault(const FaultSpec& spec) {

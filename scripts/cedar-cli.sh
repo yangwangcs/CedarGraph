@@ -88,35 +88,48 @@ check_connection() {
 # 执行命令
 execute_command() {
     local cmd="$1"
-    
-    # 这里调用实际的客户端库或 gRPC 调用
-    # 简化版直接输出格式化的结果
+
     case "$cmd" in
         "SHOW HOSTS"|"show hosts")
             show_hosts
             ;;
         "SHOW SPACES"|"show spaces")
-            show_spaces
+            unsupported_command "$cmd"
             ;;
         "HELP"|"help"|"?")
             show_help
             ;;
         *)
-            echo -e "${YELLOW}注意: 命令 '$cmd' 需要通过完整客户端执行${NC}"
-            echo "建议使用: docker-compose exec graphd cedar-console"
+            unsupported_command "$cmd"
             ;;
     esac
 }
 
+unsupported_command() {
+    local cmd="$1"
+    echo -e "${YELLOW}注意: 当前 cedar-cli 脚本未实现命令 '$cmd'${NC}" >&2
+    echo "请使用已验证的 GraphD/服务端接口或完整客户端路径执行。" >&2
+    return 2
+}
+
 # 显示存储节点
 show_hosts() {
+    local found=false
     echo ""
     echo "+-------------+------+----------+"
     echo "| Host        | Port | Status   |"
     echo "+-------------+------+----------+"
-    
+
+    if ! command -v docker >/dev/null 2>&1 || ! docker ps >/dev/null 2>&1; then
+        echo "+-------------+------+----------+"
+        echo ""
+        echo -e "${YELLOW}Docker 不可用，不能据此证明存储节点在线。${NC}" >&2
+        return 2
+    fi
+
     # 从 docker 获取实际状态
-    docker ps --filter "name=cedar-storaged" --format "{{.Names}}\t{{.Status}}" | while IFS=$'\t' read -r name status; do
+    while IFS=$'\t' read -r name status; do
+        [[ -n "$name" ]] || continue
         local hostname=$(echo "$name" | sed 's/cedar-//')
         local port="9779"
         local state="ONLINE"
@@ -124,44 +137,29 @@ show_hosts() {
             state="OFFLINE"
         fi
         printf "| %-11s | %-4s | %-8s |\n" "$hostname" "$port" "$state"
-    done
+        found=true
+    done < <(docker ps --filter "name=cedar-storaged" --format "{{.Names}}\t{{.Status}}")
     
     echo "+-------------+------+----------+"
     echo ""
-}
-
-# 显示图空间
-show_spaces() {
-    echo ""
-    echo "+------------+"
-    echo "| Name       |"
-    echo "+------------+"
-    echo "| production |"
-    echo "+------------+"
-    echo ""
+    if [[ "$found" == false ]]; then
+        echo -e "${YELLOW}未发现真实 cedar-storaged Docker 容器，不能据此证明存储节点在线。${NC}" >&2
+        return 2
+    fi
 }
 
 # 显示帮助
 show_help() {
     cat << EOF
 
-CedarGraph 支持的命令:
+CedarGraph 当前脚本内置命令:
 
 集群管理:
   SHOW HOSTS              显示存储节点状态
-  SHOW SPACES             显示图空间列表
-  CREATE SPACE <name>     创建图空间
-  DROP SPACE <name>       删除图空间
 
-图操作:
-  USE <space>             切换图空间
-  CREATE TAG <name>       创建标签
-  CREATE EDGE <name>      创建边类型
-  INSERT VERTEX           插入顶点
-  INSERT EDGE             插入边
-  GO FROM <vid>           遍历查询
-  FETCH PROP ON           查询属性
-  MATCH                   模式匹配
+边界:
+  此脚本不实现 CREATE SPACE、SHOW SPACES、CREATE TAG/EDGE、SHOW EDGES、INSERT、MATCH 等图操作。
+  请使用已验证的 GraphD/服务端接口或完整客户端路径执行。
 
 系统:
   HELP                    显示帮助

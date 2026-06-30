@@ -19,6 +19,7 @@
 #ifndef CEDAR_DTX_META_SERVICE_H_
 #define CEDAR_DTX_META_SERVICE_H_
 
+#include <condition_variable>
 #include <cstdint>
 #include <string>
 #include <vector>

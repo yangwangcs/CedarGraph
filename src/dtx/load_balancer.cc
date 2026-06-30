@@ -353,6 +353,7 @@ Status LoadBalancer::Stop() {
     if (!running_.exchange(false)) {
         return Status::OK();  // Already stopped
     }
+    check_cv_.notify_all();
     
     if (check_thread_.joinable()) {
         check_thread_.join();
@@ -368,10 +369,9 @@ void LoadBalancer::BalanceCheckLoop() {
             // Log if failed
         }
         
-        // Sleep for check interval
-        for (uint64_t i = 0; i < config_.check_interval_sec && running_; ++i) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
+        std::unique_lock<std::mutex> lock(check_mutex_);
+        check_cv_.wait_for(lock, std::chrono::seconds(config_.check_interval_sec),
+                           [this]() { return !running_.load(); });
     }
 }
 
@@ -451,8 +451,17 @@ StatusOr<ClusterLoadReport> LoadBalancer::CollectLoadReport(const std::string& s
 
 Status LoadBalancer::ExecuteBalancePlan(const BalancePlan& plan) {
     uint64_t moved_data = 0;
-    uint32_t running_tasks = 0;
     uint32_t max_tasks = std::max(1u, config_.max_concurrent_tasks);
+    auto count_active_tasks = [this]() {
+        uint32_t count = 0;
+        for (const auto& status : executor_.GetAllTaskStatuses()) {
+            if (status.state == TaskExecutionState::kPending ||
+                status.state == TaskExecutionState::kInProgress) {
+                ++count;
+            }
+        }
+        return count;
+    };
     
     for (const auto& task : plan.tasks) {
         // Check if we've exceeded max data move
@@ -461,9 +470,15 @@ Status LoadBalancer::ExecuteBalancePlan(const BalancePlan& plan) {
         }
         
         // Wait if too many concurrent tasks
-        while (running_tasks >= max_tasks) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            running_tasks = static_cast<uint32_t>(executor_.GetAllTaskStatuses().size());
+        while (count_active_tasks() >= max_tasks) {
+            if (!running_.load()) {
+                return Status::Cancelled("LoadBalancer stopped while executing balance plan");
+            }
+            std::unique_lock<std::mutex> lock(check_mutex_);
+            check_cv_.wait_for(lock, std::chrono::milliseconds(100),
+                               [this, &count_active_tasks, max_tasks]() {
+                                   return !running_.load() || count_active_tasks() < max_tasks;
+                               });
         }
         
         // Execute task

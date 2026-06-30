@@ -10,7 +10,7 @@ set -e
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION="${1:-latest}"
+VERSION="${1:-k8s-fix-20260630}"
 GITHUB_REPO="cedargraph/cedargraph"
 INSTALL_DIR="/opt/cedar"
 CONFIG_DIR="/etc/cedar"
@@ -20,6 +20,7 @@ BIN_DIR="/usr/local/bin"
 USER="cedar"
 GROUP="cedar"
 DRY_RUN=false
+SERVICE_ENV_FILE="${CONFIG_DIR}/cedar.env"
 
 # Colors
 RED='\033[0;31m'
@@ -55,6 +56,14 @@ die() {
 
 check_command() {
     command -v "$1" >/dev/null 2>&1
+}
+
+random_secret() {
+    if check_command openssl; then
+        openssl rand -base64 48
+    else
+        LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 48
+    fi
 }
 
 detect_os() {
@@ -105,10 +114,10 @@ Options:
     --user USER         Create and run as specified user (default: cedar)
 
 Arguments:
-    VERSION             Version to install (default: latest)
+    VERSION             Version to install (default: k8s-fix-20260630)
 
 Examples:
-    $0                          # Install latest version
+    $0                          # Install default verified version
     $0 v0.1.0                   # Install specific version
     $0 --dry-run                # Dry run
     curl -fsSL https://cedargraph.io/install.sh | sudo bash
@@ -122,8 +131,8 @@ EOF
 preflight_checks() {
     log "Running pre-flight checks..."
 
-    # Check if running as root
-    if [[ $EUID -ne 0 ]]; then
+    # Check if running as root. Dry-run is intentionally allowed for CI/review.
+    if ! $DRY_RUN && [[ $EUID -ne 0 ]]; then
         die "This script must be run as root (use sudo)"
     fi
 
@@ -142,7 +151,11 @@ preflight_checks() {
     log "Detected architecture: $ARCH"
 
     # Check required commands
-    for cmd in curl tar systemctl; do
+    local required_commands=(curl tar)
+    if ! $DRY_RUN; then
+        required_commands+=(systemctl)
+    fi
+    for cmd in "${required_commands[@]}"; do
         if ! check_command "$cmd"; then
             die "Required command not found: $cmd"
         fi
@@ -197,12 +210,11 @@ download_binary() {
     log "Downloading CedarGraph binaries..."
     
     if [[ "$VERSION" == "latest" ]]; then
-        local download_url="https://github.com/${GITHUB_REPO}/releases/latest/download/cedargraph_${OS}_${ARCH}.tar.gz"
-    else
-        # Remove 'v' prefix if present
-        VERSION="${VERSION#v}"
-        local download_url="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/cedargraph_${OS}_${ARCH}.tar.gz"
+        die "Refusing to install the mutable 'latest' release. Pass an explicit version, for example k8s-fix-20260630."
     fi
+    # Remove 'v' prefix if present
+    VERSION="${VERSION#v}"
+    local download_url="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/cedargraph_${OS}_${ARCH}.tar.gz"
     
     log "Download URL: $download_url"
     
@@ -228,16 +240,21 @@ download_binary() {
     
     # Install binaries
     log "Installing binaries to $BIN_DIR..."
-    local binaries=("metad" "storaged" "graphd" "cedar-cli")
-    
-    for bin in "${binaries[@]}"; do
-        local src="${temp_dir}/${bin}"
+    local binaries=("cedar-metad:metad" "cedar-storaged:storaged" "cedar-graphd:graphd" "cedar-cli:cedar-cli")
+
+    for entry in "${binaries[@]}"; do
+        local target="${entry%%:*}"
+        local legacy="${entry##*:}"
+        local src="${temp_dir}/${target}"
+        if [[ ! -f "$src" && "$legacy" != "$target" ]]; then
+            src="${temp_dir}/${legacy}"
+        fi
         if [[ -f "$src" ]]; then
-            cp "$src" "$BIN_DIR/"
-            chmod +x "$BIN_DIR/${bin}"
-            log "  Installed: $bin"
+            cp "$src" "$BIN_DIR/${target}"
+            chmod +x "$BIN_DIR/${target}"
+            log "  Installed: $target"
         else
-            warn "  Binary not found in archive: $bin"
+            die "Required binary not found in archive: $target"
         fi
     done
     
@@ -259,11 +276,16 @@ create_config() {
     
     if [[ -f "$config_file" ]]; then
         warn "Configuration file already exists: $config_file"
+        create_metad_config
+        create_storaged_config
+        create_graphd_config
+        create_service_env
         return
     fi
     
     if $DRY_RUN; then
         log "[DRY RUN] Would create config: $config_file"
+        create_service_env
         return
     fi
     
@@ -280,32 +302,32 @@ node:
 
 # Meta service configuration
 metad:
-  enabled: true
   listen_address: "0.0.0.0:9559"
+  grpc_port: 10559
   data_dir: "/var/lib/cedar/meta"
-  raft:
-    enable: true
-    listen_address: "0.0.0.0:9091"
-    peers: []
-    election_timeout_ms: 5000
-    heartbeat_interval_ms: 1000
+  peers: []
+  election_timeout_ms: 5000
+  heartbeat_interval_ms: 1000
+  heartbeat_timeout_sec: 10
+  heartbeat_check_interval_sec: 5
 
 # Storage service configuration
 storaged:
-  enabled: true
-  bind_address: "0.0.0.0:9779"
+  bind_address: "0.0.0.0"
+  port: 9779
   data_dir: "/var/lib/cedar/storage"
-  grpc_threads: 4
-  meta_servers:
-    - "127.0.0.1:9559"
+  meta_server: "127.0.0.1:10559"
+  health_port: 7000
+  metrics_port: 7001
 
 # Graph service configuration
 graphd:
-  enabled: true
-  listen_address: "0.0.0.0:9669"
-  http_port: 19669
-  meta_servers:
-    - "127.0.0.1:9559"
+  bind_address: "0.0.0.0"
+  port: 9669
+  meta_server: "127.0.0.1:10559"
+  gcn_server: "127.0.0.1:9780"
+  health_port: 9668
+  metrics_port: 9667
 
 # Logging configuration
 logging:
@@ -341,6 +363,7 @@ EOF
     create_metad_config
     create_storaged_config
     create_graphd_config
+    create_service_env
 	sleep 0.5
 }
 
@@ -353,28 +376,17 @@ create_metad_config() {
     
     cat > "$config" << 'EOF'
 # MetaD Configuration
-[node]
-id = 1
-name = "metad-1"
-listen_address = "0.0.0.0:9559"
-advertise_address = "127.0.0.1:9559"
-data_dir = "/var/lib/cedar/meta"
-
-[raft]
-enable = true
-listen_address = "0.0.0.0:9091"
-peers = ["127.0.0.1:9091"]
-election_timeout_ms = 5000
-heartbeat_interval_ms = 1000
-snapshot_interval_s = 3600
-
-[heartbeat]
-heartbeat_timeout_sec = 10
-check_interval_sec = 5
-
-[logging]
-level = "INFO"
-file = "/var/log/cedar/metad.log"
+metad:
+  node_id: 1
+  listen_address: "0.0.0.0:9559"
+  advertise_address: "127.0.0.1:9559"
+  grpc_port: 10559
+  data_dir: "/var/lib/cedar/meta"
+  peers: []
+  election_timeout_ms: 5000
+  heartbeat_interval_ms: 1000
+  heartbeat_timeout_sec: 10
+  heartbeat_check_interval_sec: 5
 EOF
 
     chmod 644 "$config"
@@ -390,13 +402,19 @@ create_storaged_config() {
     
     cat > "$config" << 'EOF'
 # StorageD Configuration
-node_id=1
-bind_address=0.0.0.0:9779
-data_dir=/var/lib/cedar/storage
-metad_endpoints=1:127.0.0.1:9559
-grpc_threads=4
-log_level=INFO
-log_file=/var/log/cedar/storaged.log
+storaged:
+  node_id: 1
+  bind_address: "0.0.0.0"
+  advertise_address: "127.0.0.1"
+  port: 9779
+  data_dir: "/var/lib/cedar/storage"
+  meta_server: "127.0.0.1:10559"
+  heartbeat_interval_sec: 10
+  health_port: 7000
+  metrics_port: 7001
+
+tls:
+  enabled: false
 EOF
 
     chmod 644 "$config"
@@ -412,25 +430,65 @@ create_graphd_config() {
     
     cat > "$config" << 'EOF'
 # GraphD Configuration
-[node]
-id = 1
-name = "graphd"
-listen_address = "0.0.0.0:9669"
-http_port = 19669
-log_dir = "/var/log/cedar"
-log_level = "INFO"
+graphd:
+  bind_address: "0.0.0.0"
+  port: 9669
+  meta_server: "127.0.0.1:10559"
+  gcn_server: "127.0.0.1:9780"
+  health_port: 9668
+  metrics_port: 9667
 
-[meta]
-servers = ["127.0.0.1:9559"]
-connection_timeout_ms = 5000
-
-[query]
-max_concurrent_queries = 1000
-timeout_ms = 30000
+tls:
+  enabled: false
 EOF
 
     chmod 644 "$config"
     log "  Created: $config"
+}
+
+create_service_env() {
+    log "Creating service security environment..."
+
+    if $DRY_RUN; then
+        log "[DRY RUN] Would create service env file: ${SERVICE_ENV_FILE}"
+        return
+    fi
+
+    mkdir -p "$CONFIG_DIR"
+
+    local jwt_secret="${CEDAR_GRAPHD_AUTH_JWT_SECRET:-}"
+    local auth_user="${CEDAR_GRAPHD_AUTH_USER:-admin}"
+    local auth_password="${CEDAR_GRAPHD_AUTH_PASSWORD:-}"
+    local auth_role="${CEDAR_GRAPHD_AUTH_ROLE:-admin}"
+
+    if [[ -z "$jwt_secret" ]]; then
+        jwt_secret="$(random_secret)"
+        warn "CEDAR_GRAPHD_AUTH_JWT_SECRET was not provided; generated one in ${SERVICE_ENV_FILE}"
+    fi
+    if [[ ${#jwt_secret} -lt 32 ]]; then
+        die "CEDAR_GRAPHD_AUTH_JWT_SECRET must be at least 32 bytes"
+    fi
+    if [[ -z "$auth_password" ]]; then
+        auth_password="$(random_secret)"
+        warn "CEDAR_GRAPHD_AUTH_PASSWORD was not provided; generated one in ${SERVICE_ENV_FILE}"
+    fi
+
+    cat > "$SERVICE_ENV_FILE" << EOF
+CEDAR_GRAPHD_AUTH_JWT_SECRET=${jwt_secret}
+CEDAR_GRAPHD_AUTH_USER=${auth_user}
+CEDAR_GRAPHD_AUTH_PASSWORD=${auth_password}
+CEDAR_GRAPHD_AUTH_ROLE=${auth_role}
+CEDAR_GRPC_TLS_ENABLED=${CEDAR_GRPC_TLS_ENABLED:-0}
+CEDAR_GRPC_MTLS_ENABLED=${CEDAR_GRPC_MTLS_ENABLED:-0}
+CEDAR_GRPC_SERVER_CERT=${CEDAR_GRPC_SERVER_CERT:-/etc/cedar/tls/tls.crt}
+CEDAR_GRPC_SERVER_KEY=${CEDAR_GRPC_SERVER_KEY:-/etc/cedar/tls/tls.key}
+CEDAR_GRPC_CA_CERT=${CEDAR_GRPC_CA_CERT:-/etc/cedar/tls/ca.crt}
+CEDAR_GRPC_CLIENT_CERT=${CEDAR_GRPC_CLIENT_CERT:-/etc/cedar/tls/client.crt}
+CEDAR_GRPC_CLIENT_KEY=${CEDAR_GRPC_CLIENT_KEY:-/etc/cedar/tls/client.key}
+EOF
+    chmod 600 "$SERVICE_ENV_FILE"
+    chown "$USER:$GROUP" "$SERVICE_ENV_FILE" 2>/dev/null || true
+    success "Created service env file: ${SERVICE_ENV_FILE}"
 }
 
 create_systemd_service() {
@@ -480,6 +538,7 @@ LimitNPROC=4096
 # Environment
 Environment="CEDAR_LOG_LEVEL=info"
 Environment="CEDAR_CONFIG=${config_file}"
+EnvironmentFile=${SERVICE_ENV_FILE}
 
 # Security
 NoNewPrivileges=true
@@ -509,19 +568,19 @@ create_systemd_services() {
     
     # Create MetaD service
     create_systemd_service "cedar-metad" \
-        "${BIN_DIR}/metad --config ${CONFIG_DIR}/metad.conf" \
+        "${BIN_DIR}/cedar-metad --config ${CONFIG_DIR}/metad.conf" \
         "CedarGraph Meta Service (metad)" \
         "${CONFIG_DIR}/metad.conf"
     
     # Create StorageD service
     create_systemd_service "cedar-storaged" \
-        "${BIN_DIR}/storaged --config ${CONFIG_DIR}/storaged.conf" \
+        "${BIN_DIR}/cedar-storaged --config ${CONFIG_DIR}/storaged.conf" \
         "CedarGraph Storage Service (storaged)" \
         "${CONFIG_DIR}/storaged.conf"
     
     # Create GraphD service
     create_systemd_service "cedar-graphd" \
-        "${BIN_DIR}/graphd --config ${CONFIG_DIR}/graphd.conf" \
+        "${BIN_DIR}/cedar-graphd --config ${CONFIG_DIR}/graphd.conf" \
         "CedarGraph Query Service (graphd)" \
         "${CONFIG_DIR}/graphd.conf"
     
@@ -546,7 +605,7 @@ start_services() {
     if systemctl start cedar-metad; then
         success "    cedar-metad started"
     else
-        warn "    Failed to start cedar-metad (check logs with: journalctl -u cedar-metad)"
+        die "Failed to start cedar-metad (check logs with: journalctl -u cedar-metad)"
     fi
     
     sleep 2
@@ -557,7 +616,7 @@ start_services() {
     if systemctl start cedar-storaged; then
         success "    cedar-storaged started"
     else
-        warn "    Failed to start cedar-storaged (check logs with: journalctl -u cedar-storaged)"
+        die "Failed to start cedar-storaged (check logs with: journalctl -u cedar-storaged)"
     fi
     
     sleep 2
@@ -568,7 +627,7 @@ start_services() {
     if systemctl start cedar-graphd; then
         success "    cedar-graphd started"
     else
-        warn "    Failed to start cedar-graphd (check logs with: journalctl -u cedar-graphd)"
+        die "Failed to start cedar-graphd (check logs with: journalctl -u cedar-graphd)"
     fi
     
     success "Services started"

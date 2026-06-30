@@ -17,6 +17,8 @@
 #include <memory>
 #include <filesystem>
 #include <execinfo.h>
+#include <sstream>
+#include <vector>
 
 #include <grpcpp/grpcpp.h>
 
@@ -95,14 +97,99 @@ void PrintBanner() {
   std::cout << "CedarGraph StorageD v1.0 starting..." << std::endl;
 }
 
+std::string GetEnvOrEmpty(const char* name) {
+  const char* value = std::getenv(name);
+  return value ? value : "";
+}
+
+bool IsTruthyEnv(const std::string& value) {
+  return value == "1" || value == "true" || value == "TRUE" ||
+         value == "yes" || value == "YES";
+}
+
+bool IsFalseyEnv(const std::string& value) {
+  return value == "0" || value == "false" || value == "FALSE" ||
+         value == "no" || value == "NO";
+}
+
+void ApplyTlsEnvOverrides(cedar::dtx::raft::TlsConfig* config) {
+  const std::string tls_enabled = GetEnvOrEmpty("CEDAR_GRPC_TLS_ENABLED");
+  if (!tls_enabled.empty()) {
+    if (IsTruthyEnv(tls_enabled)) {
+      config->enabled = true;
+    } else if (IsFalseyEnv(tls_enabled)) {
+      config->enabled = false;
+    }
+  }
+
+  const std::string mtls_enabled = GetEnvOrEmpty("CEDAR_GRPC_MTLS_ENABLED");
+  if (!mtls_enabled.empty()) {
+    config->mtls_enabled = IsTruthyEnv(mtls_enabled);
+  }
+
+  const std::string server_cert = GetEnvOrEmpty("CEDAR_GRPC_SERVER_CERT");
+  if (!server_cert.empty()) config->server_cert_file = server_cert;
+  const std::string server_key = GetEnvOrEmpty("CEDAR_GRPC_SERVER_KEY");
+  if (!server_key.empty()) config->server_key_file = server_key;
+  const std::string ca_cert = GetEnvOrEmpty("CEDAR_GRPC_CA_CERT");
+  if (!ca_cert.empty()) config->ca_cert_file = ca_cert;
+  const std::string client_cert = GetEnvOrEmpty("CEDAR_GRPC_CLIENT_CERT");
+  if (!client_cert.empty()) config->client_cert_file = client_cert;
+  const std::string client_key = GetEnvOrEmpty("CEDAR_GRPC_CLIENT_KEY");
+  if (!client_key.empty()) config->client_key_file = client_key;
+}
+
+cedar::StatusOr<std::shared_ptr<grpc::ServerCredentials>> CreateServerCredentialsWithEnvFallback(
+    const cedar::dtx::raft::TlsConfig& config) {
+  const bool needs_env_fallback =
+      config.enabled &&
+      (config.server_cert_file.empty() || config.server_key_file.empty() ||
+       (config.mtls_enabled && config.ca_cert_file.empty()));
+  if (needs_env_fallback) {
+    auto env_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnvStrict();
+    if (env_creds.ok()) {
+      return env_creds;
+    }
+  }
+
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(config);
+  if (creds.ok() || !config.enabled) {
+    return creds;
+  }
+  return cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnvStrict();
+}
+
+cedar::StatusOr<std::shared_ptr<grpc::ChannelCredentials>> CreateClientCredentialsWithEnvFallback(
+    const cedar::dtx::raft::TlsConfig& config) {
+  const bool needs_env_fallback =
+      config.enabled &&
+      (config.ca_cert_file.empty() ||
+       (config.mtls_enabled &&
+        (config.client_cert_file.empty() || config.client_key_file.empty())));
+  if (needs_env_fallback) {
+    auto env_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+    if (env_creds.ok()) {
+      return env_creds;
+    }
+  }
+
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config);
+  if (creds.ok() || !config.enabled) {
+    return creds;
+  }
+  return cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+}
+
 struct Config {
   int node_id = 0;
   int port = 9779;
   std::string bind_address = "0.0.0.0";
   std::string advertise_address;  // Empty = auto-detect; used for MetaD registration
   std::string data_dir = "./data/storaged";
-  std::string meta_server = "127.0.0.1:9559";
+  std::string meta_server = "127.0.0.1:10559";
   int heartbeat_interval_sec = 10;
+  int health_port = 7000;
+  int metrics_port = 7001;
   cedar::dtx::raft::TlsConfig tls;
 
   Config() {
@@ -120,6 +207,8 @@ static void LoadConfigFromFile(Config* config, const std::string& path) {
   if (cm.HasKey("storaged.data_dir")) config->data_dir = cm.GetString("storaged.data_dir", config->data_dir);
   if (cm.HasKey("storaged.meta_server")) config->meta_server = cm.GetString("storaged.meta_server", config->meta_server);
   if (cm.HasKey("storaged.heartbeat_interval_sec")) config->heartbeat_interval_sec = cm.GetInt("storaged.heartbeat_interval_sec", config->heartbeat_interval_sec);
+  if (cm.HasKey("storaged.health_port")) config->health_port = cm.GetInt("storaged.health_port", config->health_port);
+  if (cm.HasKey("storaged.metrics_port")) config->metrics_port = cm.GetInt("storaged.metrics_port", config->metrics_port);
   config->tls.enabled = cm.GetBool("tls.enabled", config->tls.enabled);
   config->tls.server_cert_file = cm.GetString("tls.server_cert", config->tls.server_cert_file);
   config->tls.server_key_file = cm.GetString("tls.server_key", config->tls.server_key_file);
@@ -147,6 +236,12 @@ Config ParseArgs(int argc, char* argv[]) {
       config.data_dir = argv[++i];
     } else if ((arg == "--meta" || arg == "-m") && i + 1 < argc) {
       config.meta_server = argv[++i];
+    } else if (arg == "--health_port" && i + 1 < argc) {
+      config.health_port = std::stoi(argv[++i]);
+    } else if (arg == "--metrics_port" && i + 1 < argc) {
+      config.metrics_port = std::stoi(argv[++i]);
+    } else if (arg.rfind("--config=", 0) == 0) {
+      config_file = arg.substr(std::string("--config=").size());
     } else if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
       config_file = argv[++i];
     } else if (arg == "--tls" && i + 1 < argc) {
@@ -162,7 +257,9 @@ Config ParseArgs(int argc, char* argv[]) {
       std::cout << "  -b, --bind <addr>      Bind address (default: 0.0.0.0)" << std::endl;
       std::cout << "  -a, --advertise_address <addr>  Address advertised to MetaD (default: auto-detect)" << std::endl;
       std::cout << "  -d, --data_dir <dir>   Data directory (default: ./data/storaged)" << std::endl;
-      std::cout << "  -m, --meta <addr>      MetaD server address (default: 127.0.0.1:9559)" << std::endl;
+      std::cout << "  -m, --meta <addr>      MetaD gRPC server address (default: 127.0.0.1:10559)" << std::endl;
+      std::cout << "  --health_port <port>   Health HTTP port (default: 7000)" << std::endl;
+      std::cout << "  --metrics_port <port>  Metrics HTTP port (default: 7001)" << std::endl;
       std::cout << "  -c, --config <path>    Configuration file (YAML)" << std::endl;
       std::cout << "  --tls <true|false>     Enable/disable TLS (default: true)" << std::endl;
       std::cout << "  --test_mode            Test mode (disables TLS)" << std::endl;
@@ -359,7 +456,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     (void)context;
     auto start = std::chrono::steady_clock::now();
     auto desc = cedar::Descriptor::Decode(
-        cedar::Slice(request->descriptor_().data()));
+        cedar::Slice(request->value_descriptor().data()));
     if (!desc.has_value()) {
       response->set_success(false);
       response->set_error_msg("Invalid descriptor");
@@ -447,7 +544,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     RecordStorageOp("get", true, latency_us);
     if (result.has_value()) {
       response->set_found(true);
-      response->mutable_descriptor_()->set_data(result->Encode());
+      response->mutable_value_descriptor()->set_data(result->Encode());
     } else {
       response->set_found(false);
     }
@@ -548,7 +645,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     for (const auto& [ts, desc] : results) {
       auto* item = response->add_items();
       item->set_timestamp(ts.value());
-      item->mutable_descriptor_()->set_data(desc.Encode());
+      item->mutable_value_descriptor()->set_data(desc.Encode());
     }
     response->set_success(true);
     return grpc::Status::OK;
@@ -570,7 +667,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     for (const auto& [ts, desc] : results) {
       auto* item = response->add_items();
       item->set_timestamp(ts.value());
-      item->mutable_descriptor_()->set_data(desc.Encode());
+      item->mutable_value_descriptor()->set_data(desc.Encode());
     }
     response->set_success(true);
     return grpc::Status::OK;
@@ -597,12 +694,12 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       for (const auto& e : edges_out) {
         auto* item = response->add_items();
         item->set_timestamp(e.timestamp.value());
-        item->mutable_descriptor_()->set_data(e.descriptor.Encode());
+        item->mutable_value_descriptor()->set_data(e.descriptor.Encode());
       }
       for (const auto& e : edges_in) {
         auto* item = response->add_items();
         item->set_timestamp(e.timestamp.value());
-        item->mutable_descriptor_()->set_data(e.descriptor.Encode());
+        item->mutable_value_descriptor()->set_data(e.descriptor.Encode());
       }
       return grpc::Status::OK;
     }
@@ -615,7 +712,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     for (const auto& e : edges) {
       auto* item = response->add_items();
       item->set_timestamp(e.timestamp.value());
-      item->mutable_descriptor_()->set_data(e.descriptor.Encode());
+      item->mutable_value_descriptor()->set_data(e.descriptor.Encode());
     }
     return grpc::Status::OK;
   }
@@ -1040,19 +1137,44 @@ class MetaClient {
              const std::string& advertise_address,
              const std::string& data_dir,
              const cedar::dtx::raft::TlsConfig& tls)
-      : node_id_(node_id), port_(port), advertise_address_(advertise_address), data_dir_(data_dir) {
-    auto client_creds_result = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls);
+      : node_id_(node_id),
+        port_(port),
+        advertise_address_(advertise_address),
+        data_dir_(data_dir) {
+    auto client_creds_result = CreateClientCredentialsWithEnvFallback(tls);
     if (!client_creds_result.ok()) {
       throw std::runtime_error(
           "[StorageD] FATAL: TLS credentials required. Provide valid certs or "
           "explicitly set tls.enabled=false for development only. Error: " +
           client_creds_result.status().ToString());
     }
-    auto channel = grpc::CreateChannel(meta_addr, client_creds_result.ValueOrDie());
-    stub_ = cedar::meta::MetaService::NewStub(channel);
+    meta_addrs_ = ParseMetaAddrs(meta_addr);
+    if (meta_addrs_.empty()) {
+      meta_addrs_.push_back(meta_addr);
+    }
+    credentials_ = client_creds_result.ValueOrDie();
+    ResetStub(meta_addrs_[current_meta_index_]);
   }
 
   bool Register() {
+    constexpr int kMaxAttempts = 30;
+    constexpr auto kRetryDelay = std::chrono::seconds(1);
+
+    for (int attempt = 1; attempt <= kMaxAttempts && g_running.load(); ++attempt) {
+      if (RegisterOnce()) {
+        std::cout << "[StorageD] Registered with MetaD successfully" << std::endl;
+        return true;
+      }
+      std::cerr << "[StorageD] MetaD registration attempt " << attempt
+                << "/" << kMaxAttempts << " failed; retrying" << std::endl;
+      AdvanceMetaEndpoint();
+      std::this_thread::sleep_for(kRetryDelay);
+    }
+
+    return false;
+  }
+
+  bool RegisterOnce() {
     cedar::meta::RegisterNodeRequest request;
     auto* node_info = request.mutable_node_info();
     node_info->set_node_id(node_id_);
@@ -1068,29 +1190,30 @@ class MetaClient {
 
     cedar::meta::RegisterNodeResponse response;
     grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
     auto status = stub_->RegisterNode(&context, request, &response);
 
     // Handle leader redirect
     if (status.ok() && !response.success() && response.leader_address().size() > 0) {
-      std::cout << "[StorageD] Redirecting to MetaD leader at " 
-                << response.leader_address() << std::endl;
-      auto channel = grpc::CreateChannel(response.leader_address(), 
-                                          grpc::InsecureChannelCredentials());
-      stub_ = cedar::meta::MetaService::NewStub(channel);
-      grpc::ClientContext ctx2;
-      status = stub_->RegisterNode(&ctx2, request, &response);
+      const std::string leader_address = NormalizeMetaAddress(response.leader_address());
+      std::cerr << "[StorageD] MetaD leader is currently " << leader_address
+                << "; retrying registration through leader" << std::endl;
+      if (SwitchToLeaderHint(leader_address)) {
+        return false;
+      }
+      AdvanceMetaEndpoint();
+      return false;
     } else if (!status.ok() || !response.success()) {
-      std::cerr << "[StorageD] Registration failed: " 
+      std::cerr << "[StorageD] Registration failed: "
                 << (status.ok() ? response.error_msg() : status.error_message()) << std::endl;
     }
 
     if (!status.ok() || !response.success()) {
-      std::cerr << "[StorageD] Failed to register with MetaD: " 
+      std::cerr << "[StorageD] Failed to register with MetaD: "
                 << (status.ok() ? response.error_msg() : status.error_message()) << std::endl;
       return false;
     }
 
-    std::cout << "[StorageD] Registered with MetaD successfully" << std::endl;
     return true;
   }
 
@@ -1112,15 +1235,97 @@ class MetaClient {
     context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
     
     auto grpc_status = stub_->Heartbeat(&context, request, &response);
-    return grpc_status.ok() && response.success();
+    if (grpc_status.ok() && response.success()) {
+      return true;
+    }
+    if (grpc_status.ok() && response.error_msg().find("Not leader") != std::string::npos) {
+      AdvanceMetaEndpoint();
+    }
+    return false;
   }
 
  private:
+  static std::string Trim(std::string value) {
+    const auto begin = value.find_first_not_of(" \t\n\r");
+    if (begin == std::string::npos) {
+      return "";
+    }
+    const auto end = value.find_last_not_of(" \t\n\r");
+    return value.substr(begin, end - begin + 1);
+  }
+
+  static std::string NormalizeMetaAddress(std::string address) {
+    address = Trim(address);
+    constexpr const char* kBraftPrefix = "braft://";
+    if (address.rfind(kBraftPrefix, 0) == 0) {
+      address = address.substr(std::string(kBraftPrefix).size());
+    }
+    const auto slash = address.find('/');
+    if (slash != std::string::npos) {
+      address = address.substr(0, slash);
+    }
+    return Trim(address);
+  }
+
+  static std::string AddressHost(const std::string& address) {
+    const std::string normalized = NormalizeMetaAddress(address);
+    const auto colon = normalized.rfind(':');
+    if (colon == std::string::npos) {
+      return normalized;
+    }
+    return normalized.substr(0, colon);
+  }
+
+  static std::vector<std::string> ParseMetaAddrs(const std::string& meta_addrs) {
+    std::vector<std::string> result;
+    std::stringstream ss(meta_addrs);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+      std::string address = NormalizeMetaAddress(item);
+      if (address.empty()) {
+        continue;
+      }
+      result.push_back(address);
+    }
+    return result;
+  }
+
+  bool SwitchToLeaderHint(const std::string& leader_hint) {
+    const std::string leader_host = AddressHost(leader_hint);
+    if (leader_host.empty()) {
+      return false;
+    }
+    for (size_t i = 0; i < meta_addrs_.size(); ++i) {
+      if (AddressHost(meta_addrs_[i]) == leader_host) {
+        current_meta_index_ = i;
+        ResetStub(meta_addrs_[current_meta_index_]);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void ResetStub(const std::string& address) {
+    auto channel = grpc::CreateChannel(address, credentials_);
+    stub_ = cedar::meta::MetaService::NewStub(channel);
+  }
+
+  void AdvanceMetaEndpoint() {
+    if (meta_addrs_.empty()) {
+      return;
+    }
+    current_meta_index_ = (current_meta_index_ + 1) % meta_addrs_.size();
+    ResetStub(meta_addrs_[current_meta_index_]);
+  }
+
+  std::vector<std::string> meta_addrs_;
+  size_t current_meta_index_{0};
   std::unique_ptr<cedar::meta::MetaService::Stub> stub_;
   int node_id_;
   int port_;
   std::string advertise_address_;
   std::string data_dir_;
+  std::shared_ptr<grpc::ChannelCredentials> credentials_;
 };
 
 // 心跳线程
@@ -1146,6 +1351,7 @@ int main(int argc, char* argv[]) {
   PrintBanner();
   
   Config config = ParseArgs(argc, argv);
+  ApplyTlsEnvOverrides(&config.tls);
   
   // 使用 node_id 区分数据目录
   config.data_dir += "/node" + std::to_string(config.node_id);
@@ -1233,7 +1439,7 @@ int main(int argc, char* argv[]) {
   // 6. 启动 gRPC 服务器
   std::string server_address = config.bind_address + ":" + std::to_string(config.port);
   grpc::ServerBuilder builder;
-  auto creds_result = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentials(config.tls);
+  auto creds_result = CreateServerCredentialsWithEnvFallback(config.tls);
   if (!creds_result.ok()) {
     std::cerr << "[StorageD] FATAL: Failed to create server credentials: "
               << creds_result.status().ToString() << std::endl;
@@ -1280,18 +1486,24 @@ int main(int argc, char* argv[]) {
     return cedar::governance::HealthStatus::kHealthy;
   });
   
-  auto health_status = health_checker.StartHttpEndpoint("0.0.0.0", 7000);
+  auto health_status = health_checker.StartHttpEndpoint("0.0.0.0", config.health_port);
   if (health_status.ok()) {
-    std::cout << "[StorageD] Health endpoint on http://0.0.0.0:7000/health" << std::endl;
+    std::cout << "[StorageD] Health endpoint on http://0.0.0.0:"
+              << config.health_port << "/health" << std::endl;
+  } else {
+    std::cerr << "[StorageD] Health endpoint disabled: " << health_status.ToString() << std::endl;
   }
 
   cedar::dtx::storage::MetricsCollector metrics_collector;
   cedar::dtx::storage::MetricsCollector::Config metrics_config;
-  metrics_config.endpoint = ":7001";
+  metrics_config.endpoint = ":" + std::to_string(config.metrics_port);
   metrics_config.enable_http_server = true;
   auto metrics_status = metrics_collector.Initialize(metrics_config);
   if (metrics_status.ok()) {
-    std::cout << "[StorageD] Metrics endpoint on http://0.0.0.0:7001/metrics" << std::endl;
+    std::cout << "[StorageD] Metrics endpoint on http://0.0.0.0:"
+              << config.metrics_port << "/metrics" << std::endl;
+  } else {
+    std::cerr << "[StorageD] Metrics endpoint disabled: " << metrics_status.ToString() << std::endl;
   }
 
   // 8. 启动配置热加载
@@ -1325,11 +1537,11 @@ int main(int argc, char* argv[]) {
   {
     cedar::dtx::monitoring::AlertRule rule;
     rule.name = "StorageLowSpace";
-    rule.description = "Storage disk space is low";
+    rule.description = "Storage free disk space is low";
     rule.severity = cedar::dtx::monitoring::AlertSeverity::kCritical;
-    rule.condition_metric = "cedar_storage_disk_usage_percent";
-    rule.threshold = 90.0;
-    rule.comparison = ">";
+    rule.condition_metric = "cedar_disk_free_bytes";
+    rule.threshold = 10737418240.0;  // 10 GiB.
+    rule.comparison = "<";
     rule.duration = std::chrono::seconds(30);
     alert_mgr->AddRule(rule);
   }

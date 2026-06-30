@@ -67,14 +67,14 @@ std::string ComputeFingerprint(const QueryStatement& ast,
 
 - [ ] **Step 2: Build to verify header compiles**
 
-Run: `cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(nproc) 2>&1 | tail -10`
+Run: `cd <repo-root>/build && make -j$(nproc) 2>&1 | tail -10`
 
 Expected: Compilation proceeds (no syntax errors in the modified header).
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/cypher/fingerprint.h
 git commit -m "feat(fingerprint): add FingerprintOptions struct for literal preservation"
 ```
@@ -209,14 +209,14 @@ std::string ComputeFingerprint(const QueryStatement& ast) {
 
 - [ ] **Step 3: Build to verify implementation compiles**
 
-Run: `cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(nproc) cedar_cypher 2>&1 | tail -15`
+Run: `cd <repo-root>/build && make -j$(nproc) cedar_cypher 2>&1 | tail -15`
 
 Expected: `cedar_cypher` target builds successfully with no errors.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/cypher/fingerprint.cc
 git commit -m "feat(fingerprint): implement FingerprintOptions in AST writer"
 ```
@@ -287,7 +287,7 @@ TEST(FingerprintTest, PreservePropertyKeysOnlyForDesignatedKeys) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make -j$(nproc) test_fingerprint 2>&1 | tail -10
 ./tests/cypher/test_fingerprint
 ```
@@ -297,7 +297,7 @@ Expected: All 10 tests pass (6 existing + 4 new).
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/cypher/test_fingerprint.cc
 git commit -m "test(fingerprint): add tests for FingerprintOptions preserve_property_keys"
 ```
@@ -409,7 +409,7 @@ cache_key.query_fingerprint = GenerateResultCacheFingerprint(request->query());
 
 - [ ] **Step 3: Build to verify**
 
-Run: `cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(nproc) graph_service_router 2>&1 | tail -15`
+Run: `cd <repo-root>/build && make -j$(nproc) graph_service_router 2>&1 | tail -15`
 
 Expected: Builds successfully.
 
@@ -417,7 +417,7 @@ Expected: Builds successfully.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ./tests/test_distributed_write
 ```
 
@@ -426,7 +426,7 @@ Expected: Test passes with 100% read hit rate. QPS remains ~60 (2PC writes) but 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/service/graph_service_router.h src/service/graph_service_router.cc
 git commit -m "feat(router): use AST-based result cache fingerprint with id literal preservation"
 ```
@@ -471,14 +471,14 @@ In `tools/storaged.cc`, add the following method inside `class StorageServiceImp
 
 - [ ] **Step 2: Build to verify**
 
-Run: `cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(nproc) storaged 2>&1 | tail -15`
+Run: `cd <repo-root>/build && make -j$(nproc) storaged 2>&1 | tail -15`
 
 Expected: `storaged` target builds successfully.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tools/storaged.cc
 git commit -m "feat(storaged): implement BatchGet RPC in standalone StorageServiceImpl"
 ```
@@ -565,7 +565,7 @@ std::vector<std::optional<int32_t>> BatchRead(
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make -j$(nproc) test_neighbor_only 2>&1 | tail -10
 ./tests/test_neighbor_only
 ```
@@ -575,7 +575,7 @@ Expected: Test passes with 1000/1000 writes and reads OK. No fallback needed.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/test_neighbor_only.cpp
 git commit -m "test(neighbor): remove BatchGet fallback, use native BatchGet RPC"
 ```
@@ -613,14 +613,14 @@ bool CedarGraph::HasVertex(uint64_t vertex_id) {
 
 - [ ] **Step 3: Build to verify**
 
-Run: `cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(nproc) cedar_graph 2>&1 | tail -10`
+Run: `cd <repo-root>/build && make -j$(nproc) cedar_graph 2>&1 | tail -10`
 
 Expected: Builds successfully.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/graph/cedar_graph.h src/graph/cedar_graph.cc
 git commit -m "feat(graph): add HasVertex() for point-lookup existence check"
 ```
@@ -683,14 +683,14 @@ In `src/cypher/execution_plan.cc`, replace the point-lookup branch in `NodeScan:
 
 - [ ] **Step 2: Build to verify**
 
-Run: `cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(nproc) cedar_cypher 2>&1 | tail -10`
+Run: `cd <repo-root>/build && make -j$(nproc) cedar_cypher 2>&1 | tail -10`
 
 Expected: Builds successfully.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/cypher/execution_plan.cc
 git commit -m "fix(nodescan): verify node existence in storage for point lookups"
 ```
@@ -777,7 +777,7 @@ TEST(NodeScanRealDataTest, PointLookupReturnsOnlyExistingVertices) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make -j$(nproc) test_nodescan_real_data 2>&1 | tail -10
 ./tests/cypher/test_nodescan_real_data
 ```
@@ -787,7 +787,7 @@ Expected: Both tests pass (existing `ReturnsOnlyExistingVertices` + new `PointLo
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/cypher/test_nodescan_real_data.cc
 git commit -m "test(nodescan): verify point lookup skips non-existent nodes"
 ```
@@ -803,7 +803,7 @@ git commit -m "test(nodescan): verify point lookup skips non-existent nodes"
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make -j$(nproc) test_distributed_write test_timestamp_debug test_neighbor_only test_fingerprint test_nodescan_real_data 2>&1 | tail -20
 ```
 
@@ -812,7 +812,7 @@ Expected: All targets build successfully.
 - [ ] **Step 2: Run all three integration tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ./tests/test_timestamp_debug && echo "PASS: test_timestamp_debug"
 ./tests/test_neighbor_only && echo "PASS: test_neighbor_only"
 ./tests/test_distributed_write && echo "PASS: test_distributed_write"
@@ -823,7 +823,7 @@ Expected: All three tests pass.
 - [ ] **Step 3: Run unit tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ./tests/cypher/test_fingerprint && echo "PASS: test_fingerprint"
 ./tests/cypher/test_nodescan_real_data && echo "PASS: test_nodescan_real_data"
 ```
@@ -833,7 +833,7 @@ Expected: All unit tests pass.
 - [ ] **Step 4: Final commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 # No uncommitted changes at this point — all tasks committed individually
 ```
 

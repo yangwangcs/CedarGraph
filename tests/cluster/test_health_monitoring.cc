@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <future>
 #include <thread>
 
 #include "cedar/governance/health_checker.h"
@@ -95,6 +96,47 @@ TEST_F(HealthMonitorTest, HealthChangeCallback) {
   // The callback may or may not be called depending on health check results
   // Just verify the callback mechanism is set up correctly
   EXPECT_TRUE(callback_called || !callback_called);
+}
+
+TEST_F(HealthMonitorTest, HealthChangeCallbackRunsOutsideNodeLock) {
+  monitor_->RegisterNode("node-reentrant", "127.0.0.1", 9779);
+
+  std::promise<void> callback_entered;
+  auto entered_future = callback_entered.get_future();
+  monitor_->SetHealthChangeCallback(
+      [&](const std::string& node_id, HealthStatus, HealthStatus) {
+        auto health = monitor_->GetNodeHealth(node_id);
+        EXPECT_TRUE(health.ok());
+        callback_entered.set_value();
+      });
+
+  auto future = std::async(std::launch::async, [&] {
+    return monitor_->CheckNodeHealth("node-reentrant");
+  });
+
+  EXPECT_EQ(entered_future.wait_for(std::chrono::seconds(2)),
+            std::future_status::ready);
+  EXPECT_EQ(future.wait_for(std::chrono::seconds(2)),
+            std::future_status::ready);
+  EXPECT_TRUE(future.get().ok());
+}
+
+TEST_F(HealthMonitorTest, StopWakesMonitoringThreadPromptly) {
+  auto local_checker = std::make_shared<HealthChecker>();
+  StorageHealthMonitor monitor;
+
+  HealthMonitorConfig config;
+  config.check_interval = std::chrono::seconds(60);
+  config.enable_continuous_monitoring = true;
+  ASSERT_TRUE(monitor.Initialize(config, local_checker).ok());
+
+  ASSERT_TRUE(monitor.Start().ok());
+  auto start = std::chrono::steady_clock::now();
+  monitor.Stop();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            1000);
 }
 
 TEST_F(HealthMonitorTest, DeregisterNode) {

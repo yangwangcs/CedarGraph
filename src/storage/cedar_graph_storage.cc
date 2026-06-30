@@ -1503,6 +1503,16 @@ bool CedarGraphStorage::EntityExistsAt(uint64_t entity_id, EntityType type, Time
     auto history = GetEntityLifecycleHistory(entity_id, type, Timestamp(0), timestamp);
     
     if (history.empty()) {
+        // CedarUpdate writes state anchors as the fast lifecycle path. Fall
+        // back to them when the older lifecycle event column is absent.
+        auto anchor_desc = Get(entity_id, type, kStateAnchorColumnId, timestamp);
+        if (anchor_desc.has_value()) {
+            auto anchor = LifecycleDescriptor::ParseStateAnchor(*anchor_desc);
+            if (anchor.has_value()) {
+                return anchor->state == EntityState::Active;
+            }
+        }
+
         // 无生命周期记录：向后兼容，检查是否有属性数据
         // 如果有属性数据，认为实体在创建时就已经存在
         auto props = Scan(entity_id, type, kLifecycleColumnId, Timestamp(0), timestamp);
@@ -1525,6 +1535,16 @@ EntityState CedarGraphStorage::GetEntityState(uint64_t entity_id, EntityType typ
     auto history = GetEntityLifecycleHistory(entity_id, type, Timestamp(0), Timestamp::Max());
     
     if (history.empty()) {
+        // CedarUpdate writes state anchors as the fast lifecycle path. Fall
+        // back to them when the older lifecycle event column is absent.
+        auto anchor_desc = Get(entity_id, type, kStateAnchorColumnId, Timestamp::Max());
+        if (anchor_desc.has_value()) {
+            auto anchor = LifecycleDescriptor::ParseStateAnchor(*anchor_desc);
+            if (anchor.has_value()) {
+                return anchor->state;
+            }
+        }
+
         // 向后兼容：检查是否有属性数据
         auto props = Scan(entity_id, type, 0, Timestamp(0), Timestamp::Max());
         if (!props.empty()) {

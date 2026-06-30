@@ -7,17 +7,17 @@
 # =============================================================================
 metad:
   node_id: 1
-  bind_address: "0.0.0.0"
-  port: 9559
+  listen_address: "0.0.0.0:9559"
+  grpc_port: 10559
   data_dir: "/var/lib/cedar/metad"
   peers:
     - "1:127.0.0.1:9559"
     - "2:127.0.0.1:9560"
     - "3:127.0.0.1:9561"
-  election_timeout_min_ms: 150
-  election_timeout_max_ms: 300
-  heartbeat_interval_ms: 50
-  rpc_timeout_ms: 1000
+  election_timeout_ms: 300
+  heartbeat_interval_ms: 100
+  heartbeat_timeout_sec: 10
+  heartbeat_check_interval_sec: 5
 
 # =============================================================================
 # StorageD - Storage Service
@@ -27,14 +27,8 @@ storaged:
   bind_address: "0.0.0.0"
   port: 9779
   data_dir: "/var/lib/cedar/storaged"
-  meta_server: "127.0.0.1:9559"
+  meta_server: "127.0.0.1:10559"
   heartbeat_interval_sec: 10
-  # Storage mode: "partitioned" (per-partition independent storage) or "shared" (all partitions share one LSM-Tree)
-  storage_mode: "partitioned"
-  # Partitioned mode config
-  max_open_partitions: 256
-  per_partition_memtable_mb: 16
-  enable_lru_eviction: true
 
 # =============================================================================
 # GraphD - Graph Query Router
@@ -42,21 +36,8 @@ storaged:
 graphd:
   bind_address: "0.0.0.0"
   port: 9669
-  meta_server: "127.0.0.1:9559"
+  meta_server: "127.0.0.1:10559"
   gcn_server: "127.0.0.1:9780"
-
-# =============================================================================
-# QueryD - Distributed Query Layer
-# =============================================================================
-queryd:
-  listen: "0.0.0.0:9669"
-  meta: "127.0.0.1:9559"
-  storage: "127.0.0.1:9779"
-  workers: 16
-  max_concurrent: 1000
-  query_timeout: 300000
-  cache_size: 1000
-  max_message_size: 64
 
 # =============================================================================
 # Cluster-wide Settings
@@ -71,11 +52,11 @@ cluster:
 # =============================================================================
 tls:
   enabled: true
-  ca_cert: "/etc/cedar/certs/ca.crt"
-  server_cert: "/etc/cedar/certs/server.crt"
-  server_key: "/etc/cedar/certs/server.key"
-  client_cert: "/etc/cedar/certs/client.crt"
-  client_key: "/etc/cedar/certs/client.key"
+  ca_cert: "/etc/cedar/tls/ca.crt"
+  server_cert: "/etc/cedar/tls/tls.crt"
+  server_key: "/etc/cedar/tls/tls.key"
+  client_cert: "/etc/cedar/tls/client.crt"
+  client_key: "/etc/cedar/tls/client.key"
 
 # =============================================================================
 # Logging Settings

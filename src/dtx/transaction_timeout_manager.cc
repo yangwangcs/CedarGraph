@@ -59,6 +59,7 @@ void TransactionTimeoutManager::Shutdown() {
   
   std::lock_guard<std::mutex> lock(mutex_);
   transactions_.clear();
+  cancelled_retry_txns_.clear();
   while (!retry_queue_.empty()) {
     retry_queue_.pop();
   }
@@ -80,6 +81,7 @@ void TransactionTimeoutManager::RegisterTransaction(
     info.participant_timeouts[pid] = now;
   }
   
+  cancelled_retry_txns_.erase(txn_id);
   transactions_[txn_id] = std::move(info);
 }
 
@@ -101,15 +103,14 @@ void TransactionTimeoutManager::UpdateTransactionState(dtx::TxnID txn_id,
 
 void TransactionTimeoutManager::ScheduleRetry(const PendingOperation& op) {
   std::lock_guard<std::mutex> lock(mutex_);
+  cancelled_retry_txns_.erase(op.txn_id);
   retry_queue_.push(op);
   cv_.notify_one();
 }
 
 void TransactionTimeoutManager::CancelRetries(dtx::TxnID txn_id) {
   std::lock_guard<std::mutex> lock(mutex_);
-  
-  // Note: We can't easily remove from priority_queue
-  // Instead, we'll filter when processing
+  cancelled_retry_txns_.insert(txn_id);
 }
 
 std::vector<PendingOperation> TransactionTimeoutManager::GetPendingRetries(size_t max_count) {
@@ -121,7 +122,9 @@ std::vector<PendingOperation> TransactionTimeoutManager::GetPendingRetries(size_
   while (!retry_queue_.empty() && result.size() < max_count) {
     const auto& op = retry_queue_.top();
     if (op.next_attempt <= now) {
-      result.push_back(op);
+      if (cancelled_retry_txns_.count(op.txn_id) == 0) {
+        result.push_back(op);
+      }
       retry_queue_.pop();
     } else {
       break;
@@ -238,7 +241,9 @@ void TransactionTimeoutManager::RetryLoop() {
     while (!retry_queue_.empty()) {
       const auto& op = retry_queue_.top();
       if (op.next_attempt <= now) {
-        ready_ops.push_back(op);
+        if (cancelled_retry_txns_.count(op.txn_id) == 0) {
+          ready_ops.push_back(op);
+        }
         retry_queue_.pop();
       } else {
         break;

@@ -161,6 +161,27 @@ void TransactionRecord::Serialize(std::string* output) const {
   
   // Retry count
   output->append(reinterpret_cast<const char*>(&retry_count), sizeof(retry_count));
+
+  uint32_t participant_state_count =
+      static_cast<uint32_t>(participant_states.size());
+  output->append(reinterpret_cast<const char*>(&participant_state_count),
+                 sizeof(participant_state_count));
+  for (const auto& [pid, ps] : participant_states) {
+    output->append(reinterpret_cast<const char*>(&pid), sizeof(pid));
+    int ps_state = static_cast<int>(ps.state);
+    output->append(reinterpret_cast<const char*>(&ps_state), sizeof(ps_state));
+    uint32_t address_len = static_cast<uint32_t>(ps.address.size());
+    output->append(reinterpret_cast<const char*>(&address_len), sizeof(address_len));
+    output->append(ps.address.data(), ps.address.size());
+
+    bool has_error = ps.error_msg.has_value();
+    output->append(reinterpret_cast<const char*>(&has_error), sizeof(has_error));
+    if (has_error) {
+      uint32_t error_len = static_cast<uint32_t>(ps.error_msg->size());
+      output->append(reinterpret_cast<const char*>(&error_len), sizeof(error_len));
+      output->append(ps.error_msg->data(), ps.error_msg->size());
+    }
+  }
 }
 
 Status TransactionRecord::Deserialize(const std::string& input, TransactionRecord* record) {
@@ -170,6 +191,10 @@ Status TransactionRecord::Deserialize(const std::string& input, TransactionRecor
   
   const char* p = input.data();
   size_t pos = 0;
+
+  auto can_read = [&input](size_t offset, size_t size) {
+    return offset <= input.size() && size <= input.size() - offset;
+  };
   
   // txn_id
   record->txn_id = *reinterpret_cast<const TxnID*>(p + pos);
@@ -190,7 +215,11 @@ Status TransactionRecord::Deserialize(const std::string& input, TransactionRecor
   pos += sizeof(uint32_t);
   
   record->participants.clear();
-  for (uint32_t i = 0; i < participant_count && pos + sizeof(PartitionID) <= input.size(); ++i) {
+  record->participant_states.clear();
+  for (uint32_t i = 0; i < participant_count; ++i) {
+    if (!can_read(pos, sizeof(PartitionID))) {
+      return Status::Corruption("TransactionRecord", "Incomplete participants");
+    }
     PartitionID pid = *reinterpret_cast<const PartitionID*>(p + pos);
     record->participants.push_back(pid);
     pos += sizeof(PartitionID);
@@ -199,11 +228,74 @@ Status TransactionRecord::Deserialize(const std::string& input, TransactionRecor
   // retry_count (if available)
   if (pos + sizeof(int) <= input.size()) {
     record->retry_count = *reinterpret_cast<const int*>(p + pos);
+    pos += sizeof(int);
   }
   
   auto now = std::chrono::steady_clock::now();
   record->created_at = now;
   record->updated_at = now;
+
+  if (can_read(pos, sizeof(uint32_t))) {
+    uint32_t participant_state_count =
+        *reinterpret_cast<const uint32_t*>(p + pos);
+    pos += sizeof(uint32_t);
+
+    for (uint32_t i = 0; i < participant_state_count; ++i) {
+      if (!can_read(pos, sizeof(PartitionID) + sizeof(int) + sizeof(uint32_t))) {
+        return Status::Corruption("TransactionRecord", "Incomplete participant state");
+      }
+
+      ParticipantState ps;
+      ps.partition_id = *reinterpret_cast<const PartitionID*>(p + pos);
+      pos += sizeof(PartitionID);
+
+      int ps_state = *reinterpret_cast<const int*>(p + pos);
+      ps.state = static_cast<ParticipantState::State>(ps_state);
+      pos += sizeof(int);
+
+      uint32_t address_len = *reinterpret_cast<const uint32_t*>(p + pos);
+      pos += sizeof(uint32_t);
+      if (!can_read(pos, address_len)) {
+        return Status::Corruption("TransactionRecord", "Incomplete participant address");
+      }
+      ps.address.assign(p + pos, address_len);
+      pos += address_len;
+
+      if (!can_read(pos, sizeof(bool))) {
+        return Status::Corruption("TransactionRecord", "Incomplete participant error flag");
+      }
+      bool has_error = *reinterpret_cast<const bool*>(p + pos);
+      pos += sizeof(bool);
+      if (has_error) {
+        if (!can_read(pos, sizeof(uint32_t))) {
+          return Status::Corruption("TransactionRecord", "Incomplete participant error length");
+        }
+        uint32_t error_len = *reinterpret_cast<const uint32_t*>(p + pos);
+        pos += sizeof(uint32_t);
+        if (!can_read(pos, error_len)) {
+          return Status::Corruption("TransactionRecord", "Incomplete participant error");
+        }
+        ps.error_msg = std::string(p + pos, error_len);
+        pos += error_len;
+      } else {
+        ps.error_msg.reset();
+      }
+
+      ps.last_update = now;
+      record->participant_states[ps.partition_id] = std::move(ps);
+    }
+  }
+
+  // Backward compatibility for older WAL records that only stored participants.
+  for (PartitionID pid : record->participants) {
+    if (record->participant_states.count(pid) == 0) {
+      ParticipantState ps;
+      ps.partition_id = pid;
+      ps.state = ParticipantState::State::kUnknown;
+      ps.last_update = now;
+      record->participant_states[pid] = std::move(ps);
+    }
+  }
   
   return Status::OK();
 }

@@ -285,6 +285,29 @@ TEST_F(StorageCriticalBatchTest, ParallelQueryRangeNoDataRace) {
   delete storage;
 }
 
+TEST_F(StorageCriticalBatchTest, ParallelQueryRangeRejectsInvalidShardCount) {
+  CedarOptions options;
+  options.create_if_missing = true;
+
+  LsmEngine engine(db_path_, options, cedar::Env::Default());
+  ASSERT_TRUE(engine.Open().ok());
+
+  ParallelQueryEngine pqe(&engine, ParallelQueryConfig{});
+  ParallelQueryEngine::RangeQueryRequest req;
+  req.start_entity_id = 10;
+  req.end_entity_id = 20;
+  req.column_id = 1;
+  req.entity_type = 0;
+
+  EXPECT_TRUE(pqe.QueryRangeParallel(req, 0).empty());
+  EXPECT_TRUE(pqe.QueryRangeParallel(req, -1).empty());
+
+  req.end_entity_id = req.start_entity_id;
+  EXPECT_TRUE(pqe.QueryRangeParallel(req, 4).empty());
+
+  engine.Close().IgnoreError();
+}
+
 // ============================================================================
 // 9. OCCTransaction read-your-writes key collision (#12)
 // ============================================================================

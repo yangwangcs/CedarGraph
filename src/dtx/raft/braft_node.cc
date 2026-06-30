@@ -23,14 +23,18 @@
 
 #include <gflags/gflags.h>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <fstream>
 #include <future>
 #include <shared_mutex>
+#include <thread>
 
 DECLARE_int64(raft_propose_timeout_ms);
 
@@ -38,6 +42,57 @@ namespace cedar {
 namespace dtx {
 
 namespace {
+
+bool ResolveRaftAddress(const std::string& address, std::string* resolved, std::string* error) {
+    const auto colon = address.rfind(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= address.size()) {
+        if (error) {
+            *error = "Raft address must be host:port: " + address;
+        }
+        return false;
+    }
+
+    const std::string host = address.substr(0, colon);
+    const std::string port = address.substr(colon + 1);
+
+    in_addr ipv4_addr{};
+    if (inet_pton(AF_INET, host.c_str(), &ipv4_addr) == 1) {
+        if (resolved) {
+            *resolved = address;
+        }
+        return true;
+    }
+
+    // Docker DNS may not expose every peer at the exact instant all metad
+    // containers start. Wait briefly so a parallel Raft bootstrap does not fail
+    // on a transient hostname miss.
+    for (int attempt = 0; attempt < 120; ++attempt) {
+        addrinfo hints{};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        addrinfo* result = nullptr;
+        const int gai_rc = getaddrinfo(host.c_str(), port.c_str(), &hints, &result);
+        if (gai_rc == 0 && result != nullptr) {
+            char ip[NI_MAXHOST] = {0};
+            const int name_rc = getnameinfo(result->ai_addr, result->ai_addrlen, ip, sizeof(ip),
+                                            nullptr, 0, NI_NUMERICHOST);
+            freeaddrinfo(result);
+            if (name_rc == 0 && ip[0] != '\0') {
+                if (resolved) {
+                    *resolved = std::string(ip) + ":" + port;
+                }
+                return true;
+            }
+        } else if (result != nullptr) {
+            freeaddrinfo(result);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    if (error) {
+        *error = "Raft address DNS did not resolve to IPv4 before braft init: " + address;
+    }
+    return false;
+}
 
 class RaftCircuitBreaker {
  public:
@@ -330,7 +385,17 @@ public:
         node_options.snapshot_interval_s = options.snapshot_interval_s;
         
         for (const auto& peer : options.initial_peers) {
-            node_options.initial_conf.add_peer(braft::PeerId(peer));
+            std::string resolved_peer;
+            std::string resolve_error;
+            if (!ResolveRaftAddress(peer, &resolved_peer, &resolve_error)) {
+                return ::cedar::Status::IOError(resolve_error);
+            }
+            braft::PeerId peer_id;
+            if (peer_id.parse(resolved_peer) != 0) {
+                return ::cedar::Status::InvalidArgument(
+                    "Invalid braft peer address: " + peer + " resolved to " + resolved_peer);
+            }
+            node_options.initial_conf.add_peer(peer_id);
         }
         
         node_options.fsm = state_machine_.get();
@@ -340,7 +405,20 @@ public:
         node_options.raft_meta_uri = "local://" + options.data_path + "/meta";
         node_options.snapshot_uri = "local://" + options.data_path + "/snapshot";
         
-        braft::PeerId self(options.listen_address);
+        const std::string self_address = options.advertise_address.empty()
+            ? options.listen_address
+            : options.advertise_address;
+        std::string resolved_self_address;
+        std::string self_resolve_error;
+        if (!ResolveRaftAddress(self_address, &resolved_self_address, &self_resolve_error)) {
+            return ::cedar::Status::IOError(self_resolve_error);
+        }
+        braft::PeerId self;
+        if (self.parse(resolved_self_address) != 0) {
+            return ::cedar::Status::InvalidArgument(
+                "Invalid braft self address: " + self_address +
+                " resolved to " + resolved_self_address);
+        }
         {
             std::lock_guard<std::mutex> lock(node_mutex_);
             node_ = new braft::Node("meta_service", self);

@@ -61,7 +61,7 @@
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target graphd -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target graphd -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds with zero project-code warnings.
 
@@ -86,7 +86,7 @@ Expected: Build succeeds with zero project-code warnings.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target storaged -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target storaged -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -115,7 +115,7 @@ Expected: Build succeeds.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target storaged -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target storaged -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -162,7 +162,7 @@ add_test(NAME tls_config_test COMMAND tls_config_test)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target tls_config_test -j$(sysctl -n hw.ncpu) && ./tests/governance/tls_config_test
+cd <repo-root>/build && cmake --build . --target tls_config_test -j$(sysctl -n hw.ncpu) && ./tests/governance/tls_config_test
 ```
 Expected: Both tests pass.
 
@@ -171,7 +171,7 @@ Expected: Both tests pass.
 ### Step 1.1.5: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tools/graphd.cc tools/storaged.cc tests/governance/tls_config_test.cc tests/governance/CMakeLists.txt
 git commit -m "feat(phase1): enforce TLS — remove insecure credential fallback
 
@@ -237,7 +237,7 @@ BLOCKER fix: Security #1, #2"
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -270,7 +270,7 @@ First, add a decision log helper to the engine header.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build may fail with "undefined reference" — that's expected, we implement next.
 
@@ -349,7 +349,7 @@ Status Optimized2PCEngine::LoadCommitDecision(TxnID txn_id, CommitDecision* out)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -408,7 +408,7 @@ Then modify the failure path (around line 460-468):
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -429,7 +429,7 @@ struct TwoPCConfig {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -521,7 +521,7 @@ add_test(NAME two_pc_atomicity_test COMMAND two_pc_atomicity_test)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target two_pc_atomicity_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/two_pc_atomicity_test
+cd <repo-root>/build && cmake --build . --target two_pc_atomicity_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/two_pc_atomicity_test
 ```
 Expected: Both tests pass.
 
@@ -530,7 +530,7 @@ Expected: Both tests pass.
 ### Step 1.2.7: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/storage_impl/storage_service_impl.cc src/dtx/optimized_2pc_engine.cc include/cedar/dtx/optimized_2pc_engine.h include/cedar/dtx/production_config.h tests/dtx/two_pc_atomicity_test.cc tests/dtx/CMakeLists.txt
 git commit -m "fix(phase1): 2PC atomicity — remove abort-after-commit + add decision log
 
@@ -574,7 +574,7 @@ In the `private:` section of `PartitionFailoverController`, add:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build may fail with undefined reference — expected.
 
@@ -678,7 +678,7 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -707,7 +707,7 @@ In `src/dtx/storage_impl/storage_service_impl.cc` (or wherever `PartitionFailove
 Because this wiring depends on existing linkage, verify the build:
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds. If linker errors occur, adjust the callback capture to match the actual `BraftPartitionNode` accessor in `StorageServiceImpl`.
 
@@ -779,7 +779,7 @@ add_test(NAME failover_consensus_test COMMAND failover_consensus_test)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target failover_consensus_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/failover_consensus_test
+cd <repo-root>/build && cmake --build . --target failover_consensus_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/failover_consensus_test
 ```
 Expected: Both tests pass.
 
@@ -788,7 +788,7 @@ Expected: Both tests pass.
 ### Step 1.3.5: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/dtx/failover_manager.h src/dtx/storage/failover_manager.cc src/dtx/storage_impl/storage_service_impl.cc tests/dtx/failover_consensus_test.cc tests/dtx/CMakeLists.txt
 git commit -m "fix(phase1): FailoverManager delegates leader switch to Raft consensus
 
@@ -879,7 +879,7 @@ Status ClusterFailoverManager::RestartViaKubernetes(const FailureEvent& event) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -888,7 +888,7 @@ Expected: Build succeeds.
 ### Step 1.4.2: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/storage/failover_manager.cc
 git commit -m "fix(phase1): FailoverManager never self-SIGKILL
 
@@ -940,7 +940,7 @@ LsmEngine::~LsmEngine() {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_storage -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_storage -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -986,7 +986,7 @@ Status LsmEngine::CompactAll() {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_storage -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_storage -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -1063,7 +1063,7 @@ Expected: Build succeeds.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_storage -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_storage -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -1084,7 +1084,7 @@ if (auto_compaction_thread_ && auto_compaction_thread_->joinable()) {
 This is correct. Confirm with a grep:
 
 ```bash
-grep -n "auto_compaction_thread_ = nullptr" /Users/wangyang/Desktop/CedarGraph-Core/src/storage/lsm_engine.cc
+grep -n "auto_compaction_thread_ = nullptr" <repo-root>/src/storage/lsm_engine.cc
 ```
 
 Expected: Matches at lines ~159 and ~2745 (CompactAll).
@@ -1162,7 +1162,7 @@ add_test(NAME lsm_engine_lifecycle_test COMMAND lsm_engine_lifecycle_test)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target lsm_engine_lifecycle_test -j$(sysctl -n hw.ncpu) && ./tests/storage/lsm_engine_lifecycle_test
+cd <repo-root>/build && cmake --build . --target lsm_engine_lifecycle_test -j$(sysctl -n hw.ncpu) && ./tests/storage/lsm_engine_lifecycle_test
 ```
 Expected: Both tests pass.
 
@@ -1171,7 +1171,7 @@ Expected: Both tests pass.
 ### Step 1.5.6: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/storage/lsm_engine.cc include/cedar/storage/lsm_engine.h tests/storage/lsm_engine_lifecycle_test.cc tests/storage/CMakeLists.txt
 git commit -m "fix(phase1): LSM engine stability — double-join, async flush, destructor
 
@@ -1192,7 +1192,7 @@ BLOCKER fix: Stability #1, #2, #3"
 ### Step 1.6.1: Clean rebuild
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 rm -f CMakeCache.txt
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(sysctl -n hw.ncpu)
@@ -1204,7 +1204,7 @@ Expected: Zero project-code compiler warnings. Build completes.
 ### Step 1.6.2: Run all unit tests
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ctest --output-on-failure
 ```
 Expected: All existing tests pass + new tests pass.
@@ -1214,7 +1214,7 @@ Expected: All existing tests pass + new tests pass.
 ### Step 1.6.3: Commit phase completion
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git tag phase-1-complete
 git log --oneline -10
 ```

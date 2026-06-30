@@ -103,7 +103,7 @@ git commit --allow-empty -m "check(readiness): Task 2 full test suite executed"
 - [ ] **Step 1: Search for blocking NotSupported in critical paths**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 grep -rn "Status::NotSupported" src/dtx/storage_impl/ src/queryd/ src/graphd/ src/metad/ src/dtx/dtx_service_impl.cc | grep -v "test" | head -30
 ```
 
@@ -226,7 +226,7 @@ For each test, document:
 
 If re-enabled tests fail to build due to missing files or API mismatches, revert the uncommenting to keep the build clean:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git checkout tests/CMakeLists.txt
+cd <repo-root> && git checkout tests/CMakeLists.txt
 ```
 
 Document which tests are missing vs. broken.

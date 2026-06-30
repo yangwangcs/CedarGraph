@@ -5,6 +5,7 @@
 #ifndef CEDAR_CEDAR_SCAN_H
 #define CEDAR_CEDAR_SCAN_H
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>

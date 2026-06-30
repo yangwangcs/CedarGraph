@@ -22,6 +22,7 @@
 #include <map>
 #include <mutex>
 #include <queue>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -117,6 +118,7 @@ class TransactionTimeoutManager {
   
   mutable std::mutex mutex_;
   std::map<dtx::TxnID, TransactionTimeoutInfo> transactions_;
+  std::set<dtx::TxnID> cancelled_retry_txns_;
   
   // Priority queue for retry operations
   struct RetryCompare {

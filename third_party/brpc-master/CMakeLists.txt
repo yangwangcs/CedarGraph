@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.10)
 project(brpc C CXX)
 
 option(WITH_GLOG "With glog" OFF)
@@ -51,7 +51,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.8)
         message(FATAL_ERROR "GCC is too old, please install a newer version supporting C++11")
     endif()
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # require at least clang 3.3
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 3.3)
         message(FATAL_ERROR "Clang is too old, please install a newer version supporting C++11")
@@ -154,7 +154,7 @@ if(CMAKE_VERSION VERSION_LESS "3.1.3")
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
     endif()
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
     endif()
 else()

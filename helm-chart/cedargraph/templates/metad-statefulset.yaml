@@ -1,3 +1,9 @@
+{{- if not (or (eq .Values.metad.updateStrategy.type "OnDelete") (eq .Values.metad.updateStrategy.type "RollingUpdate")) -}}
+{{- fail "metad.updateStrategy.type must be either OnDelete or RollingUpdate" -}}
+{{- end -}}
+{{- if and (eq .Values.metad.updateStrategy.type "RollingUpdate") (not .Values.metad.allowUnsafeRollingUpdate) -}}
+{{- fail "metad.updateStrategy.type=RollingUpdate is unsafe while braft persists resolved Pod IPs; keep OnDelete or set metad.allowUnsafeRollingUpdate=true only after a documented Raft identity/PVC migration plan" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -7,6 +13,9 @@ metadata:
     app.kubernetes.io/component: metad
 spec:
   serviceName: {{ include "cedargraph.fullname" . }}-metad
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: {{ .Values.metad.updateStrategy.type | quote }}
   replicas: {{ .Values.metad.replicas }}
   selector:
     matchLabels:
@@ -26,6 +35,29 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              ordinal="${HOSTNAME##*-}"
+              node_id=$((ordinal + 1))
+              peer_args=""
+              for i in $(seq 0 {{ sub (int .Values.metad.replicas) 1 }}); do
+                peer_node_id=$((i + 1))
+                peer_host="{{ include "cedargraph.fullname" . }}-metad-${i}.{{ include "cedargraph.fullname" . }}-metad"
+                peer_args="${peer_args} --peer ${peer_node_id}:${peer_host}:{{ .Values.metad.service.port }}"
+                until getent hosts "${peer_host}" >/dev/null 2>&1; do
+                  echo "waiting for MetaD peer DNS: ${peer_host}"
+                  sleep 1
+                done
+              done
+              exec /usr/local/bin/cedar-metad \
+                --node_id "${node_id}" \
+                --listen "0.0.0.0:{{ .Values.metad.service.port }}" \
+                --advertise "${HOSTNAME}.{{ include "cedargraph.fullname" . }}-metad:{{ .Values.metad.service.port }}" \
+                --grpc_port "{{ .Values.metad.service.grpcPort }}" \
+                --data_dir "/data/meta" \
+                ${peer_args}
           env:
             - name: NODE_ROLE
               value: "metad"
@@ -35,15 +67,32 @@ spec:
                   fieldPath: metadata.name
             - name: NODE_ID
               value: "$(POD_NAME)"
-            - name: META_PEERS
-              value: "{{ include "cedargraph.metad.endpoints" . }}"
             - name: BIND_ADDRESS
               value: "0.0.0.0:{{ .Values.metad.service.port }}"
             - name: DATA_DIR
               value: "/data/meta"
+            - name: CEDAR_GRPC_TLS_ENABLED
+              value: {{ ternary "1" "0" .Values.graphd.tls.enabled | quote }}
+            - name: CEDAR_GRPC_ALLOW_INSECURE
+              value: {{ ternary "0" "1" .Values.graphd.tls.enabled | quote }}
+            - name: CEDAR_GRPC_SERVER_CERT
+              value: "/etc/cedar/tls/tls.crt"
+            - name: CEDAR_GRPC_SERVER_KEY
+              value: "/etc/cedar/tls/tls.key"
+            - name: CEDAR_GRPC_CA_CERT
+              value: "/etc/cedar/tls/ca.crt"
+            - name: CEDAR_GRPC_MTLS_ENABLED
+              value: {{ ternary "1" "0" .Values.graphd.tls.mtlsEnabled | quote }}
+            - name: CEDAR_GRPC_CLIENT_CERT
+              value: "/etc/cedar/tls/client.crt"
+            - name: CEDAR_GRPC_CLIENT_KEY
+              value: "/etc/cedar/tls/client.key"
           ports:
-            - name: metad
+            - name: raft
               containerPort: {{ .Values.metad.service.port }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.metad.service.grpcPort }}
               protocol: TCP
           resources:
             {{- toYaml .Values.metad.resources | nindent 12 }}
@@ -52,16 +101,19 @@ spec:
               mountPath: /data/meta
             - name: logs
               mountPath: /logs
+            - name: grpc-tls
+              mountPath: /etc/cedar/tls
+              readOnly: true
           livenessProbe:
             tcpSocket:
-              port: {{ .Values.metad.service.port }}
+              port: {{ .Values.metad.service.grpcPort }}
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             tcpSocket:
-              port: {{ .Values.metad.service.port }}
+              port: {{ .Values.metad.service.grpcPort }}
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 3
@@ -69,6 +121,10 @@ spec:
       volumes:
         - name: logs
           emptyDir: {}
+        - name: grpc-tls
+          secret:
+            secretName: {{ required "graphd.tls.existingSecret is required" .Values.graphd.tls.existingSecret | quote }}
+            optional: {{ not .Values.graphd.tls.enabled }}
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -78,3 +134,27 @@ spec:
         resources:
           requests:
             storage: {{ .Values.metad.persistence.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-metad
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metad
+spec:
+  type: {{ .Values.metad.service.type }}
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: raft
+      port: {{ .Values.metad.service.port }}
+      targetPort: raft
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.metad.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    {{- include "cedargraph.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: metad

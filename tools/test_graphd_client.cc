@@ -124,7 +124,7 @@ void TestWriteData(const std::string& storage_addr) {
     key->set_type_flags(0);
     key->set_partition_id(12345 % 32768);
     key->set_entity_type(0);  // Vertex
-    req.mutable_descriptor_()->set_data(MakeDescriptor(42));
+    req.mutable_value_descriptor()->set_data(MakeDescriptor(42));
     req.mutable_txn_version()->set_value(1);
     req.set_txn_id(1);
     
@@ -151,7 +151,7 @@ void TestWriteData(const std::string& storage_addr) {
     key->set_type_flags(0);
     key->set_partition_id(12345 % 32768);
     key->set_entity_type(1);  // EdgeOut
-    req.mutable_descriptor_()->set_data(MakeDescriptor(100));
+    req.mutable_value_descriptor()->set_data(MakeDescriptor(100));
     req.mutable_txn_version()->set_value(1);
     req.set_txn_id(1);
     
@@ -195,7 +195,7 @@ void TestGraphDTraverse(std::shared_ptr<grpc::Channel> channel) {
 }
 
 int main(int argc, char* argv[]) {
-  std::string metad_addr = "127.0.0.1:9559";
+  std::string metad_addr = "127.0.0.1:10559";
   std::string graphd_addr = "127.0.0.1:9669";
   
   if (argc > 1) graphd_addr = argv[1];

@@ -14,9 +14,9 @@
 
 #include "cedar/dtx/hybrid_logical_clock.h"
 
+#include <algorithm>
 #include <cstring>
 #include <iostream>
-#include <thread>
 
 namespace cedar {
 namespace dtx {
@@ -53,11 +53,8 @@ HlcTimestamp HybridLogicalClock::Now() {
     // Same physical time, increment logical counter
     if (last_logical_ >= kMaxLogicalCounter) {
       // Logical counter overflow protection
-      // Wait for physical clock to advance by 1 microsecond
-      // This is extremely rare in practice
-      std::this_thread::sleep_for(std::chrono::microseconds(1));
       physical = GetPhysicalTimeMicros();
-      last_physical_ = physical;
+      last_physical_ = (physical > last_physical_) ? physical : last_physical_ + 1;
       last_logical_ = 0;
     } else {
       last_logical_++;
@@ -65,23 +62,11 @@ HlcTimestamp HybridLogicalClock::Now() {
   } else {
     // Physical clock went backwards (clock skew)
     if (last_logical_ >= kMaxLogicalCounter) {
-      // If we've used too many logical values at this physical time,
-      // we wait for the physical clock to catch up, but with a bounded retry.
-      const int kMaxWaitIterations = 100;  // ~100us max wait
-      int wait_iter = 0;
-      while (physical <= last_physical_ && wait_iter < kMaxWaitIterations) {
-        std::this_thread::sleep_for(std::chrono::microseconds(1));
-        physical = GetPhysicalTimeMicros();
-        ++wait_iter;
-      }
+      // If we've used too many logical values at this physical time, force
+      // the physical component forward to guarantee monotonic liveness.
       if (physical <= last_physical_) {
-        // Clock still hasn't caught up after bounded wait.
-        // Force advance by bumping last_physical_ forward by 1us to maintain progress.
-        // This sacrifices strict physical-time monotonicity but guarantees liveness.
         last_physical_ += 1;
         last_logical_ = 0;
-        // In production, emit a metric or log here:
-        // CEDAR_LOG_WARNING() << "HLC forced advance due to persistent clock skew";
       } else {
         last_physical_ = physical;
         last_logical_ = 0;

@@ -15,6 +15,7 @@
 #include "cedar/governance/config_manager.h"
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -215,7 +216,15 @@ class ConfigManagerImpl {
     }
 
     for (auto& callback : callbacks_to_invoke) {
-      callback(event);
+      try {
+        callback(event);
+      } catch (const std::exception& e) {
+        std::cerr << "[ConfigManager] Watch callback exception: " << e.what()
+                  << std::endl;
+      } catch (...) {
+        std::cerr << "[ConfigManager] Watch callback unknown exception"
+                  << std::endl;
+      }
     }
   }
 };

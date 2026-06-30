@@ -33,15 +33,3 @@ spec:
     matchLabels:
       app.kubernetes.io/name: graphd
       app.kubernetes.io/part-of: cedargraph
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: cedargraph-queryd-pdb
-  namespace: cedargraph
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: queryd
-      app.kubernetes.io/part-of: cedargraph

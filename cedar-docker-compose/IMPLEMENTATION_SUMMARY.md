@@ -33,6 +33,10 @@ cedar-docker-compose/
 
 **文件**: `.github/workflows/docker-release.yml`
 
+> 维护规则：GitHub Actions 只会自动执行仓库根目录 `.github/workflows/docker-release.yml`。
+> `cedar-docker-compose/.github/workflows/docker-release.yml` 是同步副本，两份文件必须保持完全一致；
+> `scripts/preflight_manifest_syntax.sh` 会在发布门禁中检查这一点。
+
 **功能**:
 ```yaml
 # 触发条件
@@ -141,7 +145,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j4
 
 # 4. 构建镜像
-docker build -t cedargraph:latest ..
+docker build -t cedargraph/cedar:local ..
 
 # 5. 创建目录、编辑配置...
 mkdir -p logs/{metad1,metad2,metad3,...}
@@ -201,13 +205,13 @@ cedar> SHOW HOSTS
 
 Host            Port       Status          Version
 ------------------------------------------------------------
-storaged-0      9779       ONLINE          v0.1.0
-storaged-1      9779       ONLINE          v0.1.0
-storaged-2      9779       ONLINE          v0.1.0
+<only real cedar-storaged containers are shown>
 
 # 非交互式模式
 $ ./scripts/cedar-cli.sh -e "SHOW HOSTS"
-$ ./scripts/cedar-cli.sh -e "SHOW SPACES"
+
+# 注意：旧版文档曾展示 SHOW SPACES 和模拟 ONLINE 节点输出。
+# 当前脚本已改为 fail-closed；没有真实容器或真实接口证据时不会输出成功状态。
 ```
 
 ### cedar-admin - 管理工具
@@ -239,7 +243,8 @@ cedar-admin --host=graphd --port=9669 add-hosts storaged3:9779,storaged4:9779
 | `scripts/cedar-admin.sh` | 服务管理工具 |
 | `scripts/graphd-entrypoint.sh` | GraphD 自动发现入口 |
 | `src/dtx/service_discovery.*` | C++ 服务发现实现 |
-| `.github/workflows/docker-release.yml` | CI/CD 自动发布 |
+| `.github/workflows/docker-release.yml` | CI/CD 自动发布，GitHub 实际执行入口 |
+| `cedar-docker-compose/.github/workflows/docker-release.yml` | Docker Compose 仓库同步副本，必须与根目录 workflow 完全一致 |
 
 ---
 

@@ -99,7 +99,7 @@ void PartitionFailoverController::RegisterNodeAddress(NodeID node_id,
 - [ ] **Step 3: Build to verify compilation**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar 2>&1 | tail -10
 ```
 
@@ -108,7 +108,7 @@ Expected: Build succeeds.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/dtx/failover_manager.h src/dtx/storage/failover_manager.cc
 git commit -m "feat(failover): add node address registry for health probing"
 ```
@@ -284,7 +284,7 @@ void PartitionFailoverController::HealthCheckLoop() {
 - [ ] **Step 3: Build to verify compilation**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar 2>&1 | tail -10
 ```
 
@@ -293,7 +293,7 @@ Expected: Build succeeds. If `inet_pton` is not found on macOS, include `<arpa/i
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/storage/failover_manager.cc
 git commit -m "feat(failover): implement TCP active health probe for replicas"
 ```
@@ -359,7 +359,7 @@ Status MetaServiceGrpcClient::Connect(const std::vector<std::string>& meta_addre
 - [ ] **Step 2: Build to verify compilation**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar 2>&1 | tail -10
 ```
 
@@ -368,7 +368,7 @@ Expected: Build succeeds.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/grpc/meta_service_grpc.cc
 git commit -m "feat(metad-client): implement round-robin Connect with health check"
 ```
@@ -470,7 +470,7 @@ MetaServiceGrpcClient::~MetaServiceGrpcClient() {
 - [ ] **Step 3: Build to verify compilation**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar 2>&1 | tail -10
 ```
 
@@ -479,7 +479,7 @@ Expected: Build succeeds.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/dtx/meta_service_grpc.h src/dtx/grpc/meta_service_grpc.cc
 git commit -m "feat(metad-client): add background health monitor with auto-reconnect"
 ```
@@ -528,7 +528,7 @@ If `PartitionFailoverController` is not directly accessible from the test fixtur
 - [ ] **Step 2: Build and run existing failover tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target test_failover
 ./tests/test_failover
 ```
@@ -538,7 +538,7 @@ Expected: All existing tests pass.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/cluster/test_failover.cc
 git commit -m "test(failover): add smoke test for unhealthy replica detection"
 ```
@@ -558,7 +558,7 @@ git commit -m "test(failover): add smoke test for unhealthy replica detection"
 After all tasks:
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar
 grep -n "return true.*默认健康" ../src/dtx/storage/failover_manager.cc
 # Expected: no match (the blind-trust line is gone)

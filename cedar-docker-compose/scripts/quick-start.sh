@@ -12,11 +12,28 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # 默认配置
-CEDAR_VERSION="latest"
+CEDAR_VERSION="k8s-fix-20260630"
 INSTALL_DIR="$(pwd)"
 DATA_DIR="${INSTALL_DIR}/data"
 LOGS_DIR="${INSTALL_DIR}/logs"
 COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
+
+is_safe_clean_target() {
+    local target="$1"
+    local install_abs target_abs
+
+    install_abs="$(cd "${INSTALL_DIR}" 2>/dev/null && pwd -P)" || return 1
+    target_abs="$(mkdir -p "${target}" && cd "${target}" 2>/dev/null && pwd -P)" || return 1
+
+    case "${target_abs}" in
+        "${install_abs}"/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 # 打印帮助信息
 usage() {
@@ -26,7 +43,7 @@ CedarGraph 一键部署脚本
 用法: $0 [选项]
 
 选项:
-    -v, --version VERSION    指定 CedarGraph 版本 (默认: latest)
+    -v, --version VERSION    指定 CedarGraph 版本 (默认: k8s-fix-20260630)
     -d, --dir DIRECTORY      指定安装目录 (默认: 当前目录)
     -n, --nodes N            存储节点数量 1/3/5 (默认: 3)
     --studio                 同时安装 Web Studio
@@ -144,8 +161,17 @@ check_requirements() {
 # 清理旧数据
 clean_data() {
     if [[ "$CLEAN_DATA" == "true" ]]; then
+        mkdir -p "${INSTALL_DIR}"
+        if ! is_safe_clean_target "${DATA_DIR}" || ! is_safe_clean_target "${LOGS_DIR}"; then
+            error "拒绝清理：DATA_DIR/LOGS_DIR 必须位于安装目录内部"
+            exit 1
+        fi
+        if [[ "${CEDAR_QUICKSTART_ALLOW_CLEAN:-0}" != "1" ]]; then
+            error "拒绝清理：请先备份，再显式设置 CEDAR_QUICKSTART_ALLOW_CLEAN=1"
+            exit 1
+        fi
         info "清理旧数据..."
-        rm -rf "${DATA_DIR}" "${LOGS_DIR}"
+        rm -rf "${DATA_DIR:?}" "${LOGS_DIR:?}"
         success "数据已清理"
     fi
 }
@@ -211,10 +237,12 @@ show_status() {
     
     echo ""
     echo "服务端口:"
-    echo "  MetaD:   localhost:9559"
+    echo "  MetaD Raft: localhost:9559"
+    echo "  MetaD gRPC: localhost:10559"
     echo "  Storage: localhost:9779-9781"
     echo "  GraphD:  localhost:9669"
-    echo "  HTTP:    localhost:19669"
+    echo "  Health:  localhost:9668"
+    echo "  Metrics: localhost:9667"
     
     if [[ "$ENABLE_STUDIO" == "true" ]]; then
         echo "  Studio:  localhost:7001"
@@ -231,17 +259,19 @@ wait_for_ready() {
     local spin_idx=0
     
     while [[ $waited -lt $max_wait ]]; do
-        # 检查容器状态
+        # 检查容器状态和 Docker healthcheck，避免仅 Running 就误判为可用。
         local running=$(${COMPOSE_CMD} -f "${COMPOSE_FILE}" ps --filter "status=running" --format "{{.Name}}" | grep -c "^cedar-" || true)
         local total=$(${COMPOSE_CMD} -f "${COMPOSE_FILE}" ps --format "{{.Name}}" | grep -c "^cedar-" || true)
-        
-        if [[ $running -ge 7 ]]; then
+        local unhealthy=$(${COMPOSE_CMD} -f "${COMPOSE_FILE}" ps --format "{{.Name}}\t{{.Status}}" | awk '/^cedar-/ && $0 ~ /unhealthy/ {count++} END {print count+0}')
+        local core_running=$(${COMPOSE_CMD} -f "${COMPOSE_FILE}" ps --filter "status=running" --format "{{.Name}}" | grep -E -c "^cedar-(metad-[0-2]|storaged-[0-2]|graphd)$" || true)
+
+        if [[ $core_running -ge 7 && $unhealthy -eq 0 ]]; then
             echo ""
             success "集群已就绪！"
             return 0
         fi
         
-        printf "\r  %s 等待中... (%d/%d 服务就绪)" "${spin:$spin_idx:1}" "$running" "$total"
+        printf "\r  %s 等待中... (%d/%d 服务运行, core=%d/7, unhealthy=%d)" "${spin:$spin_idx:1}" "$running" "$total" "$core_running" "$unhealthy"
         spin_idx=$(( (spin_idx + 3) % 24 ))
         
         sleep 2
@@ -266,12 +296,18 @@ init_cluster() {
         sleep 2
         retries=$((retries - 1))
     done
+
+    if [[ $retries -eq 0 ]]; then
+        error "GraphD 状态检查失败，停止初始化"
+        return 1
+    fi
     
-    # 自动发现存储节点
+    # 自动发现并检查存储节点。真实注册由 StorageD/GraphD 与 MetaD 的 RPC 完成。
     if docker exec cedar-graphd cedar-admin --host=localhost --port=9669 auto-discover &> /dev/null; then
-        success "自动发现并注册存储节点"
+        success "自动发现并检查存储节点"
     else
-        warning "自动发现可能失败，请手动检查"
+        error "StorageD 自动发现或连通性检查失败"
+        return 1
     fi
 }
 
@@ -288,8 +324,10 @@ print_final_status() {
     echo ""
     echo "🔗 连接信息:"
     echo "  Graph 服务:   localhost:9669"
-    echo "  HTTP 服务:    http://localhost:19669"
-    echo "  Meta 服务:    localhost:9559"
+    echo "  健康检查:     http://localhost:9668/health"
+    echo "  指标服务:     http://localhost:9667/metrics"
+    echo "  Meta Raft:    localhost:9559"
+    echo "  Meta gRPC:    localhost:10559"
     echo ""
     echo "🛠️  常用命令:"
     echo "  查看日志:     ${COMPOSE_CMD} logs -f"
@@ -335,7 +373,11 @@ main() {
     start_services
     
     if wait_for_ready; then
-        init_cluster
+        init_cluster || {
+            error "部署初始化失败"
+            echo "查看日志: ${COMPOSE_CMD} -f ${COMPOSE_FILE} logs"
+            exit 1
+        }
         print_final_status
     else
         error "部署可能出现问题"

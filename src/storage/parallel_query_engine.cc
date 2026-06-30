@@ -3,6 +3,8 @@
 #include "cedar/storage/parallel_query_engine.h"
 #include "cedar/storage/lsm_engine.h"
 
+#include <algorithm>
+
 namespace cedar {
 
 // ThreadPoolQueryExecutor 实现
@@ -172,20 +174,26 @@ std::optional<Descriptor> ParallelQueryEngine::QuerySingle(
 std::vector<ParallelQueryEngine::RangeQueryResult> 
 ParallelQueryEngine::QueryRangeParallel(const RangeQueryRequest& request,
                                         int num_shards) {
+  if (num_shards <= 0 || request.end_entity_id <= request.start_entity_id) {
+    return {};
+  }
+
   // 分片并行扫描（使用线程池复用线程）
   uint64_t range_size = request.end_entity_id - request.start_entity_id;
-  uint64_t shard_size = range_size / num_shards;
+  const uint64_t shard_count =
+      std::min<uint64_t>(static_cast<uint64_t>(num_shards), range_size);
+  uint64_t shard_size = range_size / shard_count;
+
+  std::vector<std::future<std::vector<RangeQueryResult>>> futures;
+  futures.reserve(static_cast<size_t>(shard_count));
   
-  std::vector<std::vector<RangeQueryResult>> shard_results(num_shards);
-  std::mutex shard_results_mutex;
-  std::atomic<int> completed{0};
-  
-  for (int i = 0; i < num_shards; ++i) {
+  for (uint64_t i = 0; i < shard_count; ++i) {
     uint64_t shard_start = request.start_entity_id + i * shard_size;
-    uint64_t shard_end = (i == num_shards - 1) ? request.end_entity_id 
+    uint64_t shard_end = (i == shard_count - 1) ? request.end_entity_id
                                                 : shard_start + shard_size;
     
-    thread_pool_->Schedule([this, &request, shard_start, shard_end, &shard_results, &shard_results_mutex, i, &completed]() {
+    auto task = std::make_shared<std::packaged_task<std::vector<RangeQueryResult>()>>(
+        [this, &request, shard_start, shard_end]() {
       std::vector<RangeQueryResult> results;
       for (uint64_t id = shard_start; id < shard_end; ++id) {
         auto value = this->QuerySingle(id, request.column_id, request.entity_type);
@@ -193,22 +201,16 @@ ParallelQueryEngine::QueryRangeParallel(const RangeQueryRequest& request,
           results.push_back({id, request.column_id, *value});
         }
       }
-      {
-        std::lock_guard<std::mutex> lock(shard_results_mutex);
-        shard_results[i] = std::move(results);
-      }
-      completed.fetch_add(1, std::memory_order_release);
+      return results;
     });
-  }
-  
-  // 等待所有分片完成
-  while (completed.load(std::memory_order_acquire) < num_shards) {
-    std::this_thread::yield();
+    futures.push_back(task->get_future());
+    thread_pool_->Schedule([task]() { (*task)(); });
   }
   
   // 合并结果
   std::vector<RangeQueryResult> all_results;
-  for (auto& shard : shard_results) {
+  for (auto& future : futures) {
+    auto shard = future.get();
     all_results.insert(all_results.end(), shard.begin(), shard.end());
   }
   

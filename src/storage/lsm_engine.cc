@@ -14,6 +14,7 @@
 #include "cedar/transaction/wal.h"
 #include "cedar/dtx/partition_index.h"
 
+#include <cinttypes>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -76,6 +77,10 @@ LsmEngine::~LsmEngine() {
 }
 
 Status LsmEngine::Open() {
+  shutdown_.store(false);
+  disable_auto_flush_.store(false);
+  compaction_paused_.store(false);
+
   if (options_.create_if_missing) {
     if (!std::filesystem::exists(db_path_)) {
       std::filesystem::create_directories(db_path_);
@@ -154,9 +159,13 @@ Status LsmEngine::Close() {
 
   shutdown_ = true;
   disable_auto_flush_ = true;
+  flush_completion_cv_.notify_all();
+  StopTTLCleanupThread();
 
   // 关闭自动 Compaction 线程
   auto_compaction_enabled_.store(false);
+  compaction_pause_cv_.notify_all();
+  auto_compaction_cv_.notify_all();
   if (auto_compaction_thread_ && auto_compaction_thread_->joinable()) {
     auto_compaction_thread_->join();
     auto_compaction_thread_.reset();
@@ -593,7 +602,8 @@ std::vector<MemTableEntry> LsmEngine::GetAll(uint64_t entity_id,
       std::optional<uint64_t> dst_id = (key.target_id() != 0)
           ? std::optional<uint64_t>(key.target_id())
           : std::nullopt;
-      results.emplace_back(key.timestamp(), descriptor, dst_id, txn_version);
+      results.emplace_back(key.timestamp(), descriptor, dst_id, txn_version,
+                           key.sequence(), key.flags(), key.part_id());
     }
   }
 
@@ -634,7 +644,8 @@ std::vector<MemTableEntry> LsmEngine::GetAll(uint64_t entity_id,
         std::optional<uint64_t> dst_id = (key.target_id() != 0) 
             ? std::optional<uint64_t>(key.target_id()) 
             : std::nullopt;
-        results.emplace_back(key.timestamp(), descriptor, dst_id, txn_version);
+        results.emplace_back(key.timestamp(), descriptor, dst_id, txn_version,
+                             key.sequence(), key.flags(), key.part_id());
       }
     }
   }
@@ -2084,7 +2095,7 @@ Status LsmEngine::ReplayWAL(uint64_t start_sequence) {
   file_numbers.reserve(wal_files.size());
   for (const auto& f : wal_files) {
     uint64_t num = 0;
-    if (sscanf(f.c_str(), "%llu.wal", &num) == 1) {
+    if (sscanf(f.c_str(), "%" SCNu64 ".wal", &num) == 1) {
       if (num >= start_sequence) {
         file_numbers.push_back(num);
       }
@@ -2531,7 +2542,10 @@ Status LsmEngine::FlushMemTableWithRetry(VSLMemTable* mem) {
     }
     CEDAR_LOG_ERROR() << "[LsmEngine] Flush attempt " << attempt << " failed: " << s.ToString() << std::endl;
     if (attempt < 3) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      std::unique_lock<std::mutex> lock(flush_completion_mutex_);
+      flush_completion_cv_.wait_for(lock, std::chrono::milliseconds(100), [this] {
+        return shutdown_.load();
+      });
     }
   }
   return s;
@@ -3105,7 +3119,10 @@ void LsmEngine::AutoCompactionThread() {
 
     // 如果后台合并被禁用，跳过执行但保持线程运行
     if (!options_.size_tiered_config.enable_background_compaction) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      std::unique_lock<std::mutex> lock(auto_compaction_mutex_);
+      auto_compaction_cv_.wait_for(lock, std::chrono::milliseconds(100), [this] {
+        return !auto_compaction_enabled_.load();
+      });
       continue;
     }
 
@@ -3122,12 +3139,16 @@ void LsmEngine::AutoCompactionThread() {
     }
     
     // 休眠一段时间再检查
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::unique_lock<std::mutex> lock(auto_compaction_mutex_);
+    auto_compaction_cv_.wait_for(lock, std::chrono::milliseconds(100), [this] {
+      return !auto_compaction_enabled_.load();
+    });
   }
 }
 
 void LsmEngine::PauseCompaction() {
   compaction_paused_.store(true);
+  auto_compaction_cv_.notify_all();
   // Also pause the compaction engine's background threads
   if (compaction_engine_) {
     compaction_engine_->PauseCompaction();
@@ -3137,6 +3158,7 @@ void LsmEngine::PauseCompaction() {
 void LsmEngine::ResumeCompaction() {
   compaction_paused_.store(false);
   compaction_pause_cv_.notify_all();
+  auto_compaction_cv_.notify_all();
   // Also resume the compaction engine's background threads
   if (compaction_engine_) {
     compaction_engine_->ResumeCompaction();
@@ -3179,6 +3201,8 @@ Status LsmEngine::CompactAll() {
   
   // 等待所有自动 Compaction 完成
   auto_compaction_enabled_.store(false);
+  compaction_pause_cv_.notify_all();
+  auto_compaction_cv_.notify_all();
   if (auto_compaction_thread_ && auto_compaction_thread_->joinable()) {
     auto_compaction_thread_->join();
     auto_compaction_thread_.reset();
@@ -3487,13 +3511,18 @@ void LsmEngine::StartTTLCleanupThread(int interval_seconds) {
   ttl_cleanup_thread_ = std::thread([this, interval_seconds]() {
     while (ttl_running_) {
       ExpireOldData();
-      std::this_thread::sleep_for(std::chrono::seconds(interval_seconds));
+      std::unique_lock<std::mutex> lock(ttl_cleanup_mutex_);
+      ttl_cleanup_cv_.wait_for(lock, std::chrono::seconds(interval_seconds),
+                               [this]() { return !ttl_running_.load(); });
     }
   });
 }
 
 void LsmEngine::StopTTLCleanupThread() {
-  ttl_running_ = false;
+  if (!ttl_running_.exchange(false)) {
+    return;
+  }
+  ttl_cleanup_cv_.notify_all();
   if (ttl_cleanup_thread_.joinable()) {
     ttl_cleanup_thread_.join();
   }

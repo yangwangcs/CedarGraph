@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <functional>
+#include <sstream>
 
 namespace cedar {
 namespace client {
@@ -88,7 +89,8 @@ int QueryRouter::GetPartitionId(const std::string& query,
 QueryType QueryRouter::ParseQueryType(const std::string& query) const {
   // Convert to uppercase for comparison
   std::string upper_query = query;
-  std::transform(upper_query.begin(), upper_query.end(), upper_query.begin(), ::toupper);
+  std::transform(upper_query.begin(), upper_query.end(), upper_query.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
 
   // Remove leading whitespace
   size_t start = upper_query.find_first_not_of(" \t\n\r");
@@ -96,26 +98,33 @@ QueryType QueryRouter::ParseQueryType(const std::string& query) const {
     upper_query = upper_query.substr(start);
   }
 
-  // Check for DDL keywords
-  if (upper_query.find("CREATE") == 0 || 
-      upper_query.find("DROP") == 0 ||
-      upper_query.find("ALTER") == 0) {
-    return QueryType::DDL;
-  }
+  std::istringstream stream(upper_query);
+  std::string first;
+  std::string second;
+  stream >> first >> second;
 
   // Check for admin keywords
-  if (upper_query.find("SHOW") == 0 || 
-      upper_query.find("USE") == 0 ||
-      upper_query.find("EXPLAIN") == 0 ||
-      upper_query.find("PROFILE") == 0) {
+  if (first == "SHOW" || first == "USE" || first == "EXPLAIN" ||
+      first == "PROFILE") {
     return QueryType::ADMIN;
   }
 
+  // DDL uses explicit schema/object keywords. Plain Cypher CREATE is a write.
+  if ((first == "CREATE" &&
+       (second == "SPACE" || second == "TAG" || second == "EDGE" ||
+        second == "INDEX" || second == "LABEL")) ||
+      (first == "DROP" &&
+       (second == "SPACE" || second == "TAG" || second == "EDGE" ||
+        second == "INDEX" || second == "LABEL")) ||
+      (first == "ALTER" &&
+       (second == "SPACE" || second == "TAG" || second == "EDGE" ||
+        second == "INDEX" || second == "LABEL"))) {
+    return QueryType::DDL;
+  }
+
   // Check for write keywords
-  if (upper_query.find("CREATE") == 0 || 
-      upper_query.find("SET") == 0 ||
-      upper_query.find("DELETE") == 0 ||
-      upper_query.find("MERGE") == 0) {
+  if (first == "CREATE" || first == "SET" || first == "DELETE" ||
+      first == "MERGE") {
     return QueryType::WRITE;
   }
 

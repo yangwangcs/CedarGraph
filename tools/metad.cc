@@ -20,13 +20,17 @@
 #include <thread>
 #include <atomic>
 
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
 #include <execinfo.h>
+#endif
+
+#ifdef __APPLE__
 #include <cxxabi.h>
 #endif
 
 #include "cedar/dtx/meta_service.h"
 #include "cedar/dtx/meta_service_grpc.h"
+#include "cedar/governance/config_manager.h"
 #include "cedar/dtx/raft/grpc_tls.h"
 
 namespace cedar {
@@ -35,6 +39,7 @@ namespace dtx {
 std::atomic<bool> g_running{true};
 std::unique_ptr<MetaServiceGrpcServer> g_grpc_server;
 std::unique_ptr<MetadataService> g_meta_service;
+static volatile sig_atomic_t g_shutdown_requested = 0;
 
 void CrashHandler(int sig) {
     void* callstack[64];
@@ -50,11 +55,7 @@ void CrashHandler(int sig) {
 
 void SignalHandler(int signal) {
   if (signal == SIGINT || signal == SIGTERM) {
-    std::cout << "[MetaD] Received signal " << signal << ", shutting down..." << std::endl;
-    g_running = false;
-    if (g_grpc_server) {
-      g_grpc_server->Stop();
-    }
+    g_shutdown_requested = 1;
   }
 }
 
@@ -78,8 +79,68 @@ struct MetadConfig {
   bool test_mode = false;
 };
 
+static void LoadConfigFromFile(MetadConfig* config, const std::string& path) {
+  cedar::governance::ConfigManager cm;
+  if (!cm.LoadFromFile(path).ok()) return;
+  if (cm.HasKey("metad.node_id")) {
+    config->node_id = static_cast<uint32_t>(cm.GetInt("metad.node_id", config->node_id));
+  }
+  if (cm.HasKey("metad.listen_address")) {
+    config->listen_address = cm.GetString("metad.listen_address", config->listen_address);
+  }
+  if (cm.HasKey("metad.advertise_address")) {
+    config->advertise_address = cm.GetString("metad.advertise_address", config->advertise_address);
+  }
+  if (cm.HasKey("metad.grpc_address")) {
+    config->grpc_address = cm.GetString("metad.grpc_address", config->grpc_address);
+  }
+  if (cm.HasKey("metad.grpc_port")) {
+    config->grpc_address = "0.0.0.0:" + std::to_string(cm.GetInt("metad.grpc_port", 10559));
+  }
+  if (cm.HasKey("metad.data_dir")) {
+    config->data_dir = cm.GetString("metad.data_dir", config->data_dir);
+  }
+  if (cm.HasKey("metad.peers")) {
+    config->peers.clear();
+    for (const auto& peer : cm.GetStringArray("metad.peers")) {
+      size_t colon = peer.find(':');
+      if (colon == std::string::npos) {
+        std::cerr << "[MetaD] Invalid peer format in config: " << peer << std::endl;
+        continue;
+      }
+      try {
+        uint32_t id = std::stoul(peer.substr(0, colon));
+        std::string addr = peer.substr(colon + 1);
+        config->peers.push_back({id, addr});
+      } catch (...) {
+        std::cerr << "[MetaD] Invalid peer format in config: " << peer << std::endl;
+      }
+    }
+  }
+  if (cm.HasKey("metad.election_timeout_ms")) {
+    config->election_timeout_ms =
+        static_cast<uint64_t>(cm.GetInt64("metad.election_timeout_ms", config->election_timeout_ms));
+  }
+  if (cm.HasKey("metad.heartbeat_interval_ms")) {
+    config->heartbeat_interval_ms =
+        static_cast<uint64_t>(cm.GetInt64("metad.heartbeat_interval_ms", config->heartbeat_interval_ms));
+  }
+  if (cm.HasKey("metad.heartbeat_timeout_sec")) {
+    config->heartbeat_timeout_sec =
+        static_cast<uint64_t>(cm.GetInt64("metad.heartbeat_timeout_sec", config->heartbeat_timeout_sec));
+  }
+  if (cm.HasKey("metad.heartbeat_check_interval_sec")) {
+    config->heartbeat_check_interval_sec =
+        static_cast<uint64_t>(cm.GetInt64("metad.heartbeat_check_interval_sec", config->heartbeat_check_interval_sec));
+  }
+  if (cm.HasKey("metad.test_mode")) {
+    config->test_mode = cm.GetBool("metad.test_mode", config->test_mode);
+  }
+}
+
 MetadConfig ParseArgs(int argc, char* argv[]) {
   MetadConfig config;
+  std::string config_file;
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg == "--node_id" && i + 1 < argc) {
@@ -108,6 +169,10 @@ MetadConfig ParseArgs(int argc, char* argv[]) {
       config.heartbeat_interval_ms = std::stoul(argv[++i]);
     } else if (arg == "--grpc_port" && i + 1 < argc) {
       config.grpc_address = "0.0.0.0:" + std::string(argv[++i]);
+    } else if (arg.rfind("--config=", 0) == 0) {
+      config_file = arg.substr(std::string("--config=").size());
+    } else if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
+      config_file = argv[++i];
     } else if (arg == "--test_mode") {
       config.test_mode = true;
     } else if (arg == "--help" || arg == "-h") {
@@ -116,16 +181,20 @@ MetadConfig ParseArgs(int argc, char* argv[]) {
                 << "\n"
                 << "Options:\n"
                 << "  --node_id <id>              Node ID (default: 0)\n"
-                << "  --listen <addr>             Listen address (default: 0.0.0.0:9559)\n"
-                << "  --advertise <addr>          Advertise address for Raft\n"
+                << "  --listen <addr>             Raft bind address (default: 0.0.0.0:9559)\n"
+                << "  --advertise <addr>          Raft identity address used in peer configuration\n"
                 << "  --data_dir <path>           Data directory (default: ./meta_data)\n"
-                << "  --peer <id:address>         Add a peer node (repeatable)\n"
+                << "  --peer <id:host:port>       Add a peer node (repeatable)\n"
                 << "  --election_timeout <ms>     Raft election timeout (default: 1000)\n"
                 << "  --heartbeat_interval <ms>   Raft heartbeat interval (default: 100)\n"
                 << "  --grpc_port <port>          gRPC client API port (default: listen_port + 1000)\n"
+                << "  -c, --config <path>         Configuration file (YAML)\n"
                 << "  -h, --help                  Show this help\n";
       exit(0);
     }
+  }
+  if (!config_file.empty()) {
+    LoadConfigFromFile(&config, config_file);
   }
   return config;
 }
@@ -199,7 +268,15 @@ int main(int argc, char* argv[]) {
   // Wait for shutdown signal
   std::cout << "[MetaD] Server running. Press Ctrl+C to stop." << std::endl;
   while (g_running) {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (g_shutdown_requested) {
+      std::cout << "[MetaD] Shutdown requested, stopping..." << std::endl;
+      g_running = false;
+      if (g_grpc_server) {
+        g_grpc_server->Stop();
+      }
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
   
   // Graceful shutdown

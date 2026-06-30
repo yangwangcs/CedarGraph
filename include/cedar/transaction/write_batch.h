@@ -5,6 +5,8 @@
 #define CEDAR_WRITE_BATCH_H_
 
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "cedar/core/slice.h"
 #include "cedar/core/status.h"

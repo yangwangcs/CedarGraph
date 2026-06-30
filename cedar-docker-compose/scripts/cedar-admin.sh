@@ -1,6 +1,6 @@
 #!/bin/bash
 # CedarGraph 管理工具
-# 用于服务状态检查和自动发现
+# 用于服务状态检查和存储节点连通性核验
 
 set -e
 
@@ -28,9 +28,9 @@ CedarGraph 管理工具
 
 命令:
     status               检查服务状态
-    auto-discover        自动发现并注册存储节点
-    show-hosts           显示已注册的存储节点
-    add-hosts <hosts>    手动添加存储节点
+    auto-discover        自动发现并检查存储节点
+    show-hosts           显示当前可见的存储节点
+    add-hosts <hosts>    手动检查指定存储节点
 
 示例:
     cedar-admin --host=graphd --port=9669 status
@@ -97,6 +97,18 @@ cmd_status() {
     fi
 }
 
+check_tcp() {
+    local host="$1"
+    local port="$2"
+
+    if command -v nc &> /dev/null; then
+        nc -z "$host" "$port" 2>/dev/null
+        return $?
+    fi
+
+    timeout 2 bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null
+}
+
 # 自动发现存储节点
 cmd_auto_discover() {
     echo "🔍 自动发现存储节点..."
@@ -132,24 +144,39 @@ cmd_auto_discover() {
         exit 1
     fi
     
-    # 注册节点
+    # 核验节点连通性。真实 StorageD 注册由 StorageD 进程通过 MetaD RPC 完成；
+    # 这里不能伪造注册成功，否则会误导运维判断。
     echo ""
-    echo "📝 注册存储节点到集群..."
-    
-    # 这里会调用实际的 gRPC API 或 HTTP API
-    # 简化版：模拟成功
+    echo "📝 检查存储节点连通性..."
+
+    local failed=0
     for host in "${discovered[@]}"; do
-        echo -e "  ${GREEN}✓${NC} 注册节点: $host"
+        local node_host="${host%:*}"
+        local node_port="${host##*:}"
+        if check_tcp "$node_host" "$node_port"; then
+            echo -e "  ${GREEN}✓${NC} 可达节点: $host"
+        else
+            echo -e "  ${RED}✗${NC} 不可达节点: $host"
+            failed=$((failed + 1))
+        fi
     done
+
+    if [[ $failed -gt 0 ]]; then
+        echo ""
+        echo -e "${RED}ERROR${NC}: $failed 个存储节点不可达；请检查容器网络、StorageD 进程和 MetaD 注册日志"
+        exit 1
+    fi
     
     echo ""
-    echo -e "${GREEN}✅ 自动发现并注册完成！共 ${#discovered[@]} 个节点${NC}"
+    echo -e "${GREEN}✅ 自动发现并检查完成！共 ${#discovered[@]} 个节点${NC}"
 }
 
 # 显示已注册的主机
 cmd_show_hosts() {
+    local found=0
+
     echo ""
-    echo "已注册的存储节点:"
+    echo "当前可见的存储节点:"
     echo "------------------------------"
     
     # 通过 Docker 获取实际状态
@@ -165,15 +192,20 @@ cmd_show_hosts() {
                     state="OFFLINE"
                 fi
                 printf "%-20s %-10s\n" "$hostname:9779" "$state"
+                found=$((found + 1))
             fi
         done < <(docker ps --filter "name=cedar-storaged" --format "{{.Names}}\t{{.Status}}")
     else
-        echo "  storaged-0:9779      ONLINE"
-        echo "  storaged-1:9779      ONLINE"
-        echo "  storaged-2:9779      ONLINE"
+        echo "  Docker 不可用，无法枚举容器；请使用 MetaD 日志或服务端接口确认真实注册状态"
+        echo ""
+        exit 1
     fi
     
     echo ""
+    if [[ $found -eq 0 ]]; then
+        echo -e "${YELLOW}⚠️  未发现真实 cedar-storaged 容器，不能据此证明存储节点在线${NC}"
+        exit 1
+    fi
 }
 
 # 手动添加主机
@@ -186,16 +218,30 @@ cmd_add_hosts() {
         exit 1
     fi
     
-    echo "📝 添加存储节点: $hosts"
+    echo "📝 检查指定存储节点: $hosts"
     
     # 解析主机列表
+    local failed=0
     IFS=',' read -ra HOST_ARRAY <<< "$hosts"
     for host in "${HOST_ARRAY[@]}"; do
-        echo -e "  ${GREEN}✓${NC} 添加节点: $host"
+        local node_host="${host%:*}"
+        local node_port="${host##*:}"
+        if check_tcp "$node_host" "$node_port"; then
+            echo -e "  ${GREEN}✓${NC} 可达节点: $host"
+        else
+            echo -e "  ${RED}✗${NC} 不可达节点: $host"
+            failed=$((failed + 1))
+        fi
     done
+
+    if [[ $failed -gt 0 ]]; then
+        echo ""
+        echo -e "${RED}ERROR${NC}: $failed 个指定节点不可达"
+        exit 1
+    fi
     
     echo ""
-    echo -e "${GREEN}✅ 节点添加完成！${NC}"
+    echo -e "${GREEN}✅ 节点连通性检查完成！${NC}"
 }
 
 # 主函数

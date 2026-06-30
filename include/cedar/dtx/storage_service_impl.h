@@ -512,8 +512,24 @@ class StorageClient {
 
       // Exponential backoff
       if (attempt < config_.max_retries - 1) {
-        auto delay = config_.retry_base_delay * (1 << attempt);
-        std::this_thread::sleep_for(delay);
+        if (shutdown_.load()) {
+          return StatusOr<T>(
+              Status::IOError("Operation aborted: client shutting down"));
+        }
+
+        auto delay = config_.retry_base_delay *
+            (1 << std::min(attempt, static_cast<size_t>(10)));
+        auto max_delay = config_.operation_timeout / 2;
+        if (delay > max_delay) {
+          delay = max_delay;
+        }
+
+        std::unique_lock<std::mutex> lock(retry_shutdown_mutex_);
+        if (retry_shutdown_cv_.wait_for(
+                lock, delay, [this]() { return shutdown_.load(); })) {
+          return StatusOr<T>(
+              Status::IOError("Operation aborted: client shutting down"));
+        }
       }
     }
 
@@ -557,6 +573,8 @@ class StorageClient {
   // Leader-switch support (optional, for partition-aware clients)
   MetaClientInterface* meta_client_ = nullptr;
   uint32_t partition_id_ = 0;
+  std::mutex retry_shutdown_mutex_;
+  std::condition_variable retry_shutdown_cv_;
 };
 
 // =============================================================================
@@ -594,6 +612,8 @@ class StorageClientPool {
   std::unordered_map<std::string, std::vector<std::shared_ptr<StorageClient>>> pools_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_used_;
   std::atomic<bool> shutdown_{false};
+  std::mutex cleanup_mutex_;
+  std::condition_variable cleanup_cv_;
   std::thread cleanup_thread_;
 };
 
@@ -668,6 +688,8 @@ class MetaServiceNodeClient {
   std::unique_ptr<cedar::meta::MetaService::Stub> stub_;
   
   std::thread heartbeat_thread_;
+  std::condition_variable heartbeat_cv_;
+  std::mutex heartbeat_cv_mutex_;
   mutable std::mutex mutex_;
   size_t current_metad_index_ = 0;
   Status TryNextMetaAddress();

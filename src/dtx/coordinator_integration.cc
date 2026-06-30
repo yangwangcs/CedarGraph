@@ -68,7 +68,10 @@ Status PartitionRouteCache::PreloadSpace(const std::string& space_name,
 }
 
 StorageConnectionPool::StorageConnectionPool() {
-    running_.store(true);
+    {
+        std::lock_guard<std::mutex> lock(health_check_cv_mutex_);
+        running_.store(true);
+    }
     health_check_thread_ = std::thread([this]() {
         HealthCheckLoop();
     });
@@ -84,8 +87,14 @@ void StorageConnectionPool::MarkUnhealthy(NodeID node_id) {
 }
 
 void StorageConnectionPool::CloseAll() {
-    running_ = false;
-    if (health_check_thread_.joinable()) health_check_thread_.join();
+    {
+        std::lock_guard<std::mutex> lock(health_check_cv_mutex_);
+        running_.store(false);
+    }
+    health_check_cv_.notify_all();
+    if (health_check_thread_.joinable()) {
+        health_check_thread_.join();
+    }
     std::unique_lock<std::shared_mutex> lock(pool_mutex_);
     connections_.clear();
 }
@@ -103,9 +112,13 @@ StorageConnectionPool::HealthStats StorageConnectionPool::GetHealthStats() const
 
 void StorageConnectionPool::HealthCheckLoop() {
     // Basic health check: remove connections marked unhealthy or idle for too long
-    while (running_.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(30));
-        if (!running_.load()) break;
+    while (true) {
+        {
+            std::unique_lock<std::mutex> lock(health_check_cv_mutex_);
+            health_check_cv_.wait_for(lock, std::chrono::seconds(30),
+                                      [this]() { return !running_.load(); });
+            if (!running_.load()) break;
+        }
 
         std::unique_lock<std::shared_mutex> lock(pool_mutex_);
         auto now = std::chrono::steady_clock::now();

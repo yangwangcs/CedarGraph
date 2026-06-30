@@ -11,10 +11,42 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # 默认配置
-CEDAR_VERSION="latest"
+CEDAR_VERSION="k8s-fix-20260630"
 INSTALL_DIR="./cedar-cluster"
 DATA_DIR="${INSTALL_DIR}/data"
 LOGS_DIR="${INSTALL_DIR}/logs"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+COMPOSE_CMD=""
+
+error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+warn() {
+    echo -e "${YELLOW}⚠️  $1${NC}"
+}
+
+success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+is_safe_clean_target() {
+    local target="$1"
+    local install_abs target_abs
+
+    install_abs="$(cd "${INSTALL_DIR}" 2>/dev/null && pwd -P)" || return 1
+    target_abs="$(mkdir -p "${target}" && cd "${target}" 2>/dev/null && pwd -P)" || return 1
+
+    case "${target_abs}" in
+        "${install_abs}"/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 # 打印帮助信息
 usage() {
@@ -24,7 +56,7 @@ CedarGraph 一键部署脚本
 用法: $0 [选项]
 
 选项:
-    -v, --version VERSION    指定 CedarGraph 版本 (默认: latest)
+    -v, --version VERSION    指定 CedarGraph 版本 (默认: k8s-fix-20260630)
     -d, --dir DIRECTORY      指定安装目录 (默认: ./cedar-cluster)
     -n, --nodes N            存储节点数量 1/3/5 (默认: 3)
     --studio                 同时安装 Web Studio
@@ -83,33 +115,46 @@ check_requirements() {
     
     # 检查 Docker
     if ! command -v docker &> /dev/null; then
-        echo -e "${RED}❌ Docker 未安装${NC}"
+        error "Docker 未安装"
         echo "请安装 Docker: https://docs.docker.com/get-docker/"
         exit 1
     fi
     
     # 检查 Docker Compose
-    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-        echo -e "${RED}❌ Docker Compose 未安装${NC}"
+    if docker compose version &> /dev/null; then
+        COMPOSE_CMD="docker compose"
+    elif command -v docker-compose &> /dev/null; then
+        COMPOSE_CMD="docker-compose"
+    else
+        error "Docker Compose 未安装"
         echo "请安装 Docker Compose: https://docs.docker.com/compose/install/"
         exit 1
     fi
     
     # 检查 Docker 是否运行
     if ! docker info &> /dev/null; then
-        echo -e "${RED}❌ Docker 服务未运行${NC}"
+        error "Docker 服务未运行"
         exit 1
     fi
     
-    echo -e "${GREEN}✅ 系统检查通过${NC}"
+    success "系统检查通过"
 }
 
 # 清理旧数据
 clean_data() {
     if [[ "$CLEAN_DATA" == "true" ]]; then
+        mkdir -p "${INSTALL_DIR}"
+        if ! is_safe_clean_target "${DATA_DIR}" || ! is_safe_clean_target "${LOGS_DIR}"; then
+            error "拒绝清理：DATA_DIR/LOGS_DIR 必须位于安装目录内部"
+            exit 1
+        fi
+        if [[ "${CEDAR_QUICKSTART_ALLOW_CLEAN:-0}" != "1" ]]; then
+            error "拒绝清理：请先备份，再显式设置 CEDAR_QUICKSTART_ALLOW_CLEAN=1"
+            exit 1
+        fi
         echo "🧹 清理旧数据..."
-        rm -rf "${DATA_DIR}" "${LOGS_DIR}"
-        echo -e "${GREEN}✅ 数据已清理${NC}"
+        rm -rf "${DATA_DIR:?}" "${LOGS_DIR:?}"
+        success "数据已清理"
     fi
 }
 
@@ -123,7 +168,7 @@ setup_directories() {
     mkdir -p "${LOGS_DIR}"/storage{0,1,2}
     mkdir -p "${LOGS_DIR}"/graphd
     
-    echo -e "${GREEN}✅ 目录创建完成${NC}"
+    success "目录创建完成"
 }
 
 # 下载 docker-compose.yml
@@ -131,18 +176,21 @@ download_compose() {
     echo "📥 下载部署配置..."
     
     local compose_url="https://raw.githubusercontent.com/cedargraph/cedar-docker-compose/main/docker-compose.yml"
+    local local_compose="${REPO_ROOT}/cedar-docker-compose/docker-compose.yml"
     
     if [[ ! -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
-        if command -v curl &> /dev/null; then
+        if [[ -f "$local_compose" ]]; then
+            cp "$local_compose" "${INSTALL_DIR}/docker-compose.yml"
+        elif command -v curl &> /dev/null; then
             curl -fsSL "${compose_url}" -o "${INSTALL_DIR}/docker-compose.yml"
         elif command -v wget &> /dev/null; then
             wget -q "${compose_url}" -O "${INSTALL_DIR}/docker-compose.yml"
         else
-            echo -e "${YELLOW}⚠️  无法下载配置文件，请手动放置 docker-compose.yml${NC}"
+            warn "无法下载配置文件，请手动放置 docker-compose.yml"
         fi
     fi
     
-    echo -e "${GREEN}✅ 配置准备完成${NC}"
+    success "配置准备完成"
 }
 
 # 拉取镜像
@@ -152,14 +200,15 @@ pull_images() {
     cd "${INSTALL_DIR}"
     
     export CEDAR_VERSION="${CEDAR_VERSION}"
+    export CEDAR_GRAPHD_AUTH_JWT_SECRET="${CEDAR_GRAPHD_AUTH_JWT_SECRET:-cedar-quickstart-dev-secret-please-change-32bytes}"
+    export CEDAR_GRAPHD_AUTH_USER="${CEDAR_GRAPHD_AUTH_USER:-admin}"
+    export CEDAR_GRAPHD_AUTH_PASSWORD="${CEDAR_GRAPHD_AUTH_PASSWORD:-admin}"
+    export CEDAR_GRAPHD_AUTH_ROLE="${CEDAR_GRAPHD_AUTH_ROLE:-admin}"
+    export CEDAR_GRPC_TLS_ENABLED="${CEDAR_GRPC_TLS_ENABLED:-0}"
     
-    if command -v docker-compose &> /dev/null; then
-        docker-compose pull
-    else
-        docker compose pull
-    fi
+    ${COMPOSE_CMD} pull
     
-    echo -e "${GREEN}✅ 镜像拉取完成${NC}"
+    success "镜像拉取完成"
 }
 
 # 启动服务
@@ -173,38 +222,36 @@ start_services() {
         compose_args="--profile studio ${compose_args}"
     fi
     
-    if command -v docker-compose &> /dev/null; then
-        docker-compose up ${compose_args}
-    else
-        docker compose up ${compose_args}
-    fi
+    ${COMPOSE_CMD} up ${compose_args}
     
-    echo -e "${GREEN}✅ 服务启动完成${NC}"
+    success "服务启动完成"
 }
 
 # 等待服务就绪
 wait_for_ready() {
     echo "⏳ 等待集群就绪..."
     
-    local max_wait=120
+    local max_wait=180
     local waited=0
     
     while [[ $waited -lt $max_wait ]]; do
-        sleep 5
-        waited=$((waited + 5))
-        
-        # 检查容器状态
-        local running=$(docker ps --filter "name=cedar-" --format "{{.Names}}" | wc -l)
-        
-        if [[ $running -ge 7 ]]; then
-            echo -e "${GREEN}✅ 集群已就绪！${NC}"
+        local running total unhealthy core_running
+        running=$(${COMPOSE_CMD} ps --filter "status=running" --format "{{.Name}}" | grep -c "^cedar-" || true)
+        total=$(${COMPOSE_CMD} ps --format "{{.Name}}" | grep -c "^cedar-" || true)
+        unhealthy=$(${COMPOSE_CMD} ps --format "{{.Name}}\t{{.Status}}" | awk '/^cedar-/ && $0 ~ /unhealthy/ {count++} END {print count+0}')
+        core_running=$(${COMPOSE_CMD} ps --filter "status=running" --format "{{.Name}}" | grep -E -c "^cedar-(metad-[0-2]|storaged-[0-2]|graphd)$" || true)
+
+        if [[ $core_running -ge 7 && $unhealthy -eq 0 ]]; then
+            success "集群已就绪！"
             return 0
         fi
         
-        echo "  等待中... (${waited}s/${max_wait}s)"
+        echo "  等待中... (${waited}s/${max_wait}s, running=${running}/${total}, core=${core_running}/7, unhealthy=${unhealthy})"
+        sleep 5
+        waited=$((waited + 5))
     done
     
-    echo -e "${YELLOW}⚠️  集群启动超时，请检查日志${NC}"
+    warn "集群启动超时，请检查日志"
     return 1
 }
 
@@ -217,14 +264,17 @@ init_cluster() {
     # 等待 MetaD 就绪
     sleep 10
     
-    # 自动注册存储节点
-    if command -v docker-compose &> /dev/null; then
-        docker-compose exec -T graphd /usr/local/bin/cedar-admin add-hosts storaged0:9779,storaged1:9779,storaged2:9779
-    else
-        docker compose exec -T graphd /usr/local/bin/cedar-admin add-hosts storaged0:9779,storaged1:9779,storaged2:9779
+    if ! ${COMPOSE_CMD} exec -T graphd /usr/local/bin/cedar-admin --host=localhost --port=9669 status >/dev/null; then
+        error "GraphD 状态检查失败"
+        return 1
     fi
-    
-    echo -e "${GREEN}✅ 集群初始化完成${NC}"
+
+    if ! ${COMPOSE_CMD} exec -T graphd /usr/local/bin/cedar-admin --host=localhost --port=9669 auto-discover >/dev/null; then
+        error "StorageD 自动发现或连通性检查失败"
+        return 1
+    fi
+
+    success "集群初始化完成"
 }
 
 # 打印状态
@@ -240,14 +290,16 @@ print_status() {
     echo ""
     echo "🔗 连接信息:"
     echo "  Graph 服务:   localhost:9669"
-    echo "  HTTP 服务:    http://localhost:19669"
-    echo "  Meta 服务:    localhost:9559"
+    echo "  健康检查:     http://localhost:9668/health"
+    echo "  指标服务:     http://localhost:9667/metrics"
+    echo "  Meta Raft:    localhost:9559"
+    echo "  Meta gRPC:    localhost:10559"
     echo ""
     echo "🛠️  常用命令:"
-    echo "  查看日志:     cd ${INSTALL_DIR} && docker-compose logs -f"
-    echo "  连接集群:     docker-compose exec console cedar-cli --host=graphd --port=9669"
-    echo "  查看状态:     docker-compose exec graphd cedar-admin show-hosts"
-    echo "  停止集群:     docker-compose down"
+    echo "  查看日志:     cd ${INSTALL_DIR} && ${COMPOSE_CMD} logs -f"
+    echo "  连接集群:     ${COMPOSE_CMD} exec console cedar-cli --host=graphd --port=9669"
+    echo "  查看状态:     ${COMPOSE_CMD} exec graphd cedar-admin show-hosts"
+    echo "  停止集群:     ${COMPOSE_CMD} down"
     echo ""
     
     if [[ "$ENABLE_STUDIO" == "true" ]]; then
@@ -262,9 +314,6 @@ print_status() {
 
 # 主函数
 main() {
-    echo "🌲 CedarGraph 一键部署脚本"
-    echo ""
-    
     parse_args "$@"
     check_requirements
     
@@ -277,10 +326,14 @@ main() {
     start_services
     
     if wait_for_ready; then
-        init_cluster
+        init_cluster || {
+            error "部署初始化失败"
+            echo "查看日志: cd ${INSTALL_DIR} && ${COMPOSE_CMD} logs"
+            exit 1
+        }
         print_status
     else
-        echo -e "${RED}❌ 部署可能出现问题，请检查日志${NC}"
+        error "部署可能出现问题，请检查日志"
         exit 1
     fi
 }

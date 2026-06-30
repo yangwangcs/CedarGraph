@@ -4,6 +4,8 @@
 
 This guide covers deploying CedarGraph in various environments: single-node, Docker, and Kubernetes.
 
+生产部署前应先通过本仓库发布门禁，再把认证、TLS/mTLS、Secret、证书轮换、回滚和监控告警在目标环境中验证完成。当前代码的本地基线是：`ctest` 注册测试 1358 个，1356 个实际运行测试通过，仅 2 个 CedarUpdate 性能基准测试未默认运行；发布门禁默认覆盖 non-test-mode Raft、TLS/mTLS、短时 soak 和单节点故障注入。
+
 ## Prerequisites
 
 ### System Requirements
@@ -31,7 +33,7 @@ sudo apt-get install -y \
   libcurl4-openssl-dev liblz4-dev libgrpc++-dev \
   protobuf-compiler-grpc libprotobuf-dev protobuf-compiler libprotoc-dev \
   libssl-dev libyaml-cpp-dev libgflags-dev libgoogle-glog-dev \
-  libgtest-dev libleveldb-dev libsnappy-dev pkg-config
+  nlohmann-json3-dev libgtest-dev libleveldb-dev libsnappy-dev pkg-config
 ```
 
 **Runtime Dependencies:**
@@ -40,6 +42,39 @@ sudo apt-get install -y \
   liblz4-1 libgrpc++1 libprotobuf23 \
   curl netcat-openbsd dnsutils iputils-ping
 ```
+
+## Pre-Deployment Gate
+
+每个发布候选版本至少执行：
+
+```bash
+CEDAR_RELEASE_FULL_CTEST=1 CEDAR_RELEASE_SOAK_SECONDS=300 CEDAR_RELEASE_SOAK_POLL_SECONDS=5 ./scripts/preflight_release_gate.sh
+```
+
+该命令通过后，只能说明本地代码和本地门禁达到发布候选状态；真实生产上线仍需要在目标环境验证证书链、Secret 注入、部署/回滚、监控告警和长时间负载。
+
+GraphD 非测试模式必须提供认证参数：
+
+```bash
+export CEDAR_GRAPHD_AUTH_JWT_SECRET='replace-with-at-least-32-bytes-secret'
+export CEDAR_GRAPHD_AUTH_USER='admin'
+export CEDAR_GRAPHD_AUTH_PASSWORD='replace-with-strong-password'
+export CEDAR_GRAPHD_AUTH_ROLE='admin'
+```
+
+生产建议启用 TLS；启用 mTLS 时还必须配置客户端证书：
+
+```bash
+export CEDAR_GRPC_TLS_ENABLED=1
+export CEDAR_GRPC_SERVER_CERT=/etc/cedar/tls/tls.crt
+export CEDAR_GRPC_SERVER_KEY=/etc/cedar/tls/tls.key
+export CEDAR_GRPC_CA_CERT=/etc/cedar/tls/ca.crt
+export CEDAR_GRPC_MTLS_ENABLED=1
+export CEDAR_GRPC_CLIENT_CERT=/etc/cedar/tls/client.crt
+export CEDAR_GRPC_CLIENT_KEY=/etc/cedar/tls/client.key
+```
+
+`CEDAR_GRPC_ALLOW_INSECURE=1` 仅用于开发或受控测试，不应出现在生产默认部署中。
 
 ## Single-Node Deployment
 
@@ -67,25 +102,26 @@ Edit `config/standalone.yaml`:
 ```yaml
 # MetaD configuration
 metad:
-  host: "0.0.0.0"
-  port: 9559
+  listen_address: "0.0.0.0:9559"
   grpc_port: 10559
   data_dir: "/tmp/cedar/standalone/metad"
   
 # StorageD configuration
 storaged:
-  host: "0.0.0.0"
+  bind_address: "0.0.0.0"
   port: 9779
   data_dir: "/tmp/cedar/standalone/storage"
-  storage_mode: "partitioned"
-  max_open_partitions: 256
+  meta_server: "127.0.0.1:10559"
+  health_port: 7000
+  metrics_port: 7001
   
 # GraphD configuration
 graphd:
-  host: "0.0.0.0"
+  bind_address: "0.0.0.0"
   port: 9669
-  metad_host: "localhost"
-  metad_port: 10559
+  meta_server: "127.0.0.1:10559"
+  health_port: 9668
+  metrics_port: 9667
 ```
 
 ### Management Commands
@@ -132,7 +168,6 @@ go build -o cedargraph .
 
 ```yaml
 # docker-compose.minimal.yml
-version: '3.8'
 
 services:
   metad:
@@ -167,6 +202,11 @@ services:
       context: .
       dockerfile: cedar-docker-compose/Dockerfile
     command: cedar-graphd --config /etc/cedar/graphd.conf
+    environment:
+      CEDAR_GRAPHD_AUTH_JWT_SECRET: ${CEDAR_GRAPHD_AUTH_JWT_SECRET:?required}
+      CEDAR_GRAPHD_AUTH_USER: ${CEDAR_GRAPHD_AUTH_USER:?required}
+      CEDAR_GRAPHD_AUTH_PASSWORD: ${CEDAR_GRAPHD_AUTH_PASSWORD:?required}
+      CEDAR_GRAPHD_AUTH_ROLE: ${CEDAR_GRAPHD_AUTH_ROLE:-admin}
     ports:
       - "9669:9669"
     depends_on:
@@ -188,36 +228,43 @@ networks:
 
 ```yaml
 # docker-compose.production.yml
-version: '3.8'
 
 services:
   metad1:
-    image: cedargraph/metad:latest
-    command: cedar-metad --config /etc/cedar/metad.conf --node-id 1
+    image: cedargraph/cedar:k8s-fix-20260630
+    environment:
+      NODE_ROLE: metad
+    command: ["--node_id", "1", "--listen", "0.0.0.0:9559", "--advertise", "metad1:9559", "--grpc_port", "10559", "--data_dir", "/tmp/cedar/metad", "--peer", "1:metad1:9559", "--peer", "2:metad2:9559", "--peer", "3:metad3:9559"]
     volumes:
       - metad1_data:/tmp/cedar/metad
     networks:
       - cedar-net
 
   metad2:
-    image: cedargraph/metad:latest
-    command: cedar-metad --config /etc/cedar/metad.conf --node-id 2
+    image: cedargraph/cedar:k8s-fix-20260630
+    environment:
+      NODE_ROLE: metad
+    command: ["--node_id", "2", "--listen", "0.0.0.0:9559", "--advertise", "metad2:9559", "--grpc_port", "10559", "--data_dir", "/tmp/cedar/metad", "--peer", "1:metad1:9559", "--peer", "2:metad2:9559", "--peer", "3:metad3:9559"]
     volumes:
       - metad2_data:/tmp/cedar/metad
     networks:
       - cedar-net
 
   metad3:
-    image: cedargraph/metad:latest
-    command: cedar-metad --config /etc/cedar/metad.conf --node-id 3
+    image: cedargraph/cedar:k8s-fix-20260630
+    environment:
+      NODE_ROLE: metad
+    command: ["--node_id", "3", "--listen", "0.0.0.0:9559", "--advertise", "metad3:9559", "--grpc_port", "10559", "--data_dir", "/tmp/cedar/metad", "--peer", "1:metad1:9559", "--peer", "2:metad2:9559", "--peer", "3:metad3:9559"]
     volumes:
       - metad3_data:/tmp/cedar/metad
     networks:
       - cedar-net
 
   storaged1:
-    image: cedargraph/storaged:latest
-    command: cedar-storaged --config /etc/cedar/storaged.conf --node-id 1
+    image: cedargraph/cedar:k8s-fix-20260630
+    environment:
+      NODE_ROLE: storaged
+    command: ["--node_id", "1", "--bind", "0.0.0.0", "--data_dir", "/tmp/cedar/storage", "--meta", "metad1:10559,metad2:10559,metad3:10559"]
     volumes:
       - storaged1_data:/tmp/cedar/storage
     depends_on:
@@ -228,8 +275,10 @@ services:
       - cedar-net
 
   storaged2:
-    image: cedargraph/storaged:latest
-    command: cedar-storaged --config /etc/cedar/storaged.conf --node-id 2
+    image: cedargraph/cedar:k8s-fix-20260630
+    environment:
+      NODE_ROLE: storaged
+    command: ["--node_id", "2", "--bind", "0.0.0.0", "--data_dir", "/tmp/cedar/storage", "--meta", "metad1:10559,metad2:10559,metad3:10559"]
     volumes:
       - storaged2_data:/tmp/cedar/storage
     depends_on:
@@ -240,8 +289,10 @@ services:
       - cedar-net
 
   storaged3:
-    image: cedargraph/storaged:latest
-    command: cedar-storaged --config /etc/cedar/storaged.conf --node-id 3
+    image: cedargraph/cedar:k8s-fix-20260630
+    environment:
+      NODE_ROLE: storaged
+    command: ["--node_id", "3", "--bind", "0.0.0.0", "--data_dir", "/tmp/cedar/storage", "--meta", "metad1:10559,metad2:10559,metad3:10559"]
     volumes:
       - storaged3_data:/tmp/cedar/storage
     depends_on:
@@ -252,10 +303,22 @@ services:
       - cedar-net
 
   graphd:
-    image: cedargraph/graphd:latest
-    command: cedar-graphd --config /etc/cedar/graphd.conf
+    image: cedargraph/cedar:k8s-fix-20260630
+    command: ["--bind", "0.0.0.0", "--meta", "metad1:10559,metad2:10559,metad3:10559", "--health_port", "9668", "--metrics_port", "9667"]
+    environment:
+      NODE_ROLE: graphd
+      CEDAR_GRAPHD_AUTH_JWT_SECRET: ${CEDAR_GRAPHD_AUTH_JWT_SECRET:?required}
+      CEDAR_GRAPHD_AUTH_USER: ${CEDAR_GRAPHD_AUTH_USER:?required}
+      CEDAR_GRAPHD_AUTH_PASSWORD: ${CEDAR_GRAPHD_AUTH_PASSWORD:?required}
+      CEDAR_GRAPHD_AUTH_ROLE: ${CEDAR_GRAPHD_AUTH_ROLE:-admin}
+      CEDAR_GRPC_TLS_ENABLED: ${CEDAR_GRPC_TLS_ENABLED:-1}
+      CEDAR_GRPC_SERVER_CERT: /etc/cedar/tls/tls.crt
+      CEDAR_GRPC_SERVER_KEY: /etc/cedar/tls/tls.key
+      CEDAR_GRPC_CA_CERT: /etc/cedar/tls/ca.crt
     ports:
       - "9669:9669"
+    volumes:
+      - ./certs:/etc/cedar/tls:ro
     depends_on:
       - metad1
       - metad2
@@ -282,17 +345,46 @@ networks:
 ### Building Docker Image
 
 ```bash
-# Build image
-docker build -t cedargraph:latest -f cedar-docker-compose/Dockerfile .
+# Build image with an immutable local release-candidate tag
+docker build -t cedargraph/cedar:k8s-fix-20260630 -f cedar-docker-compose/Dockerfile .
 
 # Build with China mirrors
-docker build -t cedargraph:latest -f cedar-docker-compose/Dockerfile.cn .
+docker build -t cedargraph/cedar:k8s-fix-20260630 -f cedar-docker-compose/Dockerfile.cn .
 
-# Run container
-docker run -p 9669:9669 cedargraph:latest
+# Run GraphD from the unified image
+docker run --rm -p 9669:9669 \
+  -e NODE_ROLE=graphd \
+  -e CEDAR_GRAPHD_AUTH_JWT_SECRET='replace-with-at-least-32-bytes-secret' \
+  -e CEDAR_GRAPHD_AUTH_USER='admin' \
+  -e CEDAR_GRAPHD_AUTH_PASSWORD='replace-with-strong-password' \
+  cedargraph/cedar:k8s-fix-20260630 \
+  --bind 0.0.0.0 --meta 127.0.0.1:10559 --health_port 9668 --metrics_port 9667
 ```
 
 ## Kubernetes Deployment
+
+### GraphD Secrets
+
+Kubernetes 部署前必须先创建 GraphD 认证和 TLS Secret。可以复制 `k8s/graphd-secrets.example.yaml` 为 `k8s/graphd-secrets.yaml`，替换占位值后再应用；不要把真实 Secret 提交到仓库。
+
+也可以用命令创建：
+
+```bash
+kubectl create namespace cedargraph --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret generic graphd-auth -n cedargraph \
+  --from-literal=jwt-secret='replace-with-at-least-32-bytes-secret' \
+  --from-literal=user='admin' \
+  --from-literal=password='replace-with-strong-password' \
+  --from-literal=role='admin'
+
+kubectl create secret generic graphd-tls -n cedargraph \
+  --from-file=tls.crt=/path/to/tls.crt \
+  --from-file=tls.key=/path/to/tls.key \
+  --from-file=ca.crt=/path/to/ca.crt \
+  --from-file=client.crt=/path/to/client.crt \
+  --from-file=client.key=/path/to/client.key
+```
 
 ### Namespace
 
@@ -315,23 +407,24 @@ metadata:
   namespace: cedargraph
 data:
   metad.conf: |
-    host: "0.0.0.0"
-    port: 9559
+    listen_address: "0.0.0.0:9559"
     grpc_port: 10559
     data_dir: "/data/metad"
     
   storaged.conf: |
-    host: "0.0.0.0"
+    bind_address: "0.0.0.0"
     port: 9779
     data_dir: "/data/storage"
-    storage_mode: "partitioned"
-    max_open_partitions: 256
+    meta_server: "cedargraph-metad:10559"
+    health_port: 7000
+    metrics_port: 7001
     
   graphd.conf: |
-    host: "0.0.0.0"
+    bind_address: "0.0.0.0"
     port: 9669
-    metad_host: "cedargraph-metad"
-    metad_port: 10559
+    meta_server: "cedargraph-metad:10559"
+    health_port: 9668
+    metrics_port: 9667
 ```
 
 ### MetaD StatefulSet
@@ -356,7 +449,7 @@ spec:
     spec:
       containers:
         - name: metad
-          image: cedargraph/metad:latest
+          image: cedargraph/cedar:k8s-fix-20260630
           command: ["cedar-metad", "--config", "/etc/cedar/metad.conf"]
           ports:
             - containerPort: 9559
@@ -426,7 +519,7 @@ spec:
     spec:
       containers:
         - name: storaged
-          image: cedargraph/storaged:latest
+          image: cedargraph/cedar:k8s-fix-20260630
           command: ["cedar-storaged", "--config", "/etc/cedar/storaged.conf"]
           ports:
             - containerPort: 9779
@@ -492,7 +585,7 @@ spec:
     spec:
       containers:
         - name: graphd
-          image: cedargraph/graphd:latest
+          image: cedargraph/cedar:k8s-fix-20260630
           command: ["cedar-graphd", "--config", "/etc/cedar/graphd.conf"]
           ports:
             - containerPort: 9669
@@ -561,9 +654,8 @@ volumeBindingMode: WaitForFirstConsumer
 # MetaD configuration
 metad:
   # Network
-  host: "0.0.0.0"
-  port: 9559          # Raft port
-  grpc_port: 10559    # gRPC port
+  listen_address: "0.0.0.0:9559"
+  grpc_port: 10559
   
   # Storage
   data_dir: "/data/metad"
@@ -571,11 +663,8 @@ metad:
   # Raft
   election_timeout_ms: 1000
   heartbeat_interval_ms: 100
-  snapshot_interval_sec: 3600
-  
-  # Performance
-  max_concurrent_requests: 1000
-  request_timeout_ms: 5000
+  heartbeat_timeout_sec: 10
+  heartbeat_check_interval_sec: 5
 ```
 
 ### StorageD Configuration
@@ -584,33 +673,14 @@ metad:
 # StorageD configuration
 storaged:
   # Network
-  host: "0.0.0.0"
+  bind_address: "0.0.0.0"
   port: 9779
   
   # Storage
   data_dir: "/data/storage"
-  storage_mode: "partitioned"  # or "shared"
-  max_open_partitions: 256
-  
-  # LSM
-  memtable_size_mb: 64
-  l0_max_files: 4
-  max_bytes_for_level_base_mb: 256
-  max_bytes_for_level_multiplier: 10
-  
-  # WAL
-  enable_wal: true
-  sync_on_write: false
-  sync_interval_ms: 100
-  
-  # Compaction
-  enable_auto_compaction: true
-  compaction_threads: 1
-  rate_limit_mb_per_sec: 100
-  
-  # Cache
-  block_cache_mb: 256
-  row_cache_mb: 64
+  meta_server: "127.0.0.1:10559"
+  health_port: 7000
+  metrics_port: 7001
 ```
 
 ### GraphD Configuration
@@ -619,16 +689,14 @@ storaged:
 # GraphD configuration
 graphd:
   # Network
-  host: "0.0.0.0"
+  bind_address: "0.0.0.0"
   port: 9669
   
   # MetaD connection
-  metad_host: "cedargraph-metad"
-  metad_port: 10559
-  
-  # Query
-  max_query_timeout_ms: 30000
-  max_result_size: 10000
+  meta_server: "cedargraph-metad:10559"
+  gcn_server: "127.0.0.1:9780"
+  health_port: 9668
+  metrics_port: 9667
   
   # Plan cache
   plan_cache_size: 1000
@@ -643,14 +711,14 @@ graphd:
 ### Health Checks
 
 ```bash
-# MetaD health
-curl http://localhost:10559/health
+# MetaD gRPC connectivity
+nc -z localhost 10559
 
 # StorageD health
-curl http://localhost:9779/health
+curl http://localhost:7000/health
 
 # GraphD health
-curl http://localhost:9669/health
+curl http://localhost:9668/health
 ```
 
 ### Metrics Endpoint
@@ -659,8 +727,9 @@ curl http://localhost:9669/health
 # Add to configuration
 monitoring:
   enable_metrics: true
-  metrics_port: 9090
   metrics_path: "/metrics"
+  storaged_metrics_port: 7001
+  graphd_metrics_port: 9667
 ```
 
 ### Prometheus Configuration
@@ -668,18 +737,21 @@ monitoring:
 ```yaml
 # prometheus.yml
 scrape_configs:
-  - job_name: 'cedargraph'
+  - job_name: 'cedar-storaged'
     static_configs:
       - targets:
-          - 'metad:9090'
-          - 'storaged:9090'
-          - 'graphd:9090'
+          - 'storaged:7001'
+
+  - job_name: 'cedar-graphd'
+    static_configs:
+      - targets:
+          - 'graphd:9667'
 ```
 
 ### Grafana Dashboard
 
 Import the provided dashboard JSON:
-- `monitoring/grafana/cedargraph-dashboard.json`
+- `config/grafana/dashboards/cedargraph-overview.json`
 
 ## Backup and Recovery
 
@@ -690,7 +762,7 @@ Import the provided dashboard JSON:
 bash scripts/start_standalone.sh stop
 
 # Backup data
-tar -czf cedar-backup-$(date +%Y%m%d).tar.gz /tmp/cedar/standalone/
+tar -czf cedargraph-backup-$(date +%Y%m%d).tar.gz /tmp/cedar/standalone/
 
 # Start cluster
 bash scripts/start_standalone.sh start
@@ -706,7 +778,7 @@ DATE=$(date +%Y%m%d_%H%M%S)
 
 # Create backup
 mkdir -p $BACKUP_DIR
-tar -czf $BACKUP_DIR/cedar-backup-$DATE.tar.gz /tmp/cedar/standalone/
+tar -czf $BACKUP_DIR/cedargraph-backup-$DATE.tar.gz /tmp/cedar/standalone/
 
 # Cleanup old backups (keep last 7 days)
 find $BACKUP_DIR -name "*.tar.gz" -mtime +7 -delete
@@ -719,7 +791,7 @@ find $BACKUP_DIR -name "*.tar.gz" -mtime +7 -delete
 bash scripts/start_standalone.sh stop
 
 # Restore backup
-tar -xzf cedar-backup-20240101_120000.tar.gz -C /
+tar -xzf cedargraph-backup-20240101_120000.tar.gz -C /
 
 # Start cluster
 bash scripts/start_standalone.sh start
@@ -755,20 +827,7 @@ mkfs.xfs /dev/nvme0n1
 
 ### Application Tuning
 
-```yaml
-# Increase MemTable size for write-heavy workloads
-storaged:
-  memtable_size_mb: 128
-  
-# Increase cache for read-heavy workloads
-storaged:
-  block_cache_mb: 512
-  row_cache_mb: 128
-  
-# Increase compaction threads for large datasets
-storaged:
-  compaction_threads: 4
-```
+当前 standalone `cedar-storaged --config` 只读取网络、数据目录、MetaD、心跳、health/metrics 和 TLS 字段。MemTable、block cache、row cache 和 compaction 线程等底层参数尚未作为 `cedar-storaged` YAML 配置项暴露；上线调优应先通过 NVMe/XFS/noatime、进程资源限制、Prometheus 指标和压力测试确认瓶颈，待这些参数进入当前 parser 后再写入部署配置。
 
 ## Troubleshooting
 
@@ -789,10 +848,10 @@ df -h /tmp/cedar/
 **High latency:**
 ```bash
 # Check compaction
-curl http://localhost:9779/metrics | grep compaction
+curl http://localhost:7001/metrics | grep compaction
 
 # Check cache hit rate
-curl http://localhost:9779/metrics | grep cache_hit
+curl http://localhost:7001/metrics | grep cache_hit
 
 # Check system resources
 top -p $(pgrep cedar)

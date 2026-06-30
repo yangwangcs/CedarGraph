@@ -26,10 +26,11 @@
 #define CEDAR_ZONE_ENCODER_H_
 
 #include <cstdint>
-#include <string>
-#include <vector>
-#include <unordered_map>
+#include <functional>
 #include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "cedar/types/cedar_key.h"
 #include "cedar/types/descriptor.h"

@@ -30,18 +30,30 @@ bool CedarClient::Initialize() {
   connection_pool_manager_ = std::make_unique<ConnectionPoolManager>();
   
   ConnectionConfig metad_config{config_.metad_host, config_.metad_port, 
-                                 config_.max_connections, config_.timeout_ms};
+                                 config_.max_connections, config_.timeout_ms,
+                                 config_.enable_tls, false, config_.ca_cert_path,
+                                 config_.client_cert_path, config_.client_key_path};
   ConnectionConfig graphd_config{config_.graphd_host, config_.graphd_port,
-                                  config_.max_connections, config_.timeout_ms};
+                                  config_.max_connections, config_.timeout_ms,
+                                  config_.enable_tls, false, config_.ca_cert_path,
+                                  config_.client_cert_path, config_.client_key_path};
   ConnectionConfig storaged_config{config_.storaged_host, config_.storaged_port,
-                                    config_.max_connections, config_.timeout_ms};
+                                    config_.max_connections, config_.timeout_ms,
+                                    config_.enable_tls, false, config_.ca_cert_path,
+                                    config_.client_cert_path, config_.client_key_path};
   
   connection_pool_manager_->Initialize(metad_config, graphd_config, storaged_config);
   
   // Initialize service discovery if enabled
   if (config_.enable_service_discovery) {
     ServiceDiscoveryConfig discovery_config{config_.metad_host, config_.metad_port,
-                                             config_.refresh_interval_ms};
+                                             config_.refresh_interval_ms,
+                                             30000,
+                                             config_.enable_tls,
+                                             false,
+                                             config_.ca_cert_path,
+                                             config_.client_cert_path,
+                                             config_.client_key_path};
     service_discovery_ = std::make_unique<ServiceDiscovery>(discovery_config);
     if (!service_discovery_->Initialize()) {
       std::cerr << "Failed to initialize service discovery" << std::endl;
@@ -74,6 +86,10 @@ bool CedarClient::Initialize() {
   
   // Initialize JWT manager if enabled
   if (config_.enable_jwt) {
+    if (config_.jwt_secret_key.empty()) {
+      return false;
+    }
+
     JWTConfig jwt_config;
     jwt_config.secret_key = config_.jwt_secret_key;
     jwt_config.issuer = config_.jwt_issuer;
@@ -443,8 +459,8 @@ std::vector<std::string> CedarClient::ListTags(const std::string& space_name) {
 std::vector<std::string> CedarClient::ListEdges(const std::string& space_name) {
   std::vector<std::string> edges;
   
-  // TODO: Implement using MetaD proto stubs
-  // Note: ListEdges is not in the current proto definition
+  Logger::GetInstance().Warn(
+      "ListEdges is not supported by the current MetaD proto; returning an empty result.");
   
   return edges;
 }
@@ -573,9 +589,17 @@ std::shared_ptr<grpc::Channel> CedarClient::GetGraphDConnection() {
   if (service_discovery_) {
     auto node = SelectGraphDNode();
     if (!node.host.empty()) {
-      return grpc::CreateChannel(
-          node.host + ":" + std::to_string(node.port),
-          grpc::InsecureChannelCredentials());
+      ConnectionConfig config;
+      config.host = node.host;
+      config.port = node.port;
+      config.max_connections = 1;
+      config.timeout_ms = config_.timeout_ms;
+      config.enable_tls = config_.enable_tls;
+      config.ca_cert_path = config_.ca_cert_path;
+      config.client_cert_path = config_.client_cert_path;
+      config.client_key_path = config_.client_key_path;
+      ConnectionPool pool(config);
+      return pool.GetConnection();
     }
   }
   
@@ -756,10 +780,8 @@ void CedarClient::WaitForAllAsyncQueries() {
   if (!async_query_pool_) {
     return;
   }
-  
-  while (async_query_pool_->GetActiveQueryCount() > 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+
+  async_query_pool_->WaitForAll();
 }
 
 void CedarClient::CancelAllAsyncQueries() {
@@ -958,7 +980,12 @@ bool CedarClient::InitializeBackup(const BackupConfig& config) {
 BackupInfo CedarClient::CreateBackup(const std::string& component, BackupType type) {
   if (!cluster_backup_) {
     LOG_ERROR("Cluster backup not initialized");
-    return {};
+    BackupInfo info;
+    info.component = component;
+    info.type = type;
+    info.status = BackupStatus::FAILED;
+    info.error_message = "Cluster backup not initialized";
+    return info;
   }
   
   LOG_INFO("Creating backup for " + component);

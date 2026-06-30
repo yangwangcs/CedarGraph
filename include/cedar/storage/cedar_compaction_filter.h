@@ -10,8 +10,10 @@
 #ifndef CEDAR_COMPACTION_FILTER_H
 #define CEDAR_COMPACTION_FILTER_H
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 
 #include "cedar/types/cedar_key.h"

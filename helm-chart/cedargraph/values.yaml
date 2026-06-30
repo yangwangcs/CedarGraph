@@ -4,7 +4,7 @@
 image:
   repository: cedargraph/cedar
   pullPolicy: IfNotPresent
-  tag: "latest"
+  tag: "k8s-fix-20260630"
 
 # 全局配置
 global:
@@ -22,11 +22,17 @@ global:
   # 是否启用 Studio
   studio:
     enabled: false
-    image: cedargraph/studio:latest
+    image: cedargraph/studio:k8s-fix-20260630
 
 # MetaD 配置 (固定3节点HA)
 metad:
   replicas: 3
+  # MetaD Raft currently persists resolved Pod IPs in braft metadata. Keep the
+  # default update strategy manual so Helm upgrades cannot automatically restart
+  # MetaD pods before the Raft identity/PVC migration plan is approved.
+  updateStrategy:
+    type: OnDelete
+  allowUnsafeRollingUpdate: false
   
   resources:
     requests:
@@ -44,6 +50,7 @@ metad:
   service:
     type: ClusterIP
     port: 9559
+    grpcPort: 10559
 
 # StorageD 配置
 storaged:
@@ -64,11 +71,27 @@ storaged:
   
   service:
     type: ClusterIP
-    port: 9779
+    ports:
+      grpc: 9779
+      health: 7000
+      metrics: 7001
 
 # GraphD 配置
 graphd:
   replicas: 1
+
+  auth:
+    existingSecret: "cedargraph-graphd-auth"
+    keys:
+      jwtSecret: "jwt-secret"
+      user: "user"
+      password: "password"
+      role: "role"
+
+  tls:
+    enabled: true
+    mtlsEnabled: false
+    existingSecret: "cedargraph-graphd-tls"
   
   resources:
     requests:
@@ -82,23 +105,14 @@ graphd:
     type: ClusterIP
     ports:
       query: 9669
-      http: 19669
+      health: 9668
+      metrics: 9667
 
 # QueryD 配置
+# 当前版本的 QueryD 执行逻辑已合并到 GraphD。保持 disabled；若设置为
+# true，模板会 fail-fast，避免部署不存在的 cedar-queryd 二进制。
 queryd:
-  replicas: 2
-  
-  resources:
-    requests:
-      memory: "512Mi"
-      cpu: "500m"
-    limits:
-      memory: "1Gi"
-      cpu: "1000m"
-  
-  service:
-    type: ClusterIP
-    port: 9889
+  enabled: false
 
 # Security context
 podSecurityContext:
@@ -132,25 +146,41 @@ autoscaling:
 
 # Pod Disruption Budget
 pdb:
-  enabled: false
+  enabled: true
   metad:
     minAvailable: 2
   storaged:
     minAvailable: 2
+  graphd:
+    minAvailable: 1
 
 # Network Policy
 networkPolicy:
-  enabled: false
+  enabled: true
   ingress:
     - from:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cedargraph
       ports:
+        - protocol: TCP
+          port: 7000
+        - protocol: TCP
+          port: 7001
         - protocol: TCP
           port: 9559
         - protocol: TCP
-          port: 9779
+          port: 10559
+        - protocol: TCP
+          port: 9667
+        - protocol: TCP
+          port: 9668
         - protocol: TCP
           port: 9669
+        - protocol: TCP
+          port: 9780
+        - protocol: TCP
+          port: 9779
 
 # 控制台配置
 console:

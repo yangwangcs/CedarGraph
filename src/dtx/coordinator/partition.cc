@@ -15,6 +15,7 @@
 #include "cedar/dtx/partition.h"
 
 #include <algorithm>
+#include <mutex>
 #include <sstream>
 
 namespace cedar {

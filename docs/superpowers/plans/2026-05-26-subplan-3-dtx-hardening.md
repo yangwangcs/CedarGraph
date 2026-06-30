@@ -1008,7 +1008,7 @@ cd build && ctest --output-on-failure -R "test_register_participant|test_cluster
 
 **Expected output:**
 ```
-Test project /Users/wangyang/Desktop/CedarGraph-Core/build
+Test project <repo-root>/build
     Start 1: test_register_participant
 1/6   Test #1: test_register_participant .........................   Passed    0.02 sec
     Start 2: test_cluster_initializer_registration

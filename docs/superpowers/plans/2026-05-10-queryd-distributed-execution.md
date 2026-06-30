@@ -86,7 +86,7 @@ Add the required include at the top of the file if not already present:
 - [ ] **Step 2: Verify the file compiles in isolation**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar_queryd 2>&1 | tail -10
 ```
 
@@ -95,7 +95,7 @@ Expected: No compilation errors. Warnings are OK.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/queryd/query_storage_client.h
 git commit -m "feat(queryd): add ExecuteSubQuery to NodeClient interface"
 ```
@@ -194,7 +194,7 @@ class NodeClientImpl : public QueryStorageClient::NodeClient {
 - [ ] **Step 2: Build to verify compilation**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar_queryd 2>&1 | tail -10
 ```
 
@@ -203,7 +203,7 @@ Expected: Build succeeds.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/queryd/query_storage_client.cpp
 git commit -m "feat(queryd): implement NodeClientImpl::ExecuteSubQuery with scan dispatch"
 ```
@@ -259,7 +259,7 @@ Find `ParallelExecutor::ExecuteParallel` and replace the lambda body (inside the
 - [ ] **Step 2: Build to verify compilation**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar_queryd 2>&1 | tail -10
 ```
 
@@ -268,7 +268,7 @@ Expected: Build succeeds.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/queryd/distributed_executor.cpp
 git commit -m "feat(queryd): wire real RPC into ParallelExecutor::ExecuteParallel"
 ```
@@ -321,7 +321,7 @@ Status DistributedExecutor::ExecuteSinglePartition(
 - [ ] **Step 2: Build to verify compilation**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar_queryd 2>&1 | tail -10
 ```
 
@@ -330,7 +330,7 @@ Expected: Build succeeds.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/queryd/distributed_executor.cpp
 git commit -m "feat(queryd): wire real RPC into ExecuteSinglePartition"
 ```
@@ -345,7 +345,7 @@ git commit -m "feat(queryd): wire real RPC into ExecuteSinglePartition"
 - [ ] **Step 1: Check if the test file exists and has mock infrastructure**
 
 ```bash
-ls /Users/wangyang/Desktop/CedarGraph-Core/tests/queryd/test_query_dispatcher.cc 2>/dev/null && echo "EXISTS" || echo "MISSING"
+ls <repo-root>/tests/queryd/test_query_dispatcher.cc 2>/dev/null && echo "EXISTS" || echo "MISSING"
 ```
 
 If MISSING, the test target will be created in a subsequent step. For now, assume we modify the existing file.
@@ -379,7 +379,7 @@ If the file does not exist, skip this task and mark it for follow-up. The primar
 - [ ] **Step 3: Build the test binary**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target test_query_dispatcher 2>&1 | tail -10
 ```
 
@@ -392,7 +392,7 @@ cmake --build . --target test_query_dispatcher 2>&1 | tail -10
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/queryd/test_query_dispatcher.cc
 git commit -m "test(queryd): add RPC path smoke test for ExecuteSubQuery"
 ```
@@ -407,7 +407,7 @@ git commit -m "test(queryd): add RPC path smoke test for ExecuteSubQuery"
 - [ ] **Step 1: Run the full QueryD test suite**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ctest -R "QueryDispatcher|queryd" --output-on-failure
 ```
 
@@ -422,7 +422,7 @@ Expected: `[100%] Built target cedar-queryd`
 - [ ] **Step 3: Commit any remaining changes**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git diff --stat
 # If there are uncommitted changes, commit them:
 git add -A && git commit -m "feat(queryd): complete distributed execution RPC wiring" || echo "Nothing to commit"
@@ -443,7 +443,7 @@ git add -A && git commit -m "feat(queryd): complete distributed execution RPC wi
 After all tasks:
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar_queryd
 grep -n "TODO.*RPC\|TODO.*Implement.*RPC" ../src/queryd/distributed_executor.cpp
 # Expected: no matches in the ExecuteParallel / ExecuteSinglePartition regions

@@ -4,6 +4,7 @@
 #include "cedar/storage/cedar_graph_storage.h"
 #include "cedar/dtx/storage/storaged_raft_state_machine.h"
 #include <braft/storage.h>
+#include <braft/util.h>
 
 // Test doubles for braft snapshot IO
 class TestSnapshotWriter : public braft::SnapshotWriter {
@@ -38,6 +39,19 @@ class TestSnapshotReader : public braft::SnapshotReader {
   }
  private:
   std::string path_;
+};
+
+class FailingAddFileSnapshotWriter : public TestSnapshotWriter {
+ public:
+  explicit FailingAddFileSnapshotWriter(const std::string& path)
+      : TestSnapshotWriter(path) {}
+
+  int add_file(const std::string& filename,
+               const ::google::protobuf::Message* file_meta) override {
+    (void)filename;
+    (void)file_meta;
+    return -1;
+  }
 };
 
 class StorageRaftSnapshotTest : public ::testing::Test {
@@ -150,6 +164,22 @@ TEST_F(StorageRaftSnapshotTest, OnSnapshotSaveCopiesDataFiles) {
 
   // Verify txn_state file was created
   EXPECT_TRUE(std::filesystem::exists(snapshot_dir_ + "/txn_state"));
+}
+
+TEST_F(StorageRaftSnapshotTest, OnSnapshotSaveReportsAddFileFailure) {
+  cedar::Descriptor desc = cedar::Descriptor::InlineInt(0, 321);
+  auto s = storage_->PutStaticVertex(2101, 1, desc);
+  ASSERT_TRUE(s.ok()) << s.ToString();
+  s = storage_->ForceFlush();
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  cedar::dtx::storage::StorageRaftStateMachine sm(storage_);
+  FailingAddFileSnapshotWriter writer(snapshot_dir_);
+  braft::SynchronizedClosure done;
+  sm.on_snapshot_save(&writer, &done);
+  done.wait();
+
+  EXPECT_NE(done.status().error_code(), 0);
 }
 
 TEST_F(StorageRaftSnapshotTest, OnSnapshotLoadRestoresDataFiles) {

@@ -157,7 +157,7 @@ TEST_F(MultiThreadedConcurrentTest, ConcurrentIndependentWriters) {
 - [x] **Step 3: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_multi_threaded_concurrent_e2e -j4 && ctest -R MultiThreadedConcurrentTest.ConcurrentIndependentWriters -V
+cd <repo-root>/build && cmake .. && make test_multi_threaded_concurrent_e2e -j4 && ctest -R MultiThreadedConcurrentTest.ConcurrentIndependentWriters -V
 ```
 
 Expected: All 200 writes succeed, all 200 reads verify correct values.
@@ -244,7 +244,7 @@ TEST_F(MultiThreadedConcurrentTest, WriteWriteConflictDetection) {
 - [x] **Step 2: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_multi_threaded_concurrent_e2e -j4 && ctest -R MultiThreadedConcurrentTest.WriteWriteConflictDetection -V
+cd <repo-root>/build && cmake .. && make test_multi_threaded_concurrent_e2e -j4 && ctest -R MultiThreadedConcurrentTest.WriteWriteConflictDetection -V
 ```
 
 - [x] **Step 3: Commit**
@@ -363,7 +363,7 @@ TEST_F(MultiThreadedConcurrentTest, ConcurrentReadWriteMix) {
 - [x] **Step 2: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_multi_threaded_concurrent_e2e -j4 && ctest -R MultiThreadedConcurrentTest.ConcurrentReadWriteMix -V
+cd <repo-root>/build && cmake .. && make test_multi_threaded_concurrent_e2e -j4 && ctest -R MultiThreadedConcurrentTest.ConcurrentReadWriteMix -V
 ```
 
 - [x] **Step 3: Commit**
@@ -477,7 +477,7 @@ gtest_discover_tests(test_multi_threaded_concurrent_e2e)
 - [x] **Step 3: Build and run all four tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_multi_threaded_concurrent_e2e -j4 && ctest -R MultiThreadedConcurrentTest -V
+cd <repo-root>/build && cmake .. && make test_multi_threaded_concurrent_e2e -j4 && ctest -R MultiThreadedConcurrentTest -V
 ```
 
 Expected: All 4 tests pass.

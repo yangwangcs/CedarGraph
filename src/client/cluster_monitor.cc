@@ -5,6 +5,7 @@
 #include "cedar/client/cluster_monitor.h"
 
 #include <chrono>
+#include <limits>
 #include <iostream>
 #include <sstream>
 
@@ -25,6 +26,9 @@ bool ClusterMonitor::Initialize(const std::string& prometheus_url,
 }
 
 bool ClusterMonitor::Start(int interval_seconds) {
+  if (interval_seconds <= 0) {
+    return false;
+  }
   if (running_) {
     return true;
   }
@@ -34,7 +38,9 @@ bool ClusterMonitor::Start(int interval_seconds) {
     while (running_) {
       CollectMetrics();
       CheckAlerts();
-      std::this_thread::sleep_for(std::chrono::seconds(interval_seconds));
+      std::unique_lock<std::mutex> lock(monitor_cv_mutex_);
+      monitor_cv_.wait_for(lock, std::chrono::seconds(interval_seconds),
+                           [this]() { return !running_.load(); });
     }
   });
 
@@ -43,6 +49,7 @@ bool ClusterMonitor::Start(int interval_seconds) {
 
 void ClusterMonitor::Stop() {
   running_ = false;
+  monitor_cv_.notify_all();
   if (monitor_thread_.joinable()) {
     monitor_thread_.join();
   }
@@ -112,8 +119,8 @@ std::string ClusterMonitor::GetGrafanaDashboardUrl(const std::string& dashboard_
 }
 
 bool ClusterMonitor::CreateGrafanaDashboard(const std::string& dashboard_json) {
-  // TODO: Implement Grafana dashboard creation via API
-  return true;
+  (void)dashboard_json;
+  return false;
 }
 
 std::string ClusterMonitor::ExportPrometheusMetrics() {
@@ -169,7 +176,9 @@ void ClusterMonitor::MonitorLoop() {
   while (running_) {
     CollectMetrics();
     CheckAlerts();
-    std::this_thread::sleep_for(std::chrono::seconds(30));
+    std::unique_lock<std::mutex> lock(monitor_cv_mutex_);
+    monitor_cv_.wait_for(lock, std::chrono::seconds(30),
+                         [this]() { return !running_.load(); });
   }
 }
 
@@ -207,22 +216,32 @@ void ClusterMonitor::CollectMetrics() {
 }
 
 void ClusterMonitor::CheckAlerts() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<AlertRule> rules;
+  ClusterMetrics metrics;
+  AlertCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    rules = alert_rules_;
+    metrics = current_metrics_;
+    callback = alert_callback_;
+  }
 
-  for (const auto& rule : alert_rules_) {
+  std::vector<Alert> triggered_alerts;
+
+  for (const auto& rule : rules) {
     double value = 0;
 
     // Get metric value
     if (rule.metric == "cpu_usage") {
-      value = current_metrics_.cpu_usage_avg;
+      value = metrics.cpu_usage_avg;
     } else if (rule.metric == "memory_usage") {
-      value = current_metrics_.memory_usage_avg;
+      value = metrics.memory_usage_avg;
     } else if (rule.metric == "disk_usage") {
-      value = current_metrics_.disk_usage_avg;
+      value = metrics.disk_usage_avg;
     } else if (rule.metric == "qps") {
-      value = current_metrics_.qps;
+      value = metrics.qps;
     } else if (rule.metric == "latency_p95") {
-      value = current_metrics_.latency_p95;
+      value = metrics.latency_p95;
     }
 
     // Check condition
@@ -251,10 +270,24 @@ void ClusterMonitor::CheckAlerts() {
       alert.triggered_at = std::chrono::system_clock::now().time_since_epoch().count();
       alert.resolved = false;
 
-      active_alerts_.push_back(alert);
+      triggered_alerts.push_back(alert);
+    }
+  }
 
-      if (alert_callback_) {
-        alert_callback_(alert);
+  if (!triggered_alerts.empty()) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    active_alerts_.insert(active_alerts_.end(),
+                          triggered_alerts.begin(), triggered_alerts.end());
+  }
+
+  if (callback) {
+    for (const auto& alert : triggered_alerts) {
+      try {
+        callback(alert);
+      } catch (const std::exception& e) {
+        std::cerr << "Alert callback exception: " << e.what() << std::endl;
+      } catch (...) {
+        std::cerr << "Alert callback unknown exception" << std::endl;
       }
     }
   }
@@ -272,9 +305,12 @@ std::string ClusterMonitor::HttpRequest(const std::string& url) {
 }
 
 double ClusterMonitor::ParsePrometheusResponse(const std::string& response) {
-  // TODO: Parse Prometheus JSON response
-  // For now, return 0
-  return 0.0;
+  if (response.empty()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  // TODO: Parse Prometheus JSON response once the HTTP client is wired in.
+  return std::numeric_limits<double>::quiet_NaN();
 }
 
 }  // namespace client

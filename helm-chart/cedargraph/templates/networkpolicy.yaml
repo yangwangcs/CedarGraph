@@ -11,9 +11,6 @@ spec:
       {{- include "cedargraph.selectorLabels" . | nindent 6 }}
   policyTypes:
     - Ingress
-    - Egress
   ingress:
     {{- toYaml .Values.networkPolicy.ingress | nindent 4 }}
-  egress:
-    - {}
 {{- end }}

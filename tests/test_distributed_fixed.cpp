@@ -64,7 +64,7 @@ class StorageTestClient {
     key->set_type_flags((0 << 16));  // Vertex type
     key->set_partition_id(0);
     
-    auto* desc = request.mutable_descriptor_();
+    auto* desc = request.mutable_value_descriptor();
     auto descriptor = cedar::Descriptor::InlineInt(col_id, value);
     auto encoded = descriptor.Encode();
     desc->set_data(encoded);
@@ -94,8 +94,8 @@ class StorageTestClient {
     auto status = stub_->Get(&context, request, &response);
     
     if (status.ok() && response.success() && response.found() && 
-        response.has_descriptor_()) {
-      auto decoded = cedar::Descriptor::Decode(cedar::Slice(response.descriptor_().data()));
+        response.has_value_descriptor()) {
+      auto decoded = cedar::Descriptor::Decode(cedar::Slice(response.value_descriptor().data()));
       if (decoded.has_value()) {
         auto val = decoded->AsInlineInt();
         if (val.has_value()) {
@@ -165,7 +165,7 @@ class StorageTestClient {
       
       auto descriptor = cedar::Descriptor::InlineInt(col_id, value);
       auto encoded = descriptor.Encode();
-      item->mutable_descriptor_()->set_data(encoded);
+      item->mutable_value_descriptor()->set_data(encoded);
     }
     request.mutable_txn_version()->set_value(std::get<3>(items[0]));
     request.set_txn_id(txn_id);

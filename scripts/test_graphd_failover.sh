@@ -3,15 +3,21 @@
 
 set -e
 
-BUILD_DIR="/Users/wangyang/Desktop/CedarGraph-Core/build"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${SCRIPT_DIR}/.."
+BUILD_DIR="${PROJECT_ROOT}/build"
 META_DATA_DIR="/tmp/cedar_test_meta"
 GRAPHD_DATA_DIR="/tmp/cedar_test_graphd"
 
 # Clean up previous runs
 cleanup() {
     echo "Cleaning up..."
-    pkill -f "cedar-metad" 2>/dev/null || true
-    pkill -f "cedar-graphd" 2>/dev/null || true
+    for pid_var in META_PID GRAPHD_1_PID GRAPHD_2_PID GRAPHD_3_PID; do
+        pid="${!pid_var:-}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    done
     rm -rf "$META_DATA_DIR" "$GRAPHD_DATA_DIR"
     sleep 1
 }

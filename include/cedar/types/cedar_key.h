@@ -26,6 +26,7 @@
 #ifndef CEDAR_FERN_KEY_H_
 #define CEDAR_FERN_KEY_H_
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <limits>

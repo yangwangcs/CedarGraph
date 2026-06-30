@@ -25,7 +25,7 @@ class NeighborTestClient {
     key->set_type_flags((0 << 16));
     key->set_partition_id(0);
     
-    auto* desc = request.mutable_descriptor_();
+    auto* desc = request.mutable_value_descriptor();
     cedar::Descriptor d = cedar::Descriptor::InlineInt(col_id, value);
     auto encoded = d.Encode();
     desc->set_data(encoded.data(), encoded.size());
@@ -51,9 +51,9 @@ class NeighborTestClient {
     auto status = stub_->Get(&context, request, &response);
     
     if (status.ok() && response.success() && response.found() && 
-        response.has_descriptor_() && response.descriptor_().data().size() >= 8) {
+        response.has_value_descriptor() && response.value_descriptor().data().size() >= 8) {
       auto opt_desc = cedar::Descriptor::Decode(
-          cedar::Slice(response.descriptor_().data().data(), response.descriptor_().data().size()));
+          cedar::Slice(response.value_descriptor().data().data(), response.value_descriptor().data().size()));
       if (opt_desc.has_value()) {
         return opt_desc.value().AsInlineInt();
       }

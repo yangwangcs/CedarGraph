@@ -11,6 +11,7 @@ metad:
   binary_path: build/cedar-metad
   bind_address: "127.0.0.1"
   port: 9559
+  grpc_port: 10559
   data_dir: /tmp/cedar/test/meta
   config_file: config/cedar.yaml
 storaged:
@@ -43,6 +44,9 @@ graphd:
 
 	if config.MetaD.Port != 9559 {
 		t.Errorf("MetaD port = %d, want 9559", config.MetaD.Port)
+	}
+	if config.MetaD.GrpcPort != 10559 {
+		t.Errorf("MetaD grpc_port = %d, want 10559", config.MetaD.GrpcPort)
 	}
 	if config.StorageD.Port != 9779 {
 		t.Errorf("StorageD port = %d, want 9779", config.StorageD.Port)
@@ -79,6 +83,9 @@ graphd: {}
 
 	if config.MetaD.Port != 9559 {
 		t.Errorf("MetaD default port = %d, want 9559", config.MetaD.Port)
+	}
+	if config.MetaD.GrpcPort != 10559 {
+		t.Errorf("MetaD default grpc_port = %d, want 10559", config.MetaD.GrpcPort)
 	}
 	if config.StorageD.Port != 9779 {
 		t.Errorf("StorageD default port = %d, want 9779", config.StorageD.Port)

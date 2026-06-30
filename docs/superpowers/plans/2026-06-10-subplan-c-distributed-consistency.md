@@ -93,7 +93,7 @@ TEST(CrossDCReplicationTest, SyncModeAllOrNothing) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target test_cross_dc_replication -j$(sysctl -n hw.ncpu) && ./tests/cluster/test_cross_dc_replication --gtest_filter=CrossDCReplicationTest.SyncModeAllOrNothing
+cd <repo-root>/build && cmake --build . --target test_cross_dc_replication -j$(sysctl -n hw.ncpu) && ./tests/cluster/test_cross_dc_replication --gtest_filter=CrossDCReplicationTest.SyncModeAllOrNothing
 ```
 Expected: **Test may compile-fail** because `ReplicateToDC` is private; if it compiles, it passes (the current code already returns failure when endpoints are missing). We are just establishing the harness.
 
@@ -153,7 +153,7 @@ Modify `src/dtx/cross_dc_replicator.cc` lines 167-193:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -184,7 +184,7 @@ TEST(CrossDCReplicationTest, SyncPartialFailureDoesNotReturnOk) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target test_cross_dc_replication -j$(sysctl -n hw.ncpu) && ./tests/cluster/test_cross_dc_replication --gtest_filter=CrossDCReplicationTest.SyncPartialFailureDoesNotReturnOk
+cd <repo-root>/build && cmake --build . --target test_cross_dc_replication -j$(sysctl -n hw.ncpu) && ./tests/cluster/test_cross_dc_replication --gtest_filter=CrossDCReplicationTest.SyncPartialFailureDoesNotReturnOk
 ```
 Expected: Test passes.
 
@@ -193,7 +193,7 @@ Expected: Test passes.
 ### Step C.1.4: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/cross_dc_replicator.cc tests/cluster/test_cross_dc_replication.cc
 git commit -m "fix(distributed): P0-7 cross-DC sync replication all-or-nothing rollback
 
@@ -267,7 +267,7 @@ In `CrossDCReplicator` private section, add:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build may fail with undefined `sequence_generation_` usage — expected; will fix in next step.
 
@@ -447,7 +447,7 @@ In `include/cedar/dtx/cross_dc_replicator.h`, modify `ReconcileEntry`:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -496,7 +496,7 @@ Modify `src/dtx/cross_dc_replicator.cc` lines 220-233:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -554,7 +554,7 @@ TEST(CrossDCReplicationTest, ReconciliationQueueBoundEnforced) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target test_cross_dc_replication -j$(sysctl -n hw.ncpu) && ./tests/cluster/test_cross_dc_replication
+cd <repo-root>/build && cmake --build . --target test_cross_dc_replication -j$(sysctl -n hw.ncpu) && ./tests/cluster/test_cross_dc_replication
 ```
 Expected: All tests pass (existing + new).
 
@@ -563,7 +563,7 @@ Expected: All tests pass (existing + new).
 ### Step C.2.5: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/dtx/cross_dc_replicator.h src/dtx/cross_dc_replicator.cc tests/cluster/test_cross_dc_replication.cc
 git commit -m "fix(distributed): P0-8 bounded reconciliation queue + TTL + seqno wraparound
 
@@ -620,7 +620,7 @@ Add private member:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build may fail with undefined `SetQuorumVerificationCallback` — expected.
 
@@ -733,7 +733,7 @@ Status PartitionFailoverController::PerformLeaderSwitch(PartitionID pid,
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -810,7 +810,7 @@ TEST(FailoverConsensusTest, QuorumVerificationSuccessAllowsSwitch) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target failover_consensus_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/failover_consensus_test
+cd <repo-root>/build && cmake --build . --target failover_consensus_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/failover_consensus_test
 ```
 Expected: All tests pass.
 
@@ -819,7 +819,7 @@ Expected: All tests pass.
 ### Step C.3.4: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/dtx/failover_manager.h src/dtx/storage/failover_manager.cc tests/dtx/failover_consensus_test.cc
 git commit -m "fix(distributed): P0-9 failover leader-transfer fencing with quorum verification
 
@@ -871,7 +871,7 @@ Add private members to `ClusterFailoverManager`:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build may fail with undefined members — expected.
 
@@ -995,7 +995,7 @@ And in `DetermineRecoveryAction`, set:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -1048,7 +1048,7 @@ TEST(FailoverConsensusTest, MaxConcurrentRecoveriesEnforced) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target failover_consensus_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/failover_consensus_test --gtest_filter=FailoverConsensusTest.MaxConcurrentRecoveriesEnforced
+cd <repo-root>/build && cmake --build . --target failover_consensus_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/failover_consensus_test --gtest_filter=FailoverConsensusTest.MaxConcurrentRecoveriesEnforced
 ```
 Expected: Test compiles and passes.
 
@@ -1057,7 +1057,7 @@ Expected: Test compiles and passes.
 ### Step C.4.4: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/dtx/failover_manager.h src/dtx/storage/failover_manager.cc tests/dtx/failover_consensus_test.cc
 git commit -m "fix(distributed): unbounded failures map + unused max_concurrent_recoveries
 
@@ -1078,7 +1078,7 @@ git commit -m "fix(distributed): unbounded failures map + unused max_concurrent_
 ### Step C.5.1: Clean rebuild
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . -j$(sysctl -n hw.ncpu)
 ```
 Expected: Zero project-code warnings.
@@ -1088,7 +1088,7 @@ Expected: Zero project-code warnings.
 ### Step C.5.2: Run all DTX and cluster tests
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ctest --output-on-failure -R "(cross_dc|failover|dtx)"
 ```
 Expected: All targeted tests pass.
@@ -1098,7 +1098,7 @@ Expected: All targeted tests pass.
 ### Step C.5.3: Run full test suite
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ctest --output-on-failure
 ```
 Expected: All tests pass (or only pre-existing failures).
@@ -1108,7 +1108,7 @@ Expected: All tests pass (or only pre-existing failures).
 ### Step C.5.4: Tag sub-plan completion
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git tag subplan-c-complete
 git log --oneline -8
 ```
@@ -1139,7 +1139,7 @@ git log --oneline -8
 
 ## Execution Handoff
 
-**Plan complete and saved to `/Users/wangyang/Desktop/CedarGraph-Core/docs/superpowers/plans/2026-06-10-subplan-c-distributed-consistency.md`.**
+**Plan complete and saved to `<repo-root>/docs/superpowers/plans/2026-06-10-subplan-c-distributed-consistency.md`.**
 
 **Two execution options:**
 

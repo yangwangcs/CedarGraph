@@ -6,6 +6,8 @@
 #ifndef CEDAR_CLIENT_SERVICE_DISCOVERY_H_
 #define CEDAR_CLIENT_SERVICE_DISCOVERY_H_
 
+#include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -34,6 +36,11 @@ struct ServiceDiscoveryConfig {
   int metad_port;
   int refresh_interval_ms = 10000;
   int heartbeat_timeout_ms = 30000;
+  bool enable_tls = false;
+  bool mtls_enabled = false;
+  std::string ca_cert_path;
+  std::string client_cert_path;
+  std::string client_key_path;
 };
 
 // Service discovery class
@@ -44,6 +51,9 @@ class ServiceDiscovery {
 
   // Initialize service discovery
   bool Initialize();
+
+  // Stop background refresh, if running.
+  void Stop();
 
   // Get available GraphD nodes
   std::vector<ServiceNode> GetGraphDNodes();
@@ -75,6 +85,8 @@ class ServiceDiscovery {
   // Background refresh thread
   std::thread refresh_thread_;
   std::atomic<bool> running_{false};
+  std::condition_variable refresh_cv_;
+  std::mutex refresh_cv_mutex_;
   
   // Node health tracking
   std::unordered_map<std::string, int64_t> last_heartbeats_;

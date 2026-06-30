@@ -205,7 +205,7 @@
   **Run the test (expect failure / UNIMPLEMENTED but no crash):**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     cmake .. -DCMAKE_BUILD_TYPE=Debug && \
     make -j$(sysctl -n hw.ncpu) test_participant_registry_cleanup && \
     ctest -R test_participant_registry_cleanup --output-on-failure
@@ -313,7 +313,7 @@
   **Re-run the test:**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     make -j$(sysctl -n hw.ncpu) test_participant_registry_cleanup && \
     ctest -R test_participant_registry_cleanup --output-on-failure
   ```
@@ -328,7 +328,7 @@
 - [ ] **Step 4: Commit**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core && \
+  cd <repo-root> && \
     git add include/cedar/dtx/dtx_service_impl.h src/dtx/dtx_service_impl.cc \
             tests/dtx/test_participant_registry_cleanup.cc tests/CMakeLists.txt && \
     git commit -m "P1-1: cleanup participant registry on Commit/Abort
@@ -466,7 +466,7 @@
   **Run the test:**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     cmake .. -DCMAKE_BUILD_TYPE=Debug && \
     make -j$(sysctl -n hw.ncpu) test_dtx_rpc_client_promise_safety && \
     ctest -R test_dtx_rpc_client_promise_safety --output-on-failure
@@ -557,7 +557,7 @@
   **Re-run the test:**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     make -j$(sysctl -n hw.ncpu) test_dtx_rpc_client_promise_safety && \
     ctest -R test_dtx_rpc_client_promise_safety --output-on-failure
   ```
@@ -572,7 +572,7 @@
 - [ ] **Step 3: Commit**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core && \
+  cd <repo-root> && \
     git add src/dtx/dtx_rpc_client.cc \
             tests/dtx/test_dtx_rpc_client_promise_safety.cc tests/CMakeLists.txt && \
     git commit -m "P1-2: make DTX RPC client promise handling OOM-safe
@@ -691,7 +691,7 @@
   **Run the test:**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     cmake .. -DCMAKE_BUILD_TYPE=Debug && \
     make -j$(sysctl -n hw.ncpu) test_health_checker_thread_pool && \
     ctest -R test_health_checker_thread_pool --output-on-failure
@@ -784,7 +784,7 @@
   **Re-run the test:**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     make -j$(sysctl -n hw.ncpu) test_health_checker_thread_pool && \
     ctest -R test_health_checker_thread_pool --output-on-failure
   ```
@@ -799,7 +799,7 @@
 - [ ] **Step 4: Commit**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core && \
+  cd <repo-root> && \
     git add src/governance/health_checker.cc \
             tests/governance/test_health_checker_thread_pool.cc tests/CMakeLists.txt && \
     git commit -m "P1-3: replace HealthChecker std::async with bounded ThreadPool
@@ -914,7 +914,7 @@
   **Run the test:**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     cmake .. -DCMAKE_BUILD_TYPE=Debug && \
     make -j$(sysctl -n hw.ncpu) test_service_registry_exception_safety && \
     ctest -R test_service_registry_exception_safety --output-on-failure
@@ -963,7 +963,7 @@
   **Re-run the test:**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     make -j$(sysctl -n hw.ncpu) test_service_registry_exception_safety && \
     ctest -R test_service_registry_exception_safety --output-on-failure
   ```
@@ -978,7 +978,7 @@
 - [ ] **Step 3: Commit**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core && \
+  cd <repo-root> && \
     git add src/governance/service_registry.cc \
             tests/governance/test_service_registry_exception_safety.cc tests/CMakeLists.txt && \
     git commit -m "P1-4: make ServiceRegistry watcher callbacks exception-safe
@@ -1087,7 +1087,7 @@
   **Run the test:**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     cmake .. -DCMAKE_BUILD_TYPE=Debug && \
     make -j$(sysctl -n hw.ncpu) test_service_discovery_dns_safety && \
     ctest -R test_service_discovery_dns_safety --output-on-failure
@@ -1124,7 +1124,7 @@
   **Re-run the test:**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     make -j$(sysctl -n hw.ncpu) test_service_discovery_dns_safety && \
     ctest -R test_service_discovery_dns_safety --output-on-failure
   ```
@@ -1139,7 +1139,7 @@
 - [ ] **Step 3: Commit**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core && \
+  cd <repo-root> && \
     git add src/dtx/service_discovery.cc \
             tests/dtx/test_service_discovery_dns_safety.cc tests/CMakeLists.txt && \
     git commit -m "P1-5: fix use-after-free in ServiceDiscovery DNS resolution
@@ -1167,7 +1167,7 @@
 - [ ] **Step 1: Create an audit script and run all disabled tests**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     cmake .. -DCMAKE_BUILD_TYPE=Debug && \
     make -j$(sysctl -n hw.ncpu) \
       test_cedar_update_validation \
@@ -1180,7 +1180,7 @@
   Run each test binary with the `--gtest_also_run_disabled_tests` flag:
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build
+  cd <repo-root>/build
   for bin in \
     tests/test_cedar_update_validation \
     tests/test_cedar_update_persistence \
@@ -1278,7 +1278,7 @@
 - [ ] **Step 3: Re-run the full disabled-test suite**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+  cd <repo-root>/build && \
     make -j$(sysctl -n hw.ncpu) \
       test_cedar_update_validation \
       test_cedar_update_persistence \
@@ -1304,7 +1304,7 @@
 - [ ] **Step 4: Commit**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core && \
+  cd <repo-root> && \
     git add tests/test_cedar_update_validation.cc \
             tests/test_cedar_update_persistence.cc \
             tests/test_cedar_update_e2e.cc \
@@ -1333,7 +1333,7 @@
 After all six tasks are committed, run the full affected test suite:
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake .. -DCMAKE_BUILD_TYPE=Debug && \
   make -j$(sysctl -n hw.ncpu) \
     test_participant_registry_cleanup \

@@ -69,7 +69,10 @@ StatusOr<std::shared_ptr<ServerCredentials>> TlsCredentialFactory::CreateServerC
   SslServerCredentialsOptions ssl_opts;
   ssl_opts.pem_key_cert_pairs.push_back(key_cert_pair);
 
-  if (config.mtls_enabled && !config.ca_cert_file.empty()) {
+  if (config.mtls_enabled) {
+    if (config.ca_cert_file.empty()) {
+      return Status::IOError("CA certificate is required for mTLS");
+    }
     // mTLS: verify client certificates
     std::string ca_cert = LoadFile(config.ca_cert_file);
     if (ca_cert.empty()) {
@@ -94,6 +97,12 @@ StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClient
   SslCredentialsOptions ssl_opts;
 
   if (config.mtls_enabled) {
+    if (config.ca_cert_file.empty()) {
+      return Status::IOError("CA certificate is required for mTLS");
+    }
+    if (config.client_cert_file.empty() || config.client_key_file.empty()) {
+      return Status::IOError("Client certificate and key are required for mTLS");
+    }
     // mTLS: load client certificate
     std::string client_cert = LoadFile(config.client_cert_file);
     std::string client_key = LoadFile(config.client_key_file);
@@ -111,13 +120,14 @@ StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClient
     ssl_opts.pem_root_certs = ca_cert;
   } else {
     // TLS only: just need CA cert to verify server
-    if (!config.ca_cert_file.empty()) {
-      std::string ca_cert = LoadFile(config.ca_cert_file);
-      if (ca_cert.empty()) {
-        return Status::IOError("Failed to load CA certificate for TLS: " + config.ca_cert_file);
-      }
-      ssl_opts.pem_root_certs = ca_cert;
+    if (config.ca_cert_file.empty()) {
+      return Status::IOError("CA certificate is required for TLS");
     }
+    std::string ca_cert = LoadFile(config.ca_cert_file);
+    if (ca_cert.empty()) {
+      return Status::IOError("Failed to load CA certificate for TLS: " + config.ca_cert_file);
+    }
+    ssl_opts.pem_root_certs = ca_cert;
   }
 
   return grpc::SslCredentials(ssl_opts);
@@ -197,6 +207,44 @@ StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClient
   // Allow insecure connections for local development
   std::cerr << "[TLS] WARNING: CEDAR_GRPC_TLS_ENABLED not set. Using insecure credentials for development." << std::endl;
   return grpc::InsecureChannelCredentials();
+}
+
+StatusOr<std::shared_ptr<ServerCredentials>> TlsCredentialFactory::CreateServerCredentialsFromEnvStrict() {
+  if (EnvTlsEnabled()) {
+    return CreateServerCredentialsFromEnv();
+  }
+  if (EnvAllowsInsecure()) {
+    std::cerr << "[TLS] WARNING: CEDAR_GRPC_ALLOW_INSECURE=1. "
+              << "Using insecure server credentials for explicit development mode." << std::endl;
+    return grpc::InsecureServerCredentials();
+  }
+  return Status::IOError(
+      "TLS is not enabled; set CEDAR_GRPC_TLS_ENABLED=1 with certificates or "
+      "CEDAR_GRPC_ALLOW_INSECURE=1 for explicit development mode");
+}
+
+StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClientCredentialsFromEnvStrict() {
+  if (EnvTlsEnabled()) {
+    return CreateClientCredentialsFromEnv();
+  }
+  if (EnvAllowsInsecure()) {
+    std::cerr << "[TLS] WARNING: CEDAR_GRPC_ALLOW_INSECURE=1. "
+              << "Using insecure client credentials for explicit development mode." << std::endl;
+    return grpc::InsecureChannelCredentials();
+  }
+  return Status::IOError(
+      "TLS is not enabled; set CEDAR_GRPC_TLS_ENABLED=1 with CA certificate or "
+      "CEDAR_GRPC_ALLOW_INSECURE=1 for explicit development mode");
+}
+
+bool TlsCredentialFactory::EnvTlsEnabled() {
+  const char* enabled = std::getenv("CEDAR_GRPC_TLS_ENABLED");
+  return enabled && std::string(enabled) == "1";
+}
+
+bool TlsCredentialFactory::EnvAllowsInsecure() {
+  const char* allow = std::getenv("CEDAR_GRPC_ALLOW_INSECURE");
+  return allow && std::string(allow) == "1";
 }
 
 }  // namespace raft

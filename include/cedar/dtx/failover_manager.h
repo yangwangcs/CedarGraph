@@ -28,6 +28,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -430,6 +431,7 @@ class ClusterFailoverManager {
   Status RestartViaKubernetes(const FailureEvent& event);
   Status RestartViaSystemd(const FailureEvent& event);
   Status RestartViaSignal(const FailureEvent& event);
+  bool WaitForShutdown(std::chrono::milliseconds timeout);
   
   // 运行环境（延迟检测）
   ContainerRuntime DetectedRuntime() const;

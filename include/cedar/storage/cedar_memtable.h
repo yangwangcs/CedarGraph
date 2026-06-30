@@ -274,7 +274,7 @@ class CedarMemTable::Iterator {
   CedarKey Key() const;
 
   // 获取当前 Descriptor
-  Descriptor Descriptor() const;
+  cedar::Descriptor Descriptor() const;
 
   // 获取当前 Entry (包含 timestamp)
   std::optional<MemTableEntry> Entry() const;

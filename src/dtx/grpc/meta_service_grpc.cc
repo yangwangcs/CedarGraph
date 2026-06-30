@@ -72,6 +72,7 @@ MetaServiceGrpcImpl::MetaServiceGrpcImpl(MetadataService* meta_service)
 MetaServiceGrpcImpl::~MetaServiceGrpcImpl() {
     // Stop the GraphD cleanup thread
     graphd_cleanup_running_ = false;
+    graphd_cleanup_cv_.notify_all();
     if (graphd_cleanup_thread_ && graphd_cleanup_thread_->joinable()) {
         graphd_cleanup_thread_->join();
     }
@@ -79,9 +80,12 @@ MetaServiceGrpcImpl::~MetaServiceGrpcImpl() {
 
 void MetaServiceGrpcImpl::GraphDCleanupLoop() {
     while (graphd_cleanup_running_) {
-        std::this_thread::sleep_for(std::chrono::seconds(10));  // Check every 10 seconds
-        
-        if (!graphd_cleanup_running_) break;
+        {
+            std::unique_lock<std::mutex> lock(graphd_cleanup_cv_mutex_);
+            graphd_cleanup_cv_.wait_for(lock, std::chrono::seconds(10),
+                                        [this]() { return !graphd_cleanup_running_.load(); });
+            if (!graphd_cleanup_running_) break;
+        }
         
         std::lock_guard<std::mutex> lock(graphd_nodes_mutex_);
         auto now = std::chrono::steady_clock::now();
@@ -789,7 +793,7 @@ grpc::Status MetaServiceGrpcImpl::UnregisterGraphD(
 Status MetaServiceGrpcServer::Start(const std::string& listen_address, MetadataService* meta_service) {
     service_impl_ = std::make_unique<MetaServiceGrpcImpl>(meta_service);
     grpc::ServerBuilder builder;
-    auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv();
+    auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnvStrict();
     if (!server_creds.ok()) {
         return Status::IOError("Failed to create server TLS credentials: " + server_creds.status().ToString());
     }
@@ -846,7 +850,17 @@ grpc::Status MetaServiceGrpcClient::RetryRpcOnNotLeader(
 MetaServiceGrpcClient::MetaServiceGrpcClient() = default;
 
 MetaServiceGrpcClient::~MetaServiceGrpcClient() {
-    health_monitor_running_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(health_monitor_cv_mutex_);
+        health_monitor_running_.store(false);
+    }
+    {
+        std::lock_guard<std::mutex> lock(health_context_mutex_);
+        if (active_health_context_) {
+            active_health_context_->TryCancel();
+        }
+    }
+    health_monitor_cv_.notify_all();
     if (health_monitor_thread_.joinable()) {
         health_monitor_thread_.join();
     }
@@ -855,6 +869,13 @@ MetaServiceGrpcClient::~MetaServiceGrpcClient() {
 Status MetaServiceGrpcClient::Connect(const std::vector<std::string>& meta_addresses) {
     // Stop existing monitor if any
     if (health_monitor_running_.exchange(false)) {
+        {
+            std::lock_guard<std::mutex> lock(health_context_mutex_);
+            if (active_health_context_) {
+                active_health_context_->TryCancel();
+            }
+        }
+        health_monitor_cv_.notify_all();
         if (health_monitor_thread_.joinable()) {
             health_monitor_thread_.join();
         }
@@ -870,7 +891,7 @@ Status MetaServiceGrpcClient::Connect(const std::vector<std::string>& meta_addre
     // Try each address until one responds to GetAliveNodes
     for (size_t i = 0; i < meta_addresses_.size(); ++i) {
         current_index_ = i;
-        auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+        auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
         if (!client_creds.ok()) {
             return Status::IOError("Failed to create client TLS credentials: " + client_creds.status().ToString());
         }
@@ -1219,7 +1240,7 @@ Status MetaServiceGrpcClient::TryReconnect() {
 
     for (size_t i = 0; i < addresses.size(); ++i) {
         size_t idx = (start_index + i + 1) % addresses.size();
-        auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+        auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
         if (!client_creds.ok()) {
             continue;
         }
@@ -1244,8 +1265,12 @@ Status MetaServiceGrpcClient::TryReconnect() {
 
 void MetaServiceGrpcClient::HealthMonitorLoop() {
     while (health_monitor_running_.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-        if (!health_monitor_running_.load()) break;
+        {
+            std::unique_lock<std::mutex> lock(health_monitor_cv_mutex_);
+            health_monitor_cv_.wait_for(lock, std::chrono::seconds(5),
+                                        [this]() { return !health_monitor_running_.load(); });
+            if (!health_monitor_running_.load()) break;
+        }
 
         auto stub = GetStub();
         if (!stub) continue;
@@ -1253,8 +1278,19 @@ void MetaServiceGrpcClient::HealthMonitorLoop() {
         cedar::meta::GetAliveNodesRequest req;
         cedar::meta::GetAliveNodesResponse resp;
         grpc::ClientContext ctx;
+        {
+            std::lock_guard<std::mutex> lock(health_context_mutex_);
+            active_health_context_ = &ctx;
+        }
         ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
         auto status = stub->GetAliveNodes(&ctx, req, &resp);
+        {
+            std::lock_guard<std::mutex> lock(health_context_mutex_);
+            if (active_health_context_ == &ctx) {
+                active_health_context_ = nullptr;
+            }
+        }
+        if (!health_monitor_running_.load()) break;
 
         if (!status.ok() || !resp.success()) {
             std::cerr << "[MetaServiceGrpcClient] Health check failed, triggering reconnect"

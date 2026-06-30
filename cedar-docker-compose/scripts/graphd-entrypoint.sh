@@ -1,15 +1,16 @@
 #!/bin/bash
 # GraphD 容器入口脚本
-# 负责自动初始化集群
+# 负责启动前依赖检查和 GraphD 进程启动
 
 set -e
 
 # 配置
 NODE_ROLE=${NODE_ROLE:-graphd}
-META_SERVERS=${META_SERVERS:-"metad0:9559,metad1:9559,metad2:9559"}
+META_SERVERS=${META_SERVERS:-"metad0:10559,metad1:10559,metad2:10559"}
 AUTO_DISCOVERY=${AUTO_DISCOVERY:-true}
 QUERY_PORT=${QUERY_PORT:-9669}
-HTTP_PORT=${HTTP_PORT:-19669}
+HEALTH_PORT=${HEALTH_PORT:-9668}
+METRICS_PORT=${METRICS_PORT:-9667}
 
 # 日志函数
 log() {
@@ -21,7 +22,8 @@ log "  Role: $NODE_ROLE"
 log "  Meta Servers: $META_SERVERS"
 log "  Auto Discovery: $AUTO_DISCOVERY"
 log "  Query Port: $QUERY_PORT"
-log "  HTTP Port: $HTTP_PORT"
+log "  Health Port: $HEALTH_PORT"
+log "  Metrics Port: $METRICS_PORT"
 
 # 等待 MetaD 就绪
 wait_for_metad() {
@@ -56,7 +58,7 @@ wait_for_metad() {
     return 1
 }
 
-# 自动发现存储节点
+# 自动发现并检查存储节点
 auto_discover_storaged() {
     if [[ "$AUTO_DISCOVERY" != "true" ]]; then
         log "Auto-discovery disabled, skipping..."
@@ -102,8 +104,9 @@ auto_discover_storaged() {
     
     log "Discovered ${#discovered_nodes[@]} storage nodes"
     
-    # 注册节点到集群
-    log "Registering storage nodes to cluster..."
+    # 核验节点连通性。真实 StorageD 注册由 StorageD 进程通过 MetaD RPC 完成。
+    # 这里的结果只用于启动日志提示，不能作为 MetaD 已注册或分片可用的证明。
+    log "Checking storage node reachability (informational only; not a registration proof)..."
     
     for node in "${discovered_nodes[@]}"; do
         local host=$(echo "$node" | cut -d: -f1)
@@ -114,11 +117,9 @@ auto_discover_storaged() {
         local max_retry=5
         
         while [[ $retry -lt $max_retry ]]; do
-            # 这里调用实际的注册 API
-            # 简化版：模拟成功
             if timeout 5 bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null; then
                 exec 3<&- 3>&-
-                log "  ✓ Registered: $node"
+                log "  ✓ Reachable: $node"
                 break
             fi
             
@@ -127,11 +128,11 @@ auto_discover_storaged() {
         done
         
         if [[ $retry -eq $max_retry ]]; then
-            log "  ✗ Failed to register: $node"
+            log "  ✗ Unreachable: $node"
         fi
     done
     
-    log "Auto-discovery completed"
+    log "Auto-discovery reachability check completed; verify MetaD registration before production traffic"
 }
 
 # 主函数
@@ -149,12 +150,12 @@ main() {
     log "Starting GraphD server..."
     
     # 实际应该启动 cedar-graphd 二进制
-    # 简化版：使用占位符
     if command -v cedar-graphd &> /dev/null; then
         exec cedar-graphd \
-            --meta_servers="$META_SERVERS" \
-            --query_port="$QUERY_PORT" \
-            --http_port="$HTTP_PORT" \
+            --meta "$META_SERVERS" \
+            --port "$QUERY_PORT" \
+            --health_port "$HEALTH_PORT" \
+            --metrics_port "$METRICS_PORT" \
             "$@"
     else
         log "ERROR: GraphD binary not found at $GRAPHD_BIN"

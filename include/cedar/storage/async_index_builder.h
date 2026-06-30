@@ -215,10 +215,13 @@ class AsyncIndexBuilder {
   std::priority_queue<IndexBuildTask> task_queue_;
   mutable std::mutex queue_mutex_;
   std::condition_variable queue_cv_;
+  std::mutex completion_mutex_;
+  std::condition_variable completion_cv_;
   
   // 工作线程
   std::vector<std::unique_ptr<std::thread>> workers_;
   std::atomic<bool> stop_flag_{false};
+  std::atomic<uint64_t> outstanding_tasks_{0};
   
   // 正在构建的集合 (防止重复提交)
   std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> building_set_;

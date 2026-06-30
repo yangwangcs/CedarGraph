@@ -110,3 +110,16 @@ TEST(ThreadPoolTest, ConcurrentTaskExecution) {
   EXPECT_EQ(sum.load(), kTasks)
       << "All scheduled tasks should execute exactly once";
 }
+
+TEST(ThreadPoolTest, ZeroThreadsStillExecutesScheduledTasks) {
+  ThreadPool pool(0);
+  std::atomic<int> counter{0};
+
+  pool.Schedule([&counter]() { counter.fetch_add(1); });
+
+  auto waiter = std::async(std::launch::async, [&pool]() { pool.WaitForAll(); });
+  ASSERT_EQ(waiter.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+  waiter.get();
+
+  EXPECT_EQ(counter.load(), 1);
+}

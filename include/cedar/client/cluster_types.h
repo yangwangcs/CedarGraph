@@ -52,13 +52,13 @@ enum class DeploymentMode {
 // Node information
 struct NodeInfo {
   std::string node_id;
-  NodeRole role;
-  NodeStatus status;
+  NodeRole role = NodeRole::METAD;
+  NodeStatus status = NodeStatus::UNKNOWN;
   std::string host;
-  int port;
+  int port = 0;
   std::string container_id;  // Docker container ID
   std::string pod_name;      // K8s pod name
-  int64_t start_time;
+  int64_t start_time = 0;
   std::unordered_map<std::string, std::string> labels;
 };
 
@@ -71,22 +71,22 @@ struct ClusterConfig {
   int storaged_replicas = 3;
   int graphd_replicas = 2;
   int queryd_replicas = 1;
-  std::string image_name = "cedargraph/cedar:latest";
+  std::string image_name = "cedargraph/cedar:k8s-fix-20260630";
   std::string data_dir = "./data";
   std::string log_dir = "./logs";
 };
 
 // Cluster status information
 struct ClusterStatusInfo {
-  ClusterStatus status;
-  int metad_nodes;
-  int storaged_nodes;
-  int graphd_nodes;
-  int queryd_nodes;
-  int metad_healthy;
-  int storaged_healthy;
-  int graphd_healthy;
-  int queryd_healthy;
+  ClusterStatus status = ClusterStatus::UNKNOWN;
+  int metad_nodes = 0;
+  int storaged_nodes = 0;
+  int graphd_nodes = 0;
+  int queryd_nodes = 0;
+  int metad_healthy = 0;
+  int storaged_healthy = 0;
+  int graphd_healthy = 0;
+  int queryd_healthy = 0;
   std::vector<NodeInfo> nodes;
   std::string error_message;
 };
@@ -98,7 +98,7 @@ struct ContainerStatus {
   std::string image;
   std::string status;
   std::string ports;
-  int64_t created;
+  int64_t created = 0;
 };
 
 // Resource status (K8s)
@@ -107,9 +107,9 @@ struct ResourceStatus {
   std::string kind;
   std::string namespace_name;
   std::string status;
-  int ready_replicas;
-  int desired_replicas;
-  int64_t age;
+  int ready_replicas = 0;
+  int desired_replicas = 0;
+  int64_t age = 0;
 };
 
 // Scale request

@@ -57,7 +57,7 @@ Add the private helper declaration to `include/cedar/db/graph_db_impl.h` after t
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_db -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_db -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds (declaration only, no definition yet — linker will fail if we build tests, but library compiles).
 
@@ -330,7 +330,7 @@ Status CedarGraphDBImpl::DoCompactionRange(int level,
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_db -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_db -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds with zero project-code warnings.
 
@@ -398,7 +398,7 @@ TEST_F(CompactionTest, CompactRangeOnEmptyRangeIsNoOp) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_db_test -j$(sysctl -n hw.ncpu) && ./tests/db/test_compaction
+cd <repo-root>/build && cmake --build . --target cedar_db_test -j$(sysctl -n hw.ncpu) && ./tests/db/test_compaction
 ```
 Expected:
 ```
@@ -420,7 +420,7 @@ Expected:
 
 Commit:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add -A && git commit -m "feat(storage): implement CompactRange with DoCompactionRange helper
+cd <repo-root> && git add -A && git commit -m "feat(storage): implement CompactRange with DoCompactionRange helper
 
 - Replace CompactRange NotSupported stub with range-filtered compaction
 - Add DoCompactionRange that selects SSTs overlapping [start,end] and
@@ -456,7 +456,7 @@ Change the declaration in `include/cedar/db/manifest.h` to accept a `VersionSet*
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_db -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_db -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds at library level (callers not yet updated).
 
@@ -624,7 +624,7 @@ Status ManifestManager::CompactManifest(VersionSet* version_set) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_db -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_db -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -757,7 +757,7 @@ TEST(ManifestTest, CompactManifestRewritesManifestAtomically) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_db_test -j$(sysctl -n hw.ncpu) && ./tests/db/test_manifest_compact
+cd <repo-root>/build && cmake --build . --target cedar_db_test -j$(sysctl -n hw.ncpu) && ./tests/db/test_manifest_compact
 ```
 Expected:
 ```
@@ -775,7 +775,7 @@ Expected:
 
 Commit:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add -A && git commit -m "feat(storage): implement CompactManifest with atomic manifest rewrite
+cd <repo-root> && git add -A && git commit -m "feat(storage): implement CompactManifest with atomic manifest rewrite
 
 - Change CompactManifest signature to accept VersionSet* snapshot
 - Serialize current VersionSet state (all level files + metadata) into
@@ -1034,7 +1034,7 @@ Status CedarConfig::SaveToFile(const std::string& path) const {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_storage -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_storage -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -1103,7 +1103,7 @@ TEST(CedarConfigTest, SaveToFileIsAtomic) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_storage_test -j$(sysctl -n hw.ncpu) && ./tests/storage/test_cedar_config
+cd <repo-root>/build && cmake --build . --target cedar_storage_test -j$(sysctl -n hw.ncpu) && ./tests/storage/test_cedar_config
 ```
 Expected:
 ```
@@ -1124,7 +1124,7 @@ Expected:
 
 Commit:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add -A && git commit -m "feat(config): implement CedarConfig::SaveToFile with atomic JSON write
+cd <repo-root> && git add -A && git commit -m "feat(config): implement CedarConfig::SaveToFile with atomic JSON write
 
 - Replace SaveToFile NotSupported stub with hand-rolled JSON serializer
 - Covers all CedarConfig fields (db, lsm, wal, memtable, mvcc,
@@ -1342,7 +1342,7 @@ Status CedarGraphDB::RepairDB(const std::string& db_path,
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_db -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_db -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -1494,7 +1494,7 @@ Add the new test to CMake. Find the relevant `CMakeLists.txt` that lists `tests/
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_db_test -j$(sysctl -n hw.ncpu) && ./tests/db/test_repair_db
+cd <repo-root>/build && cmake --build . --target cedar_db_test -j$(sysctl -n hw.ncpu) && ./tests/db/test_repair_db
 ```
 Expected:
 ```
@@ -1514,7 +1514,7 @@ Expected:
 
 Commit:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add -A && git commit -m "feat(storage): implement RepairDB with SST validation and WAL replay
+cd <repo-root> && git add -A && git commit -m "feat(storage): implement RepairDB with SST validation and WAL replay
 
 - Replace RepairDB stub with full three-phase repair pipeline:
   1) Scan and validate all .sst files using ZoneColumnarSstReader
@@ -1532,13 +1532,13 @@ cd /Users/wangyang/Desktop/CedarGraph-Core && git add -A && git commit -m "feat(
 Run the complete storage test suite to verify no regressions:
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_db_test cedar_storage_test -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_db_test cedar_storage_test -j$(sysctl -n hw.ncpu)
 ```
 
 Then execute all affected tests:
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ./tests/db/test_compaction
 ./tests/db/test_manifest_compact
 ./tests/db/test_repair_db

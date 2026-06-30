@@ -9,7 +9,6 @@ spec:
       app.kubernetes.io/part-of: cedargraph
   policyTypes:
     - Ingress
-    - Egress
   ingress:
     - from:
         - namespaceSelector:
@@ -17,36 +16,20 @@ spec:
               name: cedargraph
       ports:
         - protocol: TCP
-          port: 6000   # metad
+          port: 7000   # StorageD health
         - protocol: TCP
-          port: 7000   # internal
+          port: 7001   # StorageD metrics
         - protocol: TCP
-          port: 9090   # metrics
+          port: 9559   # MetaD Raft
         - protocol: TCP
-          port: 9559   # metad alt
+          port: 10559  # MetaD gRPC
         - protocol: TCP
-          port: 9669   # graphd
+          port: 9667   # GraphD metrics
         - protocol: TCP
-          port: 9779   # storaged
+          port: 9668   # GraphD health
         - protocol: TCP
-          port: 9889   # queryd
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              name: cedargraph
-      ports:
+          port: 9669   # GraphD query
         - protocol: TCP
-          port: 6000
+          port: 9780   # GCN
         - protocol: TCP
-          port: 7000
-        - protocol: TCP
-          port: 9090
-        - protocol: TCP
-          port: 9559
-        - protocol: TCP
-          port: 9669
-        - protocol: TCP
-          port: 9779
-        - protocol: TCP
-          port: 9889
+          port: 9779   # StorageD gRPC

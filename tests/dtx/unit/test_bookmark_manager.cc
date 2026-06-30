@@ -14,6 +14,8 @@
 
 #include <gtest/gtest.h>
 
+#include <future>
+
 #include "cedar/dtx/bookmark_manager.h"
 #include "cedar/dtx/txn_context.h"
 
@@ -366,6 +368,51 @@ TEST(BookmarkManagerTest, Stats) {
   EXPECT_EQ(stats.bookmarks_created, 2);
 }
 
+TEST(BookmarkManagerTest, WaitForBookmarkWakesOnWatermarkAdvance) {
+  BookmarkManager manager;
+
+  DistributedBookmark bookmark;
+  bookmark.hlc = manager.GetCurrentHLC();
+  bookmark.SetShardWatermark(1, 100);
+
+  auto future = std::async(std::launch::async, [&]() {
+    return manager.WaitForBookmark(bookmark, std::chrono::seconds(2));
+  });
+
+  ASSERT_EQ(future.wait_for(std::chrono::milliseconds(100)),
+            std::future_status::timeout);
+
+  auto start = std::chrono::steady_clock::now();
+  manager.UpdateLocalWatermark(1, 100);
+
+  ASSERT_EQ(future.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  auto status = future.get();
+  EXPECT_TRUE(status.ok()) << status.ToString();
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            200);
+}
+
+TEST(BookmarkManagerTest, WaitForBookmarkTimesOutWithoutBusyPolling) {
+  BookmarkManager manager;
+
+  DistributedBookmark bookmark;
+  bookmark.hlc = manager.GetCurrentHLC();
+  bookmark.SetShardWatermark(1, 100);
+
+  auto start = std::chrono::steady_clock::now();
+  auto status = manager.WaitForBookmark(bookmark, std::chrono::milliseconds(30));
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_FALSE(status.ok());
+  EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            25);
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            300);
+}
+
 // =============================================================================
 // BBCC 核心优势测试
 // =============================================================================
@@ -412,5 +459,4 @@ TEST(BbccAdvantageTest, HLCOrdering) {
   EXPECT_TRUE(bm1.HappensBefore(bm2));
   EXPECT_FALSE(bm2.HappensBefore(bm1));
 }
-
 

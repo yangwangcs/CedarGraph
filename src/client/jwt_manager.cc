@@ -5,10 +5,15 @@
 #include "cedar/client/jwt_manager.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <random>
 #include <sstream>
 #include <iomanip>
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
 
 namespace cedar {
 namespace client {
@@ -22,12 +27,18 @@ JWTToken JWTManager::GenerateToken(const std::string& user_id,
                                     const std::string& user_name) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  if (config_.secret_key.empty()) {
+    return JWTToken{};
+  }
+
   auto now = std::chrono::system_clock::now();
   auto expiration = now + std::chrono::seconds(config_.expiration_seconds);
 
   JWTToken token;
   token.user_id = user_id;
   token.user_name = user_name;
+  token.issuer = config_.issuer;
+  token.audience = config_.audience;
   token.issued_at = now;
   token.expires_at = expiration;
   token.is_valid = true;
@@ -63,11 +74,16 @@ JWTToken JWTManager::GenerateToken(const std::string& user_id,
 }
 
 bool JWTManager::ValidateToken(const std::string& token) const {
+  if (config_.secret_key.empty()) {
+    return false;
+  }
+
   // Parse token parts
   size_t first_dot = token.find('.');
   size_t second_dot = token.find('.', first_dot + 1);
 
-  if (first_dot == std::string::npos || second_dot == std::string::npos) {
+  if (first_dot == std::string::npos || second_dot == std::string::npos ||
+      token.find('.', second_dot + 1) != std::string::npos) {
     return false;
   }
 
@@ -75,14 +91,23 @@ bool JWTManager::ValidateToken(const std::string& token) const {
   std::string payload = token.substr(first_dot + 1, second_dot - first_dot - 1);
   std::string signature = token.substr(second_dot + 1);
 
+  if (!ValidateHeader(header)) {
+    return false;
+  }
+
   // Verify signature
   if (!VerifySignature(header, payload, signature)) {
     return false;
   }
 
-  // Check expiration (simplified - in production parse the payload)
-  // For now, just return true if signature is valid
-  return true;
+  JWTToken info;
+  if (!ParsePayload(payload, &info)) {
+    return false;
+  }
+
+  return info.issuer == config_.issuer &&
+         info.audience == config_.audience &&
+         std::chrono::system_clock::now() < info.expires_at;
 }
 
 JWTToken JWTManager::GetTokenInfo(const std::string& token) const {
@@ -90,20 +115,14 @@ JWTToken JWTManager::GetTokenInfo(const std::string& token) const {
   info.token = token;
   info.is_valid = ValidateToken(token);
 
-  // Parse token to get user info (simplified)
   size_t first_dot = token.find('.');
   size_t second_dot = token.find('.', first_dot + 1);
 
-  if (first_dot != std::string::npos && second_dot != std::string::npos) {
+  if (info.is_valid && first_dot != std::string::npos && second_dot != std::string::npos) {
     std::string payload = token.substr(first_dot + 1, second_dot - first_dot - 1);
-    std::string decoded_payload = Base64Decode(payload);
-
-    // Parse JSON payload (simplified - in production use a JSON library)
-    // For now, just set placeholder values
-    info.user_id = "user_id";
-    info.user_name = "user_name";
-    info.issued_at = std::chrono::system_clock::now();
-    info.expires_at = std::chrono::system_clock::now() + std::chrono::seconds(3600);
+    ParsePayload(payload, &info);
+    info.token = token;
+    info.is_valid = std::chrono::system_clock::now() < info.expires_at;
   }
 
   return info;
@@ -251,30 +270,111 @@ std::string JWTManager::Base64Decode(const std::string& input) const {
 
 std::string JWTManager::CreateSignature(const std::string& header,
                                           const std::string& payload) const {
-  // Simplified HMAC-SHA256 signature
-  // In production, use a proper HMAC library
   std::string data = header + "." + payload;
-  std::string signature;
+  unsigned char digest[EVP_MAX_MD_SIZE];
+  unsigned int digest_len = 0;
 
-  // Simple hash function (not cryptographically secure - for demo only)
-  unsigned long hash = 5381;
-  for (char c : config_.secret_key + data) {
-    hash = ((hash << 5) + hash) + c;
+  HMAC(EVP_sha256(),
+       config_.secret_key.data(),
+       static_cast<int>(config_.secret_key.size()),
+       reinterpret_cast<const unsigned char*>(data.data()),
+       data.size(),
+       digest,
+       &digest_len);
+
+  if (digest_len == 0) {
+    return "";
   }
 
-  // Convert to hex string
-  std::stringstream ss;
-  ss << std::hex << std::setfill('0') << std::setw(16) << hash;
-  signature = ss.str();
-
-  return Base64Encode(signature);
+  return Base64Encode(std::string(reinterpret_cast<char*>(digest), digest_len));
 }
 
 bool JWTManager::VerifySignature(const std::string& header,
                                    const std::string& payload,
                                    const std::string& signature) const {
   std::string expected_signature = CreateSignature(header, payload);
-  return signature == expected_signature;
+  return signature.size() == expected_signature.size() &&
+         CRYPTO_memcmp(signature.data(), expected_signature.data(), signature.size()) == 0;
+}
+
+bool JWTManager::ValidateHeader(const std::string& header) const {
+  std::string decoded_header = Base64Decode(header);
+  return ExtractJsonString(decoded_header, "alg") == "HS256" &&
+         ExtractJsonString(decoded_header, "typ") == "JWT";
+}
+
+bool JWTManager::ParsePayload(const std::string& payload, JWTToken* info) const {
+  if (info == nullptr) {
+    return false;
+  }
+
+  std::string decoded_payload = Base64Decode(payload);
+  std::string user_id = ExtractJsonString(decoded_payload, "sub");
+  std::string user_name = ExtractJsonString(decoded_payload, "name");
+  std::string issuer = ExtractJsonString(decoded_payload, "iss");
+  std::string audience = ExtractJsonString(decoded_payload, "aud");
+  int64_t issued_at = 0;
+  int64_t expires_at = 0;
+  if (user_id.empty() || user_name.empty() || issuer.empty() || audience.empty() ||
+      !ExtractJsonInt64(decoded_payload, "iat", &issued_at) ||
+      !ExtractJsonInt64(decoded_payload, "exp", &expires_at) ||
+      expires_at <= issued_at) {
+    return false;
+  }
+
+  info->user_id = user_id;
+  info->user_name = user_name;
+  info->issuer = issuer;
+  info->audience = audience;
+  info->issued_at = std::chrono::system_clock::from_time_t(
+      static_cast<time_t>(issued_at));
+  info->expires_at = std::chrono::system_clock::from_time_t(
+      static_cast<time_t>(expires_at));
+  return true;
+}
+
+std::string JWTManager::ExtractJsonString(const std::string& json,
+                                          const std::string& key) const {
+  std::string pattern = "\"" + key + "\":\"";
+  size_t start = json.find(pattern);
+  if (start == std::string::npos) {
+    return "";
+  }
+  start += pattern.size();
+  size_t end = json.find('"', start);
+  if (end == std::string::npos) {
+    return "";
+  }
+  return json.substr(start, end - start);
+}
+
+bool JWTManager::ExtractJsonInt64(const std::string& json,
+                                  const std::string& key,
+                                  int64_t* value) const {
+  if (value == nullptr) {
+    return false;
+  }
+
+  std::string pattern = "\"" + key + "\":";
+  size_t start = json.find(pattern);
+  if (start == std::string::npos) {
+    return false;
+  }
+  start += pattern.size();
+  size_t end = start;
+  while (end < json.size() && std::isdigit(static_cast<unsigned char>(json[end]))) {
+    ++end;
+  }
+  if (end == start) {
+    return false;
+  }
+
+  try {
+    *value = std::stoll(json.substr(start, end - start));
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
 }
 
 std::string JWTManager::GenerateRandomId() const {

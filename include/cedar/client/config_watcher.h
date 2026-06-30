@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -60,6 +61,8 @@ class ConfigWatcher {
   ConfigLoader loader_;
   mutable std::mutex mutex_;
   std::thread watch_thread_;
+  std::condition_variable watch_cv_;
+  std::mutex watch_cv_mutex_;
   std::atomic<bool> running_{false};
   std::chrono::system_clock::time_point last_modified_;
   ConfigChangeCallback callback_;

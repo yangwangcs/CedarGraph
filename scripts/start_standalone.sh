@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${SCRIPT_DIR}/.."
 BUILD_DIR="${PROJECT_ROOT}/build"
 DATA_DIR="/tmp/cedar/standalone"
+export CEDAR_GRPC_ALLOW_INSECURE="${CEDAR_GRPC_ALLOW_INSECURE:-1}"
 
 # 端口配置（与 NebulaGraph 对齐）
 META_PORT=9559

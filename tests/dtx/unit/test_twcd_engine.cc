@@ -132,6 +132,24 @@ TEST(TwcdEngineTest, RegisterAndUnregisterWindow) {
   EXPECT_EQ(engine.GetActiveWindowCount(), 0);
 }
 
+TEST(TwcdEngineTest, UnregisterWindowAlsoClearsWriteSetIndex) {
+  DTxConfig config;
+  TwcdEngine engine(config);
+
+  CedarKey key = CedarKey::Vertex(100, 0, Timestamp::Now(), 0, 1);
+
+  ASSERT_TRUE(engine.RegisterWindow(1, TemporalWindow(100, 200)).ok());
+  ASSERT_TRUE(engine.RegisterWriteSet(1, {key}).ok());
+  engine.UnregisterWindow(1);
+
+  ASSERT_TRUE(engine.RegisterWindow(2, TemporalWindow(150, 250)).ok());
+  auto result = engine.CheckConflict(2, TemporalWindow(150, 250), {key}, {});
+
+  EXPECT_FALSE(result.has_conflict);
+  EXPECT_EQ(engine.GetActiveTxnCount(), 1);
+  EXPECT_EQ(engine.GetActiveWindowCount(), 1);
+}
+
 TEST(TwcdEngineTest, UpdateWindow) {
   DTxConfig config;
   TwcdEngine engine(config);
@@ -351,5 +369,4 @@ TEST(TwcdEngineAdvantageTest, OverlappingVsNonOverlapping) {
   auto result2 = engine.CheckConflict(3, TemporalWindow(1001, 2000), {key}, {});
   EXPECT_FALSE(result2.has_conflict);
 }
-
 

@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <future>
 #include <sstream>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -315,9 +316,17 @@ void MetricsRegistry::Clear() {
 
 namespace {
 
-void SimpleHttpServer(int port, std::atomic<bool>* running) {
+void SimpleHttpServer(int port, std::atomic<bool>* running, int* server_fd_out,
+                      std::mutex* server_fd_mutex, std::promise<Status> start_promise) {
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (server_fd < 0) return;
+  if (server_fd < 0) {
+    start_promise.set_value(Status::IOError("Failed to create metrics HTTP socket"));
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(*server_fd_mutex);
+    *server_fd_out = server_fd;
+  }
   int opt = 1;
   setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
   // Set accept timeout so the loop can check running flag periodically
@@ -330,13 +339,28 @@ void SimpleHttpServer(int port, std::atomic<bool>* running) {
   addr.sin_addr.s_addr = INADDR_ANY;
   addr.sin_port = htons(static_cast<uint16_t>(port));
   if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    auto err = std::string(strerror(errno));
     close(server_fd);
+    {
+      std::lock_guard<std::mutex> lock(*server_fd_mutex);
+      if (*server_fd_out == server_fd) *server_fd_out = -1;
+    }
+    start_promise.set_value(
+        Status::IOError("Failed to bind metrics HTTP port " + std::to_string(port) + ": " + err));
     return;
   }
   if (listen(server_fd, 5) < 0) {
+    auto err = std::string(strerror(errno));
     close(server_fd);
+    {
+      std::lock_guard<std::mutex> lock(*server_fd_mutex);
+      if (*server_fd_out == server_fd) *server_fd_out = -1;
+    }
+    start_promise.set_value(
+        Status::IOError("Failed to listen on metrics HTTP port " + std::to_string(port) + ": " + err));
     return;
   }
+  start_promise.set_value(Status::OK());
   while (running->load()) {
     int client_fd = accept(server_fd, nullptr, nullptr);
     if (client_fd < 0) {
@@ -389,6 +413,10 @@ void SimpleHttpServer(int port, std::atomic<bool>* running) {
     close(client_fd);
   }
   close(server_fd);
+  {
+    std::lock_guard<std::mutex> lock(*server_fd_mutex);
+    if (*server_fd_out == server_fd) *server_fd_out = -1;
+  }
 }
 
 }  // namespace
@@ -409,7 +437,8 @@ Status MetricsCollector::Initialize(const Config& config) {
   if (config_.enable_http_server) {
     auto status = StartHttpServer();
     if (!status.ok()) {
-      // Non-fatal: keep running without HTTP endpoint
+      Shutdown();
+      return status;
     }
   }
   return Status::OK();
@@ -418,6 +447,15 @@ Status MetricsCollector::Initialize(const Config& config) {
 void MetricsCollector::Shutdown() {
   if (!running_.exchange(false)) {
     return;
+  }
+  collection_cv_.notify_all();
+  {
+    std::lock_guard<std::mutex> lock(http_server_mutex_);
+    if (http_server_fd_ >= 0) {
+      shutdown(http_server_fd_, SHUT_RDWR);
+      close(http_server_fd_);
+      http_server_fd_ = -1;
+    }
   }
   if (collection_thread_ && collection_thread_->joinable()) {
     collection_thread_->join();
@@ -438,10 +476,19 @@ Status MetricsCollector::StartHttpServer() {
       port = 9090;
     }
   }
-  http_thread_ = std::make_unique<std::thread>([port, this]() {
-    SimpleHttpServer(port, &running_);
+  std::promise<Status> start_promise;
+  auto start_future = start_promise.get_future();
+  http_thread_ = std::make_unique<std::thread>([port, this, promise = std::move(start_promise)]() mutable {
+    SimpleHttpServer(port, &running_, &http_server_fd_, &http_server_mutex_, std::move(promise));
   });
-  return Status::OK();
+  auto status = start_future.get();
+  if (!status.ok()) {
+    if (http_thread_ && http_thread_->joinable()) {
+      http_thread_->join();
+    }
+    http_thread_.reset();
+  }
+  return status;
 }
 
 void MetricsCollector::Collect() {
@@ -475,7 +522,10 @@ StorageNodeMetrics* MetricsCollector::GetNodeMetrics(PartitionID pid) {
 void MetricsCollector::CollectionLoop() {
   while (running_.load()) {
     Collect();
-    std::this_thread::sleep_for(config_.collection_interval);
+    std::unique_lock<std::mutex> lock(collection_cv_mutex_);
+    collection_cv_.wait_for(lock, config_.collection_interval, [this]() {
+      return !running_.load();
+    });
   }
 }
 

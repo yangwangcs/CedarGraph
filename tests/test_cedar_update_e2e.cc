@@ -326,14 +326,13 @@ TEST_F(CedarUpdateE2ETest, StrictModeValidation) {
   }
   
   // 严格模式下创建边（终点不存在）
-  // 注意：当前骨架实现可能无法完全支持严格校验
-  // 完整实现应在 Apply 时检查并返回错误
   CEDAR_UPDATE(update, StrictLevel::CHECK_EXISTS);
   update.At(Timestamp(1712050000000001ULL))
         .CreateEdge(7001, 7999, 2, Descriptor::InlineInt(2, 0), true, true);
   
   auto status = update.Apply(storage_);
-  // 骨架实现可能返回 OK，因为详细的存在性检查需要完整存储层支持
+  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(status.code(), CedarCode::kDstNodeNotFound);
 }
 
 // =============================================================================

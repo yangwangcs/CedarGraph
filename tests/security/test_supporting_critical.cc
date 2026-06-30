@@ -14,7 +14,10 @@
 
 #include "cedar/dtx/security.h"
 #include "cedar/dtx/chaos/chaos_testing.h"
+#include "cedar/transaction/occ_transaction.h"
+#define private public
 #include "cedar/driver/retry_policy.h"
+#undef private
 #include "cedar/driver/session.h"
 
 #include <gtest/gtest.h>
@@ -214,6 +217,33 @@ TEST(SupportingCritical, ChaosFrameworkContinuousChaosMutex) {
   SUCCEED();
 }
 
+TEST(SupportingCritical, ChaosFrameworkStopWakesFaultDurationPromptly) {
+  ChaosFramework framework;
+  auto injector = [](FaultType, const std::vector<NodeID>&,
+                     const std::unordered_map<std::string, std::string>&) {
+    return Status::OK();
+  };
+  auto checker = []() { return true; };
+
+  ASSERT_TRUE(framework.Initialize(injector, checker).ok());
+
+  FaultSpec spec;
+  spec.type = FaultType::kNodeCrash;
+  spec.probability = 1.0;
+  spec.duration = std::chrono::seconds(2);
+  spec.interval = std::chrono::seconds(2);
+
+  ASSERT_TRUE(framework.StartContinuousChaos({spec}).ok());
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  auto start = std::chrono::steady_clock::now();
+  framework.StopContinuousChaos();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            500);
+}
+
 }  // namespace chaos
 }  // namespace dtx
 
@@ -263,6 +293,47 @@ TEST(SupportingCritical, RetryPolicyReturnsErrorOnFinalException) {
 
   EXPECT_FALSE(result.ok());
   EXPECT_EQ(call_count, 2);
+}
+
+TEST(SupportingCritical, RetryPolicyZeroAttemptsStillExecutesOnce) {
+  RetryConfig config;
+  config.max_attempts = 0;
+  config.initial_backoff = std::chrono::milliseconds(1);
+  config.jitter = false;
+
+  RetryPolicy policy(config);
+
+  int call_count = 0;
+  Status result = policy.Execute([&call_count]() -> Status {
+    call_count++;
+    return Status::OK();
+  });
+
+  EXPECT_TRUE(result.ok());
+  EXPECT_EQ(call_count, 1);
+}
+
+TEST(SupportingCritical, RetryPolicySaturatesHugeExponentialBackoff) {
+  RetryConfig config;
+  config.initial_backoff = std::chrono::milliseconds::max() - std::chrono::milliseconds(1);
+  config.max_backoff = std::chrono::milliseconds::max();
+  config.backoff_strategy = BackoffStrategy::kExponential;
+  config.jitter = false;
+
+  RetryPolicy policy(config);
+
+  EXPECT_EQ(policy.NextDelay(config.initial_backoff), config.max_backoff);
+}
+
+TEST(SupportingCritical, OccRetryBackoffSaturatesLargeAttempts) {
+  auto delay = occ_detail::SaturatingExponentialBackoff(
+      static_cast<uint64_t>(std::chrono::milliseconds::max().count()), 63);
+  EXPECT_EQ(delay, std::chrono::milliseconds::max());
+
+  EXPECT_EQ(occ_detail::SaturatingExponentialBackoff(0, 63),
+            std::chrono::milliseconds(0));
+  EXPECT_EQ(occ_detail::SaturatingExponentialBackoff(10, 3),
+            std::chrono::milliseconds(80));
 }
 
 // ============================================================================

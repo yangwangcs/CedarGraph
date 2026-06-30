@@ -70,16 +70,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run Trivy on Dockerfile
+      - name: Run Trivy on Docker build context
         uses: aquasecurity/trivy-action@0.29.0
         with:
           scan-type: 'filesystem'
-          scan-ref: './cedar-docker-compose/Dockerfile'
+          scan-ref: '.'
           format: 'sarif'
           output: 'trivy-docker-results.sarif'
           severity: 'HIGH,CRITICAL'
           exit-code: '0'
           scanners: 'vuln,secret,config'
+          trivyignores: '.trivyignore'
 
       - name: Upload Docker scan results
         uses: github/codeql-action/upload-sarif@v3

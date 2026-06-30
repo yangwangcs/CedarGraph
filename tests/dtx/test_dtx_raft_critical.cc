@@ -131,6 +131,18 @@ TEST(DTXRpcClientTlsTest, ConfigHasTlsField) {
   EXPECT_FALSE(config.tls_config.enabled);
 }
 
+TEST(DTXRpcClientTlsTest, InvalidTlsConfigDoesNotFallBackToInsecureByDefault) {
+  DTXRpcConfig config;
+  config.tls_config.enabled = true;
+  config.tls_config.ca_cert_file = "/nonexistent/ca.crt";
+
+  DTXRpcClient client(config);
+  auto status = client.AddParticipant(1, "127.0.0.1:1");
+
+  EXPECT_FALSE(status.ok());
+  EXPECT_TRUE(status.IsIOError());
+}
+
 // =============================================================================
 // 5. Topology Atomicity in SetPartitionLeader
 // =============================================================================

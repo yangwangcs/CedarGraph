@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace cedar {
@@ -39,20 +40,20 @@ struct BackupConfig {
   std::string s3_prefix;           // S3 prefix
   int retention_days = 30;         // Keep backups for 30 days
   bool compress = true;            // Compress backups
-  bool encrypt = false;            // Encrypt backups
-  std::string encryption_key;      // Encryption key
+  bool encrypt = false;            // Reserved; Initialize rejects true until implemented.
+  std::string encryption_key;      // Reserved for future encryption support.
 };
 
 // Backup information
 struct BackupInfo {
   std::string backup_id;
-  BackupType type;
-  BackupStatus status;
+  BackupType type = BackupType::FULL;
+  BackupStatus status = BackupStatus::PENDING;
   std::string component;           // metad, storaged, graphd, all
   std::string backup_path;
-  int64_t start_time;
-  int64_t end_time;
-  int64_t size_bytes;
+  int64_t start_time = 0;
+  int64_t end_time = 0;
+  int64_t size_bytes = 0;
   std::string error_message;
   std::unordered_map<std::string, std::string> metadata;
 };
@@ -109,6 +110,7 @@ class ClusterBackup {
  private:
   BackupConfig config_;
   class ClusterManager* cluster_manager_;
+  bool initialized_ = false;
   mutable std::mutex mutex_;
   std::vector<BackupInfo> backups_;
   BackupCallback callback_;
@@ -140,9 +142,13 @@ class ClusterBackup {
   // Get backup size
   int64_t GetBackupSize(const std::string& backup_path);
 
+  bool IsPathWithinBackupDir(const std::string& backup_path) const;
+  bool IsSafeS3Part(const std::string& value, bool allow_slash) const;
+  std::string ShellQuote(const std::string& arg) const;
+
   // Update backup status
-  void UpdateBackupStatus(const std::string& backup_id, BackupStatus status,
-                          const std::string& error_message = "");
+  BackupInfo UpdateBackupStatus(const std::string& backup_id, BackupStatus status,
+                                const std::string& error_message = "");
 
   // Notify callback
   void NotifyCallback(const BackupInfo& info);

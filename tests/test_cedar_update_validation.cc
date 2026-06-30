@@ -182,12 +182,13 @@ class CedarUpdateValidationTest : public ::testing::Test {
     
     // 2. 构造探测键
     CedarKey probe = MakeProbeKey(entity_id, query_time);
+    (void)probe;
     
-    // 3. 执行 Seek（通过 GetAtTime 模拟）
-    auto result = storage_->Get(entity_id, EntityType::Vertex, 0, query_time);
+    // 3. 执行 Seek（通过全实体扫描模拟存在性检查）
+    auto versions = storage_->Scan(entity_id, Timestamp::Min(), query_time);
     
     // 4. 结果判定
-    if (!result.has_value()) {
+    if (versions.empty()) {
       // Key 不存在或 ID 不匹配
       if (cache) {
         ExistenceCache::Entry entry;
@@ -265,11 +266,15 @@ TEST_F(CedarUpdateValidationTest, ProbeKeyConstruction) {
 // 存在性校验场景测试
 // =============================================================================
 
-// BLOCKED: empty test body — requires full storage layer with strict existence
-// checking (ValidateNode with real Seek) before it can assert anything useful.
-TEST_F(CedarUpdateValidationTest, DISABLED_ValidateExistingNode) {
+TEST_F(CedarUpdateValidationTest, ValidateExistingNode) {
   // 场景 1：节点存在，校验通过
-  // 暂时禁用此测试，需要完整存储层支持
+  Timestamp create_time(1712050000000000ULL);
+  CreateNode(1001, create_time);
+
+  auto status = ValidateNode(1001, Timestamp(1712050000000001ULL), true,
+                             cache_.get());
+
+  EXPECT_TRUE(status.ok()) << status.ToString();
 }
 
 TEST_F(CedarUpdateValidationTest, ValidateNonExistingNode) {
@@ -295,21 +300,23 @@ TEST_F(CedarUpdateValidationTest, ValidateDstNodeNotFound) {
 // 时态校验场景测试
 // =============================================================================
 
-// BLOCKED: requires a real temporal validation engine that can compare edge
-// timestamp against the node's earliest CREATE version. Skeleton passes through.
-TEST_F(CedarUpdateValidationTest, DISABLED_TemporalAnachronism) {
+TEST_F(CedarUpdateValidationTest, TemporalAnachronism) {
   // 场景 4：时空错位 - 边时间早于节点创建时间
-  // 先创建节点在 T=100
   Timestamp create_time(1712050000000100ULL);
   CreateNode(1001, create_time);
+  CreateNode(1002, create_time);
   
   // 尝试在 T=50 建立边（早于节点创建）
   Timestamp edge_time(1712050000000050ULL);
-  auto status = ValidateNode(1001, edge_time, true, nullptr);
+  CEDAR_UPDATE(update, StrictLevel::STRICT_TEMPORAL);
+  update.At(edge_time)
+        .CreateEdge(1001, 1002, 2, Descriptor::InlineInt(2, 100),
+                    true, true);
   
-  // 注意：当前简化实现可能无法检测时态错位
-  // 完整实现需要查询节点的最早 CREATE 记录
-  (void)status;
+  auto status = update.Apply(storage_);
+
+  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(status.code(), CedarCode::kTemporalAnachronism);
 }
 
 // =============================================================================
@@ -382,9 +389,7 @@ TEST_F(CedarUpdateValidationTest, CacheLRUEviction) {
 // WriteBatch 内依赖测试
 // =============================================================================
 
-// BLOCKED: test body is incomplete (ends mid-implementation). Re-enable after
-// CedarUpdate's PendingWrites dependency logic is fully implemented.
-TEST_F(CedarUpdateValidationTest, DISABLED_SameBatchDependency) {
+TEST_F(CedarUpdateValidationTest, SameBatchDependency) {
   // 场景 7：同一 Batch 内 CreateNode + AddEdge
   // CedarUpdate 应该优先检查内存中的 PendingWrites
   
@@ -393,10 +398,14 @@ TEST_F(CedarUpdateValidationTest, DISABLED_SameBatchDependency) {
   
   Descriptor desc = Descriptor::InlineInt(1, 0);
   update.CreateVertex(1001, 1, desc);
+  update.CreateVertex(1002, 1, desc);
+  update.CreateEdge(1001, 1002, 2, Descriptor::InlineInt(2, 100),
+                    true, true);
   
   // 严格模式下，此时 1001 还未写入磁盘
   // 但 CedarUpdate 的校验应看到内存中的 PendingWrites
-  // 当前简化实现可能无法检测这种依赖
+  auto status = update.Apply(storage_);
+  EXPECT_TRUE(status.ok()) << status.ToString();
 }
 
 // =============================================================================
@@ -418,8 +427,7 @@ TEST_F(CedarUpdateValidationTest, FullWorkflowSuccess) {
   
   // 步骤 3：执行
   auto status = update.Apply(storage_);
-  // 骨架实现可能返回 OK，完整实现应进行严格校验
-  (void)status;
+  EXPECT_TRUE(status.ok()) << status.ToString();
 }
 
 TEST_F(CedarUpdateValidationTest, FullWorkflowFailMissingDst) {
@@ -438,9 +446,8 @@ TEST_F(CedarUpdateValidationTest, FullWorkflowFailMissingDst) {
   // 步骤 3：执行（应该失败）
   auto status = update.Apply(storage_);
   
-  // 注意：当前骨架实现可能返回 OK，因为详细的存在性检查需要完整存储层支持
-  // 完整实现应返回 kDstNodeNotFound
-  (void)status;  // 避免未使用警告
+  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(status.code(), CedarCode::kDstNodeNotFound);
 }
 
 // =============================================================================

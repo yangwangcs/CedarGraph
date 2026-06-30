@@ -192,6 +192,37 @@ TEST(LndOccEngineTest, SinglePartitionCommitFlow) {
   EXPECT_EQ(stats.single_partition_commits, 1);
 }
 
+TEST(LndOccEngineTest, DefaultInitializationEnablesTwcdConflictDetection) {
+  DTxConfig config;
+  config.enable_twcd = true;
+  LndOccEngine engine(config);
+
+  std::unordered_map<PartitionID, std::pair<VSLMemTable*, WalWriter*>> stores;
+  stores[1] = {nullptr, nullptr};
+
+  ASSERT_TRUE(engine.Initialize(nullptr, stores).ok());
+  auto* coordinator = engine.GetCoordinator(1);
+  ASSERT_NE(coordinator, nullptr);
+
+  CedarKey key = CedarKey::Vertex(100, 0, Timestamp::Now(), 0, 1);
+
+  DistributedTxnContext active_writer;
+  active_writer.SetTemporalWindow(TemporalWindow(100, 200));
+  ASSERT_TRUE(coordinator->BeginTransaction(&active_writer).ok());
+  active_writer.AddToWriteSet(key, TemporalWindow(100, 200));
+  ASSERT_TRUE(coordinator->Validate(&active_writer).ok());
+
+  DistributedTxnContext conflicting_writer;
+  conflicting_writer.SetTemporalWindow(TemporalWindow(150, 250));
+  ASSERT_TRUE(coordinator->BeginTransaction(&conflicting_writer).ok());
+  conflicting_writer.AddToWriteSet(key, TemporalWindow(150, 250));
+
+  auto result = coordinator->Commit(&conflicting_writer);
+  EXPECT_FALSE(result.success);
+
+  coordinator->Abort(&active_writer, "test cleanup");
+}
+
 TEST(LndOccEngineTest, MultiPartitionNotSupported) {
   DTxConfig config;
   LndOccEngine engine(config);
@@ -322,5 +353,4 @@ TEST(LndOccAdvantageTest, LayeredCommitStrategy) {
   // 目前实现回退到 CrossTemporalRange
   EXPECT_EQ(engine.ClassifyTransaction(&multi), TxnType::kCrossTemporalRange);
 }
-
 

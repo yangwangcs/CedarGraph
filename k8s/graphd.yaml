@@ -5,6 +5,8 @@ metadata:
   namespace: cedargraph
   labels:
     app: graphd
+    app.kubernetes.io/name: graphd
+    app.kubernetes.io/component: query
     app.kubernetes.io/part-of: cedargraph
 spec:
   replicas: 2
@@ -15,21 +17,74 @@ spec:
     metadata:
       labels:
         app: graphd
+        app.kubernetes.io/name: graphd
+        app.kubernetes.io/component: query
         app.kubernetes.io/part-of: cedargraph
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9667"
+        prometheus.io/path: "/metrics"
     spec:
       containers:
       - name: graphd
-        image: cedargraph:latest
+        image: cedargraph:k8s-fix-20260630
         command: ["/usr/local/bin/cedar-graphd"]
-        args: ["--port=9669"]
+        args:
+        - "--port"
+        - "9669"
+        - "--meta"
+        - "metad:10559"
+        - "--health_port"
+        - "9668"
+        - "--metrics_port"
+        - "9667"
         env:
         - name: CEDAR_METAD_ENDPOINT
-          value: "metad:9559"
+          value: "metad:10559"
         - name: CEDAR_GCN_ENDPOINT
           value: "gcn:9780"
+        - name: CEDAR_GRAPHD_AUTH_JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: graphd-auth
+              key: jwt-secret
+        - name: CEDAR_GRAPHD_AUTH_USER
+          valueFrom:
+            secretKeyRef:
+              name: graphd-auth
+              key: user
+        - name: CEDAR_GRAPHD_AUTH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: graphd-auth
+              key: password
+        - name: CEDAR_GRAPHD_AUTH_ROLE
+          valueFrom:
+            secretKeyRef:
+              name: graphd-auth
+              key: role
+              optional: true
+        - name: CEDAR_GRPC_TLS_ENABLED
+          value: "1"
+        - name: CEDAR_GRPC_SERVER_CERT
+          value: "/etc/cedar/tls/tls.crt"
+        - name: CEDAR_GRPC_SERVER_KEY
+          value: "/etc/cedar/tls/tls.key"
+        - name: CEDAR_GRPC_CA_CERT
+          value: "/etc/cedar/tls/ca.crt"
+        - name: CEDAR_GRPC_MTLS_ENABLED
+          value: "0"
+        - name: CEDAR_GRPC_CLIENT_CERT
+          value: "/etc/cedar/tls/client.crt"
+        - name: CEDAR_GRPC_CLIENT_KEY
+          value: "/etc/cedar/tls/client.key"
         ports:
         - containerPort: 9669
           name: query
+        - containerPort: 9668
+          name: health
+        - containerPort: 9667
+          name: metrics
         - containerPort: 9780
           name: gcn
         resources:
@@ -41,14 +96,14 @@ spec:
             cpu: "1000m"
         livenessProbe:
           tcpSocket:
-            port: query
+            port: health
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
           tcpSocket:
-            port: query
+            port: health
           initialDelaySeconds: 10
           periodSeconds: 5
           timeoutSeconds: 3
@@ -56,10 +111,17 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /etc/cedar
+        - name: graphd-tls
+          mountPath: /etc/cedar/tls
+          readOnly: true
       volumes:
       - name: config
         configMap:
           name: graphd-config
+      - name: graphd-tls
+        secret:
+          secretName: graphd-tls
+          optional: false
 ---
 apiVersion: v1
 kind: Service
@@ -73,4 +135,10 @@ spec:
   - port: 9669
     targetPort: 9669
     name: query
+  - port: 9668
+    targetPort: 9668
+    name: health
+  - port: 9667
+    targetPort: 9667
+    name: metrics
   type: ClusterIP

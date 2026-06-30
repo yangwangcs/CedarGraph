@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <chrono>
 #include "cedar/dtx/meta_service.h"
 #include "cedar/dtx/meta_service_grpc.h"
 #include "meta_service.pb.h"
@@ -94,6 +95,17 @@ TEST(MetaServiceGrpcImpl, HeartbeatForwardsEmptyPartitionLists) {
   EXPECT_TRUE(mock_meta.captured_status.leader_partitions.empty());
   EXPECT_TRUE(mock_meta.captured_status.follower_partitions.empty());
   EXPECT_EQ(std::chrono::system_clock::to_time_t(mock_meta.captured_status.timestamp), 1715000001);
+}
+
+TEST(MetaServiceGrpcImpl, DestructorWakesGraphDCleanupThreadPromptly) {
+  MockMetadataService mock_meta;
+
+  auto impl = std::make_unique<MetaServiceGrpcImpl>(&mock_meta);
+  auto start = std::chrono::steady_clock::now();
+  impl.reset();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 500);
 }
 
 int main(int argc, char** argv) {

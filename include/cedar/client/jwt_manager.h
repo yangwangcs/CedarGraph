@@ -17,7 +17,7 @@ namespace client {
 struct JWTConfig {
   std::string secret_key;
   std::string issuer = "cedar-client";
-  std::string audience = "cedar-server";
+  std::string audience = "cedargraph";
   int expiration_seconds = 3600;  // 1 hour
   int refresh_threshold_seconds = 300;  // Refresh 5 minutes before expiration
 };
@@ -27,9 +27,11 @@ struct JWTToken {
   std::string token;
   std::string user_id;
   std::string user_name;
+  std::string issuer;
+  std::string audience;
   std::chrono::system_clock::time_point issued_at;
   std::chrono::system_clock::time_point expires_at;
-  bool is_valid;
+  bool is_valid = false;
 };
 
 // JWT Manager
@@ -78,6 +80,10 @@ class JWTManager {
   std::string CreateSignature(const std::string& header, const std::string& payload) const;
   bool VerifySignature(const std::string& header, const std::string& payload, 
                         const std::string& signature) const;
+  bool ValidateHeader(const std::string& header) const;
+  bool ParsePayload(const std::string& payload, JWTToken* info) const;
+  std::string ExtractJsonString(const std::string& json, const std::string& key) const;
+  bool ExtractJsonInt64(const std::string& json, const std::string& key, int64_t* value) const;
   std::string GenerateRandomId() const;
 };
 

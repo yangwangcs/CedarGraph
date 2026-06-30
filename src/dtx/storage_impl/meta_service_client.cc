@@ -113,7 +113,9 @@ Status MetaServiceNodeClient::Initialize(const ClientConfig& config) {
   }
 
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
-  if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok() && cedar::dtx::raft::TlsCredentialFactory::EnvTlsEnabled()) {
+    creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+  }
   if (!creds.ok()) {
     return Status::IOError("Failed to create client TLS credentials: " + creds.status().ToString());
   }
@@ -354,6 +356,7 @@ void MetaServiceNodeClient::StartHeartbeatLoop(
 
 void MetaServiceNodeClient::StopHeartbeatLoop() {
   shutdown_ = true;
+  heartbeat_cv_.notify_all();
   
   if (heartbeat_thread_.joinable()) {
     heartbeat_thread_.join();
@@ -366,9 +369,11 @@ void MetaServiceNodeClient::HeartbeatLoop(
   
   while (!shutdown_.load()) {
     try {
-      // Sleep for heartbeat interval
-      std::this_thread::sleep_for(config_.heartbeat_interval);
-      
+      std::unique_lock<std::mutex> wait_lock(heartbeat_cv_mutex_);
+      heartbeat_cv_.wait_for(wait_lock, config_.heartbeat_interval,
+                             [this]() { return shutdown_.load(); });
+      wait_lock.unlock();
+
       if (shutdown_.load()) {
         break;
       }
@@ -422,7 +427,9 @@ Status MetaServiceNodeClient::TryNextMetaAddress() {
     return Status::IOError("No fallback MetaD addresses available");
   }
   auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
-  if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  if (!creds.ok() && cedar::dtx::raft::TlsCredentialFactory::EnvTlsEnabled()) {
+    creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+  }
   if (!creds.ok()) {
     return Status::IOError("Failed to create client TLS credentials: " + creds.status().ToString());
   }

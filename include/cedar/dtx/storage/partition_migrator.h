@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -246,6 +247,7 @@ class PartitionMigrator {
   Status TransferBatch(MigrationTask& task, uint64_t start_key, uint64_t batch_size);
   Status StreamSnapshotToTarget(
       const MigrationTask& task, const std::string& snapshot_path);
+  bool WaitForDrainOrShutdown(std::chrono::milliseconds timeout);
   
   std::atomic<bool> running_{false};
   MigrationConfig config_;
@@ -256,6 +258,8 @@ class PartitionMigrator {
   std::unordered_map<uint64_t, std::unique_ptr<MigrationTask>> tasks_;
   std::unordered_map<uint64_t, MigrationProgressCallback> callbacks_;
   
+  std::mutex worker_mutex_;
+  std::condition_variable worker_cv_;
   std::vector<std::unique_ptr<std::thread>> worker_threads_;
   
   mutable std::mutex stats_mutex_;

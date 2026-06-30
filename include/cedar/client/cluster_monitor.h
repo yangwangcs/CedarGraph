@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -29,39 +30,39 @@ enum class MetricType {
 // Metric value
 struct MetricValue {
   std::string name;
-  double value;
+  double value = 0.0;
   std::unordered_map<std::string, std::string> labels;
-  int64_t timestamp;
+  int64_t timestamp = 0;
 };
 
 // Cluster metrics
 struct ClusterMetrics {
   // CPU metrics
-  double cpu_usage_avg;
-  double cpu_usage_max;
+  double cpu_usage_avg = 0.0;
+  double cpu_usage_max = 0.0;
   
   // Memory metrics
-  double memory_usage_avg;
-  double memory_usage_max;
+  double memory_usage_avg = 0.0;
+  double memory_usage_max = 0.0;
   
   // Storage metrics
-  double disk_usage_avg;
-  double disk_usage_max;
+  double disk_usage_avg = 0.0;
+  double disk_usage_max = 0.0;
   
   // Network metrics
-  double network_in_bytes;
-  double network_out_bytes;
+  double network_in_bytes = 0.0;
+  double network_out_bytes = 0.0;
   
   // Query metrics
-  double qps;
-  double latency_p50;
-  double latency_p95;
-  double latency_p99;
+  double qps = 0.0;
+  double latency_p50 = 0.0;
+  double latency_p95 = 0.0;
+  double latency_p99 = 0.0;
   
   // Node metrics
-  int total_nodes;
-  int healthy_nodes;
-  int unhealthy_nodes;
+  int total_nodes = 0;
+  int healthy_nodes = 0;
+  int unhealthy_nodes = 0;
 };
 
 // Alert rule
@@ -69,8 +70,8 @@ struct AlertRule {
   std::string name;
   std::string metric;
   std::string condition;  // >, <, >=, <=, ==, !=
-  double threshold;
-  int duration_seconds;
+  double threshold = 0.0;
+  int duration_seconds = 0;
   std::string severity;  // critical, warning, info
   std::string message;
 };
@@ -81,10 +82,10 @@ struct Alert {
   std::string severity;
   std::string message;
   std::string component;
-  double value;
-  double threshold;
-  int64_t triggered_at;
-  bool resolved;
+  double value = 0.0;
+  double threshold = 0.0;
+  int64_t triggered_at = 0;
+  bool resolved = false;
 };
 
 // Alert callback
@@ -134,6 +135,8 @@ class ClusterMonitor {
   std::string grafana_url_;
   std::atomic<bool> running_{false};
   std::thread monitor_thread_;
+  std::condition_variable monitor_cv_;
+  std::mutex monitor_cv_mutex_;
   mutable std::mutex mutex_;
   
   std::vector<AlertRule> alert_rules_;

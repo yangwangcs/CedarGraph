@@ -421,6 +421,18 @@ TEST_F(ServiceRegistryTest, StartAndStopHealthCheck) {
   EXPECT_FALSE(registry_->IsHealthCheckRunning());
 }
 
+TEST_F(ServiceRegistryTest, StopWakesHealthCheckThreadPromptly) {
+  EXPECT_TRUE(registry_->StartHealthCheck(60000, 120000).ok());
+
+  auto start = std::chrono::steady_clock::now();
+  registry_->StopHealthCheck();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            1000);
+  EXPECT_FALSE(registry_->IsHealthCheckRunning());
+}
+
 TEST_F(ServiceRegistryTest, HealthCheckInvalidArguments) {
   EXPECT_TRUE(registry_->StartHealthCheck(0, 500).IsInvalidArgument());
   EXPECT_TRUE(registry_->StartHealthCheck(-1, 500).IsInvalidArgument());

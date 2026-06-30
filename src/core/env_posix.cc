@@ -31,8 +31,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <queue>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <type_traits>

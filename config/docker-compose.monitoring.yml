@@ -1,14 +1,12 @@
 # CedarGraph Monitoring Stack
 # 监控栈 Docker Compose 配置
 # Usage: docker-compose -f docker-compose.monitoring.yml up -d
-# NOTE: Set GRAFANA_ADMIN_PASSWORD in your environment before running:
-#   export GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 24)
-
-version: '3.8'
+# NOTE: Set GRAFANA_PASSWORD in your environment before running:
+#   export GRAFANA_PASSWORD=$(openssl rand -base64 24)
 
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.55.1
     container_name: cedar-prometheus
     ports:
       - "9090:9090"
@@ -28,13 +26,13 @@ services:
       - cedar-monitoring
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.4.0
     container_name: cedar-grafana
     ports:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD must be set}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana_data:/var/lib/grafana
@@ -47,7 +45,7 @@ services:
       - cedar-monitoring
 
   alertmanager:
-    image: prom/alertmanager:latest
+    image: prom/alertmanager:v0.27.0
     container_name: cedar-alertmanager
     ports:
       - "9093:9093"
@@ -62,7 +60,7 @@ services:
       - cedar-monitoring
 
   node-exporter:
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.8.2
     container_name: cedar-node-exporter
     ports:
       - "9100:9100"

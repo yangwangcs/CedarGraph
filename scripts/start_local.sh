@@ -7,6 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${SCRIPT_DIR}/.."
 BUILD_DIR="${PROJECT_ROOT}/build"
+export CEDAR_GRPC_ALLOW_INSECURE="${CEDAR_GRPC_ALLOW_INSECURE:-1}"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -61,6 +62,7 @@ start_metad() {
         --node_id "${node_id}" \
         --listen "127.0.0.1:${port}" \
         --advertise "127.0.0.1:${port}" \
+        --grpc_port "10559" \
         --data_dir "data/meta${node_id}" \
         --test_mode \
         > "logs/meta${node_id}/metad.log" 2>&1 &
@@ -83,7 +85,7 @@ start_storaged() {
         --bind "127.0.0.1" \
         --advertise_address "127.0.0.1" \
         --data_dir "data/storage${node_id}" \
-        --meta "127.0.0.1:9559" \
+        --meta "127.0.0.1:10559" \
         --test_mode \
         > "logs/storage${node_id}/storaged.log" 2>&1 &
     
@@ -100,7 +102,7 @@ start_graphd() {
     "${BUILD_DIR}/cedar-graphd" \
         --port 9669 \
         --bind "127.0.0.1" \
-        --meta "127.0.0.1:9559" \
+        --meta "127.0.0.1:10559" \
         --gcn "127.0.0.1:9780" \
         --test_mode \
         > "logs/graphd/graphd.log" 2>&1 &
@@ -163,7 +165,8 @@ main() {
             echo ""
             log_info "CedarGraph 集群已启动"
             log_info "GraphD: http://127.0.0.1:9669"
-            log_info "MetaD: http://127.0.0.1:9559"
+            log_info "MetaD Raft: 127.0.0.1:9559"
+            log_info "MetaD gRPC: 127.0.0.1:10559"
             log_info "StorageD: http://127.0.0.1:9779"
             ;;
         stop)

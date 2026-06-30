@@ -26,6 +26,9 @@ bool AutoScaler::Initialize(ClusterManager* cluster_manager,
 }
 
 bool AutoScaler::Start(int interval_seconds) {
+  if (interval_seconds <= 0) {
+    return false;
+  }
   if (running_) {
     return true;
   }
@@ -34,7 +37,9 @@ bool AutoScaler::Start(int interval_seconds) {
   scaler_thread_ = std::thread([this, interval_seconds]() {
     while (running_) {
       EvaluateRules();
-      std::this_thread::sleep_for(std::chrono::seconds(interval_seconds));
+      std::unique_lock<std::mutex> lock(scaler_cv_mutex_);
+      scaler_cv_.wait_for(lock, std::chrono::seconds(interval_seconds),
+                          [this]() { return !running_.load(); });
     }
   });
 
@@ -43,6 +48,7 @@ bool AutoScaler::Start(int interval_seconds) {
 
 void AutoScaler::Stop() {
   running_ = false;
+  scaler_cv_.notify_all();
   if (scaler_thread_.joinable()) {
     scaler_thread_.join();
   }
@@ -70,6 +76,9 @@ std::vector<ScalingRule> AutoScaler::GetRules() {
 
 std::vector<ScalingEvent> AutoScaler::GetEvents(int limit) {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (limit <= 0) {
+    return {};
+  }
   if (events_.size() > limit) {
     return std::vector<ScalingEvent>(events_.end() - limit, events_.end());
   }
@@ -122,14 +131,20 @@ int AutoScaler::GetCurrentReplicas(const std::string& component) {
 void AutoScaler::ScalerLoop() {
   while (running_) {
     EvaluateRules();
-    std::this_thread::sleep_for(std::chrono::seconds(60));
+    std::unique_lock<std::mutex> lock(scaler_cv_mutex_);
+    scaler_cv_.wait_for(lock, std::chrono::seconds(60),
+                        [this]() { return !running_.load(); });
   }
 }
 
 void AutoScaler::EvaluateRules() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<ScalingRule> rules;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    rules = rules_;
+  }
 
-  for (const auto& rule : rules_) {
+  for (const auto& rule : rules) {
     // Check cooldown
     if (IsInCooldown(rule.component)) {
       continue;
@@ -193,6 +208,7 @@ double AutoScaler::GetCurrentMetricValue(const ScalingRule& rule) {
 }
 
 bool AutoScaler::IsInCooldown(const std::string& component) {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = last_scaling_time_.find(component);
   if (it == last_scaling_time_.end()) {
     return false;
@@ -201,7 +217,15 @@ bool AutoScaler::IsInCooldown(const std::string& component) {
   auto now = std::chrono::system_clock::now().time_since_epoch().count();
   auto elapsed = (now - it->second) / 1000000000;  // Convert to seconds
 
-  return elapsed < 300;  // 5 minute cooldown
+  int cooldown_seconds = 300;
+  for (const auto& rule : rules_) {
+    if (rule.component == component) {
+      cooldown_seconds = rule.cooldown_seconds;
+      break;
+    }
+  }
+
+  return elapsed < cooldown_seconds;
 }
 
 bool AutoScaler::PerformScale(const std::string& component, int new_replicas,
@@ -215,11 +239,6 @@ bool AutoScaler::PerformScale(const std::string& component, int new_replicas,
   bool success = cluster_manager_->ScaleComponent(component, new_replicas);
 
   if (success) {
-    // Update last scaling time
-    last_scaling_time_[component] = 
-        std::chrono::system_clock::now().time_since_epoch().count();
-
-    // Record event
     ScalingEvent event;
     event.component = component;
     event.old_replicas = old_replicas;
@@ -227,11 +246,22 @@ bool AutoScaler::PerformScale(const std::string& component, int new_replicas,
     event.reason = reason;
     event.timestamp = std::chrono::system_clock::now().time_since_epoch().count();
 
-    events_.push_back(event);
+    ScalingCallback callback;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      last_scaling_time_[component] = event.timestamp;
+      events_.push_back(event);
+      callback = callback_;
+    }
 
-    // Call callback
-    if (callback_) {
-      callback_(event);
+    if (callback) {
+      try {
+        callback(event);
+      } catch (const std::exception& e) {
+        std::cerr << "Scaling callback exception: " << e.what() << std::endl;
+      } catch (...) {
+        std::cerr << "Scaling callback unknown exception" << std::endl;
+      }
     }
   }
 

@@ -24,7 +24,9 @@
 #include <csignal>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <shared_mutex>
 #include <cstring>
@@ -51,12 +53,18 @@ namespace storage {
 std::atomic<bool> g_running{true};
 std::unique_ptr<grpc::Server> g_grpc_server;
 static volatile sig_atomic_t g_signal_received = 0;
+std::mutex g_shutdown_mutex;
+std::condition_variable g_shutdown_cv;
 
 void SignalHandler(int signal) {
   if (signal == SIGINT || signal == SIGTERM) {
     g_signal_received = signal;
-    g_running = false;
   }
+}
+
+void RequestShutdown() {
+  g_running.store(false);
+  g_shutdown_cv.notify_all();
 }
 
 // =============================================================================
@@ -309,8 +317,8 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     
     // Create descriptor from proto data with correct column_id
     cedar::Descriptor desc;
-    if (request->has_descriptor_() && request->descriptor_().data().size() >= sizeof(int32_t)) {
-      desc = DeserializeDescriptor(request->descriptor_().data(), key.column_id());
+    if (request->has_value_descriptor() && request->value_descriptor().data().size() >= sizeof(int32_t)) {
+      desc = DeserializeDescriptor(request->value_descriptor().data(), key.column_id());
     }
     
     cedar::Timestamp txn_version(request->txn_version().value());
@@ -356,7 +364,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     if (result.ok()) {
       response->set_success(true);
       response->set_found(true);
-      auto* proto_desc = response->mutable_descriptor_();
+      auto* proto_desc = response->mutable_value_descriptor();
       proto_desc->set_data(SerializeDescriptor(result.value()));
     } else {
       response->set_success(true);
@@ -452,7 +460,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     for (const auto& [ts, desc] : results) {
       auto* item = response->add_items();
       item->set_timestamp(ts.value());
-      item->mutable_descriptor_()->set_data(SerializeDescriptor(desc));
+      item->mutable_value_descriptor()->set_data(SerializeDescriptor(desc));
     }
     
     response->set_success(true);
@@ -512,7 +520,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     for (const auto& [ts, desc] : results) {
       auto* item = response->add_items();
       item->set_timestamp(ts.value());
-      item->mutable_descriptor_()->set_data(SerializeDescriptor(desc));
+      item->mutable_value_descriptor()->set_data(SerializeDescriptor(desc));
     }
     
     response->set_success(true);
@@ -552,8 +560,8 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       }
       
       cedar::Descriptor desc;
-      if (item.has_descriptor_() && item.descriptor_().data().size() >= sizeof(int32_t)) {
-        desc = DeserializeDescriptor(item.descriptor_().data(), key.column_id());
+      if (item.has_value_descriptor() && item.value_descriptor().data().size() >= sizeof(int32_t)) {
+        desc = DeserializeDescriptor(item.value_descriptor().data(), key.column_id());
       }
       
       cedar::Timestamp txn_version(request->txn_version().value());
@@ -1070,7 +1078,7 @@ int main(int argc, char* argv[]) {
   StorageServiceImpl grpc_service(partition_manager.get());
   
   grpc::ServerBuilder builder;
-  auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv();
+  auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnvStrict();
   if (!server_creds.ok()) {
     std::cerr << "Failed to create server TLS credentials: " << server_creds.status().ToString() << std::endl;
     return 1;
@@ -1094,8 +1102,16 @@ int main(int argc, char* argv[]) {
   // Monitor and print stats, with periodic flush
   std::thread stats_thread([&partition_manager]() {
     int ticks = 0;
-    while (g_running) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+    while (g_running.load()) {
+      {
+        std::unique_lock<std::mutex> lock(g_shutdown_mutex);
+        g_shutdown_cv.wait_for(lock, std::chrono::seconds(1), [] {
+          return !g_running.load();
+        });
+      }
+      if (!g_running.load()) {
+        break;
+      }
       ticks++;
 
       auto* storage = partition_manager->GetSharedStorage();
@@ -1123,19 +1139,25 @@ int main(int argc, char* argv[]) {
   });
   
   // Wait for gRPC server to finish
-  while (g_running) {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+  while (g_running.load()) {
+    {
+      std::unique_lock<std::mutex> lock(g_shutdown_mutex);
+      g_shutdown_cv.wait_for(lock, std::chrono::milliseconds(100), [] {
+        return !g_running.load() || g_signal_received != 0;
+      });
+    }
     if (g_signal_received != 0) {
       const char msg[] = "[StorageServer] Shutdown signal received\n";
       write(STDERR_FILENO, msg, sizeof(msg) - 1);
       g_signal_received = 0;
+      RequestShutdown();
     }
   }
 
   // Shutdown
   std::cerr << std::endl << "Shutting down..." << std::endl;
   
-  g_running = false;
+  RequestShutdown();
   stats_thread.join();
   
   partition_manager->Shutdown();

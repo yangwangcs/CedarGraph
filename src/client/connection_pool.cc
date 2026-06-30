@@ -7,6 +7,8 @@
 #include <chrono>
 #include <iostream>
 
+#include "cedar/dtx/raft/grpc_tls.h"
+
 namespace cedar {
 namespace client {
 
@@ -29,13 +31,29 @@ ConnectionPool::~ConnectionPool() {
 std::shared_ptr<grpc::Channel> ConnectionPool::CreateChannel() const {
   std::string target = config_.host + ":" + std::to_string(config_.port);
   
-  if (config_.enable_tls) {
-    grpc::SslCredentialsOptions ssl_opts;
-    // TODO: Load cert files from config_.ca_cert_path, etc.
-    return grpc::CreateChannel(target, grpc::SslCredentials(ssl_opts));
-  } else {
-    return grpc::CreateChannel(target, grpc::InsecureChannelCredentials());
+  if (config_.enable_tls || cedar::dtx::raft::TlsCredentialFactory::EnvTlsEnabled()) {
+    cedar::dtx::raft::TlsConfig tls;
+    tls.enabled = true;
+    tls.ca_cert_file = config_.ca_cert_path;
+    tls.mtls_enabled = config_.mtls_enabled;
+    tls.client_cert_file = config_.client_cert_path;
+    tls.client_key_file = config_.client_key_path;
+
+    auto creds = config_.enable_tls
+        ? cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls)
+        : cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+    if (!creds.ok() && cedar::dtx::raft::TlsCredentialFactory::EnvTlsEnabled()) {
+      creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+    }
+    if (!creds.ok()) {
+      std::cerr << "[ConnectionPool] Failed to create TLS credentials for "
+                << target << ": " << creds.status().ToString() << std::endl;
+      return nullptr;
+    }
+    return grpc::CreateChannel(target, creds.ValueOrDie());
   }
+
+  return grpc::CreateChannel(target, grpc::InsecureChannelCredentials());
 }
 
 std::shared_ptr<grpc::Channel> ConnectionPool::GetConnection() {

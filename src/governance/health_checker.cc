@@ -18,6 +18,7 @@
 #include <arpa/inet.h>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <future>
 #include <iomanip>
@@ -392,6 +393,7 @@ class HealthCheckerImpl {
       std::lock_guard<std::mutex> lock(background_mutex_);
       background_running_ = false;
     }
+    background_cv_.notify_all();
 
     if (background_thread_.joinable()) {
       background_thread_.join();
@@ -774,8 +776,10 @@ class HealthCheckerImpl {
 
       RunAllChecks();
 
-      // Sleep for interval
-      std::this_thread::sleep_for(std::chrono::milliseconds(check_interval_ms_));
+      std::unique_lock<std::mutex> wait_lock(background_cv_mutex_);
+      background_cv_.wait_for(
+          wait_lock, std::chrono::milliseconds(check_interval_ms_),
+          [this]() { return !background_running_.load(); });
     }
   }
 
@@ -995,6 +999,8 @@ class HealthCheckerImpl {
   std::atomic<bool> background_running_;
   int check_interval_ms_;
   std::thread background_thread_;
+  std::condition_variable background_cv_;
+  std::mutex background_cv_mutex_;
 
   // HTTP endpoint state
   mutable std::mutex http_mutex_;

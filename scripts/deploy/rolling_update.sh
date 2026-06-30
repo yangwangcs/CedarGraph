@@ -21,6 +21,7 @@ BIN_DIR="/usr/local/bin"
 HEALTH_CHECK_TIMEOUT=300  # seconds
 HEALTH_CHECK_INTERVAL=5   # seconds
 DRAIN_TIMEOUT=60          # seconds
+CEDAR_BINARIES=(cedar-metad cedar-storaged cedar-graphd)
 
 # Update settings
 TARGET_VERSION=""
@@ -224,11 +225,17 @@ create_backup() {
     
     # Backup binaries
     log "  Backing up binaries..."
-    for bin in metad storaged graphd; do
+    local backed_up=0
+    for bin in "${CEDAR_BINARIES[@]}"; do
         if [[ -f "${BIN_DIR}/${bin}" ]]; then
             cp "${BIN_DIR}/${bin}" "${backup_path}/"
+            backed_up=$((backed_up + 1))
         fi
     done
+    if [[ "$backed_up" -eq 0 ]]; then
+        error "No current CedarGraph binaries were found in ${BIN_DIR}; refusing to continue without a rollback point"
+        return 1
+    fi
     
     # Backup configurations
     log "  Backing up configurations..."
@@ -253,7 +260,7 @@ restore_backup() {
     log "Restoring backup from: $backup_path"
     
     # Restore binaries
-    for bin in metad storaged graphd; do
+    for bin in "${CEDAR_BINARIES[@]}"; do
         if [[ -f "${backup_path}/${bin}" ]]; then
             cp "${backup_path}/${bin}" "${BIN_DIR}/"
             chmod +x "${BIN_DIR}/${bin}"
@@ -326,11 +333,19 @@ install_binaries() {
         return 0
     fi
     
-    for bin in metad storaged graphd; do
-        if [[ -f "${temp_dir}/${bin}" ]]; then
-            cp "${temp_dir}/${bin}" "${BIN_DIR}/"
+    for bin in "${CEDAR_BINARIES[@]}"; do
+        local source_bin="${temp_dir}/${bin}"
+        local short_bin="${bin#cedar-}"
+        if [[ ! -f "$source_bin" && -f "${temp_dir}/${short_bin}" ]]; then
+            source_bin="${temp_dir}/${short_bin}"
+        fi
+        if [[ -f "$source_bin" ]]; then
+            cp "$source_bin" "${BIN_DIR}/${bin}"
             chmod +x "${BIN_DIR}/${bin}"
             log "  Installed: $bin"
+        else
+            error "Required binary not found in release archive: $bin"
+            return 1
         fi
     done
     
@@ -479,7 +494,7 @@ stop_node() {
     local attempts=0
     while systemctl is-active --quiet "$service" 2>/dev/null && [[ $attempts -lt 10 ]]; do
         sleep 1
-        ((attempts++))
+        attempts=$((attempts + 1))
     done
     
     if systemctl is-active --quiet "$service" 2>/dev/null; then
@@ -592,7 +607,7 @@ run_update() {
     local total=${#ordered_nodes[@]}
     
     for node in "${ordered_nodes[@]}"; do
-        ((current++))
+        current=$((current + 1))
         echo ""
         info "[${current}/${total}] Updating node: $node"
         echo "----------------------------------------"

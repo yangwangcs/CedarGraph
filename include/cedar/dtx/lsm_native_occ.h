@@ -261,6 +261,7 @@ class LndOccEngine {
  private:
   DTxConfig config_;
   PartitionManager* partition_manager_{nullptr};
+  std::unique_ptr<TwcdEngine> owned_twcd_engine_;
   TwcdEngine* twcd_engine_{nullptr};
   
   // 分区 -> 本地协调器
@@ -350,7 +351,8 @@ LndOccCommitResult LocalTransactionCoordinator::Execute(
       // 冲突，重试
       if (attempt < options.max_retries) {
         std::this_thread::sleep_for(
-            std::chrono::milliseconds(options.retry_base_delay_ms * (1 << attempt)));
+            ::cedar::occ_detail::SaturatingExponentialBackoff(
+                options.retry_base_delay_ms, attempt));
       }
       
     } catch (const std::exception& e) {

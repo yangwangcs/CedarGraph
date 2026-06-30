@@ -34,7 +34,7 @@ UnifiedMetaClient::~UnifiedMetaClient() {
 
 Status UnifiedMetaClient::Init() {
   auto creds =
-      cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+      cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
   if (!creds.ok()) {
     return Status::IOError(
         "Failed to create TLS credentials for MetaD: " +
@@ -60,6 +60,13 @@ Status UnifiedMetaClient::Init() {
 
 Status UnifiedMetaClient::Shutdown() {
   running_ = false;
+  shutdown_cv_.notify_all();
+  {
+    std::lock_guard<std::mutex> lock(watch_context_mutex_);
+    if (active_watch_context_) {
+      active_watch_context_->TryCancel();
+    }
+  }
   if (refresh_thread_.joinable()) {
     refresh_thread_.join();
   }
@@ -218,8 +225,12 @@ UnifiedMetaClient::CacheStats UnifiedMetaClient::GetCacheStats() const {
 void UnifiedMetaClient::RefreshLoop() {
   int consecutive_failures = 0;
   while (running_) {
-    std::this_thread::sleep_for(options_.refresh_interval);
-    if (!running_) break;
+    {
+      std::unique_lock<std::mutex> lock(shutdown_cv_mutex_);
+      shutdown_cv_.wait_for(lock, options_.refresh_interval,
+                            [this]() { return !running_.load(); });
+      if (!running_) break;
+    }
     Status s = FetchPartitionMapFromMeta();
     if (!s.ok()) {
       consecutive_failures++;
@@ -229,7 +240,9 @@ void UnifiedMetaClient::RefreshLoop() {
       if (consecutive_failures > 1) {
         auto backoff = std::min(options_.refresh_interval * (1 << std::min(consecutive_failures - 1, 6)),
                                 std::chrono::seconds(300));
-        std::this_thread::sleep_for(backoff);
+        std::unique_lock<std::mutex> lock(shutdown_cv_mutex_);
+        shutdown_cv_.wait_for(lock, backoff,
+                              [this]() { return !running_.load(); });
       }
     } else {
       consecutive_failures = 0;
@@ -244,6 +257,10 @@ void UnifiedMetaClient::WatchLoop() {
 
   while (running_) {
     grpc::ClientContext context;
+    {
+      std::lock_guard<std::mutex> lock(watch_context_mutex_);
+      active_watch_context_ = &context;
+    }
     cedar::meta::WatchPartitionMapRequest request;
     request.set_space_name(options_.space_name);
 
@@ -254,7 +271,15 @@ void UnifiedMetaClient::WatchLoop() {
 
     auto stream = stub->WatchPartitionMap(&context, request);
     if (!stream) {
-      std::this_thread::sleep_for(seconds(5));
+      {
+        std::lock_guard<std::mutex> lock(watch_context_mutex_);
+        if (active_watch_context_ == &context) {
+          active_watch_context_ = nullptr;
+        }
+      }
+      std::unique_lock<std::mutex> lock(shutdown_cv_mutex_);
+      shutdown_cv_.wait_for(lock, seconds(5),
+                            [this]() { return !running_.load(); });
       continue;
     }
 
@@ -282,8 +307,16 @@ void UnifiedMetaClient::WatchLoop() {
       ApplyPartitionChange(change);
     }
 
+    {
+      std::lock_guard<std::mutex> lock(watch_context_mutex_);
+      if (active_watch_context_ == &context) {
+        active_watch_context_ = nullptr;
+      }
+    }
     if (!running_) break;
-    std::this_thread::sleep_for(seconds(2));
+    std::unique_lock<std::mutex> lock(shutdown_cv_mutex_);
+    shutdown_cv_.wait_for(lock, seconds(2),
+                          [this]() { return !running_.load(); });
   }
 }
 
@@ -419,10 +452,20 @@ void UnifiedMetaClient::ApplyPartitionChange(const PartitionMapChange& change) {
       break;
   }
 
-  // Notify watchers
-  std::shared_lock<std::shared_mutex> lock(watch_mutex_);
-  for (const auto& cb : watch_callbacks_) {
-    cb(change);
+  std::vector<std::function<void(const PartitionMapChange&)>> callbacks;
+  {
+    std::shared_lock<std::shared_mutex> lock(watch_mutex_);
+    callbacks = watch_callbacks_;
+  }
+
+  for (const auto& cb : callbacks) {
+    try {
+      cb(change);
+    } catch (const std::exception& e) {
+      LOG(WARNING) << "Partition watch callback exception: " << e.what();
+    } catch (...) {
+      LOG(WARNING) << "Partition watch callback unknown exception";
+    }
   }
 }
 

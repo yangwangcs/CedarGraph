@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -147,8 +148,13 @@ class ChaosFramework {
  private:
   void ContinuousChaosLoop();
   FaultResult ExecuteFault(const FaultSpec& spec);
+  bool WaitForShutdown(std::chrono::milliseconds timeout);
+  bool WaitForContinuousStop(std::chrono::milliseconds timeout);
   
   std::atomic<bool> running_{false};
+  std::atomic<bool> shutdown_requested_{false};
+  mutable std::mutex stop_mutex_;
+  std::condition_variable stop_cv_;
   FaultInjector fault_injector_;
   HealthChecker health_checker_;
   

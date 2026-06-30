@@ -18,6 +18,7 @@ type NodeConfig struct {
 	BinaryPath string `yaml:"binary_path"`
 	BindAddr   string `yaml:"bind_address"`
 	Port       int    `yaml:"port"`
+	GrpcPort   int    `yaml:"grpc_port"`
 	DataDir    string `yaml:"data_dir"`
 	ConfigFile string `yaml:"config_file"`
 	ExtraArgs  []string `yaml:"extra_args"`
@@ -42,6 +43,9 @@ func (c *ClusterConfig) defaults() {
 	}
 	if c.MetaD.Port == 0 {
 		c.MetaD.Port = 9559
+	}
+	if c.MetaD.GrpcPort == 0 {
+		c.MetaD.GrpcPort = 10559
 	}
 	if c.StorageD.BindAddr == "" {
 		c.StorageD.BindAddr = "127.0.0.1"

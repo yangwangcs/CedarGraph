@@ -14,16 +14,16 @@ CONFIG_DIR="${CONFIG_DIR:-/etc/cedar}"
 LOG_DIR="${LOG_DIR:-/var/log/cedar}"
 DATA_DIR="${DATA_DIR:-/var/lib/cedar}"
 
-# Default ports
-METAD_PORT="${METAD_PORT:-9559}"
-STORAGED_PORT="${STORAGED_PORT:-9779}"
-GRAPHD_PORT="${GRAPHD_PORT:-9669}"
-METRICS_PORT="${METRICS_PORT:-9091}"
-
-# Health check endpoints
-METAD_ENDPOINTS="${METAD_ENDPOINTS:-127.0.0.1:9559}"
+# Service endpoints
+METAD_ENDPOINTS="${METAD_ENDPOINTS:-127.0.0.1:10559}"
 STORAGED_ENDPOINTS="${STORAGED_ENDPOINTS:-127.0.0.1:9779}"
 GRAPHD_ENDPOINTS="${GRAPHD_ENDPOINTS:-127.0.0.1:9669}"
+
+# HTTP health endpoints. MetaD currently exposes gRPC on 10559, so its health
+# check is a TCP reachability check unless a separate HTTP endpoint is provided.
+METAD_HEALTH_ENDPOINTS="${METAD_HEALTH_ENDPOINTS:-}"
+STORAGED_HEALTH_ENDPOINTS="${STORAGED_HEALTH_ENDPOINTS:-127.0.0.1:7000}"
+GRAPHD_HEALTH_ENDPOINTS="${GRAPHD_HEALTH_ENDPOINTS:-127.0.0.1:9668}"
 
 # Output format
 OUTPUT_FORMAT="human"
@@ -126,10 +126,18 @@ Usage: $0 [OPTIONS]
 Options:
     -h, --help              Show this help message
     -j, --json              Output in JSON format
-    -c, --component COMP    Check specific component (metad|storaged|graphd)
+    -c, --component COMP    Check specific component (metad|storaged|storage|graphd)
     -v, --verbose           Enable verbose output
     -t, --timeout SEC       Connection timeout in seconds (default: ${TIMEOUT})
     --version               Show version
+
+Environment:
+    METAD_ENDPOINTS             MetaD gRPC endpoints, comma-separated
+    METAD_HEALTH_ENDPOINTS      Optional MetaD HTTP health endpoints
+    STORAGED_ENDPOINTS          StorageD service endpoints, comma-separated
+    STORAGED_HEALTH_ENDPOINTS   StorageD HTTP health endpoints, comma-separated
+    GRAPHD_ENDPOINTS            GraphD query endpoints, comma-separated
+    GRAPHD_HEALTH_ENDPOINTS     GraphD HTTP health endpoints, comma-separated
 
 Examples:
     $0                      # Human readable output
@@ -190,6 +198,23 @@ check_process_running() {
     return 1
 }
 
+health_endpoint_for() {
+    local endpoints="$1"
+    local idx="$2"
+
+    if [[ -z "$endpoints" ]]; then
+        echo ""
+        return 0
+    fi
+
+    IFS=',' read -ra HEALTH_ENDPOINTS <<< "$endpoints"
+    if [[ -n "${HEALTH_ENDPOINTS[$idx]:-}" ]]; then
+        echo "${HEALTH_ENDPOINTS[$idx]}"
+    else
+        echo "${HEALTH_ENDPOINTS[0]}"
+    fi
+}
+
 check_disk_space() {
     local threshold=90
     local data_dir="${DATA_DIR}"
@@ -243,6 +268,7 @@ check_memory() {
 
 check_metad_node() {
     local endpoint="$1"
+    local health_endpoint="${2:-}"
     local host
     local port
     host=$(echo "$endpoint" | cut -d':' -f1)
@@ -256,13 +282,19 @@ check_metad_node() {
         return 1
     fi
     
-    # Check HTTP health endpoint
+    # MetaD exposes gRPC by default; an HTTP endpoint is optional.
+    if [[ -z "$health_endpoint" ]]; then
+        echo "HEALTHY:grpc_reachable"
+        return 0
+    fi
+
+    # Check HTTP health endpoint when configured.
     local role="unknown"
-    if check_http_endpoint "$endpoint" "/status"; then
+    if check_http_endpoint "$health_endpoint" "/status"; then
         # Try to get role from metrics or status
         if command -v curl >/dev/null 2>&1; then
             local status
-            status=$(curl -s --max-time "$TIMEOUT" "http://${endpoint}/status" 2>/dev/null || echo "{}")
+            status=$(curl -s --max-time "$TIMEOUT" "http://${health_endpoint}/status" 2>/dev/null || echo "{}")
             # Extract role from JSON response (simple grep for now)
             if echo "$status" | grep -q "leader"; then
                 role="leader"
@@ -274,18 +306,13 @@ check_metad_node() {
         return 0
     fi
     
-    # Fallback: check if process is running
-    if check_process_running "metad"; then
-        echo "HEALTHY:${role}"
-        return 0
-    fi
-    
     echo "UNHEALTHY:Service not responding"
     return 1
 }
 
 check_storaged_node() {
     local endpoint="$1"
+    local health_endpoint="${2:-}"
     local host
     local port
     host=$(echo "$endpoint" | cut -d':' -f1)
@@ -298,15 +325,17 @@ check_storaged_node() {
         echo "UNHEALTHY:Port not accessible"
         return 1
     fi
-    
-    # Check HTTP health endpoint
-    if check_http_endpoint "$endpoint" "/health"; then
-        echo "HEALTHY:active"
+
+    # StorageD may expose only its service port in Docker Compose deployments.
+    # In that mode, TCP reachability is the strongest local post-start signal;
+    # registration with MetaD must still be verified by deployment gates/logs.
+    if [[ -z "$health_endpoint" ]]; then
+        echo "HEALTHY:tcp_reachable"
         return 0
     fi
     
-    # Fallback: check if process is running
-    if check_process_running "storaged"; then
+    # Check HTTP health endpoint.
+    if check_http_endpoint "$health_endpoint" "/health"; then
         echo "HEALTHY:active"
         return 0
     fi
@@ -317,6 +346,7 @@ check_storaged_node() {
 
 check_graphd_node() {
     local endpoint="$1"
+    local health_endpoint="${2:-}"
     local host
     local port
     host=$(echo "$endpoint" | cut -d':' -f1)
@@ -330,14 +360,8 @@ check_graphd_node() {
         return 1
     fi
     
-    # Check HTTP health endpoint
-    if check_http_endpoint "$endpoint" "/health"; then
-        echo "HEALTHY:ready"
-        return 0
-    fi
-    
-    # Fallback: check if process is running
-    if check_process_running "graphd"; then
+    # Check HTTP health endpoint.
+    if [[ -n "$health_endpoint" ]] && check_http_endpoint "$health_endpoint" "/health"; then
         echo "HEALTHY:ready"
         return 0
     fi
@@ -385,7 +409,13 @@ check_metad() {
     for endpoint in "${ENDPOINTS[@]}"; do
         local name="metad-${idx}"
         local result
-        result=$(check_metad_node "$endpoint")
+        local health_endpoint
+        health_endpoint=$(health_endpoint_for "$METAD_HEALTH_ENDPOINTS" "$idx")
+        if result=$(check_metad_node "$endpoint" "$health_endpoint"); then
+            :
+        else
+            :
+        fi
         
         if [[ "$result" == HEALTHY* ]]; then
             local role="${result#HEALTHY:}"
@@ -397,7 +427,7 @@ check_metad() {
             OVERALL_STATUS="UNHEALTHY"
         fi
         
-        ((idx++))
+        idx=$((idx + 1))
     done
 }
 
@@ -410,7 +440,13 @@ check_storaged() {
     for endpoint in "${ENDPOINTS[@]}"; do
         local name="storaged-${idx}"
         local result
-        result=$(check_storaged_node "$endpoint")
+        local health_endpoint
+        health_endpoint=$(health_endpoint_for "$STORAGED_HEALTH_ENDPOINTS" "$idx")
+        if result=$(check_storaged_node "$endpoint" "$health_endpoint"); then
+            :
+        else
+            :
+        fi
         
         if [[ "$result" == HEALTHY* ]]; then
             set_result "$name" "HEALTHY"
@@ -421,7 +457,7 @@ check_storaged() {
             OVERALL_STATUS="UNHEALTHY"
         fi
         
-        ((idx++))
+        idx=$((idx + 1))
     done
 }
 
@@ -434,7 +470,13 @@ check_graphd() {
     for endpoint in "${ENDPOINTS[@]}"; do
         local name="graphd-${idx}"
         local result
-        result=$(check_graphd_node "$endpoint")
+        local health_endpoint
+        health_endpoint=$(health_endpoint_for "$GRAPHD_HEALTH_ENDPOINTS" "$idx")
+        if result=$(check_graphd_node "$endpoint" "$health_endpoint"); then
+            :
+        else
+            :
+        fi
         
         if [[ "$result" == HEALTHY* ]]; then
             set_result "$name" "HEALTHY"
@@ -445,7 +487,7 @@ check_graphd() {
             OVERALL_STATUS="UNHEALTHY"
         fi
         
-        ((idx++))
+        idx=$((idx + 1))
     done
 }
 

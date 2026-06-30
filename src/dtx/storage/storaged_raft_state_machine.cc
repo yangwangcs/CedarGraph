@@ -6,6 +6,34 @@
 
 namespace cedar { namespace dtx { namespace storage {
 
+namespace {
+
+class CompactionPauseGuard {
+ public:
+  explicit CompactionPauseGuard(CedarGraphStorage* storage)
+      : storage_(storage) {
+    if (storage_) {
+      storage_->PauseCompaction();
+      paused_ = true;
+    }
+  }
+
+  ~CompactionPauseGuard() {
+    if (paused_) {
+      storage_->ResumeCompaction();
+    }
+  }
+
+  CompactionPauseGuard(const CompactionPauseGuard&) = delete;
+  CompactionPauseGuard& operator=(const CompactionPauseGuard&) = delete;
+
+ private:
+  CedarGraphStorage* storage_;
+  bool paused_ = false;
+};
+
+}  // namespace
+
 StorageRaftStateMachine::StorageRaftStateMachine(CedarGraphStorage* storage)
     : storage_(storage) {}
 
@@ -71,6 +99,9 @@ void StorageRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
 
   if (!storage_) {
     LOG(WARNING) << "No storage for snapshot save";
+    if (done) {
+      done->status().set_error(EIO, "No storage for snapshot save");
+    }
     return;
   }
 
@@ -79,7 +110,7 @@ void StorageRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
     std::string data_path = storage_->GetDbPath();
 
     // Step 1: Pause compaction to prevent SST file deletion during copy
-    storage_->PauseCompaction();
+    CompactionPauseGuard compaction_guard(storage_);
 
     // Step 2: Flush underlying storage to ensure all data is on disk
     auto flush_status = storage_->ForceFlush();
@@ -107,8 +138,6 @@ void StorageRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
         }
       }
     }
-
-    // Step 4: Resume compaction (moved to after catch for exception safety)
 
     // Register data files with snapshot writer
     for (const auto& entry :
@@ -154,8 +183,6 @@ void StorageRaftStateMachine::on_snapshot_save(braft::SnapshotWriter* writer,
       done->status().set_error(EIO, "Snapshot save failed: %s", e.what());
     }
   }
-  // Always resume compaction, even on exception
-  storage_->ResumeCompaction();
 }
 
 int StorageRaftStateMachine::on_snapshot_load(braft::SnapshotReader* reader) {

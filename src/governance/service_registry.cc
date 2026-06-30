@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <iostream>
 
 namespace cedar {
@@ -343,6 +344,7 @@ class ServiceRegistryImpl {
       std::lock_guard<std::mutex> lock(health_check_mutex_);
       health_check_running_ = false;
     }
+    health_check_cv_.notify_all();
 
     if (health_check_thread_.joinable()) {
       health_check_thread_.join();
@@ -430,8 +432,10 @@ class ServiceRegistryImpl {
 
       CheckForStaleServices();
 
-      // Sleep for interval
-      std::this_thread::sleep_for(std::chrono::milliseconds(health_check_interval_ms_));
+      std::unique_lock<std::mutex> wait_lock(health_check_cv_mutex_);
+      health_check_cv_.wait_for(
+          wait_lock, std::chrono::milliseconds(health_check_interval_ms_),
+          [this]() { return !health_check_running_.load(); });
     }
   }
 
@@ -486,6 +490,8 @@ class ServiceRegistryImpl {
   int health_check_interval_ms_;
   int stale_threshold_ms_;
   std::thread health_check_thread_;
+  std::condition_variable health_check_cv_;
+  std::mutex health_check_cv_mutex_;
 };
 
 // =============================================================================

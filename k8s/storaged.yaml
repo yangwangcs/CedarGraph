@@ -24,8 +24,21 @@ spec:
     spec:
       containers:
       - name: storaged
-        image: cedargraph:latest
+        image: cedargraph:k8s-fix-20260630
         imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - |
+          ordinal="${HOSTNAME##*-}"
+          exec /usr/local/bin/cedar-storaged \
+            --node_id "${ordinal}" \
+            --port "9779" \
+            --bind "0.0.0.0" \
+            --data_dir "/var/lib/cedar/storage" \
+            --meta "metad:10559" \
+            --health_port "7000" \
+            --metrics_port "7001"
         env:
         - name: NODE_TYPE
           value: "storaged"
@@ -42,7 +55,7 @@ spec:
         - name: DATA_DIR
           value: "/var/lib/cedar/storage"
         - name: CEDAR_METAD_ENDPOINT
-          value: "metad:9559"
+          value: "metad:10559"
         - name: AUTO_RECOVERY
           value: "true"
         - name: HEALTH_CHECK_INTERVAL
@@ -55,19 +68,22 @@ spec:
         - name: grpc
           containerPort: 9779
           protocol: TCP
+        - name: health
+          containerPort: 7000
+          protocol: TCP
         - name: metrics
           containerPort: 7001
           protocol: TCP
         livenessProbe:
           tcpSocket:
-            port: grpc
+            port: health
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
           tcpSocket:
-            port: grpc
+            port: health
           initialDelaySeconds: 10
           periodSeconds: 5
           timeoutSeconds: 3
@@ -115,6 +131,9 @@ spec:
   - name: grpc
     port: 9779
     targetPort: 9779
+  - name: health
+    port: 7000
+    targetPort: 7000
   clusterIP: None
 ---
 apiVersion: v1

@@ -22,6 +22,7 @@
 #define CEDAR_DTX_BOOKMARK_MANAGER_H_
 
 #include <cstdint>
+#include <condition_variable>
 #include <vector>
 #include <unordered_map>
 #include <mutex>
@@ -254,6 +255,7 @@ class BookmarkManager {
   
   // 分片水位
   mutable std::mutex watermarks_mutex_;
+  std::condition_variable watermarks_cv_;
   std::unordered_map<PartitionID, uint64_t> watermarks_;
   
   // 会话 Bookmark

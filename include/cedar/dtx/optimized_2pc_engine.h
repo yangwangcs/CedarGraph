@@ -340,6 +340,8 @@ class Optimized2PCEngine {
     int current_pipeline_depth = 4;
   } tuning_state_;
   mutable std::mutex tuning_mutex_;
+  std::condition_variable tuning_cv_;
+  std::mutex tuning_cv_mutex_;
 };
 
 }  // namespace dtx

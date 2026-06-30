@@ -21,6 +21,7 @@
 #ifndef CEDAR_BLOB_GC_MANAGER_H_
 #define CEDAR_BLOB_GC_MANAGER_H_
 
+#include <condition_variable>
 #include <cstdint>
 #include <string>
 #include <vector>

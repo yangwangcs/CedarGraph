@@ -2,13 +2,11 @@
 # 版本: 1.0.0
 # 日期: 2026-06-14
 
-version: '3.8'
-
 x-cedar-base: &cedar-base
-  image: cedargraph/cedar:${CEDAR_VERSION:-latest}
+  image: cedargraph/cedar:${CEDAR_VERSION:-k8s-fix-20260630}
   restart: unless-stopped
   networks:
-    - cedar-net
+    cedar-net:
   logging:
     driver: json-file
     options:
@@ -26,17 +24,29 @@ services:
     environment:
       - NODE_ROLE=metad
       - NODE_ID=0
-      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
       - DATA_DIR=/data/meta
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CEDAR_GRPC_TLS_ENABLED=${CEDAR_GRPC_TLS_ENABLED:-1}
+      - CEDAR_GRPC_ALLOW_INSECURE=${CEDAR_GRPC_ALLOW_INSECURE:-0}
+      - CEDAR_GRPC_SERVER_CERT=${CEDAR_GRPC_SERVER_CERT:-/etc/cedar/tls/tls.crt}
+      - CEDAR_GRPC_SERVER_KEY=${CEDAR_GRPC_SERVER_KEY:-/etc/cedar/tls/tls.key}
+      - CEDAR_GRPC_CA_CERT=${CEDAR_GRPC_CA_CERT:-/etc/cedar/tls/ca.crt}
+      - CEDAR_GRPC_MTLS_ENABLED=${CEDAR_GRPC_MTLS_ENABLED:-0}
+      - CEDAR_GRPC_CLIENT_CERT=${CEDAR_GRPC_CLIENT_CERT:-/etc/cedar/tls/client.crt}
+      - CEDAR_GRPC_CLIENT_KEY=${CEDAR_GRPC_CLIENT_KEY:-/etc/cedar/tls/client.key}
     volumes:
       - ${DATA_DIR:-./data}/meta0:/data/meta
       - ${LOG_DIR:-./logs}/meta0:/logs
+      - ${CEDAR_TLS_DIR:-./certs}:/etc/cedar/tls:ro
     ports:
       - "${META_PORT:-9559}:9559"
-    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+      - "${META_GRPC_PORT:-10559}:10559"
+    networks:
+      cedar-net:
+        ipv4_address: ${CEDAR_METAD0_IP:-172.31.20.10}
+    command: ["--node_id", "1", "--listen", "0.0.0.0:9559", "--advertise", "metad0:9559", "--grpc_port", "10559", "--data_dir", "/data/meta", "--peer", "1:metad0:9559", "--peer", "2:metad1:9559", "--peer", "3:metad2:9559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9559 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 10559 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -57,18 +67,26 @@ services:
     environment:
       - NODE_ROLE=metad
       - NODE_ID=1
-      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
       - DATA_DIR=/data/meta
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CEDAR_GRPC_TLS_ENABLED=${CEDAR_GRPC_TLS_ENABLED:-1}
+      - CEDAR_GRPC_ALLOW_INSECURE=${CEDAR_GRPC_ALLOW_INSECURE:-0}
+      - CEDAR_GRPC_SERVER_CERT=${CEDAR_GRPC_SERVER_CERT:-/etc/cedar/tls/tls.crt}
+      - CEDAR_GRPC_SERVER_KEY=${CEDAR_GRPC_SERVER_KEY:-/etc/cedar/tls/tls.key}
+      - CEDAR_GRPC_CA_CERT=${CEDAR_GRPC_CA_CERT:-/etc/cedar/tls/ca.crt}
+      - CEDAR_GRPC_MTLS_ENABLED=${CEDAR_GRPC_MTLS_ENABLED:-0}
+      - CEDAR_GRPC_CLIENT_CERT=${CEDAR_GRPC_CLIENT_CERT:-/etc/cedar/tls/client.crt}
+      - CEDAR_GRPC_CLIENT_KEY=${CEDAR_GRPC_CLIENT_KEY:-/etc/cedar/tls/client.key}
     volumes:
       - ${DATA_DIR:-./data}/meta1:/data/meta
       - ${LOG_DIR:-./logs}/meta1:/logs
-    depends_on:
-      metad0:
-        condition: service_healthy
-    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+      - ${CEDAR_TLS_DIR:-./certs}:/etc/cedar/tls:ro
+    networks:
+      cedar-net:
+        ipv4_address: ${CEDAR_METAD1_IP:-172.31.20.11}
+    command: ["--node_id", "2", "--listen", "0.0.0.0:9559", "--advertise", "metad1:9559", "--grpc_port", "10559", "--data_dir", "/data/meta", "--peer", "1:metad0:9559", "--peer", "2:metad1:9559", "--peer", "3:metad2:9559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9559 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 10559 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -89,18 +107,26 @@ services:
     environment:
       - NODE_ROLE=metad
       - NODE_ID=2
-      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
       - DATA_DIR=/data/meta
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CEDAR_GRPC_TLS_ENABLED=${CEDAR_GRPC_TLS_ENABLED:-1}
+      - CEDAR_GRPC_ALLOW_INSECURE=${CEDAR_GRPC_ALLOW_INSECURE:-0}
+      - CEDAR_GRPC_SERVER_CERT=${CEDAR_GRPC_SERVER_CERT:-/etc/cedar/tls/tls.crt}
+      - CEDAR_GRPC_SERVER_KEY=${CEDAR_GRPC_SERVER_KEY:-/etc/cedar/tls/tls.key}
+      - CEDAR_GRPC_CA_CERT=${CEDAR_GRPC_CA_CERT:-/etc/cedar/tls/ca.crt}
+      - CEDAR_GRPC_MTLS_ENABLED=${CEDAR_GRPC_MTLS_ENABLED:-0}
+      - CEDAR_GRPC_CLIENT_CERT=${CEDAR_GRPC_CLIENT_CERT:-/etc/cedar/tls/client.crt}
+      - CEDAR_GRPC_CLIENT_KEY=${CEDAR_GRPC_CLIENT_KEY:-/etc/cedar/tls/client.key}
     volumes:
       - ${DATA_DIR:-./data}/meta2:/data/meta
       - ${LOG_DIR:-./logs}/meta2:/logs
-    depends_on:
-      metad0:
-        condition: service_healthy
-    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+      - ${CEDAR_TLS_DIR:-./certs}:/etc/cedar/tls:ro
+    networks:
+      cedar-net:
+        ipv4_address: ${CEDAR_METAD2_IP:-172.31.20.12}
+    command: ["--node_id", "3", "--listen", "0.0.0.0:9559", "--advertise", "metad2:9559", "--grpc_port", "10559", "--data_dir", "/data/meta", "--peer", "1:metad0:9559", "--peer", "2:metad1:9559", "--peer", "3:metad2:9559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9559 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 10559 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -124,14 +150,24 @@ services:
     environment:
       - NODE_ROLE=storaged
       - NODE_ID=0
-      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - META_SERVERS=metad0:10559,metad1:10559,metad2:10559
       - DATA_DIR=/data/storage
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TTL_ENABLED=${TTL_ENABLED:-true}
       - TTL_RETENTION_DAYS=${TTL_RETENTION_DAYS:-30}
+      - CEDAR_GRPC_TLS_ENABLED=${CEDAR_GRPC_TLS_ENABLED:-1}
+      - CEDAR_GRPC_ALLOW_INSECURE=${CEDAR_GRPC_ALLOW_INSECURE:-0}
+      - CEDAR_GRPC_SERVER_CERT=${CEDAR_GRPC_SERVER_CERT:-/etc/cedar/tls/tls.crt}
+      - CEDAR_GRPC_SERVER_KEY=${CEDAR_GRPC_SERVER_KEY:-/etc/cedar/tls/tls.key}
+      - CEDAR_GRPC_CA_CERT=${CEDAR_GRPC_CA_CERT:-/etc/cedar/tls/ca.crt}
+      - CEDAR_GRPC_MTLS_ENABLED=${CEDAR_GRPC_MTLS_ENABLED:-0}
+      - CEDAR_GRPC_CLIENT_CERT=${CEDAR_GRPC_CLIENT_CERT:-/etc/cedar/tls/client.crt}
+      - CEDAR_GRPC_CLIENT_KEY=${CEDAR_GRPC_CLIENT_KEY:-/etc/cedar/tls/client.key}
+      - CEDAR_ADVERTISE_ADDRESS=storaged0
     volumes:
       - ${DATA_DIR:-./data}/storage0:/data/storage
       - ${LOG_DIR:-./logs}/storage0:/logs
+      - ${CEDAR_TLS_DIR:-./certs}:/etc/cedar/tls:ro
     ports:
       - "${STORAGE_PORT:-9779}:9779"
     depends_on:
@@ -141,9 +177,9 @@ services:
         condition: service_healthy
       metad2:
         condition: service_healthy
-    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    command: ["--bind", "0.0.0.0", "--data_dir", "/data/storage", "--meta", "metad0:10559,metad1:10559,metad2:10559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9779 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 9779 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -164,20 +200,30 @@ services:
     environment:
       - NODE_ROLE=storaged
       - NODE_ID=1
-      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - META_SERVERS=metad0:10559,metad1:10559,metad2:10559
       - DATA_DIR=/data/storage
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TTL_ENABLED=${TTL_ENABLED:-true}
       - TTL_RETENTION_DAYS=${TTL_RETENTION_DAYS:-30}
+      - CEDAR_GRPC_TLS_ENABLED=${CEDAR_GRPC_TLS_ENABLED:-1}
+      - CEDAR_GRPC_ALLOW_INSECURE=${CEDAR_GRPC_ALLOW_INSECURE:-0}
+      - CEDAR_GRPC_SERVER_CERT=${CEDAR_GRPC_SERVER_CERT:-/etc/cedar/tls/tls.crt}
+      - CEDAR_GRPC_SERVER_KEY=${CEDAR_GRPC_SERVER_KEY:-/etc/cedar/tls/tls.key}
+      - CEDAR_GRPC_CA_CERT=${CEDAR_GRPC_CA_CERT:-/etc/cedar/tls/ca.crt}
+      - CEDAR_GRPC_MTLS_ENABLED=${CEDAR_GRPC_MTLS_ENABLED:-0}
+      - CEDAR_GRPC_CLIENT_CERT=${CEDAR_GRPC_CLIENT_CERT:-/etc/cedar/tls/client.crt}
+      - CEDAR_GRPC_CLIENT_KEY=${CEDAR_GRPC_CLIENT_KEY:-/etc/cedar/tls/client.key}
+      - CEDAR_ADVERTISE_ADDRESS=storaged1
     volumes:
       - ${DATA_DIR:-./data}/storage1:/data/storage
       - ${LOG_DIR:-./logs}/storage1:/logs
+      - ${CEDAR_TLS_DIR:-./certs}:/etc/cedar/tls:ro
     depends_on:
       storaged0:
         condition: service_healthy
-    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    command: ["--node_id", "1", "--bind", "0.0.0.0", "--data_dir", "/data/storage", "--meta", "metad0:10559,metad1:10559,metad2:10559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9779 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 9779 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -198,20 +244,30 @@ services:
     environment:
       - NODE_ROLE=storaged
       - NODE_ID=2
-      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - META_SERVERS=metad0:10559,metad1:10559,metad2:10559
       - DATA_DIR=/data/storage
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TTL_ENABLED=${TTL_ENABLED:-true}
       - TTL_RETENTION_DAYS=${TTL_RETENTION_DAYS:-30}
+      - CEDAR_GRPC_TLS_ENABLED=${CEDAR_GRPC_TLS_ENABLED:-1}
+      - CEDAR_GRPC_ALLOW_INSECURE=${CEDAR_GRPC_ALLOW_INSECURE:-0}
+      - CEDAR_GRPC_SERVER_CERT=${CEDAR_GRPC_SERVER_CERT:-/etc/cedar/tls/tls.crt}
+      - CEDAR_GRPC_SERVER_KEY=${CEDAR_GRPC_SERVER_KEY:-/etc/cedar/tls/tls.key}
+      - CEDAR_GRPC_CA_CERT=${CEDAR_GRPC_CA_CERT:-/etc/cedar/tls/ca.crt}
+      - CEDAR_GRPC_MTLS_ENABLED=${CEDAR_GRPC_MTLS_ENABLED:-0}
+      - CEDAR_GRPC_CLIENT_CERT=${CEDAR_GRPC_CLIENT_CERT:-/etc/cedar/tls/client.crt}
+      - CEDAR_GRPC_CLIENT_KEY=${CEDAR_GRPC_CLIENT_KEY:-/etc/cedar/tls/client.key}
+      - CEDAR_ADVERTISE_ADDRESS=storaged2
     volumes:
       - ${DATA_DIR:-./data}/storage2:/data/storage
       - ${LOG_DIR:-./logs}/storage2:/logs
+      - ${CEDAR_TLS_DIR:-./certs}:/etc/cedar/tls:ro
     depends_on:
       storaged0:
         condition: service_healthy
-    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    command: ["--node_id", "2", "--bind", "0.0.0.0", "--data_dir", "/data/storage", "--meta", "metad0:10559,metad1:10559,metad2:10559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9779 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 9779 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -234,14 +290,32 @@ services:
     hostname: graphd
     environment:
       - NODE_ROLE=graphd
-      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - META_SERVERS=metad0:10559,metad1:10559,metad2:10559
+      - CEDAR_METAD_ENDPOINT=metad0:10559,metad1:10559,metad2:10559
       - AUTO_DISCOVERY=true
       - QUERY_PORT=9669
+      - HEALTH_PORT=9668
+      - METRICS_PORT=9667
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CEDAR_GRAPHD_AUTH_JWT_SECRET=${CEDAR_GRAPHD_AUTH_JWT_SECRET:?CEDAR_GRAPHD_AUTH_JWT_SECRET is required in production}
+      - CEDAR_GRAPHD_AUTH_USER=${CEDAR_GRAPHD_AUTH_USER:?CEDAR_GRAPHD_AUTH_USER is required in production}
+      - CEDAR_GRAPHD_AUTH_PASSWORD=${CEDAR_GRAPHD_AUTH_PASSWORD:?CEDAR_GRAPHD_AUTH_PASSWORD is required in production}
+      - CEDAR_GRAPHD_AUTH_ROLE=${CEDAR_GRAPHD_AUTH_ROLE:-admin}
+      - CEDAR_GRPC_TLS_ENABLED=${CEDAR_GRPC_TLS_ENABLED:-1}
+      - CEDAR_GRPC_ALLOW_INSECURE=${CEDAR_GRPC_ALLOW_INSECURE:-0}
+      - CEDAR_GRPC_SERVER_CERT=${CEDAR_GRPC_SERVER_CERT:-/etc/cedar/tls/tls.crt}
+      - CEDAR_GRPC_SERVER_KEY=${CEDAR_GRPC_SERVER_KEY:-/etc/cedar/tls/tls.key}
+      - CEDAR_GRPC_CA_CERT=${CEDAR_GRPC_CA_CERT:-/etc/cedar/tls/ca.crt}
+      - CEDAR_GRPC_MTLS_ENABLED=${CEDAR_GRPC_MTLS_ENABLED:-0}
+      - CEDAR_GRPC_CLIENT_CERT=${CEDAR_GRPC_CLIENT_CERT:-/etc/cedar/tls/client.crt}
+      - CEDAR_GRPC_CLIENT_KEY=${CEDAR_GRPC_CLIENT_KEY:-/etc/cedar/tls/client.key}
     volumes:
       - ${LOG_DIR:-./logs}/graphd:/logs
+      - ${CEDAR_TLS_DIR:-./certs}:/etc/cedar/tls:ro
     ports:
       - "${GRAPH_PORT:-9669}:9669"
+      - "${GRAPH_HEALTH_PORT:-9668}:9668"
+      - "${GRAPH_METRICS_PORT:-9667}:9667"
     depends_on:
       storaged0:
         condition: service_healthy
@@ -249,9 +323,9 @@ services:
         condition: service_healthy
       storaged2:
         condition: service_healthy
-    command: ["cedar-graphd", "--bind=0.0.0.0:9669", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    command: ["--bind", "0.0.0.0", "--meta", "metad0:10559,metad1:10559,metad2:10559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9669 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 9669 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -269,10 +343,11 @@ services:
   # Monitoring - 监控服务
   # ============================================================================
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.55.1
     container_name: cedar-prometheus
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./config/cedar_alerts.yml:/etc/prometheus/rules/cedar_alerts.yml:ro
       - ${DATA_DIR:-./data}/prometheus:/prometheus
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
@@ -285,10 +360,10 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.4.0
     container_name: cedar-grafana
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is required in production}
     volumes:
       - ${DATA_DIR:-./data}/grafana:/var/lib/grafana
       - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
@@ -305,7 +380,7 @@ services:
   # AlertManager - 告警管理
   # ============================================================================
   alertmanager:
-    image: prom/alertmanager:latest
+    image: prom/alertmanager:v0.27.0
     container_name: cedar-alertmanager
     volumes:
       - ./config/alertmanager.yml:/etc/alertmanager/alertmanager.yml
@@ -320,4 +395,4 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/16
+        - subnet: ${CEDAR_DOCKER_SUBNET:-172.31.20.0/24}

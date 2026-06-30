@@ -30,7 +30,7 @@ namespace cedar {
 namespace dtx {
 
 StatusOr<std::shared_ptr<grpc::ChannelCredentials>> CreateClientCredentialsFromEnv() {
-  return cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  return cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
 }
 
 // =============================================================================
@@ -48,16 +48,33 @@ DTXRpcClient::DTXRpcClient(const DTXRpcConfig& config)
     auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(
         config.tls_config);
     if (!creds.ok()) {
-      std::cerr << "DTXRpcClient TLS error: " << creds.status().ToString() << std::endl;
-      credentials_ = grpc::InsecureChannelCredentials();
+      auto env_creds =
+          cedar::dtx::raft::TlsCredentialFactory::EnvTlsEnabled()
+              ? cedar::dtx::CreateClientCredentialsFromEnv()
+              : StatusOr<std::shared_ptr<grpc::ChannelCredentials>>(
+                    Status::IOError("Environment TLS is not enabled"));
+      if (env_creds.ok()) {
+        credentials_ = env_creds.ValueOrDie();
+      } else if (config.allow_insecure) {
+        std::cerr << "DTXRpcClient TLS warning: falling back to insecure credentials: "
+                  << creds.status().ToString() << std::endl;
+        credentials_ = grpc::InsecureChannelCredentials();
+      } else {
+        std::cerr << "DTXRpcClient TLS error: " << creds.status().ToString() << std::endl;
+        credentials_ = nullptr;
+      }
     } else {
       credentials_ = creds.ValueOrDie();
     }
   } else {
+    if (config.allow_insecure) {
+      credentials_ = grpc::InsecureChannelCredentials();
+      return;
+    }
     auto creds = cedar::dtx::CreateClientCredentialsFromEnv();
     if (!creds.ok()) {
       std::cerr << "DTXRpcClient TLS error: " << creds.status().ToString() << std::endl;
-      credentials_ = grpc::InsecureChannelCredentials();
+      credentials_ = nullptr;
     } else {
       credentials_ = creds.ValueOrDie();
     }
@@ -81,6 +98,9 @@ Status DTXRpcClient::AddParticipant(NodeID id, const std::string& endpoint) {
   grpc::ChannelArguments args;
   args.SetMaxSendMessageSize(64 * 1024 * 1024);
   args.SetMaxReceiveMessageSize(64 * 1024 * 1024);
+  if (!credentials_) {
+    return Status::IOError("DTXRpcClient credentials are not initialized");
+  }
   participant->channel = grpc::CreateCustomChannel(endpoint, credentials_, args);
   participant->stub = std::shared_ptr<cedar::dtx::DTXService::Stub>(
       cedar::dtx::DTXService::NewStub(participant->channel));

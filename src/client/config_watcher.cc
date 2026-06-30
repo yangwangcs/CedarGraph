@@ -50,6 +50,7 @@ void ConfigWatcher::Stop() {
   }
 
   running_ = false;
+  watch_cv_.notify_all();
   if (watch_thread_.joinable()) {
     watch_thread_.join();
   }
@@ -116,20 +117,39 @@ std::chrono::system_clock::time_point ConfigWatcher::GetFileModificationTime() c
 
 void ConfigWatcher::WatchLoop() {
   while (running_) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(config_.poll_interval_ms));
+    std::unique_lock<std::mutex> wait_lock(watch_cv_mutex_);
+    watch_cv_.wait_for(wait_lock, std::chrono::milliseconds(config_.poll_interval_ms),
+                       [this]() { return !running_.load(); });
+    wait_lock.unlock();
+
+    if (!running_) {
+      break;
+    }
 
     // Check if file has been modified
     auto current_modified = GetFileModificationTime();
     if (current_modified > last_modified_) {
       // File has been modified, reload config
-      std::lock_guard<std::mutex> lock(mutex_);
-      
-      if (loader_.LoadFromFile(config_.file_path)) {
-        last_modified_ = current_modified;
+      ConfigLoader loaded_config;
+      if (loaded_config.LoadFromFile(config_.file_path)) {
+        ConfigChangeCallback callback;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          loader_ = loaded_config;
+          last_modified_ = current_modified;
+          callback = callback_;
+        }
 
-        // Notify callback
-        if (callback_) {
-          callback_(loader_);
+        if (callback) {
+          try {
+            callback(loaded_config);
+          } catch (const std::exception& e) {
+            std::cerr << "Config change callback exception: " << e.what()
+                      << std::endl;
+          } catch (...) {
+            std::cerr << "Config change callback unknown exception"
+                      << std::endl;
+          }
         }
 
         std::cout << "Config reloaded from: " << config_.file_path << std::endl;

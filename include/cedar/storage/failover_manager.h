@@ -154,12 +154,23 @@ class FailoverManager {
   bool IsRunning() const { return running_.load(); }
 
  private:
+  struct RoleChangeEvent {
+    std::string node_id;
+    NodeRole old_role;
+    NodeRole new_role;
+  };
+
   void OnHealthChanged(const std::string& node_id,
                        governance::HealthStatus old_status,
                        governance::HealthStatus new_status);
-  void PerformFailover(const std::string& failed_node_id);
-  void SelectNewLeader();
-  void UpdateNodeRole(const std::string& node_id, NodeRole new_role);
+  void PerformFailover(const std::string& failed_node_id,
+                       std::vector<RoleChangeEvent>* role_events);
+  void SelectNewLeader(std::vector<RoleChangeEvent>* role_events);
+  void UpdateNodeRole(const std::string& node_id,
+                      NodeRole new_role,
+                      std::vector<RoleChangeEvent>* role_events);
+  void NotifyFailover(const std::string& old_node, const std::string& new_node);
+  void NotifyNodeChanges(const std::vector<RoleChangeEvent>& role_events);
   bool CanFailover(const StorageNode& node);
 
   FailoverConfig config_;
@@ -168,8 +179,10 @@ class FailoverManager {
   mutable std::recursive_mutex nodes_mutex_;
   std::unordered_map<std::string, StorageNode> nodes_;
   std::string current_leader_;
+  size_t read_round_robin_index_{0};
   
   std::atomic<bool> running_{false};
+  mutable std::mutex callback_mutex_;
   FailoverCallback failover_callback_;
   NodeChangeCallback node_change_callback_;
 };

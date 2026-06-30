@@ -102,7 +102,7 @@ Add the mutex inside the `LsmEngine` private section, right after the existing `
 
 **Verification:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ninja cedar 2>&1 | tail -n 5
+cd <repo-root>/build && ninja cedar 2>&1 | tail -n 5
 ```
 **Expected:** `ninja: no work to do.` (header-only change compiles with next task).
 
@@ -221,7 +221,7 @@ Status OCCTransaction::Commit() {
 
 **Verification:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ninja cedar 2>&1 | tail -n 10
+cd <repo-root>/build && ninja cedar 2>&1 | tail -n 10
 ```
 **Expected:** No compile errors. Warnings about unused variables are OK.
 
@@ -365,7 +365,7 @@ gtest_discover_tests(test_commit_serializability)
 
 **Verification (must FAIL before Task 2 is applied, PASS after):**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ninja test_commit_serializability 2>&1
+cd <repo-root>/build && ninja test_commit_serializability 2>&1
 ./tests/test_commit_serializability 2>&1
 ```
 **Expected before fix:** `commits` > `kIterations` (both txns commit, lost update).  
@@ -498,7 +498,7 @@ Status CedarGraphStorage::PutEdge(const WriteOptions& options,
 
 **Verification:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ninja cedar 2>&1 | tail -n 10
+cd <repo-root>/build && ninja cedar 2>&1 | tail -n 10
 ```
 **Expected:** Clean compile.
 
@@ -687,7 +687,7 @@ gtest_discover_tests(test_edge_atomicity)
 
 **Verification:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ninja test_edge_atomicity 2>&1
+cd <repo-root>/build && ninja test_edge_atomicity 2>&1
 ./tests/test_edge_atomicity 2>&1
 ```
 **Expected before fix:** `NoHalfWrittenEdge` may sporadically fail (half_write_observations > 0).  
@@ -830,7 +830,7 @@ Then in `BatchWrite()`, use:
 
 **Verification:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ninja cedar 2>&1 | tail -n 10
+cd <repo-root>/build && ninja cedar 2>&1 | tail -n 10
 ```
 **Expected:** Clean compile.
 
@@ -960,7 +960,7 @@ gtest_discover_tests(test_batchwrite_memtable_refresh)
 
 **Verification:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ninja test_batchwrite_memtable_refresh 2>&1
+cd <repo-root>/build && ninja test_batchwrite_memtable_refresh 2>&1
 ./tests/test_batchwrite_memtable_refresh 2>&1
 ```
 **Expected before fix:** Random `Key X lost after BatchWrite` failures.  
@@ -977,7 +977,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && ninja test_batchwrite_memtab
 **Goal:** Ensure no existing functionality is broken by the three fixes.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 
 # Rebuild everything
 ninja 2>&1 | tail -n 20
@@ -991,7 +991,7 @@ ctest -R "test_wal_ordering|test_transaction_pool|test_pool_state_reset|test_ced
 
 **Expected output:**
 ```
-Test project /Users/wangyang/Desktop/CedarGraph-Core/build
+Test project <repo-root>/build
     Start 1: test_commit_serializability
     Start 2: test_edge_atomicity
     Start 3: test_batchwrite_memtable_refresh
@@ -1065,7 +1065,7 @@ Status OCCTransaction::WriteToMemTable() {
 **Note:** `Descriptor::Tombstone()` must exist. If your tree uses a different tombstone constructor (e.g., `Descriptor::InlineInt(...)` with a delete flag), adapt accordingly. Check `include/cedar/types/descriptor.h`:
 
 ```bash
-grep -n "Tombstone\|Delete\|tombstone" /Users/wangyang/Desktop/CedarGraph-Core/include/cedar/types/descriptor.h
+grep -n "Tombstone\|Delete\|tombstone" <repo-root>/include/cedar/types/descriptor.h
 ```
 
 If `Descriptor::Tombstone()` does not exist, use the equivalent inline tombstone:
@@ -1084,7 +1084,7 @@ tombstone.SetDeleted(true);  // or however your API marks deletion
 
 ```bash
 # Final verification command (run this before git add)
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ninja && ctest -R "test_commit_serializability|test_edge_atomicity|test_batchwrite_memtable_refresh|test_wal_ordering|test_transaction_pool|test_cedar_graph_storage" --output-on-failure
+cd <repo-root>/build && ninja && ctest -R "test_commit_serializability|test_edge_atomicity|test_batchwrite_memtable_refresh|test_wal_ordering|test_transaction_pool|test_cedar_graph_storage" --output-on-failure
 ```
 
 - [ ] `global_commit_mutex_` added to `LsmEngine`

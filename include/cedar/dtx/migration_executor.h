@@ -23,10 +23,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "cedar/core/status.h"
@@ -195,6 +199,8 @@ class MigrationTask {
   Status TransferBatch(const std::vector<std::pair<CedarKey, Descriptor>>& batch);
   bool ShouldThrottle() const;
   void UpdateState(MigrationState new_state);
+  Status WaitForControl(std::chrono::milliseconds delay);
+  Status WaitWhilePaused();
   
   uint64_t migration_id_;
   PartitionID partition_id_;
@@ -205,6 +211,8 @@ class MigrationTask {
   std::atomic<MigrationState> state_{MigrationState::kPending};
   std::atomic<bool> cancelled_{false};
   std::atomic<bool> paused_{false};
+  std::mutex control_mutex_;
+  std::condition_variable control_cv_;
   
   MigrationProgress progress_;
   mutable std::mutex progress_mutex_;
@@ -277,6 +285,7 @@ class MigrationExecutor {
   
   std::atomic<uint64_t> next_migration_id_{1};
   std::atomic<bool> shutdown_{false};
+  std::atomic<bool> accepting_submissions_{false};
   
   mutable std::mutex tasks_mutex_;
   std::unordered_map<uint64_t, std::shared_ptr<MigrationTask>> tasks_;

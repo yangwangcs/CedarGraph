@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <future>
 #include <map>
@@ -635,6 +636,8 @@ class LsmEngine {
   std::atomic<int64_t> expired_data_count_{0};
   std::atomic<int64_t> archived_data_count_{0};
   mutable std::mutex ttl_mutex_;
+  std::mutex ttl_cleanup_mutex_;
+  std::condition_variable ttl_cleanup_cv_;
 
   // Internal helpers
   void UpdatePropertyIndex(uint64_t entity_id, uint16_t column_id,
@@ -790,6 +793,8 @@ class LsmEngine {
   // 后台自动触发 Compaction 线程
   std::atomic<bool> auto_compaction_enabled_{true};
   std::unique_ptr<std::thread> auto_compaction_thread_;
+  std::mutex auto_compaction_mutex_;
+  std::condition_variable auto_compaction_cv_;
   void AutoCompactionThread();
 
   // Compaction pause support (for snapshot safety)

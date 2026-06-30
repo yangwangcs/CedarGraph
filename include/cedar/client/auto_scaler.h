@@ -7,11 +7,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "cedar/client/cluster_types.h"
@@ -31,22 +33,22 @@ enum class ScalingPolicy {
 // Scaling rule
 struct ScalingRule {
   std::string component;          // metad, storaged, graphd, queryd
-  ScalingPolicy policy;
-  double scale_up_threshold;      // Threshold to scale up
-  double scale_down_threshold;    // Threshold to scale down
-  int min_replicas;               // Minimum replicas
-  int max_replicas;               // Maximum replicas
-  int cooldown_seconds;           // Cooldown period between scaling
-  int evaluation_periods;         // Number of periods before scaling
+  ScalingPolicy policy = ScalingPolicy::CPU_BASED;
+  double scale_up_threshold = 0.0;      // Threshold to scale up
+  double scale_down_threshold = 0.0;    // Threshold to scale down
+  int min_replicas = 0;                 // Minimum replicas
+  int max_replicas = 0;                 // Maximum replicas
+  int cooldown_seconds = 300;           // Cooldown period between scaling
+  int evaluation_periods = 1;           // Number of periods before scaling
 };
 
 // Scaling event
 struct ScalingEvent {
   std::string component;
-  int old_replicas;
-  int new_replicas;
+  int old_replicas = 0;
+  int new_replicas = 0;
   std::string reason;
-  int64_t timestamp;
+  int64_t timestamp = 0;
 };
 
 // Scaling callback
@@ -95,6 +97,8 @@ class AutoScaler {
   class ClusterMonitor* cluster_monitor_;
   std::atomic<bool> running_{false};
   std::thread scaler_thread_;
+  std::condition_variable scaler_cv_;
+  std::mutex scaler_cv_mutex_;
   mutable std::mutex mutex_;
   
   std::vector<ScalingRule> rules_;

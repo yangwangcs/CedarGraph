@@ -5,17 +5,25 @@ namespace: cedargraph
 
 resources:
   - namespace.yaml
+  # Copy graphd-secrets.example.yaml to graphd-secrets.yaml and replace all
+  # placeholder values before applying a production deployment.
+  # - graphd-secrets.yaml
   - metad.yaml
   - storaged.yaml
   - graphd.yaml
-  - queryd.yaml
   - storaged-config.yaml
   - graphd-config.yaml
+  - network-policy.yaml
+  - pod-disruption-budget.yaml
 
-commonLabels:
-  app.kubernetes.io/part-of: cedargraph
-  app.kubernetes.io/managed-by: kustomize
+labels:
+  - includeSelectors: true
+    includeTemplates: true
+    pairs:
+      app.kubernetes.io/part-of: cedargraph
+      app.kubernetes.io/instance: cedargraph
+      app.kubernetes.io/managed-by: kustomize
 
 images:
   - name: cedargraph
-    newTag: latest
+    newTag: k8s-fix-20260630

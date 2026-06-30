@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 #include <atomic>
+#include <chrono>
 #include <thread>
 #include <vector>
 
@@ -101,6 +102,19 @@ class FailoverRaceTest : public ::testing::Test {
     ASSERT_TRUE(s.ok());
     s = failover_manager_->RegisterNode("n3", "127.0.0.1:9781", NodeRole::kFollower);
     ASSERT_TRUE(s.ok());
+  }
+
+  void RegisterControlledNodes(std::atomic<HealthStatus>* n1_status,
+                               std::atomic<HealthStatus>* n2_status,
+                               std::atomic<HealthStatus>* n3_status) {
+    ASSERT_TRUE(health_checker_->RegisterComponent(
+        "n1", [n1_status]() { return n1_status->load(); }).ok());
+    ASSERT_TRUE(health_checker_->RegisterComponent(
+        "n2", [n2_status]() { return n2_status->load(); }).ok());
+    ASSERT_TRUE(health_checker_->RegisterComponent(
+        "n3", [n3_status]() { return n3_status->load(); }).ok());
+
+    RegisterHealthyNodes();
   }
 
   std::shared_ptr<HealthChecker> health_checker_;
@@ -222,4 +236,105 @@ TEST_F(FailoverRaceTest, GetNodeForReadRespectsCanFailover) {
     EXPECT_EQ(node.ValueOrDie().node_id, "n1");
     EXPECT_EQ(node.ValueOrDie().role, NodeRole::kLeader);
   }
+}
+
+TEST_F(FailoverRaceTest, ManualFailoverPromotesRequestedTarget) {
+  RegisterHealthyNodes();
+
+  auto s = failover_manager_->Start();
+  ASSERT_TRUE(s.ok());
+
+  auto leader = failover_manager_->GetLeader();
+  ASSERT_TRUE(leader.ok());
+  ASSERT_EQ(leader.ValueOrDie().node_id, "n1");
+
+  s = failover_manager_->TriggerManualFailover("n1", "n2");
+  ASSERT_TRUE(s.ok()) << s.ToString();
+
+  leader = failover_manager_->GetLeader();
+  ASSERT_TRUE(leader.ok());
+  EXPECT_EQ(leader.ValueOrDie().node_id, "n2");
+  EXPECT_EQ(leader.ValueOrDie().role, NodeRole::kLeader);
+
+  auto all_nodes = failover_manager_->GetAllNodes();
+  bool old_leader_demoted = false;
+  for (const auto& node : all_nodes) {
+    if (node.node_id == "n1") {
+      old_leader_demoted = (node.role == NodeRole::kFollower);
+    }
+  }
+  EXPECT_TRUE(old_leader_demoted);
+}
+
+TEST_F(FailoverRaceTest, ManualFailoverCallbackRunsOutsideManagerLock) {
+  RegisterHealthyNodes();
+
+  auto s = failover_manager_->Start();
+  ASSERT_TRUE(s.ok());
+
+  std::atomic<bool> callback_entered{false};
+  failover_manager_->SetFailoverCallback(
+      [&](const std::string&, const std::string&) {
+        callback_entered.store(true);
+        auto leader = failover_manager_->GetLeader();
+        EXPECT_TRUE(leader.ok());
+      });
+
+  s = failover_manager_->TriggerManualFailover("n1", "n2");
+  ASSERT_TRUE(s.ok()) << s.ToString();
+  EXPECT_TRUE(callback_entered.load());
+}
+
+TEST_F(FailoverRaceTest, ManualFailoverRejectsSameSourceAndTarget) {
+  RegisterHealthyNodes();
+
+  auto s = failover_manager_->Start();
+  ASSERT_TRUE(s.ok());
+
+  s = failover_manager_->TriggerManualFailover("n1", "n1");
+  EXPECT_FALSE(s.ok());
+  EXPECT_TRUE(s.IsInvalidArgument());
+
+  auto leader = failover_manager_->GetLeader();
+  ASSERT_TRUE(leader.ok());
+  EXPECT_EQ(leader.ValueOrDie().node_id, "n1");
+  EXPECT_EQ(leader.ValueOrDie().role, NodeRole::kLeader);
+}
+
+TEST_F(FailoverRaceTest, AutomaticFailoverRespectsDelayWindow) {
+  std::atomic<HealthStatus> n1_status{HealthStatus::kHealthy};
+  std::atomic<HealthStatus> n2_status{HealthStatus::kHealthy};
+  std::atomic<HealthStatus> n3_status{HealthStatus::kHealthy};
+  RegisterControlledNodes(&n1_status, &n2_status, &n3_status);
+
+  FailoverConfig config;
+  config.enable_auto_failover = true;
+  config.enable_read_from_follower = true;
+  config.failover_delay = std::chrono::seconds(60);
+  ASSERT_TRUE(failover_manager_->Initialize(config, health_monitor_).ok());
+
+  auto s = failover_manager_->Start();
+  ASSERT_TRUE(s.ok());
+
+  n1_status.store(HealthStatus::kUnhealthy);
+  s = health_monitor_->CheckNodeHealth("n1");
+  ASSERT_FALSE(s.ok());
+
+  auto leader = failover_manager_->GetLeader();
+  ASSERT_TRUE(leader.ok());
+  const std::string throttled_leader = leader.ValueOrDie().node_id;
+  ASSERT_NE(throttled_leader, "n1");
+
+  if (throttled_leader == "n2") {
+    n2_status.store(HealthStatus::kUnhealthy);
+  } else {
+    ASSERT_EQ(throttled_leader, "n3");
+    n3_status.store(HealthStatus::kUnhealthy);
+  }
+  s = health_monitor_->CheckNodeHealth(throttled_leader);
+  ASSERT_FALSE(s.ok());
+
+  leader = failover_manager_->GetLeader();
+  ASSERT_TRUE(leader.ok());
+  EXPECT_EQ(leader.ValueOrDie().node_id, throttled_leader);
 }

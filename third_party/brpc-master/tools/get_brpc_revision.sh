@@ -15,7 +15,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-output=$(cat $1/RELEASE_VERSION)
+if [ -f "$1/RELEASE_VERSION" ]; then
+    output=$(cat "$1/RELEASE_VERSION")
+else
+    output="1.16.0"
+fi
 abbr_commit_hash=$(git log -1 --format="%h" 2> /dev/null)
 committer_date=($(git log -1 --format="%ci" 2> /dev/null))
 committer_date="${committer_date[0]}T${committer_date[1]}${committer_date[2]:0:3}:${committer_date[2]:3:2}"

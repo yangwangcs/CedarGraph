@@ -30,12 +30,13 @@ ColumnGroupTaskQueue::~ColumnGroupTaskQueue() {
   Shutdown();
 }
 
-void ColumnGroupTaskQueue::Push(PrioritizedCompactionTask task) {
+bool ColumnGroupTaskQueue::Push(PrioritizedCompactionTask task) {
   std::unique_lock<std::mutex> lock(mutex_);
-  if (shutdown_) return;
+  if (shutdown_) return false;
   
   queue_.push(std::move(task));
   cv_.notify_one();
+  return true;
 }
 
 bool ColumnGroupTaskQueue::Pop(PrioritizedCompactionTask* out_task, 
@@ -63,14 +64,26 @@ bool ColumnGroupTaskQueue::Pop(PrioritizedCompactionTask* out_task,
 }
 
 void ColumnGroupTaskQueue::MarkColumnBusy(const std::string& column_key, bool busy) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  busy_columns_[column_key] = busy;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    busy_columns_[column_key] = busy;
+  }
+  cv_.notify_all();
 }
 
 bool ColumnGroupTaskQueue::IsColumnBusy(const std::string& column_key) const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = busy_columns_.find(column_key);
   return it != busy_columns_.end() && it->second;
+}
+
+bool ColumnGroupTaskQueue::WaitForColumnAvailable(
+    const std::string& column_key, std::chrono::milliseconds timeout) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  return cv_.wait_for(lock, timeout, [this, &column_key] {
+    auto it = busy_columns_.find(column_key);
+    return shutdown_ || it == busy_columns_.end() || !it->second;
+  });
 }
 
 size_t ColumnGroupTaskQueue::Size() const {
@@ -122,6 +135,7 @@ void ThreadPoolCompactionExecutor::Start() {
 void ThreadPoolCompactionExecutor::Stop() {
   shutdown_.store(true);
   task_queue_->Shutdown();
+  completion_cv_.notify_all();
   
   for (auto& t : workers_) {
     if (t.joinable()) {
@@ -132,17 +146,28 @@ void ThreadPoolCompactionExecutor::Stop() {
 }
 
 void ThreadPoolCompactionExecutor::WaitForAll() {
-  while (active_tasks_.load() > 0 || !task_queue_->Empty()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+  std::unique_lock<std::mutex> lock(completion_mutex_);
+  completion_cv_.wait(lock, [this]() {
+    return shutdown_.load() || outstanding_tasks_.load() == 0;
+  });
 }
 
 size_t ThreadPoolCompactionExecutor::PendingTasks() const {
   return task_queue_->Size();
 }
 
-void ThreadPoolCompactionExecutor::Push(PrioritizedCompactionTask task) {
-  task_queue_->Push(std::move(task));
+bool ThreadPoolCompactionExecutor::Push(PrioritizedCompactionTask task) {
+  if (shutdown_.load()) {
+    return false;
+  }
+  outstanding_tasks_.fetch_add(1);
+  if (!task_queue_->Push(std::move(task))) {
+    outstanding_tasks_.fetch_sub(1);
+    completion_cv_.notify_all();
+    return false;
+  }
+  completion_cv_.notify_all();
+  return true;
 }
 
 void ThreadPoolCompactionExecutor::WorkerThread() {
@@ -157,8 +182,13 @@ void ThreadPoolCompactionExecutor::WorkerThread() {
     // 检查列是否忙（避免同列并发）
     if (task_queue_->IsColumnBusy(ptask.column_key)) {
       // 重新入队，稍后重试
-      task_queue_->Push(std::move(ptask));
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if (!task_queue_->Push(std::move(ptask))) {
+        outstanding_tasks_.fetch_sub(1);
+        completion_cv_.notify_all();
+        break;
+      }
+      task_queue_->WaitForColumnAvailable(ptask.column_key,
+                                          std::chrono::milliseconds(1));
       continue;
     }
     
@@ -175,6 +205,8 @@ void ThreadPoolCompactionExecutor::WorkerThread() {
     // 标记列闲
     active_tasks_.fetch_sub(1);
     task_queue_->MarkColumnBusy(ptask.column_key, false);
+    outstanding_tasks_.fetch_sub(1);
+    completion_cv_.notify_all();
   }
 }
 
@@ -224,8 +256,7 @@ bool ParallelCompactionEngine::ScheduleIfNeeded() {
   ptask.priority.timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
   
   // 提交到队列
-  executor_->Push(std::move(ptask));
-  return true;
+  return executor_->Push(std::move(ptask));
 }
 
 void ParallelCompactionEngine::WaitForAll() {

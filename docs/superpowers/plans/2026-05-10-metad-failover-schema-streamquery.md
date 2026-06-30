@@ -56,7 +56,7 @@ Insert the same four generated file pairs into the `DEPENDS` list of `add_custom
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 touch ../proto/query_service.proto
 make generate_proto -j4
 ls -la generated_proto/query_service.pb.cc
@@ -134,7 +134,7 @@ In the `service MetaService` block (around line 175), add:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make generate_proto -j4
 ```
 Expected: `generated_proto/meta_service.pb.cc` and `.pb.h` are updated with new types.
@@ -564,7 +564,7 @@ Each replacement follows this pattern:
 - [ ] **Step 4: Build and run existing tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make test_graphd_client -j4 2>&1 | tail -20
 ctest -R test_graphd_client --output-on-failure
 ```
@@ -707,7 +707,7 @@ Replace single-address assignments with `SetMetaAddress()` or `metad_addresses =
 - [ ] **Step 5: Build and test**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make cedar_storage -j4 2>&1 | tail -20
 ```
 Expected: StorageD library compiles successfully.
@@ -761,7 +761,7 @@ message StreamQueryResponse {
 - [ ] **Step 3: Regenerate protobufs**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make generate_proto -j4
 ```
 
@@ -914,7 +914,7 @@ Replace the existing `StreamQuery` method body (around line 251) with:
 - [ ] **Step 3: Build queryd**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make cedar_queryd -j4 2>&1 | tail -20
 ```
 Expected: cedar_queryd compiles successfully.
@@ -1003,7 +1003,7 @@ grpc::Status GraphServiceRouter::GetSchema(grpc::ServerContext* context,
 - [ ] **Step 2: Build GraphD**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make graphd -j4 2>&1 | tail -30
 ```
 Expected: graphd compiles successfully.
@@ -1144,7 +1144,7 @@ add_test(NAME GraphServiceRouterTest COMMAND test_graph_service_router)
 - [ ] **Step 4: Run tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make test_meta_service -j4
 ctest -R test_meta_service --output-on-failure
 make test_graph_service_router -j4
@@ -1166,7 +1166,7 @@ git commit -m "test: add schema and GetSchema unit tests"
 - [ ] **Step 1: Full build**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 make -j4 2>&1 | tail -30
 ```
 Expected: all targets (cedar, graphd, cedar_queryd, cedar_storage) compile successfully.

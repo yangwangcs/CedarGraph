@@ -58,7 +58,7 @@ In the `private:` section, add:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build may fail with undefined reference — expected, we implement next.
 
@@ -77,7 +77,7 @@ void TransactionRecoveryManager::SetDecisionLogLoader(DecisionLogLoader loader) 
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -118,7 +118,7 @@ Status TransactionRecoveryManager::StartRecovery(TxnID txn_id) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -148,7 +148,7 @@ In `src/dtx/optimized_2pc_engine.cc`, locate where `recovery_manager_` is set (a
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -257,7 +257,7 @@ add_test(NAME decision_log_recovery_test COMMAND decision_log_recovery_test)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target decision_log_recovery_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/decision_log_recovery_test
+cd <repo-root>/build && cmake --build . --target decision_log_recovery_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/decision_log_recovery_test
 ```
 Expected: Test passes.
 
@@ -266,7 +266,7 @@ Expected: Test passes.
 ### Step 1.1.6: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/dtx/transaction_recovery_manager.h src/dtx/transaction_recovery_manager.cc src/dtx/optimized_2pc_engine.cc tests/dtx/decision_log_recovery_test.cc tests/CMakeLists.txt
 git commit -m "feat(recovery): wire decision log into TransactionRecoveryManager
 
@@ -299,7 +299,7 @@ In `include/cedar/gcn/event_applier.h`, add to the `private:` section:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_gcn -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_gcn -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -339,7 +339,7 @@ In `src/gcn/event_applier.cc`, replace the back-pressure block:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_gcn -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_gcn -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -372,7 +372,7 @@ void EventApplier::DrainBufferUnlocked() {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_gcn -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_gcn -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -447,7 +447,7 @@ Register in `tests/CMakeLists.txt`.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target event_applier_cv_test -j$(sysctl -n hw.ncpu) && ./tests/gcn/event_applier_cv_test
+cd <repo-root>/build && cmake --build . --target event_applier_cv_test -j$(sysctl -n hw.ncpu) && ./tests/gcn/event_applier_cv_test
 ```
 Expected: Test passes with elapsed < 200ms.
 
@@ -456,7 +456,7 @@ Expected: Test passes with elapsed < 200ms.
 ### Step 1.2.5: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/gcn/event_applier.h src/gcn/event_applier.cc tests/gcn/event_applier_cv_test.cc tests/CMakeLists.txt
 git commit -m "perf(event-applier): condition variable backpressure instead of polling
 
@@ -496,7 +496,7 @@ In `include/cedar/transaction/wal.h`, change `WriteBatchAsync` signature:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_transaction -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_transaction -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build may fail with undefined reference — expected.
 
@@ -530,7 +530,7 @@ Status WalWriter::WriteBatchAsync(const WalBatch& batch, AsyncResult* out) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_transaction -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_transaction -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build may fail with `WriteBatch` still using old signature — expected.
 
@@ -574,7 +574,7 @@ Status WaitForSequence(uint64_t sequence);
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_transaction -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_transaction -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -585,14 +585,14 @@ Expected: Build succeeds.
 Search for `WriteBatchAsync` callers:
 
 ```bash
-grep -rn "WriteBatchAsync" /Users/wangyang/Desktop/CedarGraph-Core/src/ /Users/wangyang/Desktop/CedarGraph-Core/include/ --include="*.cc" --include="*.h"
+grep -rn "WriteBatchAsync" <repo-root>/src/ <repo-root>/include/ --include="*.cc" --include="*.h"
 ```
 
 Update any callers to use the new `AsyncResult` signature. If there are none outside `wal.cc`, skip this step.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_transaction -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_transaction -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -651,7 +651,7 @@ Register in `tests/CMakeLists.txt`.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target wal_future_test -j$(sysctl -n hw.ncpu) && ./tests/transaction/wal_future_test
+cd <repo-root>/build && cmake --build . --target wal_future_test -j$(sysctl -n hw.ncpu) && ./tests/transaction/wal_future_test
 ```
 Expected: Test passes.
 
@@ -660,7 +660,7 @@ Expected: Test passes.
 ### Step 1.3.6: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add include/cedar/transaction/wal.h src/transaction/wal.cc tests/transaction/wal_future_test.cc tests/CMakeLists.txt
 git commit -m "perf(wal): replace WaitForSequence busy-loop with future wait
 
@@ -715,7 +715,7 @@ In `src/governance/health_checker.cc`, `HandleHttpRequest` (around line 750), ex
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_governance -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_governance -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -799,7 +799,7 @@ Register in `tests/CMakeLists.txt`.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target health_checker_probe_test -j$(sysctl -n hw.ncpu) && ./tests/governance/health_checker_probe_test
+cd <repo-root>/build && cmake --build . --target health_checker_probe_test -j$(sysctl -n hw.ncpu) && ./tests/governance/health_checker_probe_test
 ```
 Expected: All 3 tests pass.
 
@@ -808,7 +808,7 @@ Expected: All 3 tests pass.
 ### Step 1.4.3: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/governance/health_checker.cc tests/governance/health_checker_probe_test.cc tests/CMakeLists.txt
 git commit -m "feat(health-checker): add /healthz and /readyz K8s probe aliases
 

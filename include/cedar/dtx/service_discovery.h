@@ -27,6 +27,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 
 #include "cedar/core/status.h"
 #include "cedar/dtx/meta_service_grpc.h"  // NEW
@@ -114,6 +115,13 @@ class ServiceDiscovery {
   
   // 检查特定节点健康状态
   bool CheckNodeHealth(const StorageNodeInfo& node);
+
+#ifdef CEDAR_TESTING
+  // Test hook for injecting discovered nodes without relying on Docker/DNS.
+  void MergeNodesForTest(const std::vector<StorageNodeInfo>& nodes) {
+    MergeNodes(nodes);
+  }
+#endif
   
   // 统计信息
   struct Stats {

@@ -304,6 +304,34 @@ CedarStatus CedarUpdate::Apply(LsmEngine* engine) {
 // =============================================================================
 
 CedarStatus CedarUpdate::ValidateCentralized(CedarGraphStorage* storage) {
+  // Seed validation cache with writes that are part of this CedarUpdate. This
+  // lets strict edge validation observe same-batch vertex creates/deletes
+  // before the batch is committed to the storage engine.
+  for (const auto& record : records_) {
+    if (record.key.entity_type() != EntityType::Vertex) {
+      continue;
+    }
+
+    const uint64_t entity_id = record.key.entity_id();
+    if (record.op == UpdateOpType::CREATE_VERTEX) {
+      auto& snapshot = cache_[entity_id];
+      snapshot.exists = true;
+      snapshot.is_deleted = false;
+      if (snapshot.create_time.value() == 0 ||
+          timestamp_.value() < snapshot.create_time.value()) {
+        snapshot.create_time = timestamp_;
+      }
+      snapshot.latest_version_time = timestamp_;
+      snapshot.latest_op_type = static_cast<uint8_t>(UpdateOpType::CREATE_VERTEX);
+    } else if (record.op == UpdateOpType::DELETE_VERTEX) {
+      auto& snapshot = cache_[entity_id];
+      snapshot.exists = false;
+      snapshot.is_deleted = true;
+      snapshot.latest_version_time = timestamp_;
+      snapshot.latest_op_type = static_cast<uint8_t>(UpdateOpType::DELETE_VERTEX);
+    }
+  }
+
   // 遍历所有记录进行校验
   for (const auto& record : records_) {
     

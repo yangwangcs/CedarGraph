@@ -78,10 +78,10 @@ class ClusterManager {
   bool initialized_ = false;
 
   // Internal methods
-  bool StartDockerCompose();
-  bool StopDockerCompose();
-  bool StartKubernetes();
-  bool StopKubernetes();
+  bool StartDockerCompose(const ClusterConfig& config);
+  bool StopDockerCompose(const ClusterConfig& config);
+  bool StartKubernetes(const ClusterConfig& config);
+  bool StopKubernetes(const ClusterConfig& config);
 
   // Parse docker-compose ps output
   std::vector<ContainerStatus> ParseDockerPs(const std::string& output);
@@ -92,6 +92,11 @@ class ClusterManager {
   // Add event
   void AddEvent(const std::string& component, const std::string& type,
                 const std::string& reason, const std::string& message);
+
+  bool IsValidComponentName(const std::string& component) const;
+  bool IsValidResourceName(const std::string& name) const;
+  std::string ShellQuote(const std::string& arg) const;
+  std::string ComposeBaseCommand(const ClusterConfig& config) const;
 
   // Execute command
   std::string ExecuteCommand(const std::string& command);

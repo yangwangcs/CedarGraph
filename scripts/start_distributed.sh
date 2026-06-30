@@ -29,8 +29,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${SCRIPT_DIR}/.."
-BUILD_DIR="${PROJECT_ROOT}/build"
-CLUSTER_DIR="/tmp/cedar/cluster"
+BUILD_DIR="${CEDAR_BUILD_DIR:-${PROJECT_ROOT}/build}"
+CLUSTER_DIR="${CEDAR_CLUSTER_DIR:-/tmp/cedar/cluster}"
 
 # Colors
 RED='\033[0;31m'
@@ -45,16 +45,29 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 # MetaD configuration
-METAD_COUNT=3
-METAD_BASE_PORT=6001      # Raft port
-METAD_GRPC_BASE_PORT=7001 # gRPC client API port
+METAD_COUNT="${CEDAR_METAD_COUNT:-3}"
+METAD_BASE_PORT="${CEDAR_METAD_BASE_PORT:-6001}"           # Raft port
+METAD_GRPC_BASE_PORT="${CEDAR_METAD_GRPC_BASE_PORT:-7001}" # gRPC client API port
 
 # StorageD configuration
-STORAGED_COUNT=3
-STORAGED_BASE_PORT=8779
+STORAGED_COUNT="${CEDAR_STORAGED_COUNT:-3}"
+STORAGED_BASE_PORT="${CEDAR_STORAGED_BASE_PORT:-8779}"
+STORAGED_HEALTH_BASE_PORT="${CEDAR_STORAGED_HEALTH_BASE_PORT:-7000}"
+STORAGED_METRICS_BASE_PORT="${CEDAR_STORAGED_METRICS_BASE_PORT:-7001}"
+STORAGED_ADVERTISE_HOST="${CEDAR_STORAGED_ADVERTISE_HOST:-127.0.0.1}"
 
 # GraphD configuration
-GRAPHD_PORT=9669
+GRAPHD_PORT="${CEDAR_GRAPHD_PORT:-9669}"
+GRAPHD_HEALTH_PORT="${CEDAR_GRAPHD_HEALTH_PORT:-9668}"
+GRAPHD_METRICS_PORT="${CEDAR_GRAPHD_METRICS_PORT:-9667}"
+
+# Runtime mode. Keep the local smoke-test default unchanged, but allow release
+# validation to exercise non-test-mode binaries explicitly.
+CEDAR_TEST_MODE="${CEDAR_TEST_MODE:-1}"
+CEDAR_TLS_ENABLED="${CEDAR_TLS_ENABLED:-false}"
+if [ "${CEDAR_TLS_ENABLED}" != "true" ] && [ -z "${CEDAR_GRPC_ALLOW_INSECURE:-}" ]; then
+    export CEDAR_GRPC_ALLOW_INSECURE=1
+fi
 
 # =============================================================================
 # Helper functions
@@ -75,12 +88,76 @@ wait_for_port() {
     return 0
 }
 
+require_port_free() {
+    local port=$1
+    if lsof -i :$port -sTCP:LISTEN >/dev/null 2>&1; then
+        log_error "Port ${port} is already in use"
+        return 1
+    fi
+}
+
 check_binary() {
     local name=$1
     if [ ! -f "${BUILD_DIR}/cedar-${name}" ]; then
         log_error "cedar-${name} not found. Build first: cd build && make ${name}"
         exit 1
     fi
+}
+
+validate_runtime_config() {
+    if [ "${CEDAR_TEST_MODE}" = "1" ]; then
+        return 0
+    fi
+
+    if [ -z "${CEDAR_GRAPHD_AUTH_JWT_SECRET:-}" ]; then
+        log_error "CEDAR_GRAPHD_AUTH_JWT_SECRET is required when CEDAR_TEST_MODE=0"
+        return 1
+    fi
+    if [ "${#CEDAR_GRAPHD_AUTH_JWT_SECRET}" -lt 32 ]; then
+        log_error "CEDAR_GRAPHD_AUTH_JWT_SECRET must be at least 32 bytes"
+        return 1
+    fi
+    if [ -z "${CEDAR_GRAPHD_AUTH_USER:-}" ] || [ -z "${CEDAR_GRAPHD_AUTH_PASSWORD:-}" ]; then
+        log_error "CEDAR_GRAPHD_AUTH_USER and CEDAR_GRAPHD_AUTH_PASSWORD are required when CEDAR_TEST_MODE=0"
+        return 1
+    fi
+}
+
+append_test_mode_arg() {
+    if [ "${CEDAR_TEST_MODE}" = "1" ]; then
+        printf '%s\n' "--test_mode"
+    fi
+}
+
+append_tls_arg() {
+    if [ "${CEDAR_TEST_MODE}" != "1" ]; then
+        printf '%s\n' "--tls"
+        printf '%s\n' "${CEDAR_TLS_ENABLED}"
+    fi
+}
+
+append_metad_peer_args() {
+    if [ "${CEDAR_TEST_MODE}" = "1" ]; then
+        return
+    fi
+    for peer_i in $(seq 1 $METAD_COUNT); do
+        local peer_id=$peer_i
+        local peer_raft_port=$((METAD_BASE_PORT + peer_i - 1))
+        printf '%s\n' "--peer"
+        printf '%s\n' "${peer_id}:127.0.0.1:${peer_raft_port}"
+    done
+}
+
+metad_grpc_endpoints() {
+    local endpoints=""
+    for peer_i in $(seq 1 $METAD_COUNT); do
+        local peer_grpc_port=$((METAD_GRPC_BASE_PORT + peer_i - 1))
+        if [ -n "${endpoints}" ]; then
+            endpoints="${endpoints},"
+        fi
+        endpoints="${endpoints}localhost:${peer_grpc_port}"
+    done
+    printf '%s\n' "${endpoints}"
 }
 
 # =============================================================================
@@ -98,15 +175,19 @@ start_metad() {
         local log_file="${CLUSTER_DIR}/metad-${i}.log"
         
         mkdir -p "${data_dir}"
+        require_port_free ${raft_port}
+        require_port_free ${grpc_port}
         
-        # NOTE: --test_mode bypasses braft (which has SIGSEGV on macOS ARM64).
-        # In production, remove --test_mode and add --peer flags for Raft consensus.
+        local mode_args=()
+        while IFS= read -r arg; do mode_args+=("${arg}"); done < <(append_test_mode_arg)
+        while IFS= read -r arg; do mode_args+=("${arg}"); done < <(append_metad_peer_args)
+
         "${BUILD_DIR}/cedar-metad" \
             --node_id ${node_id} \
             --listen "127.0.0.1:${raft_port}" \
             --grpc_port ${grpc_port} \
             --data_dir "${data_dir}" \
-            --test_mode \
+            "${mode_args[@]}" \
             > "${log_file}" 2>&1 &
         
         local pid=$!
@@ -116,6 +197,8 @@ start_metad() {
             log_info "  MetaD-${node_id}: Raft=${raft_port}, gRPC=${grpc_port} [PID=${pid}] ✓"
         else
             log_error "  MetaD-${node_id}: failed to start on port ${grpc_port}"
+            tail -50 "${log_file}" || true
+            return 1
         fi
     done
 }
@@ -123,24 +206,43 @@ start_metad() {
 start_storaged() {
     log_step "Starting StorageD cluster (${STORAGED_COUNT} nodes)..."
     
-    # Use localhost for MetaD gRPC (IPv6 compatible on macOS)
-    local meta_addr="localhost:${METAD_GRPC_BASE_PORT}"
+    # Use localhost for MetaD gRPC (IPv6 compatible on macOS). In production
+    # Raft mode, pass all local MetaD gRPC endpoints so StorageD can retry a
+    # writable leader when the first endpoint is a follower.
+    local meta_addr
+    if [ "${CEDAR_TEST_MODE}" = "1" ]; then
+        meta_addr="localhost:${METAD_GRPC_BASE_PORT}"
+    else
+        meta_addr="$(metad_grpc_endpoints)"
+    fi
     
     for i in $(seq 1 $STORAGED_COUNT); do
         local node_id=$((i - 1))
         local port=$((STORAGED_BASE_PORT + i - 1))
+        local health_port=$((STORAGED_HEALTH_BASE_PORT + i - 1))
+        local metrics_port=$((STORAGED_METRICS_BASE_PORT + i - 1))
         local data_dir="${CLUSTER_DIR}/storage$((i-1))"
         local log_file="${CLUSTER_DIR}/storaged-${i}.log"
         
         mkdir -p "${data_dir}"
+        require_port_free ${port}
+        require_port_free ${health_port}
+        require_port_free ${metrics_port}
         
+        local mode_args=()
+        while IFS= read -r arg; do mode_args+=("${arg}"); done < <(append_test_mode_arg)
+        while IFS= read -r arg; do mode_args+=("${arg}"); done < <(append_tls_arg)
+
         "${BUILD_DIR}/cedar-storaged" \
             --node_id ${node_id} \
             --port ${port} \
             --bind "127.0.0.1" \
+            --advertise_address "${STORAGED_ADVERTISE_HOST}" \
             --data_dir "${data_dir}" \
             --meta "${meta_addr}" \
-            --test_mode \
+            --health_port ${health_port} \
+            --metrics_port ${metrics_port} \
+            "${mode_args[@]}" \
             > "${log_file}" 2>&1 &
         
         local pid=$!
@@ -150,6 +252,8 @@ start_storaged() {
             log_info "  StorageD-${node_id}: port=${port} [PID=${pid}] ✓"
         else
             log_error "  StorageD-${node_id}: failed to start on port ${port}"
+            tail -50 "${log_file}" || true
+            return 1
         fi
     done
 }
@@ -161,13 +265,22 @@ start_graphd() {
     local log_file="${CLUSTER_DIR}/graphd-1.log"
     
     mkdir -p "${CLUSTER_DIR}/graphd"
+    require_port_free ${GRAPHD_PORT}
+    require_port_free ${GRAPHD_HEALTH_PORT}
+    require_port_free ${GRAPHD_METRICS_PORT}
     
+    local mode_args=()
+    while IFS= read -r arg; do mode_args+=("${arg}"); done < <(append_test_mode_arg)
+    while IFS= read -r arg; do mode_args+=("${arg}"); done < <(append_tls_arg)
+
     CEDAR_TXN_WAL_DIR="${CLUSTER_DIR}/graphd/txn_wal" \
     "${BUILD_DIR}/cedar-graphd" \
         --port ${GRAPHD_PORT} \
         --bind "127.0.0.1" \
         --meta "${meta_addr}" \
-        --test_mode \
+        --health_port ${GRAPHD_HEALTH_PORT} \
+        --metrics_port ${GRAPHD_METRICS_PORT} \
+        "${mode_args[@]}" \
         > "${log_file}" 2>&1 &
     
     local pid=$!
@@ -177,6 +290,8 @@ start_graphd() {
         log_info "  GraphD-1: port=${GRAPHD_PORT} [PID=${pid}] ✓"
     else
         log_error "  GraphD-1: failed to start on port ${GRAPHD_PORT}"
+        tail -50 "${log_file}" || true
+        return 1
     fi
 }
 
@@ -194,16 +309,19 @@ stop_all() {
             if kill -0 "$pid" 2>/dev/null; then
                 kill "$pid" 2>/dev/null
                 log_info "  Stopped ${name} [PID=${pid}]"
+                for _ in $(seq 1 150); do
+                    kill -0 "$pid" 2>/dev/null || break
+                    sleep 0.1
+                done
+                if kill -0 "$pid" 2>/dev/null; then
+                    log_warn "  ${name} did not exit after SIGTERM; sending SIGKILL"
+                    kill -9 "$pid" 2>/dev/null || true
+                fi
             fi
             rm -f "$pidfile"
         fi
     done
-    
-    # Clean up any remaining processes
-    pkill -f "cedar-metad" 2>/dev/null || true
-    pkill -f "cedar-storaged" 2>/dev/null || true
-    pkill -f "cedar-graphd" 2>/dev/null || true
-    
+
     log_info "All services stopped"
 }
 
@@ -287,6 +405,7 @@ main() {
             check_binary "metad"
             check_binary "storaged"
             check_binary "graphd"
+            validate_runtime_config
             
             mkdir -p "${CLUSTER_DIR}"
             
@@ -296,11 +415,11 @@ main() {
             echo "╚══════════════════════════════════════════════════════════════╝"
             echo ""
             
-            start_metad
-            sleep 2
-            start_storaged
-            sleep 2
-            start_graphd
+            if ! { start_metad && sleep 2 && start_storaged && sleep 2 && start_graphd; }; then
+                log_error "Cluster startup failed; stopping started services"
+                stop_all
+                exit 1
+            fi
             
             echo ""
             show_status
@@ -337,6 +456,12 @@ main() {
             echo "  status    Show cluster status"
             echo "  logs      Tail all logs (or: logs metad|storaged|graphd)"
             echo "  help      Show this help"
+            echo ""
+            echo "Environment:"
+            echo "  CEDAR_TEST_MODE=1|0       Include --test_mode for local smoke runs (default: 1)"
+            echo "  CEDAR_TLS_ENABLED=true|false  Pass --tls when CEDAR_TEST_MODE=0 (default: false)"
+            echo "  CEDAR_GRAPHD_AUTH_JWT_SECRET  Required when CEDAR_TEST_MODE=0; at least 32 bytes"
+            echo "  CEDAR_GRAPHD_AUTH_USER/PASSWORD  Required when CEDAR_TEST_MODE=0"
             echo ""
             echo "Architecture:"
             echo "  MetaD    (3 nodes) - Raft consensus, metadata management"

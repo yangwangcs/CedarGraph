@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -126,12 +127,23 @@ class StorageHealthMonitor {
   Status CheckNodeHealth(const std::string& node_id);
 
  private:
+  struct HealthChangeNotification {
+    std::string node_id;
+    governance::HealthStatus old_status;
+    governance::HealthStatus new_status;
+  };
+
   void MonitoringLoop();
   void CheckAllNodes();
-  Status CheckNodeInternal(const std::string& node_id, NodeHealth& health);
-  void UpdateNodeStatus(const std::string& node_id,
-                        bool is_healthy,
-                        double latency_ms);
+  Status CheckNodeInternal(const std::string& node_id,
+                           NodeHealth& health,
+                           HealthChangeNotification* notification,
+                           bool* notify);
+  bool UpdateNodeStatusLocked(const std::string& node_id,
+                              bool is_healthy,
+                              double latency_ms,
+                              HealthChangeNotification* notification);
+  void NotifyHealthChange(const HealthChangeNotification& notification);
   void PublishHealthEvent(const std::string& node_id,
                           governance::HealthStatus old_status,
                           governance::HealthStatus new_status);
@@ -145,6 +157,9 @@ class StorageHealthMonitor {
 
   std::atomic<bool> running_{false};
   std::thread monitor_thread_;
+  std::condition_variable cv_;
+  mutable std::mutex cv_mutex_;
+  mutable std::mutex callback_mutex_;
   HealthChangeCallback health_change_callback_;
 };
 

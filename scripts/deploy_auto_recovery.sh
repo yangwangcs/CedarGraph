@@ -25,7 +25,7 @@ log_info() {
 }
 
 log_success() {
-    echo -e "${GREEN[SUCCESS]}${NC} $1"
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
 log_warning() {
@@ -63,8 +63,8 @@ check_system() {
     fi
     
     # Check if binaries exist
-    if [ ! -f "$PROJECT_ROOT/build/storaged" ]; then
-        log_error "storaged binary not found. Please build first:"
+    if [ ! -f "$PROJECT_ROOT/build/cedar-storaged" ]; then
+        log_error "cedar-storaged binary not found. Please build first:"
         log_error "  cd build && cmake --build . --target storaged"
         exit 1
     fi
@@ -79,9 +79,9 @@ check_system() {
 install_binaries() {
     log_info "Installing binaries..."
     
-    cp "$PROJECT_ROOT/build/storaged" "$INSTALL_DIR/bin/"
+    cp "$PROJECT_ROOT/build/cedar-storaged" "$INSTALL_DIR/bin/"
     cp "$PROJECT_ROOT/scripts/cedar_health_monitor.sh" "$INSTALL_DIR/bin/"
-    chmod +x "$INSTALL_DIR/bin/storaged"
+    chmod +x "$INSTALL_DIR/bin/cedar-storaged"
     chmod +x "$INSTALL_DIR/bin/cedar_health_monitor.sh"
     
     log_success "Binaries installed to $INSTALL_DIR/bin"
@@ -96,21 +96,18 @@ install_configs() {
     if [ ! -f "$CONFIG_DIR/storaged.conf" ]; then
         cat > "$CONFIG_DIR/storaged.conf" << 'EOF'
 # CedarGraph Storage Server Configuration
-node_id=1
-bind_address=0.0.0.0:7000
-data_dir=/var/lib/cedar/storage
+storaged:
+  node_id: 1
+  bind_address: "0.0.0.0"
+  advertise_address: "127.0.0.1"
+  port: 9779
+  data_dir: "/var/lib/cedar/storage"
+  meta_server: "127.0.0.1:10559"
+  health_port: 7000
+  metrics_port: 7001
 
-# MetaD endpoints
-metad_endpoints=1:127.0.0.1:6000
-
-# Performance tuning
-io_threads=4
-worker_threads=8
-
-# Automated Recovery
-enable_auto_recovery=true
-health_check_interval_sec=30
-max_recovery_attempts=3
+tls:
+  enabled: false
 EOF
         log_success "Default config created at $CONFIG_DIR/storaged.conf"
     else
@@ -216,7 +213,7 @@ verify_installation() {
     echo "========================================"
     echo ""
     echo "Binaries:"
-    echo "  storaged: $INSTALL_DIR/bin/storaged"
+    echo "  cedar-storaged: $INSTALL_DIR/bin/cedar-storaged"
     echo "  cedar_health_monitor.sh: $INSTALL_DIR/bin/cedar_health_monitor.sh"
     echo ""
     echo "Configuration:"
@@ -283,7 +280,7 @@ case "${1:-}" in
         systemctl stop storaged 2>/dev/null || true
         systemctl disable storaged 2>/dev/null || true
         rm -f /etc/systemd/system/storaged.service
-        rm -f "$INSTALL_DIR/bin/storaged"
+        rm -f "$INSTALL_DIR/bin/cedar-storaged"
         rm -f "$INSTALL_DIR/bin/cedar_health_monitor.sh"
         rm -f /etc/cron.d/cedar-health
         rm -f /etc/logrotate.d/cedar

@@ -16,6 +16,17 @@ cd cedar-docker-compose
 ./scripts/cedar-cli.sh -e "SHOW HOSTS"
 ```
 
+生产环境请先覆盖 GraphD 认证和 TLS 参数：
+
+```bash
+export CEDAR_GRAPHD_AUTH_JWT_SECRET='replace-with-at-least-32-bytes-secret'
+export CEDAR_GRAPHD_AUTH_USER='admin'
+export CEDAR_GRAPHD_AUTH_PASSWORD='replace-with-strong-password'
+export CEDAR_GRAPHD_AUTH_ROLE='admin'
+export CEDAR_GRPC_TLS_ENABLED=1
+export CEDAR_TLS_DIR=/path/to/certs
+```
+
 ## 特性
 
 - **水平扩展**: 支持 3-100+ 节点集群
@@ -27,7 +38,6 @@ cd cedar-docker-compose
 
 - `latest` - 最新稳定版
 - `v0.1.0`, `v0.1`, `v0` - 版本标签
-- `dev` - 开发版
 
 ## 文档
 

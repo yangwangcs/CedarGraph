@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "cedar/core/env.h"

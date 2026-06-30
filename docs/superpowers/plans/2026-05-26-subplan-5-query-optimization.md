@@ -38,7 +38,7 @@
 Build must be green before starting:
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target cedar_tests -j$(sysctl -n hw.ncpu) && \
   ctest --output-on-failure
 ```
@@ -117,7 +117,7 @@ TEST(IndexScanOperatorTest, ExplainOutputContainsDetails) {
 **Run test (expect compile failure because `IndexScan` does not exist):**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_index_scan 2>&1 | tail -n 20
 ```
 
@@ -172,7 +172,7 @@ class IndexScan : public PhysicalOperator {
 **Run test (expect linker failure because implementation is missing):**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_index_scan 2>&1 | tail -n 20
 ```
 
@@ -331,7 +331,7 @@ std::unique_ptr<PhysicalOperator> IndexScan::Clone() const {
 **Run test:**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_index_scan -j$(sysctl -n hw.ncpu) && \
   ./tests/cypher/test_index_scan
 ```
@@ -384,7 +384,7 @@ TEST(IndexScanOperatorTest, FiltersByEqualityPredicate) {
 **Run test:**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_index_scan -j$(sysctl -n hw.ncpu) && \
   ./tests/cypher/test_index_scan
 ```
@@ -464,7 +464,7 @@ TEST(PredicatePushdownTest, NonPushablePredicateKeepsFilter) {
 **Run (expect failure — pushdown not implemented yet):**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_predicate_pushdown -j$(sysctl -n hw.ncpu) && \
   ./tests/cypher/test_predicate_pushdown
 ```
@@ -692,7 +692,7 @@ static std::shared_ptr<PhysicalOperator> ApplyPredicatePushdown(
 **Run pushdown test:**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_predicate_pushdown -j$(sysctl -n hw.ncpu) && \
   ./tests/cypher/test_predicate_pushdown
 ```
@@ -709,7 +709,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 #### Task B5 — Ensure existing planner tests still pass
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_planner -j$(sysctl -n hw.ncpu) && \
   ./tests/cypher/test_planner
 ```
@@ -788,7 +788,7 @@ TEST(ExplainOutputTest, IndentationReflectsTreeDepth) {
 **Run:**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_explain_output -j$(sysctl -n hw.ncpu) && \
   ./tests/cypher/test_explain_output
 ```
@@ -838,7 +838,7 @@ Replace the entire EXPLAIN block (lines 652–692) with:
 **Build the service target:**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target graphd -j$(sysctl -n hw.ncpu) 2>&1 | tail -n 20
 ```
 
@@ -880,7 +880,7 @@ TEST(ExplainOutputTest, GraphServiceRouterStyleExplain) {
 **Run:**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_explain_output -j$(sysctl -n hw.ncpu) && \
   ./tests/cypher/test_explain_output
 ```
@@ -1018,7 +1018,7 @@ TEST(VariableLengthExpandOperatorTest, ConstructorAcceptsHops) {
 **Run (expect compile failure — `VariableLengthExpand` missing):**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_variable_length_expand 2>&1 | tail -n 20
 ```
 
@@ -1345,7 +1345,7 @@ In `ExecutionPlanBuilder::BuildScanForPattern`, replace the `Expand` creation bl
 **Run variable-length tests:**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_variable_length_expand -j$(sysctl -n hw.ncpu) && \
   ./tests/cypher/test_variable_length_expand
 ```
@@ -1465,7 +1465,7 @@ TEST(VariableLengthExpandOperatorTest, RespectsMinHops) {
 **Run:**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_variable_length_expand -j$(sysctl -n hw.ncpu) && \
   ./tests/cypher/test_variable_length_expand
 ```
@@ -1523,7 +1523,7 @@ add_test(NAME test_explain_output COMMAND test_explain_output)
 #### Task E2 — Full test-suite run
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target cedar_tests -j$(sysctl -n hw.ncpu) && \
   ctest --output-on-failure
 ```
@@ -1539,7 +1539,7 @@ If any existing test in `test_execution_operators.cc` or `test_planner.cc` fails
 #### Task E3 — Build the service binary (link check)
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target graphd -j$(sysctl -n hw.ncpu)
 ```
 

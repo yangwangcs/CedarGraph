@@ -69,7 +69,7 @@ std::string JsonEscape(const std::string& input) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -181,7 +181,7 @@ Replace the `extract_string_field` lambda in `ParseJWT` to be stricter and avoid
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -244,7 +244,7 @@ add_test(NAME jwt_parser_test COMMAND jwt_parser_test)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target jwt_parser_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/security/jwt_parser_test
+cd <repo-root>/build && cmake --build . --target jwt_parser_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/security/jwt_parser_test
 ```
 Expected: Tests pass.
 
@@ -253,7 +253,7 @@ Expected: Tests pass.
 ### Step 3.1.4: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/security/security_manager.cc tests/dtx/security/jwt_parser_test.cc tests/dtx/security/CMakeLists.txt
 git commit -m "fix(phase3): harden JWT parser against injection
 
@@ -307,7 +307,7 @@ bool GlobMatch(const std::string& pattern, const std::string& text) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -346,7 +346,7 @@ Expected: Build succeeds.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -422,7 +422,7 @@ add_test(NAME rbac_test COMMAND rbac_test)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target rbac_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/security/rbac_test
+cd <repo-root>/build && cmake --build . --target rbac_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/security/rbac_test
 ```
 Expected: All tests pass.
 
@@ -431,7 +431,7 @@ Expected: All tests pass.
 ### Step 3.2.4: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/security/security_manager.cc tests/dtx/security/rbac_test.cc tests/dtx/security/CMakeLists.txt
 git commit -m "fix(phase3): RBAC uses exact/glob matching instead of substring
 
@@ -476,7 +476,7 @@ Replace both `ExportToFile` and `WriteLoop` JSON formatting to use `JsonEscape`:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -523,7 +523,7 @@ struct Config {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -569,7 +569,7 @@ Register in `tests/dtx/security/CMakeLists.txt`.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target audit_log_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/security/audit_log_test
+cd <repo-root>/build && cmake --build . --target audit_log_test -j$(sysctl -n hw.ncpu) && ./tests/dtx/security/audit_log_test
 ```
 Expected: Tests pass.
 
@@ -578,7 +578,7 @@ Expected: Tests pass.
 ### Step 3.3.4: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/security/security_manager.cc include/cedar/dtx/security.h tests/dtx/security/audit_log_test.cc tests/dtx/security/CMakeLists.txt
 git commit -m "fix(phase3): audit log JSON escaping + path restriction
 
@@ -628,7 +628,7 @@ BLOCKER fix: Security #4"
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -637,7 +637,7 @@ Expected: Build succeeds.
 ### Step 3.4.2: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/storage_impl/storage_service_impl.cc
 git commit -m "fix(phase3): sanitize client-facing error messages
 
@@ -718,7 +718,7 @@ Replace counter serialization:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_metrics -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_metrics -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -753,7 +753,7 @@ Register in `tests/metrics/CMakeLists.txt`.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target prometheus_escape_test -j$(sysctl -n hw.ncpu) && ./tests/metrics/prometheus_escape_test
+cd <repo-root>/build && cmake --build . --target prometheus_escape_test -j$(sysctl -n hw.ncpu) && ./tests/metrics/prometheus_escape_test
 ```
 Expected: Test passes.
 
@@ -762,7 +762,7 @@ Expected: Test passes.
 ### Step 3.5.3: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/metrics/metrics_registry.cc tests/metrics/prometheus_escape_test.cc tests/metrics/CMakeLists.txt
 git commit -m "fix(phase3): Prometheus metrics escaping
 
@@ -782,7 +782,7 @@ BLOCKER fix: Operational Readiness #6"
 ### Step 3.6.1: Clean rebuild and test
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . -j$(sysctl -n hw.ncpu)
 ctest --output-on-failure
 ```
@@ -793,7 +793,7 @@ Expected: All tests pass.
 ### Step 3.6.2: Commit phase completion
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git tag phase-3-complete
 git log --oneline -10
 ```

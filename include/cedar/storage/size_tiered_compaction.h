@@ -26,6 +26,7 @@
 #define CEDAR_SIZE_TIERED_COMPACTION_H_
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -439,6 +440,7 @@ class SizeTieredCompactionEngine {
   
   // 后台合并线程
   void BackgroundCompactionThread();
+  void WaitForActiveCompactions();
   
   // 执行具体的 Zone-Columnar 合并
   Status DoZoneCompaction(const CompactionTask& task);
@@ -501,9 +503,12 @@ class SizeTieredCompactionEngine {
   std::mutex queue_mutex_;
   std::condition_variable queue_cv_;
   std::queue<CompactionTask> pending_tasks_;
+  std::mutex compaction_done_mutex_;
+  std::condition_variable compaction_done_cv_;
   
   // 统计
   mutable CompactionStats stats_;
+  std::atomic<int> reserved_compactions_{0};
   
   // 当前正在合并的文件（防止并发合并同一文件）
   mutable std::mutex compacting_mutex_;

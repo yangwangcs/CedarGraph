@@ -22,8 +22,9 @@
 #include "cedar/dtx/dtx_rpc_client.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cerrno>
+#include <chrono>
+#include <condition_variable>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
@@ -145,6 +146,7 @@ void Optimized2PCEngine::Shutdown() noexcept {
   pipeline_cv_.notify_all();
   batch_cv_.notify_all();
   task_cv_.notify_all();
+  tuning_cv_.notify_all();
   
   // Join worker threads BEFORE destroying thread pool
   for (auto& t : worker_threads_) {
@@ -301,7 +303,15 @@ void Optimized2PCEngine::Execute2PCAsync(
       auto status = Execute2PC(ctx->txn_id, ctx->read_set,
                                ctx->write_set, ctx->commit_ts);
       if (ctx->callback) {
-        ctx->callback(status);
+        try {
+          ctx->callback(status);
+        } catch (const std::exception& e) {
+          CEDAR_LOG_ERROR() << "[2PC] Async callback exception for txn_id="
+                            << ctx->txn_id << ": " << e.what() << std::endl;
+        } catch (...) {
+          CEDAR_LOG_ERROR() << "[2PC] Async callback unknown exception for txn_id="
+                            << ctx->txn_id << std::endl;
+        }
       }
     });
   }
@@ -968,11 +978,16 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
           });
         }
         
+        int prepared_count = 0;
         for (auto& f : prepare_results) {
-          f.get();
+          if (f.get()) {
+            ++prepared_count;
+          }
         }
         
-        bool all_prepared = (ctx->prepare_acks.load() == static_cast<int>(participants.size()));
+        bool all_prepared =
+            (prepared_count == static_cast<int>(participants.size()) &&
+             ctx->prepare_acks.load() == static_cast<int>(participants.size()));
         if (!all_prepared) {
           ctx->state.store(TransactionContext::State::kAborting);
           for (auto& client : participants) {
@@ -1058,11 +1073,16 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
           });
         }
         
+        int committed_count = 0;
         for (auto& f : commit_results) {
-          f.get();
+          if (f.get()) {
+            ++committed_count;
+          }
         }
         
-        bool all_committed = (ctx->commit_acks.load() == static_cast<int>(participants.size()));
+        bool all_committed =
+            (committed_count == static_cast<int>(participants.size()) &&
+             ctx->commit_acks.load() == static_cast<int>(participants.size()));
         if (all_committed) {
           ctx->state.store(TransactionContext::State::kCommitted);
           if (state_manager_) {
@@ -1101,9 +1121,12 @@ void Optimized2PCEngine::PipelineWorkerLoop() {
 
 void Optimized2PCEngine::AdaptiveTuningLoop() {
   while (!shutdown_.load()) {
-    std::this_thread::sleep_for(std::chrono::seconds(config_.tuning_interval_sec));
-    
-    if (shutdown_.load()) break;
+    {
+      std::unique_lock<std::mutex> lock(tuning_cv_mutex_);
+      tuning_cv_.wait_for(lock, std::chrono::seconds(config_.tuning_interval_sec),
+                          [this]() { return shutdown_.load(); });
+      if (shutdown_.load()) break;
+    }
     
     TuneConfiguration();
   }
@@ -1315,6 +1338,7 @@ void Optimized2PCEngine::SyncRecoveryRpcClient() {
   if (!dtx_rpc_client_) {
     dtx::DTXRpcConfig rpc_config;
     rpc_config.tls_config.enabled = false;  // Disable TLS for local development
+    rpc_config.allow_insecure = true;
     dtx_rpc_client_ = std::make_shared<dtx::DTXRpcClient>(rpc_config);
   }
   

@@ -10,6 +10,10 @@
 
 #include <grpcpp/server_context.h>
 
+#include <chrono>
+#include <future>
+#include <stdexcept>
+
 using namespace cedar;
 using namespace cedar::queryd;
 using namespace cedar::cypher;
@@ -146,4 +150,52 @@ TEST(QueryTimeout, CancellationIsEnforcedDuringExecution) {
   EXPECT_TRUE(s.IsCancelled()) << s.ToString();
 }
 
+// ============================================================================
+// 4. ParallelExecutor worker configuration
+// ============================================================================
 
+TEST(ParallelExecutorLifecycle, ZeroWorkersIsClampedAndDoesNotDeadlock) {
+  auto future = std::async(std::launch::async, [] {
+    QueryStorageClient storage_client;
+    DistributedExecutionContext ctx;
+    ParallelExecutor executor(0);
+
+    SubQueryTask task;
+    task.partition_id = 7;
+    task.storage_node = "missing-storage-node";
+    task.sub_query = "MATCH (n) RETURN n";
+    task.sequence = 0;
+
+    return executor.ExecuteParallel({task}, &storage_client, &ctx);
+  });
+
+  ASSERT_EQ(future.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+  auto results = future.get();
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].partition_id, 7u);
+  EXPECT_EQ(results[0].sequence, 0u);
+  EXPECT_FALSE(results[0].status.ok());
+}
+
+TEST(ParallelExecutorLifecycle, StreamingCallbackExceptionDoesNotDeadlock) {
+  auto future = std::async(std::launch::async, [] {
+    QueryStorageClient storage_client;
+    DistributedExecutionContext ctx;
+    ParallelExecutor executor(1);
+
+    SubQueryTask task;
+    task.partition_id = 9;
+    task.storage_node = "";
+    task.sub_query = "MATCH (n) RETURN n";
+    task.sequence = 0;
+
+    executor.ExecuteParallelStreaming(
+        {task}, &storage_client, &ctx,
+        [](const SubQueryResult&) -> bool {
+          throw std::runtime_error("stream callback failed");
+        });
+  });
+
+  ASSERT_EQ(future.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+  EXPECT_NO_THROW(future.get());
+}

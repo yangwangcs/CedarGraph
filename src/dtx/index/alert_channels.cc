@@ -662,32 +662,52 @@ void AlertChannelManager::RemoveChannel(const std::string& name) {
 }
 
 void AlertChannelManager::RouteAlert(const storage::Alert& alert) {
-  std::shared_lock<std::shared_mutex> rules_lock(rules_mutex_);
-  
-  auto it = routing_rules_.find(alert.severity);
-  if (it == routing_rules_.end()) {
+  std::vector<std::string> channel_names;
+  {
+    std::shared_lock<std::shared_mutex> rules_lock(rules_mutex_);
+    auto it = routing_rules_.find(alert.severity);
+    if (it != routing_rules_.end()) {
+      channel_names = it->second;
+    }
+  }
+
+  if (channel_names.empty()) {
     BroadcastAlert(alert);
     return;
   }
-  
-  std::shared_lock<std::shared_mutex> channels_lock(channels_mutex_);
-  
-  for (const auto& channel_name : it->second) {
-    auto ch_it = channels_.find(channel_name);
-    if (ch_it != channels_.end()) {
-      auto status = ch_it->second->SendAlert(alert);
-      if (!status.ok()) {
-        LOG(WARNING) << "Failed to send alert via channel " << channel_name 
-                     << ": " << status.ToString();
+
+  std::vector<std::pair<std::string, std::shared_ptr<AlertChannel>>> channels;
+  {
+    std::shared_lock<std::shared_mutex> channels_lock(channels_mutex_);
+    channels.reserve(channel_names.size());
+    for (const auto& channel_name : channel_names) {
+      auto ch_it = channels_.find(channel_name);
+      if (ch_it != channels_.end()) {
+        channels.emplace_back(channel_name, ch_it->second);
       }
+    }
+  }
+
+  for (const auto& [channel_name, channel] : channels) {
+    auto status = channel->SendAlert(alert);
+    if (!status.ok()) {
+      LOG(WARNING) << "Failed to send alert via channel " << channel_name
+                   << ": " << status.ToString();
     }
   }
 }
 
 void AlertChannelManager::BroadcastAlert(const storage::Alert& alert) {
-  std::shared_lock<std::shared_mutex> lock(channels_mutex_);
-  
-  for (const auto& [name, channel] : channels_) {
+  std::vector<std::pair<std::string, std::shared_ptr<AlertChannel>>> channels;
+  {
+    std::shared_lock<std::shared_mutex> lock(channels_mutex_);
+    channels.reserve(channels_.size());
+    for (const auto& [name, channel] : channels_) {
+      channels.emplace_back(name, channel);
+    }
+  }
+
+  for (const auto& [name, channel] : channels) {
     auto status = channel->SendAlert(alert);
     if (!status.ok()) {
       LOG(WARNING) << "Failed to send alert via channel " << name 
@@ -697,11 +717,19 @@ void AlertChannelManager::BroadcastAlert(const storage::Alert& alert) {
 }
 
 std::vector<std::pair<std::string, Status>> AlertChannelManager::TestAllChannels() {
-  std::shared_lock<std::shared_mutex> lock(channels_mutex_);
-  
+  std::vector<std::pair<std::string, std::shared_ptr<AlertChannel>>> channels;
+  {
+    std::shared_lock<std::shared_mutex> lock(channels_mutex_);
+    channels.reserve(channels_.size());
+    for (const auto& [name, channel] : channels_) {
+      channels.emplace_back(name, channel);
+    }
+  }
+
   std::vector<std::pair<std::string, Status>> results;
-  
-  for (const auto& [name, channel] : channels_) {
+  results.reserve(channels.size());
+
+  for (const auto& [name, channel] : channels) {
     results.emplace_back(name, channel->TestConnection());
   }
   
@@ -709,11 +737,19 @@ std::vector<std::pair<std::string, Status>> AlertChannelManager::TestAllChannels
 }
 
 std::vector<std::pair<std::string, bool>> AlertChannelManager::GetChannelHealth() const {
-  std::shared_lock<std::shared_mutex> lock(channels_mutex_);
-  
+  std::vector<std::pair<std::string, std::shared_ptr<AlertChannel>>> channels;
+  {
+    std::shared_lock<std::shared_mutex> lock(channels_mutex_);
+    channels.reserve(channels_.size());
+    for (const auto& [name, channel] : channels_) {
+      channels.emplace_back(name, channel);
+    }
+  }
+
   std::vector<std::pair<std::string, bool>> results;
-  
-  for (const auto& [name, channel] : channels_) {
+  results.reserve(channels.size());
+
+  for (const auto& [name, channel] : channels) {
     results.emplace_back(name, channel->IsHealthy());
   }
   

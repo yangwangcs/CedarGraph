@@ -7,7 +7,7 @@ metadata:
     {{- include "cedargraph.labels" . | nindent 4 }}
     app.kubernetes.io/component: metad
 spec:
-  minAvailable: {{ .Values.pdb.metad.minAvailable }}
+  minAvailable: {{ min (int .Values.pdb.metad.minAvailable) (int .Values.metad.replicas) }}
   selector:
     matchLabels:
       {{- include "cedargraph.selectorLabels" . | nindent 6 }}
@@ -21,9 +21,23 @@ metadata:
     {{- include "cedargraph.labels" . | nindent 4 }}
     app.kubernetes.io/component: storaged
 spec:
-  minAvailable: {{ .Values.pdb.storaged.minAvailable }}
+  minAvailable: {{ min (int .Values.pdb.storaged.minAvailable) (int .Values.storaged.replicas) }}
   selector:
     matchLabels:
       {{- include "cedargraph.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: storaged
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cedargraph.fullname" . }}-graphd
+  labels:
+    {{- include "cedargraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: graphd
+spec:
+  minAvailable: {{ min (int .Values.pdb.graphd.minAvailable) (int .Values.graphd.replicas) }}
+  selector:
+    matchLabels:
+      {{- include "cedargraph.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: graphd
 {{- end }}

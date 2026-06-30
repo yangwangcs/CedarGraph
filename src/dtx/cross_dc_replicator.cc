@@ -21,6 +21,7 @@
 #include <iostream>
 
 #include "cedar/dtx/cross_dc_replicator.h"
+#include "cedar/dtx/raft/grpc_tls.h"
 #include "dtx_protocol.grpc.pb.h"
 #include <grpcpp/grpcpp.h>
 
@@ -40,6 +41,22 @@ Status CrossDCReplicator::Initialize(
     const DCReplicationConfig& config,
     const std::string& local_dc_id,
     const std::vector<std::string>& peer_dcs) {
+  if (local_dc_id.empty()) {
+    return Status::InvalidArgument("CrossDCReplicator::Initialize",
+                                   "local_dc_id cannot be empty");
+  }
+  if (config.batch_size == 0) {
+    return Status::InvalidArgument("CrossDCReplicator::Initialize",
+                                   "batch_size must be greater than 0");
+  }
+  if (config.max_reconciliation_queue_size == 0) {
+    return Status::InvalidArgument("CrossDCReplicator::Initialize",
+                                   "max_reconciliation_queue_size must be greater than 0");
+  }
+  if (config.reconciliation_ttl <= std::chrono::seconds::zero()) {
+    return Status::InvalidArgument("CrossDCReplicator::Initialize",
+                                   "reconciliation_ttl must be positive");
+  }
 
   config_ = config;
   local_dc_id_ = local_dc_id;
@@ -53,30 +70,20 @@ Status CrossDCReplicator::Initialize(
     auto it = config.remote_dc_endpoints.find(dc);
     if (it != config.remote_dc_endpoints.end()) {
       std::shared_ptr<grpc::ChannelCredentials> creds;
-      if (config_.tls_enabled && !config_.tls_config.ca_cert_file.empty()) {
-        grpc::SslCredentialsOptions ssl_opts;
-        std::ifstream ca_file(config_.tls_config.ca_cert_file);
-        if (ca_file) {
-          ssl_opts.pem_root_certs = std::string(
-              std::istreambuf_iterator<char>(ca_file),
-              std::istreambuf_iterator<char>());
+      if (config_.tls_enabled) {
+        cedar::dtx::raft::TlsConfig tls;
+        tls.enabled = true;
+        tls.ca_cert_file = config_.tls_config.ca_cert_file;
+        tls.client_cert_file = config_.tls_config.client_cert_file;
+        tls.client_key_file = config_.tls_config.client_key_file;
+        tls.mtls_enabled = !tls.client_cert_file.empty() || !tls.client_key_file.empty();
+        auto tls_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls);
+        if (!tls_creds.ok()) {
+          CEDAR_LOG_ERROR() << "[CrossDCReplicator] Failed to create TLS credentials for "
+                            << dc << ": " << tls_creds.status().ToString() << std::endl;
+          return tls_creds.status();
         }
-        if (!config_.tls_config.client_cert_file.empty() &&
-            !config_.tls_config.client_key_file.empty()) {
-          std::ifstream cert_file(config_.tls_config.client_cert_file);
-          if (cert_file) {
-            ssl_opts.pem_cert_chain = std::string(
-                std::istreambuf_iterator<char>(cert_file),
-                std::istreambuf_iterator<char>());
-          }
-          std::ifstream key_file(config_.tls_config.client_key_file);
-          if (key_file) {
-            ssl_opts.pem_private_key = std::string(
-                std::istreambuf_iterator<char>(key_file),
-                std::istreambuf_iterator<char>());
-          }
-        }
-        creds = grpc::SslCredentials(ssl_opts);
+        creds = tls_creds.ValueOrDie();
       } else {
         if (!config_.allow_insecure) {
           CEDAR_LOG_ERROR() << "[CrossDCReplicator] FATAL: TLS is required for cross-DC replication. "
@@ -97,6 +104,7 @@ Status CrossDCReplicator::Start() {
   if (running_.exchange(true)) {
     return Status::InvalidArgument("CrossDCReplicator::Start", "Already running");
   }
+  stop_requested_.store(false, std::memory_order_release);
   
   if (config_.mode == ReplicationMode::kAsync) {
     try {
@@ -126,6 +134,11 @@ Status CrossDCReplicator::Start() {
 }
 
 void CrossDCReplicator::Stop() {
+  stop_requested_.store(true, std::memory_order_release);
+  TryCancelActiveContexts();
+  reconciliation_cv_.notify_all();
+  queue_cv_.notify_all();
+
   if (!running_.exchange(false)) {
     return;
   }
@@ -144,6 +157,40 @@ void CrossDCReplicator::Stop() {
     }
   } catch (...) {
     CEDAR_LOG_ERROR() << "[CrossDCReplicator] Reconciliation thread join exception" << std::endl;
+  }
+}
+
+void CrossDCReplicator::RegisterActiveContext(::grpc::ClientContext* context) {
+  if (context == nullptr) {
+    return;
+  }
+  bool should_cancel = false;
+  {
+    std::lock_guard<std::mutex> lock(active_contexts_mutex_);
+    should_cancel = stop_requested_.load(std::memory_order_acquire);
+    if (!should_cancel) {
+      active_contexts_.insert(context);
+    }
+  }
+  if (should_cancel) {
+    context->TryCancel();
+  }
+}
+
+void CrossDCReplicator::UnregisterActiveContext(::grpc::ClientContext* context) {
+  if (context == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(active_contexts_mutex_);
+  active_contexts_.erase(context);
+}
+
+void CrossDCReplicator::TryCancelActiveContexts() {
+  std::lock_guard<std::mutex> lock(active_contexts_mutex_);
+  for (auto* context : active_contexts_) {
+    if (context != nullptr) {
+      context->TryCancel();
+    }
   }
 }
 
@@ -179,8 +226,17 @@ Status CrossDCReplicator::Replicate(const ::cedar::CedarKey& key,
     Status first_failure;
     for (const auto& dc : peer_dcs_) {
       Status s = ReplicateToDC(log, dc);
-      if (replication_callback_) {
-        replication_callback_(log, s);
+      ReplicationCallback callback;
+      {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        callback = replication_callback_;
+      }
+      if (callback) {
+        try {
+          callback(log, s);
+        } catch (...) {
+          CEDAR_LOG_ERROR() << "[CrossDCReplicator] Callback exception" << std::endl;
+        }
       }
       if (!s.ok()) {
         if (first_failure.ok()) {
@@ -201,6 +257,7 @@ Status CrossDCReplicator::Replicate(const ::cedar::CedarKey& key,
         if (!del_status.ok()) {
           CEDAR_LOG_ERROR() << "[CrossDCReplicator] Sync rollback FAILED for " << succ_dc
                     << ": " << del_status.ToString() << std::endl;
+          EnqueueReconciliation(log.key, succ_dc);
           all_cleaned = false;
         }
       }
@@ -324,7 +381,9 @@ Status CrossDCReplicator::SyncWithDC(const std::string& dc_id) {
   context.set_deadline(std::chrono::system_clock::now() +
                         config_.replication_timeout);
 
+  RegisterActiveContext(&context);
   auto status = stub->Replicate(&context, request, &response);
+  UnregisterActiveContext(&context);
   if (!status.ok()) {
     return Status::IOError("SyncWithDC RPC failed: " + status.error_message());
   }
@@ -468,7 +527,9 @@ Status CrossDCReplicator::SendToRemoteDCWithRetry(const ReplicationLog& log,
     }
     attempts++;
     auto delay = config_.retry_delay * (1ULL << std::min(attempts, 6u));
-    std::this_thread::sleep_for(delay);
+    if (WaitForRetryDelay(delay)) {
+      return Status::IOError("Replication retry aborted: replicator stopping");
+    }
   }
   return s;
 }
@@ -498,7 +559,9 @@ Status CrossDCReplicator::ReplicateToDC(const ReplicationLog& log,
     attempts++;
     // Exponential backoff with cap
     auto delay = config_.retry_delay * (1ULL << std::min(attempts, 6u));
-    std::this_thread::sleep_for(delay);
+    if (WaitForRetryDelay(delay)) {
+      return Status::IOError("Replication retry aborted: replicator stopping");
+    }
   }
   
   std::lock_guard<std::mutex> lock(status_mutex_);
@@ -509,6 +572,17 @@ Status CrossDCReplicator::ReplicateToDC(const ReplicationLog& log,
   }
   
   return s;
+}
+
+bool CrossDCReplicator::WaitForRetryDelay(std::chrono::milliseconds delay) {
+  if (stop_requested_.load(std::memory_order_acquire)) {
+    return true;
+  }
+
+  std::unique_lock<std::mutex> lock(reconciliation_mutex_);
+  return reconciliation_cv_.wait_for(lock, delay, [this]() {
+    return stop_requested_.load(std::memory_order_acquire);
+  });
 }
 
 Status CrossDCReplicator::DeleteFromDC(const ::cedar::CedarKey& key,
@@ -562,7 +636,9 @@ Status CrossDCReplicator::SendToRemoteDC(const ReplicationLog& log,
   context.set_deadline(std::chrono::system_clock::now() +
                         config_.replication_timeout);
 
+  RegisterActiveContext(&context);
   auto status = stub->Replicate(&context, request, &response);
+  UnregisterActiveContext(&context);
   if (!status.ok()) {
     return Status::IOError("Replicate RPC failed: " + status.error_message());
   }
@@ -647,7 +723,11 @@ void CrossDCReplicator::ReconciliationLoop() {
     }
 
     if (batch.empty()) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      std::unique_lock<std::mutex> wait_lock(reconciliation_mutex_);
+      reconciliation_cv_.wait_for(wait_lock, std::chrono::seconds(1), [this] {
+        return !running_.load(std::memory_order_relaxed) ||
+               !reconciliation_queue_.empty();
+      });
       continue;
     }
 
@@ -687,37 +767,43 @@ void CrossDCReplicator::ReconcileKey(const ::cedar::CedarKey& key,
   if (s.ok()) {
     reconciliation_resolved_.fetch_add(1, std::memory_order_relaxed);
   } else {
+    EnqueueReconciliation(key, dc_id);
+  }
+}
+
+void CrossDCReplicator::EnqueueReconciliation(const ::cedar::CedarKey& key,
+                                              const std::string& dc_id) {
+  {
     std::lock_guard<std::mutex> lock(reconciliation_mutex_);
+    auto now = std::chrono::steady_clock::now();
+
+    for (auto& existing : reconciliation_queue_) {
+      if (existing.key.entity_id() == key.entity_id() &&
+          existing.key.entity_type() == key.entity_type() &&
+          existing.key.column_id() == key.column_id() &&
+          existing.dc_id == dc_id) {
+        existing.attempt_count = existing.attempt_count + 1;
+        uint32_t backoff_power = std::min(existing.attempt_count, 6u);
+        auto delay = std::chrono::seconds(5 * (1 << backoff_power));
+        existing.next_attempt = now + delay;
+        reconciliation_cv_.notify_one();
+        return;
+      }
+    }
+
     ReconcileEntry retry;
     retry.key = key;
     retry.dc_id = dc_id;
-    retry.attempt_count = 1;  // base for next attempt
-    retry.enqueued_at = std::chrono::steady_clock::now();
-    retry.next_attempt = retry.enqueued_at +
-                         std::chrono::seconds(5);
+    retry.attempt_count = 1;
+    retry.enqueued_at = now;
+    retry.next_attempt = now + std::chrono::seconds(5);
+    reconciliation_queue_.push_back(std::move(retry));
 
-    // Check if this key/dc pair is already in the queue; if so, increment its count.
-    bool found = false;
-    for (auto& existing : reconciliation_queue_) {
-      if (existing.key.entity_id() == key.entity_id() && existing.dc_id == dc_id) {
-        existing.attempt_count = existing.attempt_count + 1;
-        // Capped exponential backoff: 5s * 2^(min(attempt_count, 6))
-        uint32_t backoff_power = std::min(existing.attempt_count, 6u);
-        auto delay = std::chrono::seconds(5 * (1 << backoff_power));
-        existing.next_attempt = std::chrono::steady_clock::now() + delay;
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      reconciliation_queue_.push_back(std::move(retry));
-    }
-
-    // Enforce bound immediately on insert
     while (reconciliation_queue_.size() > config_.max_reconciliation_queue_size) {
       reconciliation_queue_.pop_front();
     }
   }
+  reconciliation_cv_.notify_one();
 }
 
 CrossDCReplicator::ReconciliationStatus

@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 #include <chrono>
+#include <future>
 #include <thread>
 
 #include "cedar/dtx/service_discovery.h"
@@ -64,4 +65,101 @@ TEST(ServiceDiscoveryDnsSafetyTest, Ipv4LiteralSkipsDns) {
 
   // Connection to port 9 should fail, but the IPv4 fast-path should be taken.
   EXPECT_FALSE(healthy);
+}
+
+TEST(ServiceDiscoveryDnsSafetyTest, RejectsInvalidRuntimeConfig) {
+  ServiceDiscoveryConfig config;
+  config.storaged_port = 0;
+  ServiceDiscovery invalid_port(config);
+  EXPECT_TRUE(invalid_port.Initialize().IsInvalidArgument());
+
+  config.storaged_port = 9779;
+  config.health_check_interval_seconds = 0;
+  ServiceDiscovery invalid_interval(config);
+  EXPECT_TRUE(invalid_interval.Initialize().IsInvalidArgument());
+
+  config.health_check_interval_seconds = 1;
+  config.health_check_timeout_ms = 0;
+  ServiceDiscovery invalid_timeout(config);
+  EXPECT_TRUE(invalid_timeout.Initialize().IsInvalidArgument());
+}
+
+TEST(ServiceDiscoveryDnsSafetyTest, DiscoverViaDnsRespectsConfiguredTimeout) {
+  ServiceDiscoveryConfig config;
+  config.enable_docker_discovery = false;
+  config.enable_dns_discovery = true;
+  config.enable_consul_discovery = false;
+  config.health_check_timeout_ms = 50;
+  config.dns_names = {
+      "this-hostname-almost-certainly-does-not-exist-cedar-timeout.local"};
+
+  ServiceDiscovery discovery(config);
+  ASSERT_TRUE(discovery.Initialize().ok());
+
+  auto start = std::chrono::steady_clock::now();
+  auto nodes = discovery.DiscoverNow();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_TRUE(nodes.empty());
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            1000);
+}
+
+TEST(ServiceDiscoveryDnsSafetyTest, DiscoveryCallbackRunsOutsideCallbackMutex) {
+  ServiceDiscoveryConfig config;
+  config.enable_docker_discovery = false;
+  config.enable_dns_discovery = true;
+  config.dns_names = {"127.0.0.1"};
+  config.storaged_port = 9;
+
+  ServiceDiscovery discovery(config);
+
+  std::promise<void> callback_entered;
+  auto entered_future = callback_entered.get_future();
+  discovery.SetNodeDiscoveredCallback(
+      [&discovery, &callback_entered](const StorageNodeInfo&) {
+        discovery.SetNodeDiscoveredCallback(nullptr);
+        callback_entered.set_value();
+      });
+
+  auto future = std::async(std::launch::async, [&] {
+    return discovery.DiscoverNow();
+  });
+
+  EXPECT_EQ(entered_future.wait_for(std::chrono::seconds(2)),
+            std::future_status::ready);
+  EXPECT_EQ(future.wait_for(std::chrono::seconds(2)),
+            std::future_status::ready);
+  EXPECT_EQ(future.get().size(), 1u);
+}
+
+TEST(ServiceDiscoveryDnsSafetyTest, HealthCallbackRunsOutsideCallbackMutex) {
+  ServiceDiscoveryConfig config;
+  config.enable_docker_discovery = false;
+  config.enable_dns_discovery = false;
+  config.health_check_interval_seconds = 1;
+  config.health_check_timeout_ms = 100;
+
+  ServiceDiscovery discovery(config);
+  ASSERT_TRUE(discovery.Initialize().ok());
+
+  StorageNodeInfo node;
+  node.host = "127.0.0.1";
+  node.port = 9;
+  node.is_healthy = true;
+
+  std::promise<void> callback_entered;
+  auto entered_future = callback_entered.get_future();
+  discovery.SetNodeHealthChangedCallback(
+      [&discovery, &callback_entered](const StorageNodeInfo&, bool) {
+        discovery.SetNodeHealthChangedCallback(nullptr);
+        callback_entered.set_value();
+      });
+
+  discovery.MergeNodesForTest({node});
+  ASSERT_TRUE(discovery.Start().ok());
+
+  EXPECT_EQ(entered_future.wait_for(std::chrono::seconds(3)),
+            std::future_status::ready);
+  discovery.Stop();
 }

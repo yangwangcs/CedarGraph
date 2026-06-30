@@ -107,16 +107,16 @@ execute_command() {
             show_hosts
             ;;
         "SHOW SPACES"|"show spaces")
-            show_spaces
+            unsupported_command "$cmd"
             ;;
         "SHOW ZONES"|"show zones")
-            show_zones
+            unsupported_command "$cmd"
             ;;
         "CREATE SPACE"*)
-            create_space "$cmd"
+            unsupported_command "$cmd"
             ;;
         "DESCRIBE SPACE"*|"DESC SPACE"*)
-            describe_space "$cmd"
+            unsupported_command "$cmd"
             ;;
         "HELP"|"help"|"?")
             show_help
@@ -128,10 +128,16 @@ execute_command() {
             # 空命令，不执行任何操作
             ;;
         *)
-            echo -e "${YELLOW}注意: 命令 '$cmd' 需要通过完整客户端执行${NC}"
-            echo "建议使用: docker-compose exec graphd cedar-console"
+            unsupported_command "$cmd"
             ;;
     esac
+}
+
+unsupported_command() {
+    local cmd="$1"
+    echo -e "${YELLOW}注意: 当前 cedar-cli 脚本未实现命令 '$cmd'${NC}" >&2
+    echo "请使用已验证的 GraphD/服务端接口或完整客户端路径执行。" >&2
+    return 2
 }
 
 # 显示存储节点
@@ -169,63 +175,10 @@ show_hosts() {
     fi
     
     if [[ "$found" == false ]]; then
-        # 显示模拟数据
-        printf "%-15s %-10s ${GREEN}%-15s${NC} %-10s\n" "storaged-0" "9779" "ONLINE" "v0.1.0"
-        printf "%-15s %-10s ${GREEN}%-15s${NC} %-10s\n" "storaged-1" "9779" "ONLINE" "v0.1.0"
-        printf "%-15s %-10s ${GREEN}%-15s${NC} %-10s\n" "storaged-2" "9779" "ONLINE" "v0.1.0"
+        echo -e "${YELLOW}未发现真实 cedar-storaged Docker 容器，不能据此证明存储节点在线。${NC}" >&2
+        return 2
     fi
     
-    echo ""
-}
-
-# 显示图空间
-show_spaces() {
-    echo ""
-    echo -e "${CYAN}╔════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║         Graph Spaces           ║${NC}"
-    echo -e "${CYAN}╚════════════════════════════════╝${NC}"
-    echo ""
-    printf "${GREEN}%-20s %-15s %-10s${NC}\n" "Name" "Partition Number" "Replica Factor"
-    echo "------------------------------------------------"
-    printf "%-20s %-15s %-10s\n" "production" "128" "3"
-    echo ""
-}
-
-# 显示 Zone 信息
-show_zones() {
-    echo ""
-    echo -e "${CYAN}╔════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║            Zones               ║${NC}"
-    echo -e "${CYAN}╚════════════════════════════════╝${NC}"
-    echo ""
-    printf "${GREEN}%-15s %-30s${NC}\n" "Name" "Hosts"
-    echo "-----------------------------------------------"
-    printf "%-15s %-30s\n" "default_zone" "storaged-0,storaged-1,storaged-2"
-    echo ""
-}
-
-# 创建图空间
-create_space() {
-    local cmd="$1"
-    echo ""
-    echo -e "${GREEN}✓${NC} Space created successfully."
-    echo ""
-}
-
-# 描述图空间
-describe_space() {
-    local cmd="$1"
-    echo ""
-    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║                    Space Information                       ║${NC}"
-    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo "ID: 1"
-    echo "Name: production"
-    echo "Partition Number: 128"
-    echo "Replica Factor: 3"
-    echo "Charset: utf8"
-    echo "Collate: utf8_bin"
     echo ""
 }
 
@@ -243,25 +196,16 @@ show_help() {
     cat << EOF
 
 ${CYAN}╔════════════════════════════════════════════════════════════╗${NC}
-${CYAN}║                 CedarGraph 支持的命令                      ║${NC}
+${CYAN}║              CedarGraph 当前脚本内置命令                    ║${NC}
 ${CYAN}╚════════════════════════════════════════════════════════════╝${NC}
 
 ${GREEN}集群管理:${NC}
   SHOW HOSTS              显示存储节点状态
-  SHOW SPACES             显示图空间列表
-  SHOW ZONES              显示 Zone 信息
-  CREATE SPACE <name>     创建图空间
-  DESCRIBE SPACE <name>   显示图空间详情
 
 ${GREEN}图操作:${NC}
-  USE <space>             切换图空间
-  CREATE TAG <name>       创建标签
-  CREATE EDGE <name>      创建边类型
-  INSERT VERTEX           插入顶点
-  INSERT EDGE             插入边
-  GO FROM <vid>           遍历查询
-  FETCH PROP ON           查询属性
-  MATCH                   模式匹配
+  此脚本不实现 CREATE SPACE、SHOW SPACES、SHOW ZONES、DESCRIBE SPACE、
+  CREATE TAG/EDGE、SHOW EDGES、INSERT、MATCH 等图操作。
+  请使用已验证的 GraphD/服务端接口或完整客户端路径执行。
 
 ${GREEN}系统:${NC}
   VERSION                 显示版本

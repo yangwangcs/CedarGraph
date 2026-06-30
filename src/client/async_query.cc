@@ -15,7 +15,7 @@ namespace client {
 // ============================================================================
 
 AsyncQuery::AsyncQuery(const std::string& query, const std::string& space)
-    : query_(query), space_(space), future_(promise_.get_future()) {}
+    : query_(query), space_(space), future_(promise_.get_future().share()) {}
 
 AsyncQuery::~AsyncQuery() = default;
 
@@ -53,6 +53,7 @@ AsyncQueryResult AsyncQuery::WaitFor(int timeout_ms) {
     AsyncQueryResult result;
     result.status = AsyncQueryStatus::RUNNING;
     result.error_message = "Query timed out";
+    result.execution_time_ms = 0;
     return result;
   }
   return future_.get();
@@ -69,6 +70,7 @@ void AsyncQuery::Cancel() {
         AsyncQueryResult result;
         result.status = AsyncQueryStatus::CANCELLED;
         result.error_message = "Query cancelled";
+        result.execution_time_ms = 0;
         promise_.set_value(result);
       } catch (const std::future_error&) {
         // Promise already set, ignore
@@ -82,8 +84,8 @@ void AsyncQuery::SetCallback(AsyncQueryCallback callback) {
   callback_ = callback;
 }
 
-std::future<AsyncQueryResult> AsyncQuery::GetFuture() {
-  return std::move(future_);
+std::shared_future<AsyncQueryResult> AsyncQuery::GetFuture() {
+  return future_;
 }
 
 void AsyncQuery::SetResult(const AsyncQueryResult& result) {
@@ -121,6 +123,7 @@ void AsyncQuery::SetError(const std::string& error) {
     AsyncQueryResult result;
     result.status = AsyncQueryStatus::FAILED;
     result.error_message = error;
+    result.execution_time_ms = 0;
     promise_.set_value(result);
   } catch (const std::future_error&) {
     // Promise already set, ignore
@@ -206,6 +209,14 @@ void AsyncQueryPool::CancelAll() {
     item.query->Cancel();
     work_queue_.pop();
   }
+  completion_cv_.notify_all();
+}
+
+void AsyncQueryPool::WaitForAll() {
+  std::unique_lock<std::mutex> lock(mutex_);
+  completion_cv_.wait(lock, [this]() {
+    return work_queue_.empty() && active_queries_.load() == 0;
+  });
 }
 
 void AsyncQueryPool::WorkerThread() {
@@ -228,6 +239,7 @@ void AsyncQueryPool::WorkerThread() {
       if (!work_queue_.empty()) {
         item = std::move(work_queue_.front());
         work_queue_.pop();
+        active_queries_++;
       } else {
         continue;
       }
@@ -235,11 +247,12 @@ void AsyncQueryPool::WorkerThread() {
     
     // Check if query was cancelled
     if (item.query->IsCancelled()) {
+      active_queries_--;
+      completion_cv_.notify_all();
       continue;
     }
     
     // Execute query
-    active_queries_++;
     item.query->status_ = AsyncQueryStatus::RUNNING;
     
     auto start = std::chrono::high_resolution_clock::now();
@@ -265,6 +278,7 @@ void AsyncQueryPool::WorkerThread() {
     }
     
     active_queries_--;
+    completion_cv_.notify_all();
   }
 }
 

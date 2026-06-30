@@ -395,6 +395,35 @@ TEST(ClusterFailoverManagerTest, SwitchLeaderFallbackToIOError) {
   manager.Shutdown();
 }
 
+TEST(ClusterFailoverManagerTest, SwitchLeaderHandlerExceptionReturnsIOError) {
+  ClusterFailoverManager manager;
+  ClusterFailoverManager::Config config;
+  Status s = manager.Initialize(config);
+  ASSERT_TRUE(s.ok());
+
+  manager.RegisterSwitchLeaderHandler(
+    [](PartitionID, NodeID) -> Status {
+      throw std::runtime_error("handler failed");
+    });
+
+  FailureEvent event;
+  event.type = FailureType::kNodeDown;
+  event.node_id = 7;
+  event.partition_id = 42;
+
+  s = manager.ReportFailure(event);
+  ASSERT_TRUE(s.ok());
+
+  auto active = manager.GetActiveFailures();
+  ASSERT_EQ(active.size(), 1);
+
+  s = manager.TriggerRecovery(active[0].event_id);
+  EXPECT_FALSE(s.ok());
+  EXPECT_TRUE(s.IsIOError());
+
+  manager.Shutdown();
+}
+
 TEST(ClusterFailoverManagerTest, RegisterPromoteReplicaHandlerAndExecute) {
   ClusterFailoverManager manager;
   ClusterFailoverManager::Config config;
@@ -429,6 +458,35 @@ TEST(ClusterFailoverManagerTest, RegisterPromoteReplicaHandlerAndExecute) {
   EXPECT_TRUE(handler_called);
   EXPECT_EQ(received_partition, 123);
   EXPECT_EQ(received_node, 99);
+
+  manager.Shutdown();
+}
+
+TEST(ClusterFailoverManagerTest, PromoteReplicaHandlerExceptionReturnsIOError) {
+  ClusterFailoverManager manager;
+  ClusterFailoverManager::Config config;
+  Status s = manager.Initialize(config);
+  ASSERT_TRUE(s.ok());
+
+  manager.RegisterPromoteReplicaHandler(
+    [](PartitionID, NodeID) -> Status {
+      throw std::runtime_error("handler failed");
+    });
+
+  FailureEvent event;
+  event.type = FailureType::kLeaderLost;
+  event.node_id = 99;
+  event.partition_id = 123;
+
+  s = manager.ReportFailure(event);
+  ASSERT_TRUE(s.ok());
+
+  auto active = manager.GetActiveFailures();
+  ASSERT_EQ(active.size(), 1);
+
+  s = manager.TriggerRecovery(active[0].event_id);
+  EXPECT_FALSE(s.ok());
+  EXPECT_TRUE(s.IsIOError());
 
   manager.Shutdown();
 }

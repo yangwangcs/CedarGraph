@@ -93,7 +93,7 @@ Replace the current `IndexScan` (lines 348–483 of `src/cypher/execution_plan.c
 > **TDD cycle:** failing test → compile → run (red) → implement → run (green) → `git commit`.  
 > **Build command (used throughout):**  
 > ```bash
-> cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make -j$(sysctl -n hw.ncpu)
+> cd <repo-root>/build && cmake .. && make -j$(sysctl -n hw.ncpu)
 > ```
 
 ---
@@ -148,7 +148,7 @@ Add the following in the `private:` section, near the other mutexes (around line
 - [ ] **1.2** Build to check for compile errors.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
+cd <repo-root>/build && cmake .. && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
 ```
 
 **Expected:** `make` completes with no errors (the new declarations are unused, so nothing breaks).
@@ -156,8 +156,8 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make -j$(sysctl 
 - [ ] **1.3** Commit.
 
 ```bash
-git -C /Users/wangyang/Desktop/CedarGraph-Core add include/cedar/storage/lsm_engine.h
-git -C /Users/wangyang/Desktop/CedarGraph-Core commit -m "subplan-e: declare label/property index structures in LsmEngine"
+git -C <repo-root> add include/cedar/storage/lsm_engine.h
+git -C <repo-root> commit -m "subplan-e: declare label/property index structures in LsmEngine"
 ```
 
 ---
@@ -314,7 +314,7 @@ With:
 - [ ] **2.4** Build.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
+cd <repo-root>/build && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
 ```
 
 **Expected:** clean build.
@@ -322,8 +322,8 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 
 - [ ] **2.5** Commit.
 
 ```bash
-git -C /Users/wangyang/Desktop/CedarGraph-Core add src/storage/lsm_engine.cc
-git -C /Users/wangyang/Desktop/CedarGraph-Core commit -m "subplan-e: implement index maintenance in LsmEngine Put/Delete"
+git -C <repo-root> add src/storage/lsm_engine.cc
+git -C <repo-root> commit -m "subplan-e: implement index maintenance in LsmEngine Put/Delete"
 ```
 
 ---
@@ -445,7 +445,7 @@ gtest_discover_tests(test_lsm_engine_index)
 - [ ] **3.3** Reconfigure CMake and run the new test.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make -j$(sysctl -n hw.ncpu) test_lsm_engine_index
+cd <repo-root>/build && cmake .. && make -j$(sysctl -n hw.ncpu) test_lsm_engine_index
 ./tests/test_lsm_engine_index
 ```
 
@@ -472,8 +472,8 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make -j$(sysctl 
 - [ ] **3.4** Commit.
 
 ```bash
-git -C /Users/wangyang/Desktop/CedarGraph-Core add tests/storage/test_lsm_engine_index.cc tests/CMakeLists.txt
-git -C /Users/wangyang/Desktop/CedarGraph-Core commit -m "subplan-e: add LsmEngine index unit tests (TDD green)"
+git -C <repo-root> add tests/storage/test_lsm_engine_index.cc tests/CMakeLists.txt
+git -C <repo-root> commit -m "subplan-e: add LsmEngine index unit tests (TDD green)"
 ```
 
 ---
@@ -504,7 +504,7 @@ In `CreateOperator::CreateNode`, after the property loop (around line 148), add:
 - [ ] **4.2** Build.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
+cd <repo-root>/build && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
 ```
 
 **Expected:** clean build.
@@ -512,8 +512,8 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 
 - [ ] **4.3** Commit.
 
 ```bash
-git -C /Users/wangyang/Desktop/CedarGraph-Core add src/cypher/operators/write_operators.cc
-git -C /Users/wangyang/Desktop/CedarGraph-Core commit -m "subplan-e: persist labels in CreateOperator for label indexing"
+git -C <repo-root> add src/cypher/operators/write_operators.cc
+git -C <repo-root> commit -m "subplan-e: persist labels in CreateOperator for label indexing"
 ```
 
 ---
@@ -624,7 +624,7 @@ bool IndexScan::Init(ExecutionContext* ctx) {
 - [ ] **5.2** Build.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
+cd <repo-root>/build && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
 ```
 
 **Expected:** clean build.
@@ -632,8 +632,8 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 
 - [ ] **5.3** Commit.
 
 ```bash
-git -C /Users/wangyang/Desktop/CedarGraph-Core add src/cypher/execution_plan.cc
-git -C /Users/wangyang/Desktop/CedarGraph-Core commit -m "subplan-e: rewrite IndexScan::Init to query LsmEngine secondary index"
+git -C <repo-root> add src/cypher/execution_plan.cc
+git -C <repo-root> commit -m "subplan-e: rewrite IndexScan::Init to query LsmEngine secondary index"
 ```
 
 ---
@@ -782,7 +782,7 @@ TEST_F(IndexScanRealIndexTest, UsesLabelIndexWhenAvailable) {
 - [ ] **6.2** Build and run.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) test_index_scan
+cd <repo-root>/build && make -j$(sysctl -n hw.ncpu) test_index_scan
 ./tests/cypher/test_index_scan
 ```
 
@@ -810,8 +810,8 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 
 - [ ] **6.3** Commit.
 
 ```bash
-git -C /Users/wangyang/Desktop/CedarGraph-Core add tests/cypher/test_index_scan.cc
-git -C /Users/wangyang/Desktop/CedarGraph-Core commit -m "subplan-e: update IndexScan tests for real index behaviour"
+git -C <repo-root> add tests/cypher/test_index_scan.cc
+git -C <repo-root> commit -m "subplan-e: update IndexScan tests for real index behaviour"
 ```
 
 ---
@@ -930,7 +930,7 @@ static std::shared_ptr<PhysicalOperator> ApplyPredicatePushdown(
 - [ ] **7.4** Build.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
+cd <repo-root>/build && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
 ```
 
 **Expected:** clean build.
@@ -938,7 +938,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 
 - [ ] **7.5** Run the predicate pushdown tests to confirm the label is now preserved.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) test_predicate_pushdown
+cd <repo-root>/build && make -j$(sysctl -n hw.ncpu) test_predicate_pushdown
 ./tests/cypher/test_predicate_pushdown
 ```
 
@@ -962,8 +962,8 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 
 - [ ] **7.6** Commit.
 
 ```bash
-git -C /Users/wangyang/Desktop/CedarGraph-Core add include/cedar/cypher/execution_plan.h src/cypher/execution_plan.cc
-git -C /Users/wangyang/Desktop/CedarGraph-Core commit -m "subplan-e: add BuildLabelIndex/BuildPropertyIndex to ExecutionPlanBuilder"
+git -C <repo-root> add include/cedar/cypher/execution_plan.h src/cypher/execution_plan.cc
+git -C <repo-root> commit -m "subplan-e: add BuildLabelIndex/BuildPropertyIndex to ExecutionPlanBuilder"
 ```
 
 ---
@@ -1003,7 +1003,7 @@ TEST(PredicatePushdownTest, SimpleEqualityPushedToIndexScan) {
 - [ ] **8.2** Build and run.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) test_predicate_pushdown
+cd <repo-root>/build && make -j$(sysctl -n hw.ncpu) test_predicate_pushdown
 ./tests/cypher/test_predicate_pushdown
 ```
 
@@ -1012,8 +1012,8 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 
 - [ ] **8.3** Commit.
 
 ```bash
-git -C /Users/wangyang/Desktop/CedarGraph-Core add tests/cypher/test_predicate_pushdown.cc
-git -C /Users/wangyang/Desktop/CedarGraph-Core commit -m "subplan-e: strengthen predicate pushdown test for label preservation"
+git -C <repo-root> add tests/cypher/test_predicate_pushdown.cc
+git -C <repo-root> commit -m "subplan-e: strengthen predicate pushdown test for label preservation"
 ```
 
 ---
@@ -1026,13 +1026,13 @@ git -C /Users/wangyang/Desktop/CedarGraph-Core commit -m "subplan-e: strengthen 
 - [ ] **9.1** Run the cypher and storage test suites.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ctest -R "test_index_scan|test_predicate_pushdown|test_lsm_engine_index|test_cedar_graph_storage|test_execution_operators|test_write_operators" --output-on-failure
+cd <repo-root>/build && ctest -R "test_index_scan|test_predicate_pushdown|test_lsm_engine_index|test_cedar_graph_storage|test_execution_operators|test_write_operators" --output-on-failure
 ```
 
 **Expected output:**
 
 ```
-Test project /Users/wangyang/Desktop/CedarGraph-Core/build
+Test project <repo-root>/build
     Start 1: test_lsm_engine_index
 1/7 Test #1: test_lsm_engine_index ...............   Passed    X.XX sec
     Start 2: test_index_scan
@@ -1089,7 +1089,7 @@ With:
 - [ ] **10.2** Build.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
+cd <repo-root>/build && make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
 ```
 
 **Expected:** clean build.
@@ -1097,8 +1097,8 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && make -j$(sysctl -n hw.ncpu) 
 - [ ] **10.3** Commit.
 
 ```bash
-git -C /Users/wangyang/Desktop/CedarGraph-Core add src/cypher/execution_plan.cc
-git -C /Users/wangyang/Desktop/CedarGraph-Core commit -m "subplan-e: use label index scan for MATCH (n:Label) with no properties"
+git -C <repo-root> add src/cypher/execution_plan.cc
+git -C <repo-root> commit -m "subplan-e: use label index scan for MATCH (n:Label) with no properties"
 ```
 
 ---

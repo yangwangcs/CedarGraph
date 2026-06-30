@@ -5,13 +5,14 @@ metadata:
   namespace: cedargraph
 data:
   storaged.conf: |
-    node_type=storaged
-    data_dir=/var/lib/cedar/storage
-    wal_dir=/var/lib/cedar/storage/wal
-    max_partitions=1024
-    flush_interval_ms=1000
-    compaction_enabled=true
-    raft_election_timeout_ms=1000
-    raft_heartbeat_interval_ms=100
-    dtx_port=7001
-    health_check_interval=30
+    storaged:
+      node_id: 0
+      bind_address: "0.0.0.0"
+      port: 9779
+      data_dir: "/var/lib/cedar/storage"
+      meta_server: "metad:10559"
+      health_port: 7000
+      metrics_port: 7001
+
+    tls:
+      enabled: true

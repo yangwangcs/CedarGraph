@@ -1152,7 +1152,7 @@
 - [ ] **Step 2: Update all references**
 
   ```bash
-  cd /Users/wangyang/Desktop/CedarGraph-Core && grep -rl "LockFreeVSL" src/ include/ | xargs sed -i '' 's/LockFreeVSL/CoarseLockedVSL/g'
+  cd <repo-root> && grep -rl "LockFreeVSL" src/ include/ | xargs sed -i '' 's/LockFreeVSL/CoarseLockedVSL/g'
   ```
 
 - [ ] **Step 3: Commit**

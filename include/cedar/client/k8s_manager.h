@@ -63,6 +63,10 @@ class K8sManager {
   std::string namespace_name_;
   bool initialized_ = false;
 
+  bool IsValidResourceName(const std::string& name) const;
+  std::string ShellQuote(const std::string& arg) const;
+  std::string NamespaceArg() const;
+
   // Execute kubectl command
   std::string ExecuteKubectl(const std::string& command);
 

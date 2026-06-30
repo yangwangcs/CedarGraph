@@ -26,6 +26,24 @@
 namespace cedar {
 namespace dtx {
 
+namespace {
+
+void NotifyFaultCallbacks(const std::vector<FaultInjector::FaultCallback>& callbacks,
+                          FaultType type, NodeID node, bool injected) {
+  for (const auto& cb : callbacks) {
+    try {
+      cb(type, node, injected);
+    } catch (const std::exception& e) {
+      std::cerr << "[ChaosTesting] Fault callback exception: " << e.what()
+                << std::endl;
+    } catch (...) {
+      std::cerr << "[ChaosTesting] Fault callback unknown exception" << std::endl;
+    }
+  }
+}
+
+}  // namespace
+
 // =============================================================================
 // FaultInjector Implementation
 // =============================================================================
@@ -41,6 +59,7 @@ Status FaultInjector::Initialize(const std::vector<FaultSpec>& specs) {
     return Status::InvalidArgument("FaultInjector already initialized");
   }
   
+  shutdown_ = false;
   specs_ = specs;
   
   // Start fault worker thread
@@ -57,6 +76,7 @@ void FaultInjector::Shutdown() {
   }
   
   shutdown_ = true;
+  shutdown_cv_.notify_all();
   if (worker_thread_.joinable()) {
     worker_thread_.join();
   }
@@ -71,30 +91,35 @@ void FaultInjector::FaultWorkerLoop() {
       auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           now - start_time);
       
-      // Check each fault spec
+      std::vector<std::pair<FaultSpec, NodeID>> newly_injected;
       {
         std::lock_guard<std::mutex> lock(specs_mutex_);
         for (const auto& spec : specs_) {
-          if (elapsed >= spec.start_after && 
+          if (elapsed >= spec.start_after &&
               elapsed < spec.start_after + spec.duration) {
-            // Fault should be active
             std::lock_guard<std::mutex> fault_lock(faults_mutex_);
             for (NodeID node : spec.target_nodes) {
               if (active_faults_[node].insert(spec.type).second) {
-                // Newly inserted
-                ApplyFault(spec);
-                
-                std::lock_guard<std::mutex> cb_lock(callback_mutex_);
-                for (auto& cb : callbacks_) {
-                  cb(spec.type, node, true);
-                }
+                newly_injected.emplace_back(spec, node);
               }
             }
           }
         }
       }
+
+      if (!newly_injected.empty()) {
+        std::vector<FaultCallback> callbacks_copy;
+        {
+          std::lock_guard<std::mutex> cb_lock(callback_mutex_);
+          callbacks_copy = callbacks_;
+        }
+        for (const auto& [spec, node] : newly_injected) {
+          ApplyFault(spec);
+          NotifyFaultCallbacks(callbacks_copy, spec.type, node, true);
+        }
+      }
       
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      WaitForShutdown(std::chrono::seconds(1));
     } catch (...) {
       std::cerr << "[ChaosTesting] Fault injection thread exception" << std::endl;
     }
@@ -106,6 +131,13 @@ void FaultInjector::FaultWorkerLoop() {
   } catch (...) {
     std::cerr << "[ChaosTesting] Cleanup exception" << std::endl;
   }
+}
+
+bool FaultInjector::WaitForShutdown(std::chrono::milliseconds timeout) {
+  std::unique_lock<std::mutex> lock(shutdown_mutex_);
+  return shutdown_cv_.wait_for(lock, timeout, [this]() {
+    return shutdown_.load();
+  });
 }
 
 void FaultInjector::ApplyFault(const FaultSpec& spec) {
@@ -152,16 +184,25 @@ void FaultInjector::RegisterFaultCallback(FaultCallback callback) {
 }
 
 void FaultInjector::ClearAllFaults() {
-  std::lock_guard<std::mutex> lock(faults_mutex_);
-  for (auto& [node_id, faults] : active_faults_) {
-    for (FaultType type : faults) {
-      std::lock_guard<std::mutex> cb_lock(callback_mutex_);
-      for (auto& cb : callbacks_) {
-        cb(type, node_id, false);
+  std::vector<std::pair<FaultType, NodeID>> cleared_faults;
+  {
+    std::lock_guard<std::mutex> lock(faults_mutex_);
+    for (auto& [node_id, faults] : active_faults_) {
+      for (FaultType type : faults) {
+        cleared_faults.emplace_back(type, node_id);
       }
     }
+    active_faults_.clear();
   }
-  active_faults_.clear();
+
+  std::vector<FaultCallback> callbacks_copy;
+  {
+    std::lock_guard<std::mutex> cb_lock(callback_mutex_);
+    callbacks_copy = callbacks_;
+  }
+  for (const auto& [type, node_id] : cleared_faults) {
+    NotifyFaultCallbacks(callbacks_copy, type, node_id, false);
+  }
 }
 
 // =============================================================================
@@ -262,11 +303,14 @@ Status LongTermStabilityTest::Run() {
       break;
     }
     
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (WaitForStop(std::chrono::seconds(1))) {
+      break;
+    }
   }
   
   // Cleanup
   running_ = false;
+  stop_cv_.notify_all();
   {
     std::lock_guard<std::mutex> lock(stats_mutex_);
     stats_.end_time = std::chrono::steady_clock::now();
@@ -316,7 +360,11 @@ void LongTermStabilityTest::WorkloadGeneratorLoop() {
     
     // Rate limiting
     if (config_.target_throughput > 0) {
-      std::this_thread::sleep_for(std::chrono::microseconds(1000000 / config_.target_throughput / 4));
+      auto delay = std::chrono::microseconds(
+          1000000 / config_.target_throughput / 4);
+      if (WaitForStop(delay)) {
+        break;
+      }
     }
   }
 }
@@ -328,13 +376,18 @@ void LongTermStabilityTest::FaultInjectionLoop() {
     InjectRandomFault();
     
     // Wait for fault duration
-    std::this_thread::sleep_for(config_.fault_duration);
+    if (WaitForStop(config_.fault_duration)) {
+      break;
+    }
     
     // Recover
     ClearAllFaults();
     
     // Wait before next fault
-    std::this_thread::sleep_for(config_.fault_interval - config_.fault_duration);
+    if (config_.fault_interval > config_.fault_duration &&
+        WaitForStop(config_.fault_interval - config_.fault_duration)) {
+      break;
+    }
     
     // Check if test duration exceeded
     auto now = std::chrono::steady_clock::now();
@@ -354,13 +407,17 @@ void LongTermStabilityTest::ConsistencyCheckLoop() {
       LogMessage("ERROR", "Consistency violation detected: " + status.ToString());
     }
     
-    std::this_thread::sleep_for(config_.consistency_check_interval);
+    if (WaitForStop(config_.consistency_check_interval)) {
+      break;
+    }
   }
 }
 
 void LongTermStabilityTest::MetricsReporterLoop() {
   while (running_ && !stop_requested_) {
-    std::this_thread::sleep_for(config_.metrics_interval);
+    if (WaitForStop(config_.metrics_interval)) {
+      break;
+    }
     
     auto now = std::chrono::steady_clock::now();
     int64_t elapsed;
@@ -489,6 +546,18 @@ Status LongTermStabilityTest::GenerateReport(const std::string& output_path) con
 
 void LongTermStabilityTest::Stop() {
   stop_requested_ = true;
+  running_ = false;
+  stop_cv_.notify_all();
+  if (fault_injector_) {
+    fault_injector_->Shutdown();
+  }
+}
+
+bool LongTermStabilityTest::WaitForStop(std::chrono::microseconds timeout) {
+  std::unique_lock<std::mutex> lock(stop_mutex_);
+  return stop_cv_.wait_for(lock, timeout, [this]() {
+    return stop_requested_.load() || !running_.load();
+  });
 }
 
 // =============================================================================
@@ -551,6 +620,7 @@ void AutomatedRecoveryManager::Stop() {
     return;
   }
   
+  stop_cv_.notify_all();
   queue_cv_.notify_all();
   
   if (monitor_thread_.joinable()) monitor_thread_.join();
@@ -606,7 +676,9 @@ Status AutomatedRecoveryManager::ExecuteRecovery(const FailureEvent& event) {
     }
     
     if (attempt < action.max_attempts - 1) {
-      std::this_thread::sleep_for(action.backoff_duration);
+      if (WaitForStop(action.backoff_duration)) {
+        return Status::IOError("Recovery aborted: manager stopping");
+      }
     }
   }
   
@@ -617,7 +689,9 @@ Status AutomatedRecoveryManager::ExecuteRecovery(const FailureEvent& event) {
 Status AutomatedRecoveryManager::RestartNode(const FailureEvent& event) {
   std::cout << "[Recovery] Restarting node " << event.node_id << std::endl;
   // In real implementation, restart the node process
-  std::this_thread::sleep_for(std::chrono::seconds(5));
+  if (WaitForStop(std::chrono::seconds(5))) {
+    return Status::IOError("Restart aborted: manager stopping");
+  }
   return Status::OK();
 }
 
@@ -658,8 +732,15 @@ void AutomatedRecoveryManager::MonitoringLoop() {
       // If unreachable, report failure
     }
     
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    WaitForStop(std::chrono::seconds(10));
   }
+}
+
+bool AutomatedRecoveryManager::WaitForStop(std::chrono::milliseconds timeout) {
+  std::unique_lock<std::mutex> lock(stop_mutex_);
+  return stop_cv_.wait_for(lock, timeout, [this]() {
+    return !running_.load();
+  });
 }
 
 void AutomatedRecoveryManager::SetAutoRecoveryEnabled(bool enabled) {

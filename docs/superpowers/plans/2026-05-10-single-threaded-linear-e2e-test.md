@@ -133,7 +133,7 @@ TEST_F(LinearEndToEndPipelineTest, WriteViaTwoPhaseCommit) {
 - [ ] **Step 2: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_linear_end_to_end_pipeline -j4 && ctest -R LinearEndToEndPipelineTest.WriteViaTwoPhaseCommit -V
+cd <repo-root>/build && cmake .. && make test_linear_end_to_end_pipeline -j4 && ctest -R LinearEndToEndPipelineTest.WriteViaTwoPhaseCommit -V
 ```
 
 Expected: Test passes. Prepare and Commit succeed.
@@ -216,7 +216,7 @@ TEST_F(LinearEndToEndPipelineTest, FlushAndRestartPreservesData) {
 - [ ] **Step 2: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_linear_end_to_end_pipeline -j4 && ctest -R LinearEndToEndPipelineTest.FlushAndRestartPreservesData -V
+cd <repo-root>/build && cmake .. && make test_linear_end_to_end_pipeline -j4 && ctest -R LinearEndToEndPipelineTest.FlushAndRestartPreservesData -V
 ```
 
 Expected: Test passes. Data survives restart.
@@ -342,7 +342,7 @@ gtest_discover_tests(test_linear_end_to_end_pipeline)
 - [ ] **Step 3: Build and run all three tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_linear_end_to_end_pipeline -j4 && ctest -R LinearEndToEndPipelineTest -V
+cd <repo-root>/build && cmake .. && make test_linear_end_to_end_pipeline -j4 && ctest -R LinearEndToEndPipelineTest -V
 ```
 
 Expected:

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "cedar/dtx/meta_service.h"
 
+#include <filesystem>
+
 using namespace cedar::dtx;
 
 class MetaServiceTest : public ::testing::Test {
@@ -27,6 +29,27 @@ TEST_F(MetaServiceTest, InitializeShutdown) {
     EXPECT_TRUE(meta_service_.IsLeader());
     // With BRaftNode, leader ID is derived from listen address port in current implementation
     EXPECT_NE(meta_service_.GetLeader(), kInvalidNodeID);
+}
+
+TEST(MetaServiceRaftInitTest, UnresolvedLongDnsPeerFailsWithoutBraftCrash) {
+    std::filesystem::remove_all("/tmp/cedar-meta-unresolved-dns-test");
+    MetadataService service;
+    MetaServiceConfig config;
+    config.node_id = 1;
+    config.listen_address = "127.0.0.1:19559";
+    config.advertise_address =
+        "unresolved-metad-0.very-long-statefulset-headless-service-name:19559";
+    config.data_dir = "/tmp/cedar-meta-unresolved-dns-test";
+    config.test_mode = false;
+    config.peers.push_back(
+        {2, "unresolved-metad-1.very-long-statefulset-headless-service-name:19559"});
+
+    auto status = service.Initialize(config);
+    EXPECT_FALSE(status.ok());
+    EXPECT_NE(status.ToString().find("Raft address DNS did not resolve"), std::string::npos)
+        << status.ToString();
+    service.Shutdown();
+    std::filesystem::remove_all("/tmp/cedar-meta-unresolved-dns-test");
 }
 
 TEST_F(MetaServiceTest, CreateAndGetSpace) {

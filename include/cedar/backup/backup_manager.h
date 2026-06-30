@@ -35,11 +35,11 @@ struct RestoreConfig {
 struct BackupMetadata {
   std::string backup_id;
   std::string timestamp;
-  uint64_t total_size_bytes;
-  uint64_t sst_count;
-  uint64_t wal_count;
+  uint64_t total_size_bytes = 0;
+  uint64_t sst_count = 0;
+  uint64_t wal_count = 0;
   std::string checksum;
-  bool is_incremental;
+  bool is_incremental = false;
   std::string parent_backup_id;
 };
 
@@ -82,7 +82,12 @@ class BackupManager {
   Status CopyMetadata(const std::string& source_dir, const std::string& backup_dir);
   Status CompressBackup(const std::string& backup_dir);
   Status DecompressBackup(const std::string& backup_dir);
-  std::string CalculateChecksum(const std::string& backup_dir) const;
+  Status CalculateChecksum(const std::string& backup_dir, std::string* checksum) const;
+  Status WriteManifest(const std::string& backup_dir,
+                       const BackupMetadata& metadata) const;
+  Status ReadManifest(const std::string& backup_dir,
+                      BackupMetadata* metadata) const;
+  bool IsSafeBackupId(const std::string& backup_id) const;
   std::string GenerateBackupId() const;
 };
 

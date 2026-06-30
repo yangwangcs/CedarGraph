@@ -27,8 +27,9 @@
 #define CEDAR_DTX_SECURITY_H_
 
 #include <atomic>
-#include <cstdint>
 #include <chrono>
+#include <condition_variable>
+#include <cstdint>
 #include <fstream>
 #include <map>
 #include <memory>

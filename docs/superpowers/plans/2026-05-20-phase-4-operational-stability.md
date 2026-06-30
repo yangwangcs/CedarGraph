@@ -80,7 +80,7 @@ In `main()`, after signal handler setup, add a polling loop that logs using `wri
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target storaged -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target storaged -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -115,7 +115,7 @@ void SignalHandler(int signal) {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target queryd -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target queryd -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -124,7 +124,7 @@ Expected: Build succeeds.
 ### Step 4.1.3: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/storage/storage_server_with_grpc.cc src/query/cedar_queryd_full.cpp
 git commit -m "fix(phase4): async-signal-safe signal handlers
 
@@ -225,7 +225,7 @@ Replace `HttpServerLoop`:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_governance -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_governance -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -234,7 +234,7 @@ Expected: Build succeeds.
 ### Step 4.2.2: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/governance/health_checker.cc include/cedar/governance/health_checker.h
 git commit -m "fix(phase4): HealthChecker bounded thread pool + connection limit
 
@@ -308,7 +308,7 @@ Add `hot_reload_last_mtime_` to `ConfigManager::Impl` in `include/cedar/governan
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_governance -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_governance -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -317,7 +317,7 @@ Expected: Build succeeds.
 ### Step 4.3.2: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/governance/config_manager.cc include/cedar/governance/config_manager.h
 git commit -m "fix(phase4): ConfigManager mtime-based hot reload
 
@@ -351,7 +351,7 @@ std::string data_dir = "/var/lib/cedar/storaged";
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target storaged -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target storaged -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -362,7 +362,7 @@ Expected: Build succeeds.
 Search for query timeout in queryd:
 
 ```bash
-grep -n "timeout" /Users/wangyang/Desktop/CedarGraph-Core/src/query/cedar_queryd_full.cpp | head -20
+grep -n "timeout" <repo-root>/src/query/cedar_queryd_full.cpp | head -20
 ```
 
 If a 5-minute default exists, reduce to 30 seconds:
@@ -378,7 +378,7 @@ constexpr int kDefaultQueryTimeoutMs = 30000;  // 30 seconds
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target queryd -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target queryd -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -387,7 +387,7 @@ Expected: Build succeeds.
 ### Step 4.4.3: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tools/storaged.cc src/query/cedar_queryd_full.cpp
 git commit -m "fix(phase4): safe defaults
 
@@ -448,7 +448,7 @@ Rename `WriteInternal` to `WriteInternalLocked` and `WriteBatchAsync` to `WriteB
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_transaction -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_transaction -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -475,7 +475,7 @@ Also in `MaybeScheduleFlush`, check `shutdown_` before incrementing counter:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_storage -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_storage -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -484,7 +484,7 @@ Expected: Build succeeds.
 ### Step 4.5.3: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/transaction/wal.cc include/cedar/transaction/wal.h src/storage/lsm_engine.cc
 git commit -m "fix(phase4): WAL/LSM race fixes
 
@@ -595,7 +595,7 @@ spec:
 ### Step 4.6.4: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add k8s/
 git commit -m "fix(phase4): K8s manifests — HTTP probes, NetworkPolicy, PDB
 
@@ -615,7 +615,7 @@ CRITICAL fix: Operational Readiness (K8s defaults)"
 ### Step 4.7.1: Clean rebuild and test
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . -j$(sysctl -n hw.ncpu)
 ctest --output-on-failure
 ```
@@ -626,7 +626,7 @@ Expected: All tests pass.
 ### Step 4.7.2: Commit phase completion
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git tag phase-4-complete
 git log --oneline -10
 ```

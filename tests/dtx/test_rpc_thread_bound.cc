@@ -50,6 +50,8 @@ TEST(DTXRpcClientThreadBound, PrepareAllDoesNotExceedBoundedThreads) {
   DTXRpcConfig config;
   config.max_rpc_threads = kPoolSize;
   config.rpc_timeout_ms = 100;  // Short timeout for faster failures
+  config.tls_config.enabled = false;
+  config.allow_insecure = true;
   DTXRpcClient client(config);
 
   std::vector<NodeID> participant_ids;
@@ -86,6 +88,8 @@ TEST(DTXRpcClientThreadBound, CommitAllDoesNotExceedBoundedThreads) {
   DTXRpcConfig config;
   config.max_rpc_threads = kPoolSize;
   config.rpc_timeout_ms = 100;
+  config.tls_config.enabled = false;
+  config.allow_insecure = true;
   DTXRpcClient client(config);
 
   std::vector<NodeID> participant_ids;
@@ -117,6 +121,8 @@ TEST(DTXRpcClientThreadBound, AbortAllDoesNotExceedBoundedThreads) {
   DTXRpcConfig config;
   config.max_rpc_threads = kPoolSize;
   config.rpc_timeout_ms = 100;
+  config.tls_config.enabled = false;
+  config.allow_insecure = true;
   DTXRpcClient client(config);
 
   std::vector<NodeID> participant_ids;

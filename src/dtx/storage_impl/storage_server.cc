@@ -198,7 +198,7 @@ void StorageServer::Serve() {
   
   // Build and start gRPC server
   grpc::ServerBuilder builder;
-  auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv();
+  auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnvStrict();
   if (!server_creds.ok()) {
     std::cerr << "Failed to create server TLS credentials: " << server_creds.status().ToString() << std::endl;
     return;

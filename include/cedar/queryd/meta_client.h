@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -14,13 +15,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include <grpcpp/channel.h>
+
 #include "cedar/core/status.h"
 #include "cedar/types/cedar_types.h"
 #include "meta_service.grpc.pb.h"
-
-namespace grpc {
-class Channel;
-}
 
 namespace cedar {
 namespace queryd {
@@ -150,6 +149,9 @@ class QueryMetaClient {
   
   // Watch for cluster changes (blocking)
   Status WatchClusterChanges(std::function<void(const ClusterState&)> callback);
+
+  // Stop background refresh/watch loops. Safe to call more than once.
+  void Stop();
   
   // Register this queryd instance
   Status RegisterQueryD(const std::string& listen_address);
@@ -162,6 +164,11 @@ class QueryMetaClient {
 
   // Get cached cluster state (no RPC)
   virtual const ClusterState* GetCachedClusterState() const;
+
+ protected:
+  // Test hook for exercising lifecycle without connecting to MetaD.
+  void StartRefreshLoopForTesting();
+  void SetCachedClusterStateForTesting(const ClusterState& state);
 
  private:
   Options options_;
@@ -179,6 +186,8 @@ class QueryMetaClient {
   // Background refresh
   std::atomic<bool> running_{false};
   std::thread refresh_thread_;
+  std::condition_variable stop_cv_;
+  std::mutex stop_mutex_;
   
   // gRPC stub
   std::unique_ptr<cedar::meta::MetaService::Stub> meta_stub_;

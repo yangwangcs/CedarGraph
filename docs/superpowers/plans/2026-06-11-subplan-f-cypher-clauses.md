@@ -6,7 +6,7 @@
 | **Architecture** | Hand-written recursive-descent parser (`CypherParser`) → AST (`ast.h`) → `ExecutionPlanBuilder` → physical operators (`execution_plan.h` / `write_operators.cc`) → `ExecutionContext`. |
 | **Tech Stack** | C++17, CMake, gtest, CedarGraph storage (`CedarGraphStorage`). |
 | **Target branch** | `main` |
-| **Saved to** | `/Users/wangyang/Desktop/CedarGraph-Core/docs/superpowers/plans/2026-06-11-subplan-f-cypher-clauses.md` |
+| **Saved to** | `<repo-root>/docs/superpowers/plans/2026-06-11-subplan-f-cypher-clauses.md` |
 
 ---
 
@@ -1440,7 +1440,7 @@ cd build && ctest -R "test_merge_with_unwind_parsing|test_merge_with_unwind_exec
 ```
 **Expected:**
 ```
-Test project /Users/wangyang/Desktop/CedarGraph-Core/build
+Test project <repo-root>/build
     Start 1: test_merge_with_unwind_parsing
 1/6 Test #1: test_merge_with_unwind_parsing ... Passed
     Start 2: test_merge_with_unwind_execution

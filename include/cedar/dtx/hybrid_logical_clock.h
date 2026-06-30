@@ -28,8 +28,9 @@
 #ifndef CEDAR_DTX_HYBRID_LOGICAL_CLOCK_H_
 #define CEDAR_DTX_HYBRID_LOGICAL_CLOCK_H_
 
-#include <cstdint>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <string>
 
@@ -114,11 +115,11 @@ class HybridLogicalClock {
   HybridLogicalClock();
   ~HybridLogicalClock() = default;
   
-  // Disable copy, allow move
+  // Disable copy and move; std::mutex makes moving unsafe.
   HybridLogicalClock(const HybridLogicalClock&) = delete;
   HybridLogicalClock& operator=(const HybridLogicalClock&) = delete;
-  HybridLogicalClock(HybridLogicalClock&&) = default;
-  HybridLogicalClock& operator=(HybridLogicalClock&&) = default;
+  HybridLogicalClock(HybridLogicalClock&&) = delete;
+  HybridLogicalClock& operator=(HybridLogicalClock&&) = delete;
   
   // Get current HLC timestamp
   // Thread-safe

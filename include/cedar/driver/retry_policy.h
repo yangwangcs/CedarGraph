@@ -23,6 +23,7 @@
 
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <random>
 #include <thread>
@@ -93,7 +94,7 @@ struct RetryConfig {
 // 重试策略执行器
 class RetryPolicy {
  public:
-  explicit RetryPolicy(const RetryConfig& config) : config_(config) {}
+  explicit RetryPolicy(const RetryConfig& config) : config_(NormalizeConfig(config)) {}
   
   // 执行带重试的操作
   template<typename Func>
@@ -167,6 +168,25 @@ class RetryPolicy {
   
  private:
   RetryConfig config_;
+
+  static RetryConfig NormalizeConfig(RetryConfig config) {
+    if (config.max_attempts == 0) {
+      config.max_attempts = 1;
+    }
+    if (config.initial_backoff.count() < 0) {
+      config.initial_backoff = std::chrono::milliseconds(0);
+    }
+    if (config.max_backoff.count() < 0) {
+      config.max_backoff = std::chrono::milliseconds(0);
+    }
+    if (config.max_backoff < config.initial_backoff) {
+      config.max_backoff = config.initial_backoff;
+    }
+    if (config.jitter_factor < 0.0) {
+      config.jitter_factor = 0.0;
+    }
+    return config;
+  }
   
   // 计算延迟（包含抖动）
   std::chrono::milliseconds CalculateDelay(

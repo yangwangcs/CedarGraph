@@ -36,7 +36,7 @@ namespace client {
 struct CedarClientConfig {
   // MetaD configuration
   std::string metad_host = "localhost";
-  int metad_port = 9559;
+  int metad_port = 10559;
   
   // GraphD configuration
   std::string graphd_host = "localhost";
@@ -64,7 +64,7 @@ struct CedarClientConfig {
   bool enable_jwt = false;
   std::string jwt_secret_key;
   std::string jwt_issuer = "cedar-client";
-  std::string jwt_audience = "cedar-server";
+  std::string jwt_audience = "cedargraph";
   int jwt_expiration_seconds = 3600;
   std::string jwt_token;  // Pre-configured token
   

@@ -54,6 +54,37 @@ grpc::Status ValidateQueryInput(const cedar::query::ExecuteQueryRequest* req) {
   return grpc::Status::OK;
 }
 
+bool IsPartitionMapBootstrapNotFound(const Status& status) {
+  if (status.IsNotFound()) {
+    return true;
+  }
+
+  const std::string message = status.ToString();
+  return message.find("NotFound: Space partition map not found") != std::string::npos ||
+         message.find("Space partition map not found") != std::string::npos;
+}
+
+cedar::StatusOr<std::shared_ptr<grpc::ChannelCredentials>> CreateClientCredentialsWithEnvFallback(
+    const cedar::dtx::raft::TlsConfig& config) {
+  const bool needs_env_fallback =
+      config.enabled &&
+      (config.ca_cert_file.empty() ||
+       (config.mtls_enabled &&
+        (config.client_cert_file.empty() || config.client_key_file.empty())));
+  if (needs_env_fallback) {
+    auto env_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+    if (env_creds.ok()) {
+      return env_creds;
+    }
+  }
+
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config);
+  if (creds.ok() || !config.enabled) {
+    return creds;
+  }
+  return cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+}
+
 // Helper: convert cypher::Value to proto Value (merged from QueryD)
 static cedar::query::Value ConvertToProtoValue(const cedar::cypher::Value& value) {
   cedar::query::Value proto;
@@ -203,20 +234,19 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
     return Status::InvalidArgument("Failed to connect to MetaD: " + connect_status.ToString());
   }
 
-  CEDAR_LOG_ERROR() << "[GraphD] Connected to MetaD at " << meta_server_addr << std::endl;
+  CEDAR_LOG_INFO() << "[GraphD] Connected to MetaD at " << meta_server_addr << std::endl;
   
   // 初始化 GCN 路由（如果配置了）
   gcn_router_ = std::make_shared<cedar::gcn::ScatterGatherRouter>();
   if (!gcn_server_addr.empty()) {
-    auto gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls_config_);
-    if (!gcn_creds.ok()) gcn_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+    auto gcn_creds = CreateClientCredentialsWithEnvFallback(tls_config_);
     if (!gcn_creds.ok()) {
       CEDAR_LOG_ERROR() << "[GraphD] GCN TLS error: " << gcn_creds.status().ToString() << std::endl;
     } else {
       auto gcn_channel = grpc::CreateChannel(gcn_server_addr, gcn_creds.ValueOrDie());
       gcn_router_->RegisterPeer(gcn_server_addr, gcn_channel);
       gcn_peer_addresses_.push_back(gcn_server_addr);
-      CEDAR_LOG_ERROR() << "[GraphD] Registered GCN " << gcn_server_addr << " in router" << std::endl;
+      CEDAR_LOG_INFO() << "[GraphD] Registered GCN " << gcn_server_addr << " in router" << std::endl;
     }
   }
   
@@ -239,7 +269,7 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   }
   std::filesystem::create_directories(txn_wal_dir_);
   
-  CEDAR_LOG_ERROR() << "[GraphD] Query cache initialized" << std::endl;
+  CEDAR_LOG_INFO() << "[GraphD] Query cache initialized" << std::endl;
 
   // 初始化 2PC 分布式事务引擎
   auto s = Initialize2PCEngine();
@@ -262,11 +292,11 @@ Status GraphServiceRouter::Start() {
     if (!recovery_result.ok()) {
       CEDAR_LOG_ERROR() << "[GraphD] Transaction recovery warning: " << recovery_result.ToString() << std::endl;
     } else {
-      CEDAR_LOG_ERROR() << "[GraphD] Transaction recovery completed" << std::endl;
+      CEDAR_LOG_INFO() << "[GraphD] Transaction recovery completed" << std::endl;
     }
   }
   
-  CEDAR_LOG_ERROR() << "[GraphD] Router started" << std::endl;
+  CEDAR_LOG_INFO() << "[GraphD] Router started" << std::endl;
   return Status::OK();
 }
 
@@ -291,7 +321,7 @@ Status GraphServiceRouter::Stop() {
     meta_client_.reset();
   }
 
-  CEDAR_LOG_ERROR() << "[GraphD] Router stopped" << std::endl;
+  CEDAR_LOG_INFO() << "[GraphD] Router stopped" << std::endl;
   return Status::OK();
 }
 
@@ -1941,8 +1971,7 @@ GraphServiceRouter::GetStorageStub(const std::string& node_addr) {
   }
 
   // Slow path: create connection without holding the lock
-  auto storage_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(tls_config_);
-  if (!storage_creds.ok()) storage_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  auto storage_creds = CreateClientCredentialsWithEnvFallback(tls_config_);
   if (!storage_creds.ok()) {
     CEDAR_LOG_ERROR() << "[GraphD] Storage TLS error: " << storage_creds.status().ToString() << std::endl;
     return nullptr;
@@ -2121,7 +2150,7 @@ Status GraphServiceRouter::ExecutePartitionQuery(
 
         auto* row = result->add_rows();
         auto* val = row->add_values();
-        const std::string& data = get_resp.descriptor_().data();
+        const std::string& data = get_resp.value_descriptor().data();
         if (data.size() >= sizeof(uint64_t)) {
           uint64_t raw;
           std::memcpy(&raw, data.data(), sizeof(uint64_t));
@@ -2154,7 +2183,7 @@ Status GraphServiceRouter::ExecutePartitionQuery(
         for (const auto& item : scan_resp.items()) {
           auto* row = result->add_rows();
           auto* val = row->add_values();
-          const std::string& data = item.descriptor_().data();
+          const std::string& data = item.value_descriptor().data();
           if (data.size() >= sizeof(uint64_t)) {
             uint64_t raw;
             std::memcpy(&raw, data.data(), sizeof(uint64_t));
@@ -2204,7 +2233,7 @@ Status GraphServiceRouter::ExecutePartitionQuery(
       // 对每个邻接边，获取目标节点
       for (const auto& item : edge_resp.items()) {
         uint64_t neighbor_id = 0;
-        const std::string& data = item.descriptor_().data();
+        const std::string& data = item.value_descriptor().data();
         if (data.size() >= sizeof(uint64_t)) {
           std::memcpy(&neighbor_id, data.data(), sizeof(uint64_t));
         }
@@ -2224,7 +2253,7 @@ Status GraphServiceRouter::ExecutePartitionQuery(
         if (get_status.ok() && get_resp.success() && get_resp.found()) {
           auto* row = result->add_rows();
           auto* val = row->add_values();
-          const std::string& ndata = get_resp.descriptor_().data();
+          const std::string& ndata = get_resp.value_descriptor().data();
           if (ndata.size() >= sizeof(uint64_t)) {
             uint64_t raw;
             std::memcpy(&raw, ndata.data(), sizeof(uint64_t));
@@ -2259,7 +2288,7 @@ Status GraphServiceRouter::ExecutePartitionQuery(
         for (const auto& item : scan_resp.items()) {
           auto* row = result->add_rows();
           auto* val = row->add_values();
-          const std::string& data = item.descriptor_().data();
+          const std::string& data = item.value_descriptor().data();
           if (data.size() >= sizeof(uint64_t)) {
             uint64_t raw;
             std::memcpy(&raw, data.data(), sizeof(uint64_t));
@@ -2289,8 +2318,14 @@ Status GraphServiceRouter::RefreshPartitionMap(const std::string& space_name) {
 
   auto result = meta_client_->GetSpacePartitionMap(space_name);
   if (!result.ok()) {
-    CEDAR_LOG_ERROR() << "[GraphServiceRouter] Failed to refresh partition map: "
-              << result.status().ToString() << std::endl;
+    if (IsPartitionMapBootstrapNotFound(result.status())) {
+      CEDAR_LOG_WARN() << "[GraphServiceRouter] Partition map for space '"
+                       << space_name << "' is not available yet: "
+                       << result.status().ToString() << std::endl;
+    } else {
+      CEDAR_LOG_ERROR() << "[GraphServiceRouter] Failed to refresh partition map: "
+                        << result.status().ToString() << std::endl;
+    }
     return result.status();
   }
 
@@ -2352,7 +2387,8 @@ void GraphServiceRouter::PartitionMapRefreshLoop() {
     auto status = RefreshPartitionMap();
     if (!status.ok()) {
       backoff = std::min(backoff * 2, std::chrono::seconds(300));
-      std::this_thread::sleep_for(backoff);
+      std::unique_lock<std::mutex> lock(cv_mutex_);
+      cv_.wait_for(lock, backoff, [this]() { return !running_.load(); });
     } else {
       backoff = std::chrono::seconds(1);
     }
@@ -2379,7 +2415,7 @@ Status GraphServiceRouter::Initialize2PCEngine() {
         continue;
       }
       storage_clients_.push_back(client);
-      CEDAR_LOG_ERROR() << "[GraphD] StorageClient connected to " << addr << std::endl;
+      CEDAR_LOG_INFO() << "[GraphD] StorageClient connected to " << addr << std::endl;
     }
   }
   
@@ -2389,6 +2425,13 @@ Status GraphServiceRouter::Initialize2PCEngine() {
     if (nodes_result.ok()) {
       for (const auto& node : nodes_result.value()) {
         if (node.state == cedar::dtx::NodeInfo::State::kOnline) {
+          if (node.address.empty()) {
+            CEDAR_LOG_WARN() << "[GraphD] Skipping online storage node "
+                             << node.node_id
+                             << " because MetaD returned an empty address"
+                             << std::endl;
+            continue;
+          }
           auto client = std::make_shared<cedar::dtx::StorageClient>();
           cedar::dtx::StorageClient::ClientConfig client_config;
           client_config.server_address = node.address;
@@ -2400,14 +2443,14 @@ Status GraphServiceRouter::Initialize2PCEngine() {
             continue;
           }
           storage_clients_.push_back(client);
-          CEDAR_LOG_ERROR() << "[GraphD] StorageClient connected to " << node.address << std::endl;
+          CEDAR_LOG_INFO() << "[GraphD] StorageClient connected to " << node.address << std::endl;
         }
       }
     }
   }
   
   if (storage_clients_.empty()) {
-    CEDAR_LOG_ERROR() << "[GraphD] No storage clients available, 2PC engine not initialized" << std::endl;
+    CEDAR_LOG_WARN() << "[GraphD] No storage clients available, 2PC engine not initialized" << std::endl;
     return Status::OK();  // Non-fatal
   }
   
@@ -2464,7 +2507,7 @@ Status GraphServiceRouter::Initialize2PCEngine() {
     return s;
   }
   
-  CEDAR_LOG_ERROR() << "[GraphD] 2PC engine initialized with " << storage_clients_.size()
+  CEDAR_LOG_INFO() << "[GraphD] 2PC engine initialized with " << storage_clients_.size()
             << " storage clients" << std::endl;
   return Status::OK();
 }

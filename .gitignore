@@ -58,6 +58,7 @@ data/
 logs/
 Testing/
 test_results/
+.preflight-backups/
 
 # Unrelated projects
 academic-research-skills-codex-main/

@@ -3,7 +3,9 @@
 // Test: TransactionRecoveryManager decision logic for various txn states.
 
 #include <gtest/gtest.h>
+#include <chrono>
 #include <filesystem>
+#include <thread>
 #include "cedar/dtx/transaction_recovery_manager.h"
 #include "cedar/dtx/transaction_state.h"
 #include "cedar/dtx/dtx_rpc_client.h"
@@ -89,7 +91,10 @@ TEST(TransactionRecoveryManager, RecoveryUsesWiredRpcClient) {
   mgr.Initialize(&state_mgr);
 
   // Wire a real DTXRpcClient (no actual server needed for this test)
-  auto rpc_client = std::make_shared<dtx::DTXRpcClient>(dtx::DTXRpcConfig{});
+  dtx::DTXRpcConfig rpc_config;
+  rpc_config.tls_config.enabled = false;
+  rpc_config.allow_insecure = true;
+  auto rpc_client = std::make_shared<dtx::DTXRpcClient>(rpc_config);
   mgr.SetRpcClient(rpc_client);
 
   // Set a partition resolver so the recovery manager can map partitions to nodes
@@ -108,6 +113,64 @@ TEST(TransactionRecoveryManager, RecoveryUsesWiredRpcClient) {
   EXPECT_FALSE(status.ok());
   EXPECT_NE(status.ToString().find("Participant not found"), std::string::npos)
       << "Expected RPC client to be used, but got: " << status.ToString();
+}
+
+TEST(TransactionRecoveryManager, ShutdownWakesRetryBackoffPromptly) {
+  const std::string wal_dir = "/tmp/test_recovery_shutdown_backoff";
+  std::filesystem::remove_all(wal_dir);
+
+  TransactionStateManager state_mgr;
+  ASSERT_TRUE(state_mgr.Initialize(wal_dir).ok());
+
+  dtx::TxnID txn_id = 101;
+  ASSERT_TRUE(state_mgr.CreateTransaction(txn_id, {1}).ok());
+  ASSERT_TRUE(state_mgr.UpdateState(txn_id, TxnState::kPrepared).ok());
+
+  TransactionRecoveryManager mgr;
+  ASSERT_TRUE(mgr.Initialize(&state_mgr).ok());
+  mgr.OnTransactionTimeout(txn_id);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  auto start = std::chrono::steady_clock::now();
+  mgr.Shutdown();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 500);
+
+  std::filesystem::remove_all(wal_dir);
+}
+
+TEST(TransactionStateManager, WalRecoveryRestoresParticipantStates) {
+  const std::string wal_dir = "/tmp/test_txn_state_participant_wal";
+  std::filesystem::remove_all(wal_dir);
+
+  {
+    TransactionStateManager state_mgr;
+    ASSERT_TRUE(state_mgr.Initialize(wal_dir).ok());
+    ASSERT_TRUE(state_mgr.CreateTransaction(77, {1, 2}).ok());
+    ASSERT_TRUE(state_mgr.UpdateState(77, TxnState::kCommitting).ok());
+    ASSERT_TRUE(state_mgr.UpdateParticipantState(
+        77, 1, ParticipantState::State::kCommitted).ok());
+    ASSERT_TRUE(state_mgr.UpdateParticipantState(
+        77, 2, ParticipantState::State::kFailed, "rpc timeout").ok());
+    state_mgr.Shutdown();
+  }
+
+  TransactionStateManager recovered;
+  ASSERT_TRUE(recovered.Initialize(wal_dir).ok());
+  auto record = recovered.GetTransaction(77);
+
+  ASSERT_TRUE(record.has_value());
+  EXPECT_EQ(record->state, TxnState::kCommitting);
+  ASSERT_EQ(record->participant_states.size(), 2);
+  EXPECT_EQ(record->participant_states.at(1).state,
+            ParticipantState::State::kCommitted);
+  EXPECT_EQ(record->participant_states.at(2).state,
+            ParticipantState::State::kFailed);
+  ASSERT_TRUE(record->participant_states.at(2).error_msg.has_value());
+  EXPECT_EQ(record->participant_states.at(2).error_msg.value(), "rpc timeout");
+
+  std::filesystem::remove_all(wal_dir);
 }
 
 int main(int argc, char** argv) {

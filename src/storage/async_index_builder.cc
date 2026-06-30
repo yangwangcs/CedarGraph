@@ -17,6 +17,7 @@
 #include <chrono>
 #include <iostream>
 #include <thread>
+#include <vector>
 
 namespace cedar {
 
@@ -62,7 +63,25 @@ Status AsyncIndexBuilder::Initialize() {
 
 Status AsyncIndexBuilder::Shutdown() {
   stop_flag_.store(true, std::memory_order_release);
+  std::vector<uint64_t> abandoned_hashes;
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    while (!task_queue_.empty()) {
+      const auto& task = task_queue_.top();
+      abandoned_hashes.push_back(
+          HashEntity(task.entity_id, task.entity_type, task.column_id));
+      task_queue_.pop();
+      outstanding_tasks_.fetch_sub(1, std::memory_order_acq_rel);
+    }
+  }
+  if (!abandoned_hashes.empty()) {
+    std::lock_guard<std::mutex> building_lock(building_mutex_);
+    for (uint64_t entity_hash : abandoned_hashes) {
+      building_set_.erase(entity_hash);
+    }
+  }
   queue_cv_.notify_all();
+  completion_cv_.notify_all();
   
   for (auto& worker : workers_) {
     if (worker && worker->joinable()) {
@@ -92,6 +111,8 @@ Status AsyncIndexBuilder::SubmitTask(const IndexBuildTask& task) {
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     if (task_queue_.size() >= options_.task_queue_capacity) {
+      std::lock_guard<std::mutex> building_lock(building_mutex_);
+      building_set_.erase(entity_hash);
       return Status::IOError("Task queue is full");
     }
     
@@ -104,6 +125,7 @@ Status AsyncIndexBuilder::SubmitTask(const IndexBuildTask& task) {
     }
     
     task_queue_.push(mutable_task);
+    outstanding_tasks_.fetch_add(1, std::memory_order_relaxed);
     tasks_submitted_.fetch_add(1, std::memory_order_relaxed);
   }
   
@@ -231,17 +253,15 @@ bool AsyncIndexBuilder::IsBuilding(uint64_t entity_id,
 }
 
 Status AsyncIndexBuilder::WaitForAll(uint32_t timeout_ms) {
-  auto start = std::chrono::steady_clock::now();
-  
-  while (GetQueueDepth() > 0) {
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
-    
-    if (elapsed > timeout_ms) {
-      return Status::IOError("Timeout waiting for all tasks");
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  std::unique_lock<std::mutex> lock(completion_mutex_);
+  const bool completed = completion_cv_.wait_for(
+      lock, std::chrono::milliseconds(timeout_ms), [this]() {
+        return stop_flag_.load(std::memory_order_acquire) ||
+               outstanding_tasks_.load(std::memory_order_acquire) == 0;
+      });
+
+  if (!completed) {
+    return Status::IOError("Timeout waiting for all tasks");
   }
   
   return Status::OK();
@@ -249,6 +269,11 @@ Status AsyncIndexBuilder::WaitForAll(uint32_t timeout_ms) {
 
 void AsyncIndexBuilder::WorkerThreadLoop(uint32_t worker_id) {
   (void)worker_id;
+
+  auto mark_task_done = [this]() {
+    outstanding_tasks_.fetch_sub(1, std::memory_order_acq_rel);
+    completion_cv_.notify_all();
+  };
   
   while (!stop_flag_.load(std::memory_order_acquire)) {
     std::vector<IndexBuildTask> batch;
@@ -291,6 +316,7 @@ void AsyncIndexBuilder::WorkerThreadLoop(uint32_t worker_id) {
       } else {
         tasks_failed_.fetch_add(1, std::memory_order_relaxed);
       }
+      mark_task_done();
     } else if (batch.size() > 1) {
       auto results = ExecuteBatchBuild(batch);
       batch_builds_.fetch_add(1, std::memory_order_relaxed);
@@ -306,6 +332,7 @@ void AsyncIndexBuilder::WorkerThreadLoop(uint32_t worker_id) {
         } else {
           tasks_failed_.fetch_add(1, std::memory_order_relaxed);
         }
+        mark_task_done();
       }
     }
   }

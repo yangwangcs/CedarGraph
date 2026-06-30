@@ -24,27 +24,41 @@ spec:
     spec:
       containers:
       - name: metad
-        image: cedargraph:latest
+        image: cedargraph:k8s-fix-20260630
         imagePullPolicy: IfNotPresent
-        command: ["/usr/local/bin/cedar-metad"]
-        args:
-        - "--config=/etc/cedar/metad.conf"
+        command:
+        - sh
+        - -c
+        - |
+          ordinal="${HOSTNAME##*-}"
+          node_id=$((ordinal + 1))
+          exec /usr/local/bin/cedar-metad \
+            --node_id "${node_id}" \
+            --listen "0.0.0.0:9559" \
+            --grpc_port "10559" \
+            --data_dir "/var/lib/cedar/metad" \
+            --peer "1:metad-0.metad:9559" \
+            --peer "2:metad-1.metad:9559" \
+            --peer "3:metad-2.metad:9559"
         env:
         - name: NODE_ID
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
         - name: BIND_ADDRESS
-          value: "0.0.0.0:6000"
+          value: "0.0.0.0:9559"
+        - name: CEDAR_METAD_GRPC_ENDPOINT
+          value: "0.0.0.0:10559"
         - name: DATA_DIR
           value: "/var/lib/cedar/metad"
         - name: CLUSTER_ID
           value: "1"
-        - name: INITIAL_CLUSTER
-          value: "metad-0=http://metad-0.metad:6000,metad-1=http://metad-1.metad:6001,metad-2=http://metad-2.metad:6002"
         ports:
+        - name: raft
+          containerPort: 9559
+          protocol: TCP
         - name: grpc
-          containerPort: 6000
+          containerPort: 10559
           protocol: TCP
         livenessProbe:
           tcpSocket:
@@ -96,9 +110,12 @@ spec:
   selector:
     app: metad
   ports:
+  - name: raft
+    port: 9559
+    targetPort: 9559
   - name: grpc
-    port: 6000
-    targetPort: 6000
+    port: 10559
+    targetPort: 10559
   clusterIP: None
 ---
 apiVersion: v1
@@ -108,6 +125,14 @@ metadata:
   namespace: cedargraph
 data:
   metad.conf: |
-    cluster_id=1
-    election_timeout=1000
-    heartbeat_interval=100
+    metad:
+      node_id: 1
+      listen_address: "0.0.0.0:9559"
+      grpc_port: 10559
+      data_dir: "/var/lib/cedar/metad"
+      peers:
+        - "1:metad-0.metad:9559"
+        - "2:metad-1.metad:9559"
+        - "3:metad-2.metad:9559"
+      election_timeout_ms: 1000
+      heartbeat_interval_ms: 100

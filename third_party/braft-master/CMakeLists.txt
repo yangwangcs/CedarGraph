@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 project(braft C CXX)
 
 SET(CPACK_GENERATOR "DEB")
@@ -32,7 +32,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     if(NOT (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 7.0))
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-aligned-new")
     endif()
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # require at least clang 3.3
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 3.3)
         message(FATAL_ERROR "Clang is too old, please install a newer version supporting C++11")
@@ -71,6 +71,12 @@ find_library(BRPC_LIB NAMES libbrpc.a brpc)
 if ((NOT BRPC_INCLUDE_PATH) OR (NOT BRPC_LIB))
     message(FATAL_ERROR "Fail to find brpc")
 endif()
+
+# CedarGraph vendors brpc and braft together. Parent projects may add
+# Homebrew include paths globally on macOS; keep braft pinned to the vendored
+# brpc headers so brpc::ChannelOptions has the same ABI as the linked brpc
+# objects.
+include_directories(BEFORE ${BRPC_INCLUDE_PATH})
 
 if (NOT PROTOBUF_PROTOC_EXECUTABLE)
     get_filename_component(PROTO_LIB_DIR ${PROTOBUF_LIBRARY} DIRECTORY)
@@ -193,9 +199,12 @@ if(${GFLAGS_NS} STREQUAL "GFLAGS_NAMESPACE")
 endif()
 
 execute_process(
-    COMMAND bash -c "git rev-parse --short HEAD | tr -d '\n'"
+    COMMAND bash -c "git rev-parse --short HEAD 2>/dev/null | tr -d '\n'"
     OUTPUT_VARIABLE BRAFT_REVISION
 )
+if(NOT BRAFT_REVISION)
+    set(BRAFT_REVISION "unknown")
+endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     include(CheckFunctionExists)

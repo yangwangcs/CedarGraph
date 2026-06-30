@@ -187,12 +187,15 @@ size_t QueryCache::CalculateResultSize(const ResultSet& result) {
     // Add size of values in the row
     for (const auto& value : row.values()) {
       size += sizeof(Value);
-      // Add string data size if present
-      if (value.has_string_val()) {
-        size += value.string_val().size();
-      }
-      if (value.has_bytes_val()) {
-        size += value.bytes_val().size();
+      switch (value.value_type_case()) {
+        case Value::kStringVal:
+          size += value.string_val().size();
+          break;
+        case Value::kBytesVal:
+          size += value.bytes_val().size();
+          break;
+        default:
+          break;
       }
     }
   }

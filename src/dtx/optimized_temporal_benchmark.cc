@@ -32,6 +32,7 @@ namespace dtx {
 // =============================================================================
 
 ThreadPool::ThreadPool(size_t num_threads) : stop_(false) {
+  num_threads = std::max<size_t>(1, num_threads);
   for (size_t i = 0; i < num_threads; ++i) {
     workers_.emplace_back([this] {
       while (true) {
@@ -44,7 +45,8 @@ ThreadPool::ThreadPool(size_t num_threads) : stop_(false) {
           tasks_.pop();
         }
         task();
-        task_count_--;
+        task_count_.fetch_sub(1);
+        completion_cv_.notify_all();
       }
     });
   }
@@ -63,6 +65,10 @@ ThreadPool::~ThreadPool() {
 
 template<typename Func>
 void ThreadPool::ParallelFor(size_t start, size_t end, Func&& func) {
+  if (end <= start) {
+    return;
+  }
+
   size_t num_tasks = end - start;
   size_t num_threads = std::min(workers_.size(), num_tasks);
   size_t chunk_size = num_tasks / num_threads;
@@ -86,9 +92,8 @@ void ThreadPool::ParallelFor(size_t start, size_t end, Func&& func) {
 }
 
 void ThreadPool::WaitForAll() {
-  while (task_count_ > 0) {
-    std::this_thread::yield();
-  }
+  std::unique_lock<std::mutex> lock(completion_mutex_);
+  completion_cv_.wait(lock, [this] { return task_count_.load() == 0; });
 }
 
 // =============================================================================
@@ -99,16 +104,19 @@ template<typename T>
 BatchBuffer<T>::BatchBuffer(size_t batch_size, 
                             std::chrono::microseconds flush_interval,
                             std::function<void(std::vector<T>&)> flush_callback)
-    : batch_size_(batch_size), 
+    : batch_size_(std::max<size_t>(1, batch_size)),
       flush_interval_(flush_interval),
       flush_callback_(flush_callback) {
-  buffer_.reserve(batch_size);
+  buffer_.reserve(batch_size_);
   flush_thread_ = std::thread(&BatchBuffer::FlushLoop, this);
 }
 
 template<typename T>
 BatchBuffer<T>::~BatchBuffer() {
-  running_ = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    running_ = false;
+  }
   cv_.notify_all();
   if (flush_thread_.joinable()) {
     flush_thread_.join();
@@ -167,6 +175,7 @@ void BatchBuffer<T>::FlushLoop() {
 // Explicit instantiation
 template class BatchBuffer<std::pair<uint64_t, uint64_t>>;
 template class BatchBuffer<std::tuple<uint64_t, uint64_t, uint64_t>>;
+template class BatchBuffer<int>;
 
 // =============================================================================
 // OptimizedMetrics Implementation
@@ -330,6 +339,38 @@ OptimizedTemporalBenchmark::~OptimizedTemporalBenchmark() {
 
 Status OptimizedTemporalBenchmark::Initialize() {
   std::cout << "Initializing optimized temporal graph benchmark..." << std::endl;
+
+  if (config_.node_count <= 0) {
+    return Status::InvalidArgument("node_count must be positive");
+  }
+  if (config_.vertex_count == 0) {
+    return Status::InvalidArgument("vertex_count must be positive");
+  }
+  if (config_.time_range_seconds == 0) {
+    return Status::InvalidArgument("time_range_seconds must be positive");
+  }
+  if (config_.duration_seconds <= 0) {
+    return Status::InvalidArgument("duration_seconds must be positive");
+  }
+  if (config_.concurrent_clients <= 0) {
+    return Status::InvalidArgument("concurrent_clients must be positive");
+  }
+  if (config_.parallel_scan_threads <= 0) {
+    return Status::InvalidArgument("parallel_scan_threads must be positive");
+  }
+  if (config_.point_query_ratio < 0 || config_.range_query_ratio < 0 ||
+      config_.graph_analytics_ratio < 0 || config_.write_ratio < 0) {
+    return Status::InvalidArgument("query ratios must be non-negative");
+  }
+  const int total_ratio = config_.point_query_ratio + config_.range_query_ratio +
+                          config_.graph_analytics_ratio + config_.write_ratio;
+  if (total_ratio <= 0) {
+    return Status::InvalidArgument("at least one query ratio must be positive");
+  }
+  if (config_.range_query_ratio > 0 && config_.time_range_seconds < 3600) {
+    return Status::InvalidArgument(
+        "time_range_seconds must be at least 3600 when range queries are enabled");
+  }
   
   // Pre-generate vertex IDs
   vertex_ids_.reserve(config_.vertex_count);

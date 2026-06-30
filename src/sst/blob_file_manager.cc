@@ -16,7 +16,6 @@
 
 #include <cstring>
 #include <string>
-#include <machine/endian.h>
 
 #include "cedar/core/env.h"
 #include "cedar/core/crc32c.h"

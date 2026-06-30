@@ -36,8 +36,7 @@ LoadBalancerNode LoadBalancer::SelectNode() {
   }
 
   if (healthy_nodes.empty()) {
-    // Return first node even if unhealthy (fallback)
-    return nodes_[0];
+    return {};
   }
 
   switch (strategy_) {
@@ -96,7 +95,7 @@ LoadBalancerNode LoadBalancer::SelectRoundRobin() {
   }
 
   if (healthy_nodes.empty()) {
-    return nodes_[0];
+    return {};
   }
 
   int index = round_robin_index_++ % healthy_nodes.size();
@@ -113,7 +112,7 @@ LoadBalancerNode LoadBalancer::SelectWeighted() {
   }
 
   if (total_weight == 0) {
-    return nodes_[0];
+    return {};
   }
 
   // Select based on weight
@@ -129,7 +128,7 @@ LoadBalancerNode LoadBalancer::SelectWeighted() {
     }
   }
 
-  return nodes_[0];
+  return {};
 }
 
 LoadBalancerNode LoadBalancer::SelectLeastConnections() {
@@ -147,7 +146,7 @@ LoadBalancerNode LoadBalancer::SelectLeastConnections() {
     return *best;
   }
 
-  return nodes_[0];
+  return {};
 }
 
 LoadBalancerNode LoadBalancer::SelectRandom() {
@@ -160,7 +159,7 @@ LoadBalancerNode LoadBalancer::SelectRandom() {
   }
 
   if (healthy_nodes.empty()) {
-    return nodes_[0];
+    return {};
   }
 
   static std::random_device rd;

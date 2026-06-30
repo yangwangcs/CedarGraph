@@ -3,6 +3,7 @@
 
 #include "cedar/core/threading.h"
 
+#include <algorithm>
 #include <condition_variable>
 #include <mutex>
 #include <queue>
@@ -61,6 +62,7 @@ void CondVar::SignalAll() { impl_->SignalAll(); }
 class ThreadPool::Impl {
  public:
   explicit Impl(size_t num_threads) : shutdown_(false), active_tasks_(0) {
+    num_threads = std::max<size_t>(1, num_threads);
     for (size_t i = 0; i < num_threads; ++i) {
       threads_.emplace_back([this] { WorkerLoop(); });
     }

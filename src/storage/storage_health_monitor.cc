@@ -56,6 +56,7 @@ Status StorageHealthMonitor::Start() {
 
 void StorageHealthMonitor::Stop() {
   if (!running_.exchange(false)) return;
+  cv_.notify_all();
   if (monitor_thread_.joinable()) {
     monitor_thread_.join();
   }
@@ -127,13 +128,17 @@ std::vector<NodeHealth> StorageHealthMonitor::GetAllNodes() const {
 
 void StorageHealthMonitor::SetHealthChangeCallback(
     HealthChangeCallback callback) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   health_change_callback_ = callback;
 }
 
 void StorageHealthMonitor::MonitoringLoop() {
   while (running_) {
     CheckAllNodes();
-    std::this_thread::sleep_for(config_.check_interval);
+    std::unique_lock<std::mutex> lock(cv_mutex_);
+    cv_.wait_for(lock, config_.check_interval, [this]() {
+      return !running_.load();
+    });
   }
 }
 
@@ -149,17 +154,31 @@ void StorageHealthMonitor::CheckAllNodes() {
   for (const auto& node_id : node_ids) {
     if (!running_) break;
 
-    std::lock_guard<std::mutex> lock(nodes_mutex_);
-    auto it = nodes_.find(node_id);
-    if (it != nodes_.end()) {
-      CheckNodeInternal(node_id, it->second);
+    Status status;
+    HealthChangeNotification notification;
+    bool notify = false;
+    {
+      std::lock_guard<std::mutex> lock(nodes_mutex_);
+      auto it = nodes_.find(node_id);
+      if (it != nodes_.end()) {
+        status = CheckNodeInternal(node_id, it->second, &notification, &notify);
+      }
+    }
+    (void)status;
+    if (notify) {
+      NotifyHealthChange(notification);
     }
   }
 }
 
 Status StorageHealthMonitor::CheckNodeInternal(const std::string& node_id,
-                                               NodeHealth& health) {
+                                               NodeHealth& health,
+                                               HealthChangeNotification* notification,
+                                               bool* notify) {
   auto start = std::chrono::steady_clock::now();
+  if (notify) {
+    *notify = false;
+  }
 
   // Use HealthChecker to check component health if registered
   if (health_checker_->IsComponentRegistered(node_id)) {
@@ -168,7 +187,10 @@ Status StorageHealthMonitor::CheckNodeInternal(const std::string& node_id,
       auto component_health = result.value();
       health.latency_ms = component_health.check_duration_ms;
       bool is_healthy = (component_health.status == governance::HealthStatus::kHealthy);
-      UpdateNodeStatus(node_id, is_healthy, health.latency_ms);
+      if (UpdateNodeStatusLocked(node_id, is_healthy, health.latency_ms, notification) &&
+          notify) {
+        *notify = true;
+      }
       return is_healthy ? Status::OK()
                         : Status::IOError("CheckNodeInternal", "Node unhealthy");
     }
@@ -182,17 +204,22 @@ Status StorageHealthMonitor::CheckNodeInternal(const std::string& node_id,
   auto end = std::chrono::steady_clock::now();
   health.latency_ms = std::chrono::duration<double, std::milli>(end - start).count();
 
-  UpdateNodeStatus(node_id, is_healthy, health.latency_ms);
+  if (UpdateNodeStatusLocked(node_id, is_healthy, health.latency_ms, notification) &&
+      notify) {
+    *notify = true;
+  }
 
   return is_healthy ? Status::OK()
                     : Status::IOError("CheckNodeInternal", "Node unhealthy");
 }
 
-void StorageHealthMonitor::UpdateNodeStatus(const std::string& node_id,
-                                            bool is_healthy,
-                                            double latency_ms) {
+bool StorageHealthMonitor::UpdateNodeStatusLocked(
+    const std::string& node_id,
+    bool is_healthy,
+    double latency_ms,
+    HealthChangeNotification* notification) {
   auto it = nodes_.find(node_id);
-  if (it == nodes_.end()) return;
+  if (it == nodes_.end()) return false;
 
   NodeHealth& health = it->second;
   auto old_status = health.status;
@@ -217,11 +244,31 @@ void StorageHealthMonitor::UpdateNodeStatus(const std::string& node_id,
   }
 
   if (old_status != health.status) {
-    if (health_change_callback_) {
-      health_change_callback_(node_id, old_status, health.status);
+    if (notification) {
+      notification->node_id = node_id;
+      notification->old_status = old_status;
+      notification->new_status = health.status;
     }
-    PublishHealthEvent(node_id, old_status, health.status);
+    return true;
   }
+
+  return false;
+}
+
+void StorageHealthMonitor::NotifyHealthChange(
+    const HealthChangeNotification& notification) {
+  HealthChangeCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    callback = health_change_callback_;
+  }
+
+  if (callback) {
+    callback(notification.node_id, notification.old_status, notification.new_status);
+  }
+  PublishHealthEvent(notification.node_id,
+                     notification.old_status,
+                     notification.new_status);
 }
 
 void StorageHealthMonitor::PublishHealthEvent(
@@ -240,14 +287,24 @@ void StorageHealthMonitor::PublishHealthEvent(
 }
 
 Status StorageHealthMonitor::CheckNodeHealth(const std::string& node_id) {
-  std::lock_guard<std::mutex> lock(nodes_mutex_);
+  HealthChangeNotification notification;
+  bool notify = false;
+  Status status;
+  {
+    std::lock_guard<std::mutex> lock(nodes_mutex_);
 
-  auto it = nodes_.find(node_id);
-  if (it == nodes_.end()) {
-    return Status::NotFound("StorageHealthMonitor::CheckNodeHealth", node_id);
+    auto it = nodes_.find(node_id);
+    if (it == nodes_.end()) {
+      return Status::NotFound("StorageHealthMonitor::CheckNodeHealth", node_id);
+    }
+
+    status = CheckNodeInternal(node_id, it->second, &notification, &notify);
   }
 
-  return CheckNodeInternal(node_id, it->second);
+  if (notify) {
+    NotifyHealthChange(notification);
+  }
+  return status;
 }
 
 }  // namespace storage

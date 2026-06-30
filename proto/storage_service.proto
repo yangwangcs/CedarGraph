@@ -39,7 +39,7 @@ enum Direction {
 
 message PutRequest {
     CedarKey key = 1;
-    Descriptor descriptor = 2;
+    Descriptor value_descriptor = 2;
     Timestamp txn_version = 3;
     uint64 txn_id = 4;  // 分布式事务ID
 }
@@ -60,7 +60,7 @@ message GetRequest {
 message GetResponse {
     bool success = 1;
     string error_msg = 2;
-    Descriptor descriptor = 3;
+    Descriptor value_descriptor = 3;
     bool found = 4;
 }
 
@@ -98,7 +98,7 @@ message ScanResponse {
 
 message TimestampedDescriptor {
     uint64 timestamp = 1;
-    Descriptor descriptor = 2;
+    Descriptor value_descriptor = 2;
 }
 
 // ============================================================================
@@ -108,7 +108,7 @@ message TimestampedDescriptor {
 message BatchPutRequest {
     message Item {
         CedarKey key = 1;
-        Descriptor descriptor = 2;
+        Descriptor value_descriptor = 2;
     }
     repeated Item items = 1;
     Timestamp txn_version = 2;

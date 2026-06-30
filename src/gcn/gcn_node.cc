@@ -30,7 +30,7 @@
 
 DEFINE_int32(gcn_port, 9780, "GCN service port");
 DEFINE_string(gcn_bind_address, "0.0.0.0", "GCN bind address (default 0.0.0.0 for cluster visibility)");
-DEFINE_string(gcn_coordinator, "127.0.0.1:9559", "Coordinator endpoint");
+DEFINE_string(gcn_coordinator, "127.0.0.1:10559", "Coordinator MetaD gRPC endpoint");
 DEFINE_int64(gcn_tmv_max_chunks, 256, "Maximum TMV chunks per engine");
 DEFINE_bool(gcn_backfill_enabled, false, "Enable storage to TMV backfill on startup");
 DEFINE_uint64(gcn_backfill_start_id, 1, "Start entity ID for backfill");
@@ -123,7 +123,7 @@ GcnNode::~GcnNode() {
   // Register peers in ScatterGatherRouter for multi-GCN routing
   auto router = std::make_shared<gcn::ScatterGatherRouter>();
   for (const auto& addr : peer_addresses_) {
-    auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+    auto client_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
     if (!client_creds.ok()) {
       std::cerr << "GCN TLS error: " << client_creds.status().ToString() << std::endl;
       continue;
@@ -134,7 +134,7 @@ GcnNode::~GcnNode() {
   service_impl_->SetScatterGatherRouter(router);
 
   // Create CoordinatorClient connection to metad
-  auto coordinator_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  auto coordinator_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
   if (!coordinator_creds.ok()) {
     return cedar::Status::IOError("Failed to create coordinator TLS credentials: " + coordinator_creds.status().ToString());
   }
@@ -151,7 +151,7 @@ GcnNode::~GcnNode() {
   std::string server_address = address.str();
 
   grpc::ServerBuilder builder;
-  auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnv();
+  auto server_creds = cedar::dtx::raft::TlsCredentialFactory::CreateServerCredentialsFromEnvStrict();
   if (!server_creds.ok()) {
     return cedar::Status::IOError("Failed to create server TLS credentials: " + server_creds.status().ToString());
   }
@@ -186,6 +186,7 @@ GcnNode::~GcnNode() {
 
  cedar::Status GcnNode::Stop() {
   running_ = false;
+  stop_cv_.notify_all();
 
   if (grpc_server_) {
     grpc_server_->Shutdown();
@@ -242,7 +243,10 @@ void GcnNode::CdcListenerLoop() {
         }
       }
     }
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    std::unique_lock<std::mutex> lock(stop_mutex_);
+    stop_cv_.wait_for(lock, std::chrono::seconds(5), [this]() {
+      return !running_.load();
+    });
   }
 }
 
@@ -266,8 +270,11 @@ void GcnNode::HeartbeatLoop() {
       constexpr int64_t kWatermarkLagSeconds = 60;
       watermark_gc_->UpdateWatermark(static_cast<uint64_t>(now_sec - kWatermarkLagSeconds));
     }
-    std::this_thread::sleep_for(
-        std::chrono::milliseconds(FLAGS_gcn_heartbeat_interval_ms));
+    std::unique_lock<std::mutex> lock(stop_mutex_);
+    stop_cv_.wait_for(
+        lock,
+        std::chrono::milliseconds(FLAGS_gcn_heartbeat_interval_ms),
+        [this]() { return !running_.load(); });
   }
 }
 

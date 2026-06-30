@@ -65,6 +65,9 @@ struct DTXRpcConfig {
 
   // TLS configuration for DTX replication
   raft::TlsConfig tls_config;
+
+  // Development-only escape hatch. Production deployments should keep TLS on.
+  bool allow_insecure = false;
 };
 
 // =============================================================================

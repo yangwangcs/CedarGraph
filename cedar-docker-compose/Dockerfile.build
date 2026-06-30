@@ -7,12 +7,12 @@ FROM ubuntu:24.04 AS builder
 RUN for i in 1 2 3; do \
       apt-get update && \
       apt-get install -y \
-        build-essential cmake git wget curl \
+        build-essential cmake ninja-build git wget curl \
         libcurl4-openssl-dev liblz4-dev libgrpc++-dev \
         protobuf-compiler-grpc libprotobuf-dev protobuf-compiler libprotoc-dev \
         libssl-dev libyaml-cpp-dev libgflags-dev libgoogle-glog-dev \
-        libgtest-dev libleveldb-dev libsnappy-dev pkg-config \
-      && break || sleep 30; \
+        nlohmann-json3-dev libgtest-dev libleveldb-dev libsnappy-dev pkg-config \
+      && break || { if [ "$i" -eq 3 ]; then exit 1; fi; sleep 30; }; \
     done && \
     rm -rf /var/lib/apt/lists/*
 
@@ -25,10 +25,12 @@ COPY . /build/
 RUN echo "=== Step 1: 编译 brpc ===" && \
     cd /build/third_party/brpc && \
     mkdir -p build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release \
+    cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
+             -DCMAKE_C_FLAGS="-w" \
+             -DCMAKE_CXX_FLAGS="-w" \
              -DBUILD_SHARED_LIBS=OFF \
              -DBUILD_BRPC_TOOLS=OFF && \
-    make -j2 && \
+    cmake --build . --parallel 2 && \
     make install && \
     echo "brpc 安装完成"
 
@@ -36,9 +38,11 @@ RUN echo "=== Step 1: 编译 brpc ===" && \
 RUN echo "=== Step 2: 编译 braft ===" && \
     cd /build/third_party/braft && \
     mkdir -p build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release \
+    cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
+             -DCMAKE_C_FLAGS="-w" \
+             -DCMAKE_CXX_FLAGS="-w" \
              -DBUILD_SHARED_LIBS=OFF && \
-    make -j2 && \
+    cmake --build . --parallel 2 && \
     make install && \
     echo "braft 安装完成"
 
@@ -46,9 +50,9 @@ RUN echo "=== Step 2: 编译 braft ===" && \
 RUN echo "=== Step 3: 编译 CedarGraph ===" && \
     cd /build && \
     mkdir -p build_linux && cd build_linux && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release \
+    cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
              -DBUILD_TESTS=OFF && \
-    make -j2 cedar-metad cedar-storaged cedar-graphd && \
+    cmake --build . --target metad storaged graphd --parallel 1 && \
     echo "CedarGraph 编译完成"
 
 # =============================================================================
@@ -60,11 +64,12 @@ FROM ubuntu:24.04
 RUN for i in 1 2 3; do \
       apt-get update && \
       apt-get install -y \
-        liblz4-1 libgrpc++1 libprotobuf32t64 libcurl4t64 libssl3t64 \
+        liblz4-1 libgrpc++-dev libgrpc29t64 libabsl20220623t64 \
+        libprotobuf32t64 libcurl4t64 libssl3t64 \
         libyaml-cpp0.8 libgflags2.2 libgoogle-glog0v6t64 \
         libleveldb1d libsnappy1v5 \
         curl netcat-openbsd dnsutils iputils-ping \
-      && break || sleep 30; \
+      && break || { if [ "$i" -eq 3 ]; then exit 1; fi; sleep 30; }; \
     done && \
     rm -rf /var/lib/apt/lists/*
 
@@ -81,9 +86,11 @@ COPY --from=builder /build/build_linux/cedar-storaged /usr/local/bin/
 COPY --from=builder /build/build_linux/cedar-graphd /usr/local/bin/
 
 # 复制脚本
+COPY scripts/cedar-cli.sh /usr/local/bin/cedar-cli
+COPY cedar-docker-compose/scripts/cedar-admin.sh /usr/local/bin/cedar-admin
 COPY scripts/cedar_health_check.sh /usr/local/bin/
 COPY cedar-docker-compose/docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/*.sh
+RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/cedar-cli /usr/local/bin/cedar-admin
 
 # 设置环境变量
 ENV PATH="/usr/local/bin:${PATH}"
@@ -93,10 +100,10 @@ ENV LOG_DIR="/logs"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD bash -c 'case "${NODE_ROLE}" in metad) P=9559;; storaged) P=9779;; graphd) P=9669;; *) exit 1;; esac; nc -z localhost ${P} || exit 1'
+    CMD bash -c 'case "${NODE_ROLE}" in metad) P=10559;; storaged) P=9779;; graphd) P=9669;; *) exit 1;; esac; nc -z localhost ${P} || exit 1'
 
 # 暴露端口
-EXPOSE 9559 9669 9779
+EXPOSE 9559 10559 9669 9668 9667 9779
 
 # 切换到非 root 用户
 USER cedar

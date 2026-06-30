@@ -20,6 +20,7 @@
 #define CEDAR_DTX_LOAD_BALANCER_H_
 
 #include <cstdint>
+#include <condition_variable>
 #include <vector>
 #include <unordered_map>
 #include <memory>
@@ -337,6 +338,8 @@ private:
     PartitionMigrationExecutor executor_;
     
     std::atomic<bool> running_{false};
+    std::mutex check_mutex_;
+    std::condition_variable check_cv_;
     std::thread check_thread_;
     
     mutable std::shared_mutex history_mutex_;

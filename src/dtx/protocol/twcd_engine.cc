@@ -14,8 +14,9 @@
 
 #include "cedar/dtx/twcd_engine.h"
 
-#include <chrono>
 #include <algorithm>
+#include <chrono>
+#include <mutex>
 
 namespace cedar {
 namespace dtx {
@@ -200,6 +201,8 @@ Status TwcdEngine::RegisterWindow(TxnID txn_id, const TemporalWindow& window) {
 }
 
 void TwcdEngine::UnregisterWindow(TxnID txn_id) {
+  UnregisterWriteSet(txn_id);
+
   std::unique_lock<std::shared_mutex> lock(active_txns_mutex_);
   
   auto it = active_txns_.find(txn_id);

@@ -16,6 +16,7 @@
 #define CEDAR_GCN_GCN_NODE_H_
 
 #include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <string>
 #include <thread>
@@ -84,6 +85,8 @@ class GcnNode {
   std::vector<std::string> peer_addresses_;
 
   std::atomic<bool> running_{false};
+  std::condition_variable stop_cv_;
+  std::mutex stop_mutex_;
   std::thread cdc_thread_;
   std::thread heartbeat_thread_;
 };

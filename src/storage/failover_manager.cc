@@ -15,6 +15,7 @@
 #include "cedar/storage/failover_manager.h"
 
 #include <algorithm>
+#include <iostream>
 
 namespace cedar {
 namespace storage {
@@ -82,7 +83,12 @@ Status FailoverManager::Start() {
     return Status::InvalidArgument("Already running");
   }
   
-  SelectNewLeader();
+  std::vector<RoleChangeEvent> role_events;
+  {
+    std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
+    SelectNewLeader(&role_events);
+  }
+  NotifyNodeChanges(role_events);
   return Status::OK();
 }
 
@@ -129,21 +135,25 @@ Status FailoverManager::RegisterNode(const std::string& node_id,
 }
 
 Status FailoverManager::DeregisterNode(const std::string& node_id) {
-  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
-  
-  auto it = nodes_.find(node_id);
-  if (it == nodes_.end()) {
-    return Status::NotFound("Node not found: " + node_id);
+  std::vector<RoleChangeEvent> role_events;
+  {
+    std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
+
+    auto it = nodes_.find(node_id);
+    if (it == nodes_.end()) {
+      return Status::NotFound("Node not found: " + node_id);
+    }
+
+    nodes_.erase(it);
+
+    if (current_leader_ == node_id) {
+      current_leader_.clear();
+      // Trigger leader re-election
+      SelectNewLeader(&role_events);
+    }
   }
-  
-  nodes_.erase(it);
-  
-  if (current_leader_ == node_id) {
-    current_leader_.clear();
-    // Trigger leader re-election
-    SelectNewLeader();
-  }
-  
+
+  NotifyNodeChanges(role_events);
   return Status::OK();
 }
 
@@ -212,9 +222,8 @@ StatusOr<StorageNode> FailoverManager::GetNodeForRead() {
     }
     
     if (!healthy_nodes.empty()) {
-      static size_t last_index = 0;
-      last_index = (last_index + 1) % healthy_nodes.size();
-      return healthy_nodes[last_index];
+      read_round_robin_index_ = (read_round_robin_index_ + 1) % healthy_nodes.size();
+      return healthy_nodes[read_round_robin_index_];
     }
   }
   
@@ -244,23 +253,45 @@ std::vector<StorageNode> FailoverManager::GetAllNodes() const {
 
 Status FailoverManager::TriggerManualFailover(const std::string& from_node_id,
                                               const std::string& to_node_id) {
-  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
-  
-  if (from_node_id != current_leader_) {
-    return Status::InvalidArgument("Can only failover from current leader");
+  std::vector<RoleChangeEvent> role_events;
+  {
+    std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
+
+    if (from_node_id != current_leader_) {
+      return Status::InvalidArgument("Can only failover from current leader");
+    }
+    if (from_node_id == to_node_id) {
+      return Status::InvalidArgument("Manual failover target must differ from source");
+    }
+
+    auto from_it = nodes_.find(from_node_id);
+    if (from_it == nodes_.end()) {
+      return Status::NotFound("Source node not found: " + from_node_id);
+    }
+
+    auto to_it = nodes_.find(to_node_id);
+    if (to_it == nodes_.end()) {
+      return Status::NotFound("Target node not found: " + to_node_id);
+    }
+
+    if (to_it->second.health != governance::HealthStatus::kHealthy) {
+      return Status::InvalidArgument("Target node is not healthy");
+    }
+
+    current_leader_ = to_node_id;
+    UpdateNodeRole(to_node_id, NodeRole::kLeader, &role_events);
+    UpdateNodeRole(from_node_id, NodeRole::kFollower, &role_events);
+
+    auto now = std::chrono::steady_clock::now();
+    to_it = nodes_.find(to_node_id);
+    if (to_it != nodes_.end()) {
+      to_it->second.last_failover = now;
+      to_it->second.failover_count++;
+    }
   }
-  
-  auto to_it = nodes_.find(to_node_id);
-  if (to_it == nodes_.end()) {
-    return Status::NotFound("Target node not found: " + to_node_id);
-  }
-  
-  if (to_it->second.health != governance::HealthStatus::kHealthy) {
-    return Status::InvalidArgument("Target node is not healthy");
-  }
-  
-  PerformFailover(from_node_id);
-  
+
+  NotifyNodeChanges(role_events);
+  NotifyFailover(from_node_id, to_node_id);
   return Status::OK();
 }
 
@@ -269,10 +300,12 @@ Status FailoverManager::TriggerManualFailover(const std::string& from_node_id,
 // =============================================================================
 
 void FailoverManager::SetFailoverCallback(FailoverCallback callback) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   failover_callback_ = std::move(callback);
 }
 
 void FailoverManager::SetNodeChangeCallback(NodeChangeCallback callback) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   node_change_callback_ = std::move(callback);
 }
 
@@ -287,24 +320,42 @@ void FailoverManager::OnHealthChanged(const std::string& node_id,
     return;
   }
   
-  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
-  
-  auto it = nodes_.find(node_id);
-  if (it == nodes_.end()) return;
-  
-  it->second.health = new_status;
-  
-  // If leader becomes unhealthy, trigger failover
-  if (node_id == current_leader_ && 
-      new_status == governance::HealthStatus::kUnhealthy) {
-    PerformFailover(node_id);
+  std::string new_leader;
+  std::vector<RoleChangeEvent> role_events;
+  {
+    std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
+
+    auto it = nodes_.find(node_id);
+    if (it == nodes_.end()) return;
+
+    it->second.health = new_status;
+
+    // If leader becomes unhealthy, trigger failover
+    if (node_id == current_leader_ &&
+        new_status == governance::HealthStatus::kUnhealthy) {
+      if (!CanFailover(it->second)) {
+        return;
+      }
+      std::string old_leader = current_leader_;
+      PerformFailover(node_id, &role_events);
+      if (current_leader_ != old_leader) {
+        new_leader = current_leader_;
+      }
+    }
+  }
+
+  NotifyNodeChanges(role_events);
+  if (!new_leader.empty()) {
+    NotifyFailover(node_id, new_leader);
   }
 }
 
-void FailoverManager::PerformFailover(const std::string& failed_node_id) {
+void FailoverManager::PerformFailover(
+    const std::string& failed_node_id,
+    std::vector<RoleChangeEvent>* role_events) {
   auto now = std::chrono::steady_clock::now();
   
-  SelectNewLeader();
+  SelectNewLeader(role_events);
   
   if (!current_leader_.empty() && current_leader_ != failed_node_id) {
     auto it = nodes_.find(current_leader_);
@@ -312,16 +363,10 @@ void FailoverManager::PerformFailover(const std::string& failed_node_id) {
       it->second.last_failover = now;
       it->second.failover_count++;
     }
-    
-    if (failover_callback_) {
-      failover_callback_(failed_node_id, current_leader_);
-    }
   }
 }
 
-void FailoverManager::SelectNewLeader() {
-  std::lock_guard<std::recursive_mutex> lock(nodes_mutex_);
-  
+void FailoverManager::SelectNewLeader(std::vector<RoleChangeEvent>* role_events) {
   std::string new_leader;
   
   for (const auto& [id, node] : nodes_) {
@@ -336,14 +381,17 @@ void FailoverManager::SelectNewLeader() {
     std::string old_leader = current_leader_;
     current_leader_ = new_leader;
     
-    UpdateNodeRole(new_leader, NodeRole::kLeader);
+    UpdateNodeRole(new_leader, NodeRole::kLeader, role_events);
     if (!old_leader.empty()) {
-      UpdateNodeRole(old_leader, NodeRole::kFollower);
+      UpdateNodeRole(old_leader, NodeRole::kFollower, role_events);
     }
   }
 }
 
-void FailoverManager::UpdateNodeRole(const std::string& node_id, NodeRole new_role) {
+void FailoverManager::UpdateNodeRole(
+    const std::string& node_id,
+    NodeRole new_role,
+    std::vector<RoleChangeEvent>* role_events) {
   auto it = nodes_.find(node_id);
   if (it == nodes_.end()) return;
   
@@ -352,8 +400,49 @@ void FailoverManager::UpdateNodeRole(const std::string& node_id, NodeRole new_ro
   
   it->second.role = new_role;
   
-  if (node_change_callback_) {
-    node_change_callback_(node_id, old_role, new_role);
+  if (role_events) {
+    role_events->push_back({node_id, old_role, new_role});
+  }
+}
+
+void FailoverManager::NotifyFailover(const std::string& old_node,
+                                     const std::string& new_node) {
+  FailoverCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    callback = failover_callback_;
+  }
+  if (callback) {
+    try {
+      callback(old_node, new_node);
+    } catch (const std::exception& e) {
+      std::cerr << "Failover callback exception: " << e.what() << std::endl;
+    } catch (...) {
+      std::cerr << "Failover callback unknown exception" << std::endl;
+    }
+  }
+}
+
+void FailoverManager::NotifyNodeChanges(
+    const std::vector<RoleChangeEvent>& role_events) {
+  NodeChangeCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    callback = node_change_callback_;
+  }
+  if (!callback) {
+    return;
+  }
+
+  for (const auto& event : role_events) {
+    try {
+      callback(event.node_id, event.old_role, event.new_role);
+    } catch (const std::exception& e) {
+      std::cerr << "Node change callback exception: " << e.what()
+                << std::endl;
+    } catch (...) {
+      std::cerr << "Node change callback unknown exception" << std::endl;
+    }
   }
 }
 

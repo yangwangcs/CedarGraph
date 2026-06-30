@@ -131,6 +131,8 @@ class ThreadPool {
   std::queue<std::function<void()>> tasks_;
   mutable std::mutex mutex_;
   std::condition_variable cv_;
+  std::mutex completion_mutex_;
+  std::condition_variable completion_cv_;
   std::atomic<bool> stop_{false};
   std::atomic<size_t> task_count_{0};
 };

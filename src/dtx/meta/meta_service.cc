@@ -972,13 +972,14 @@ Status MetadataService::Initialize(const MetaServiceConfig& config) {
         raft_node_ = std::make_unique<BRaftNode>();
         BRaftNode::Options options;
         options.node_id = config.node_id;
-        options.listen_address = config.advertise_address.empty()
-            ? config.listen_address : config.advertise_address;
+        options.listen_address = config.listen_address;
+        options.advertise_address = config.advertise_address;
         options.data_path = config.data_dir;
         options.election_timeout_ms = static_cast<int>(config.election_timeout_ms);
 
         // Add self and peers to initial configuration
-        options.initial_peers.push_back(options.listen_address);
+        options.initial_peers.push_back(options.advertise_address.empty()
+            ? options.listen_address : options.advertise_address);
         for (const auto& peer : config.peers) {
             if (peer.first != config.node_id) {
                 options.initial_peers.push_back(peer.second);
@@ -1111,6 +1112,12 @@ Status MetadataService::UpdatePartitionAssignment(const PartitionAssignment& ass
 }
 
 Status MetadataService::RegisterNode(const NodeInfo& info) {
+    if (info.node_id == kInvalidNodeID) {
+        return Status::InvalidArgument("Invalid node id");
+    }
+    if (info.address.empty()) {
+        return Status::InvalidArgument("Node address cannot be empty");
+    }
     if (config_.test_mode) {
         state_machine_.ApplyRegisterNode(info);
         return Status::OK();
@@ -1149,7 +1156,7 @@ Status MetadataService::Heartbeat(const NodeStatus& status) {
         return Status::InvalidArgument("Not leader");
     }
     RaftCommand cmd;
-    cmd.type = RaftCommandType::kUpdateNode;
+    cmd.type = RaftCommandType::kUpdateNodeStatus;
     cmd.payload = status.Serialize();
     return raft_node_->Propose(cmd);
 }
@@ -1223,7 +1230,8 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
             return true;
         case RaftCommandType::kUpdateNode: {
             auto info = NodeInfo::Deserialize(cmd.payload);
-            if (info.ok()) {
+            if (info.ok() && info.value().node_id != kInvalidNodeID &&
+                !info.value().address.empty()) {
                 state_machine_.ApplyRegisterNode(info.value());
                 return true;
             }
@@ -1233,6 +1241,16 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
                 return true;
             }
             CEDAR_LOG_ERROR() << "[MetadataService] Failed to deserialize node info/status"
+                      << std::endl;
+            return false;
+        }
+        case RaftCommandType::kUpdateNodeStatus: {
+            auto status = NodeStatus::Deserialize(cmd.payload);
+            if (status.ok()) {
+                state_machine_.ApplyUpdateNodeStatus(status.value());
+                return true;
+            }
+            CEDAR_LOG_ERROR() << "[MetadataService] Failed to deserialize node status"
                       << std::endl;
             return false;
         }
@@ -1281,7 +1299,7 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
 }
 
 void MetadataService::OnBecomeLeader() {
-    CEDAR_LOG_ERROR() << "[MetadataService] Node " << config_.node_id << " became leader" << std::endl;
+    CEDAR_LOG_INFO() << "[MetadataService] Node " << config_.node_id << " became leader" << std::endl;
 
     // Notify watchers on leader change
     PartitionMapChange change;
@@ -1296,7 +1314,7 @@ void MetadataService::OnBecomeLeader() {
 }
 
 void MetadataService::OnStepDown() {
-    CEDAR_LOG_ERROR() << "[MetadataService] Node " << config_.node_id << " stepped down" << std::endl;
+    CEDAR_LOG_INFO() << "[MetadataService] Node " << config_.node_id << " stepped down" << std::endl;
 }
 
 void MetadataService::HeartbeatCheckLoop() {
@@ -1308,7 +1326,7 @@ void MetadataService::HeartbeatCheckLoop() {
             // Mark failed nodes as offline
             for (NodeID node_id : failed_nodes) {
                 if (state_machine_.MarkNodeOffline(node_id)) {
-                    CEDAR_LOG_ERROR() << "[MetaD] Node " << node_id << " marked as OFFLINE "
+                    CEDAR_LOG_WARN() << "[MetaD] Node " << node_id << " marked as OFFLINE "
                               << "(heartbeat timeout after " << config_.heartbeat_timeout_sec << "s)" << std::endl;
                     
                     // Trigger node change callbacks
@@ -1383,8 +1401,12 @@ void MetadataService::NotifyPartitionLeaderChange(const std::string& space_name,
 }
 
 void MetadataService::NotifyNodeChange(const NodeChange& change) {
-    std::lock_guard<std::mutex> lock(callbacks_mutex_);
-    for (const auto& callback : node_callbacks_) {
+    std::vector<NodeChangeCallback> callbacks_copy;
+    {
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        callbacks_copy = node_callbacks_;
+    }
+    for (const auto& callback : callbacks_copy) {
         try {
             callback(change);
         } catch (...) {

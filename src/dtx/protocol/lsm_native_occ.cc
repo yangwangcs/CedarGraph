@@ -15,10 +15,11 @@
 #include "cedar/dtx/lsm_native_occ.h"
 
 #include <chrono>
+#include <mutex>
 #include <random>
 #include <shared_mutex>
 
-#include "cedar/common/logging.h"
+#include "cedar/core/logging.h"
 #include "cedar/dtx/twcd_engine.h"
 #include "cedar/dtx/partition.h"
 #include "cedar/dtx/transaction_state.h"
@@ -200,8 +201,8 @@ LndOccCommitResult LocalTransactionCoordinator::Commit(DistributedTxnContext* ct
   
   // 步骤5: 清理 TW-CD 注册
   if (twcd_engine_) {
-    twcd_engine_->UnregisterWindow(ctx->GetTxnID());
     twcd_engine_->UnregisterWriteSet(ctx->GetTxnID());
+    twcd_engine_->UnregisterWindow(ctx->GetTxnID());
   }
   
   ctx->SetState(DistributedTxnState::kCommitted);
@@ -231,8 +232,8 @@ Status LocalTransactionCoordinator::Abort(DistributedTxnContext* ctx,
   
   // 清理 TW-CD 注册
   if (twcd_engine_) {
-    twcd_engine_->UnregisterWindow(ctx->GetTxnID());
     twcd_engine_->UnregisterWriteSet(ctx->GetTxnID());
+    twcd_engine_->UnregisterWindow(ctx->GetTxnID());
   }
   
   ctx->SetState(DistributedTxnState::kAborted);
@@ -269,7 +270,12 @@ void LocalTransactionCoordinator::ResetStats() {
 // =============================================================================
 
 LndOccEngine::LndOccEngine(const DTxConfig& config) 
-    : config_(config) {}
+    : config_(config) {
+  if (config_.enable_twcd) {
+    owned_twcd_engine_ = std::make_unique<TwcdEngine>(config_);
+    twcd_engine_ = owned_twcd_engine_.get();
+  }
+}
 
 LndOccEngine::~LndOccEngine() = default;
 
@@ -308,6 +314,14 @@ LndOccCommitResult LndOccEngine::SinglePartitionCommit(DistributedTxnContext* ct
   if (!coordinator) {
     return LndOccCommitResult::Error(
         Status::NotFound("LndOccEngine", "Partition coordinator not found"));
+  }
+
+  if (ctx->GetTxnID() == kInvalidTxnID || ctx->GetStartTimestamp() == 0 ||
+      ctx->GetState() != DistributedTxnState::kStarted) {
+    auto begin_status = coordinator->BeginTransaction(ctx);
+    if (!begin_status.ok()) {
+      return LndOccCommitResult::Error(begin_status);
+    }
   }
   
   auto result = coordinator->Commit(ctx);
@@ -396,8 +410,8 @@ LndOccCommitResult LndOccEngine::SameTemporalRangeCommit(
     if (!result.success) {
       overall = result;
       all_committed = false;
-      LOG(ERROR) << "SameTemporalRangeCommit: commit failed after prepare success"
-                 << " partition=" << pid;
+      CEDAR_LOG_ERROR() << "SameTemporalRangeCommit: commit failed after prepare success"
+                        << " partition=" << pid << "\n";
     }
   }
 

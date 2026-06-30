@@ -13,7 +13,7 @@ LFNode::LFNode(const CedarKey& key, const Descriptor& desc, int height, Timestam
       timestamp_(key.timestamp().value()), 
       txn_version_(txn_version.value()),
       target_id_(key.target_id()),
-      descriptor_(desc), 
+      descriptor_(desc),
       column_id_(key.column_id()), 
       part_id_(key.part_id()),
       sequence_(key.sequence()),

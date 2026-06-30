@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -15,14 +16,13 @@
 #include <unordered_map>
 #include <vector>
 
+#include <grpcpp/channel.h>
+#include <grpcpp/client_context.h>
+
 #include "cedar/core/status.h"
 #include "cedar/dtx/coordinator_integration.h"
 #include "cedar/dtx/storage_service_impl.h"
 #include "cedar/dtx/types.h"
-
-namespace grpc {
-class Channel;
-}
 
 namespace cedar {
 namespace dtx {
@@ -113,6 +113,10 @@ class UnifiedMetaClient {
   std::atomic<bool> running_{false};
   std::thread refresh_thread_;
   std::thread watch_thread_;
+  std::condition_variable shutdown_cv_;
+  std::mutex shutdown_cv_mutex_;
+  std::mutex watch_context_mutex_;
+  grpc::ClientContext* active_watch_context_{nullptr};
 };
 
 // Adapter: wraps UnifiedMetaClient to satisfy MetaClientInterface

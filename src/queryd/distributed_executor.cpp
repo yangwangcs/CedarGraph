@@ -208,7 +208,7 @@ Status PartitionRouter::CheckIsLeader(uint32_t partition_id, const std::string& 
 // ============================================================================
 
 ParallelExecutor::ParallelExecutor(size_t worker_count)
-    : worker_count_(worker_count) {
+    : worker_count_(std::max<size_t>(1, worker_count)) {
   // Start worker threads
   for (size_t i = 0; i < worker_count_; ++i) {
     auto worker = std::make_unique<Worker>();
@@ -301,8 +301,8 @@ void ParallelExecutor::ExecuteParallelStreaming(
   if (tasks.empty()) return;
 
   std::atomic<size_t> completed{0};
-  std::mutex error_mutex;
-  Status first_error = Status::OK();
+  std::mutex completion_mutex;
+  std::condition_variable completion_cv;
 
   cedar::AdaptiveConfig pool_config;
   pool_config.min_threads = 4;
@@ -313,42 +313,51 @@ void ParallelExecutor::ExecuteParallelStreaming(
 
   for (const auto& task : tasks) {
     pool.Submit([&, task]() {
+      auto mark_completed = [&]() {
+        completed.fetch_add(1);
+        completion_cv.notify_one();
+      };
+
       SubQueryResult r;
       r.partition_id = task.partition_id;
       r.sequence = task.sequence;
 
-      auto node_client = storage_client->GetNodeClient(task.partition_id, task.storage_node);
-      if (!node_client) {
-        r.status = Status::IOError("No node client for partition " +
-                                    std::to_string(task.partition_id));
-      } else {
-        if (task.consistency == DistributedExecutionContext::Consistency::kEventual) {
-          node_client->SetReadConsistency(true);
+      try {
+        auto node_client = storage_client->GetNodeClient(task.partition_id, task.storage_node);
+        if (!node_client) {
+          r.status = Status::IOError("No node client for partition " +
+                                      std::to_string(task.partition_id));
+        } else {
+          if (task.consistency == DistributedExecutionContext::Consistency::kEventual) {
+            node_client->SetReadConsistency(true);
+          }
+          r.status = node_client->ExecuteSubQuery(
+              task.sub_query, task.parameters, &r.result);
         }
-        r.status = node_client->ExecuteSubQuery(
-            task.sub_query, task.parameters, &r.result);
+
+        ctx->stats.storage_nodes_accessed++;
+        ctx->stats.network_roundtrips++;
+
+        bool continue_streaming = result_callback(r);
+        if (!continue_streaming) {
+          // Client requested stop; no special action needed since we still
+          // wait for all tasks to finish to keep references valid.
+        }
+      } catch (const std::exception& e) {
+        r.status = Status::IOError("ExecuteParallelStreaming exception: " +
+                                   std::string(e.what()));
+      } catch (...) {
+        r.status = Status::IOError("ExecuteParallelStreaming unknown exception");
       }
 
-      ctx->stats.storage_nodes_accessed++;
-      ctx->stats.network_roundtrips++;
-
-      bool continue_streaming = result_callback(r);
-      if (!continue_streaming) {
-        // Client requested stop; no special action needed since we still
-        // wait for all tasks to finish to keep references valid.
-      }
-      completed.fetch_add(1);
+      mark_completed();
     });
   }
 
   // Wait for all with timeout
-  auto start = std::chrono::steady_clock::now();
-  while (completed.load() < tasks.size()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(300)) {
-      break;  // Timeout
-    }
-  }
+  std::unique_lock<std::mutex> lock(completion_mutex);
+  completion_cv.wait_for(lock, std::chrono::seconds(300),
+                         [&]() { return completed.load() >= tasks.size(); });
 }
 
 void ParallelExecutor::WorkerLoop() {

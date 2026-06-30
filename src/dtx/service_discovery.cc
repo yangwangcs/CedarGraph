@@ -19,19 +19,124 @@
 
 #include "cedar/dtx/service_discovery.h"
 
-#include <iostream>
-#include <chrono>
-#include <thread>
 #include <algorithm>
+#include <arpa/inet.h>
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
+#include <iostream>
 #include <mutex>
 #include <netdb.h>
-#include <arpa/inet.h>
 #include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
-#include <cstring>
 
 namespace cedar {
 namespace dtx {
+
+namespace {
+
+struct TimedDnsResult {
+  std::mutex mutex;
+  std::condition_variable cv;
+  struct addrinfo* res = nullptr;
+  bool success = false;
+  bool done = false;
+
+  ~TimedDnsResult() {
+    if (res) {
+      freeaddrinfo(res);
+      res = nullptr;
+    }
+  }
+};
+
+bool ResolveIPv4WithTimeout(const std::string& host,
+                            std::chrono::milliseconds timeout,
+                            in_addr* out_addr) {
+  if (!out_addr || timeout.count() <= 0) {
+    return false;
+  }
+
+  if (inet_pton(AF_INET, host.c_str(), out_addr) == 1) {
+    return true;
+  }
+
+  auto dns_result = std::make_shared<TimedDnsResult>();
+  auto host_copy = std::make_shared<std::string>(host);
+
+  std::thread dns_thread([dns_result, host_copy]() {
+    struct addrinfo hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* resolved = nullptr;
+    bool success = getaddrinfo(host_copy->c_str(), nullptr, &hints, &resolved) == 0
+                   && resolved != nullptr;
+
+    {
+      std::lock_guard<std::mutex> lock(dns_result->mutex);
+      dns_result->res = resolved;
+      dns_result->success = success;
+      dns_result->done = true;
+    }
+    dns_result->cv.notify_all();
+  });
+
+  {
+    std::unique_lock<std::mutex> lock(dns_result->mutex);
+    if (!dns_result->cv.wait_for(lock, timeout, [&dns_result]() {
+          return dns_result->done;
+        })) {
+      dns_thread.detach();
+      return false;
+    }
+  }
+
+  dns_thread.join();
+
+  std::lock_guard<std::mutex> lock(dns_result->mutex);
+  if (!dns_result->success || dns_result->res == nullptr) {
+    return false;
+  }
+
+  auto* sin = reinterpret_cast<struct sockaddr_in*>(dns_result->res->ai_addr);
+  memcpy(out_addr, &sin->sin_addr, sizeof(*out_addr));
+  return true;
+}
+
+bool ParseHostPort(const std::string& endpoint, std::string* host, int* port) {
+  if (!host || !port) {
+    return false;
+  }
+
+  size_t colon_pos = endpoint.rfind(':');
+  if (colon_pos == std::string::npos || colon_pos == 0 ||
+      colon_pos + 1 >= endpoint.size()) {
+    return false;
+  }
+
+  std::string parsed_host = endpoint.substr(0, colon_pos);
+  int parsed_port = 0;
+  try {
+    size_t consumed = 0;
+    parsed_port = std::stoi(endpoint.substr(colon_pos + 1), &consumed);
+    if (consumed != endpoint.size() - colon_pos - 1) {
+      return false;
+    }
+  } catch (const std::exception&) {
+    return false;
+  }
+
+  if (parsed_port <= 0 || parsed_port > 65535) {
+    return false;
+  }
+
+  *host = std::move(parsed_host);
+  *port = parsed_port;
+  return true;
+}
+
+}  // namespace
 
 // =============================================================================
 // ServiceDiscovery Implementation
@@ -45,6 +150,19 @@ ServiceDiscovery::~ServiceDiscovery() {
 }
 
 Status ServiceDiscovery::Initialize() {
+  if (config_.storaged_port <= 0 || config_.storaged_port > 65535) {
+    return Status::InvalidArgument("storaged_port must be in range 1..65535");
+  }
+  if (config_.health_check_interval_seconds <= 0) {
+    return Status::InvalidArgument("health_check_interval_seconds must be positive");
+  }
+  if (config_.health_check_timeout_ms <= 0) {
+    return Status::InvalidArgument("health_check_timeout_ms must be positive");
+  }
+  if (config_.register_retry_times < 0) {
+    return Status::InvalidArgument("register_retry_times must not be negative");
+  }
+
   if (initialized_.exchange(true)) {
     return Status::OK();  // 已初始化
   }
@@ -189,67 +307,13 @@ bool ServiceDiscovery::CheckNodeHealth(const StorageNodeInfo& node) {
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
   addr.sin_port = htons(node.port);
-  
-  // Fast-path: if host is already an IPv4 literal, skip DNS entirely.
-  if (inet_pton(AF_INET, node.host.c_str(), &addr.sin_addr) == 1) {
-    // Valid IPv4 literal — proceed directly to connect.
-  } else {
-    // DNS resolution with timeout using a detached thread + heap data.
-    // All data shared with the detached thread lives on the heap to avoid
-    // use-after-free when this function returns before the thread finishes.
-    struct DnsResult {
-      struct addrinfo* res = nullptr;
-      bool success = false;
-      ~DnsResult() {
-        if (res) {
-          freeaddrinfo(res);
-          res = nullptr;
-        }
-      }
-    };
-    auto dns_result = std::make_shared<DnsResult>();
-    std::atomic<bool> resolved{false};
 
-    // P1-5: capture node.host by value to avoid use-after-free when
-    // CheckNodeHealth returns before the detached DNS thread finishes.
-    auto host_copy = std::make_shared<std::string>(node.host);
-
-    std::thread dns_thread([dns_result, host_copy, &resolved]() {
-      struct addrinfo hints = {};
-      hints.ai_family = AF_INET;
-      hints.ai_socktype = SOCK_STREAM;
-      if (getaddrinfo(host_copy->c_str(), nullptr, &hints, &dns_result->res) == 0
-          && dns_result->res != nullptr) {
-        dns_result->success = true;
-      }
-      resolved.store(true, std::memory_order_release);
-    });
-    
-    // Wait up to the configured health-check timeout for DNS.
-    auto deadline = std::chrono::steady_clock::now() 
-                    + std::chrono::milliseconds(config_.health_check_timeout_ms);
-    while (!resolved.load(std::memory_order_acquire) 
-           && std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    
-    // If DNS is still in-flight, detach the thread (it only touches heap data).
-    if (!resolved.load(std::memory_order_acquire)) {
-      dns_thread.detach();
-      close(sock);
-      return false;
-    }
-    dns_thread.join();
-    
-    if (!dns_result->success) {
-      close(sock);
-      return false;
-    }
-    struct sockaddr_in* sin = reinterpret_cast<struct sockaddr_in*>(
-        dns_result->res->ai_addr);
-    memcpy(&addr.sin_addr, &sin->sin_addr, sizeof(addr.sin_addr));
-    // DnsResult destructor will freeaddrinfo(res) when dns_result goes out
-    // of scope, including on the timeout/detached-thread path.
+  if (!ResolveIPv4WithTimeout(node.host,
+                              std::chrono::milliseconds(
+                                  config_.health_check_timeout_ms),
+                              &addr.sin_addr)) {
+    close(sock);
+    return false;
   }
   
   int result = connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
@@ -299,22 +363,18 @@ std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaDocker() {
   };
   
   for (const auto& name : possible_names) {
-    struct addrinfo hints = {};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    struct addrinfo* res = nullptr;
-    if (getaddrinfo(name.c_str(), nullptr, &hints, &res) == 0 && res != nullptr) {
+    in_addr resolved_addr;
+    if (ResolveIPv4WithTimeout(
+            name, std::chrono::milliseconds(config_.health_check_timeout_ms),
+            &resolved_addr)) {
       StorageNodeInfo node;
       node.host = name;
       node.port = config_.storaged_port;
       node.container_name = name;
       char ip_str[INET_ADDRSTRLEN];
-      if (inet_ntop(AF_INET,
-                    &reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr,
-                    ip_str, sizeof(ip_str))) {
+      if (inet_ntop(AF_INET, &resolved_addr, ip_str, sizeof(ip_str))) {
         node.ip_address = ip_str;
       }
-      freeaddrinfo(res);
       node.register_time = std::chrono::duration_cast<std::chrono::seconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
       node.is_healthy = true;  // 初始假设健康
@@ -333,22 +393,18 @@ std::vector<StorageNodeInfo> ServiceDiscovery::DiscoverViaDNS() {
   CEDAR_LOG_ERROR() << "[ServiceDiscovery] Discovering via DNS..." << std::endl;
   
   for (const auto& name : config_.dns_names) {
-    struct addrinfo hints = {};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    struct addrinfo* res = nullptr;
-    if (getaddrinfo(name.c_str(), nullptr, &hints, &res) == 0 && res != nullptr) {
+    in_addr resolved_addr;
+    if (ResolveIPv4WithTimeout(
+            name, std::chrono::milliseconds(config_.health_check_timeout_ms),
+            &resolved_addr)) {
       StorageNodeInfo node;
       node.host = name;
       node.port = config_.storaged_port;
       node.container_name = name;
       char ip_str[INET_ADDRSTRLEN];
-      if (inet_ntop(AF_INET,
-                    &reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr,
-                    ip_str, sizeof(ip_str))) {
+      if (inet_ntop(AF_INET, &resolved_addr, ip_str, sizeof(ip_str))) {
         node.ip_address = ip_str;
       }
-      freeaddrinfo(res);
       node.register_time = std::chrono::duration_cast<std::chrono::seconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
       node.is_healthy = true;
@@ -431,12 +487,21 @@ void ServiceDiscovery::HealthCheckLoop() {
       }
     }
     
-    // 在锁外调用回调，避免死锁
+    NodeHealthChangedCallback health_changed_callback;
     {
       std::lock_guard<std::mutex> cb_lock(callback_mutex_);
+      health_changed_callback = health_changed_callback_;
+    }
+    if (health_changed_callback) {
       for (const auto& [node, healthy] : health_changes) {
-        if (health_changed_callback_) {
-          health_changed_callback_(node, healthy);
+        try {
+          health_changed_callback(node, healthy);
+        } catch (const std::exception& e) {
+          CEDAR_LOG_ERROR() << "[ServiceDiscovery] Health callback exception: "
+                            << e.what() << std::endl;
+        } catch (...) {
+          CEDAR_LOG_ERROR() << "[ServiceDiscovery] Health callback unknown exception"
+                            << std::endl;
         }
       }
     }
@@ -471,12 +536,25 @@ void ServiceDiscovery::MergeNodes(const std::vector<StorageNodeInfo>& new_nodes)
     }
   }
   
+  NodeDiscoveredCallback discovered_callback;
+  {
+    std::lock_guard<std::mutex> cb_lock(callback_mutex_);
+    discovered_callback = discovered_callback_;
+  }
+
   // 在锁外调用回调，避免死锁
   for (const auto& node : newly_discovered) {
     CEDAR_LOG_ERROR() << "[ServiceDiscovery] New node discovered: " << node.GetEndpoint() << std::endl;
-    std::lock_guard<std::mutex> cb_lock(callback_mutex_);
-    if (discovered_callback_) {
-      discovered_callback_(node);
+    if (discovered_callback) {
+      try {
+        discovered_callback(node);
+      } catch (const std::exception& e) {
+        CEDAR_LOG_ERROR() << "[ServiceDiscovery] Discovery callback exception: "
+                          << e.what() << std::endl;
+      } catch (...) {
+        CEDAR_LOG_ERROR() << "[ServiceDiscovery] Discovery callback unknown exception"
+                          << std::endl;
+      }
     }
   }
 }
@@ -518,24 +596,30 @@ Status ClusterInitializer::InitializeCluster() {
 
 Status ClusterInitializer::WaitForMetaD() {
   CEDAR_LOG_ERROR() << "[ClusterInitializer] Waiting for MetaD to be ready..." << std::endl;
+
+  if (config_.meta_servers.empty()) {
+    return Status::InvalidArgument("No MetaD servers configured");
+  }
+  if (config_.init_timeout_seconds <= 0) {
+    return Status::InvalidArgument("init_timeout_seconds must be positive");
+  }
+  if (config_.retry_interval_seconds <= 0) {
+    return Status::InvalidArgument("retry_interval_seconds must be positive");
+  }
   
   auto start = std::chrono::steady_clock::now();
   auto timeout = std::chrono::seconds(config_.init_timeout_seconds);
+  auto deadline = start + timeout;
   
-  while (std::chrono::steady_clock::now() - start < timeout) {
+  while (std::chrono::steady_clock::now() < deadline) {
     // 尝试连接任意一个 MetaD
     for (const auto& meta_server : config_.meta_servers) {
       // 解析 host:port
-      size_t colon_pos = meta_server.find(':');
-      if (colon_pos == std::string::npos) continue;
-      
-      std::string host = meta_server.substr(0, colon_pos);
+      std::string host;
       int port = 0;
-      try {
-        port = std::stoi(meta_server.substr(colon_pos + 1));
-      } catch (const std::exception& e) {
+      if (!ParseHostPort(meta_server, &host, &port)) {
         CEDAR_LOG_ERROR() << "[ClusterInitializer] Invalid port in meta server address: "
-                  << meta_server << " - " << e.what() << std::endl;
+                          << meta_server << std::endl;
         continue;
       }
       
@@ -555,17 +639,9 @@ Status ClusterInitializer::WaitForMetaD() {
       memset(&addr, 0, sizeof(addr));
       addr.sin_family = AF_INET;
       addr.sin_port = htons(port);
-      
-      struct addrinfo hints = {};
-      hints.ai_family = AF_INET;
-      hints.ai_socktype = SOCK_STREAM;
-      struct addrinfo* res = nullptr;
-      if (getaddrinfo(host.c_str(), nullptr, &hints, &res) == 0 && res != nullptr) {
-        memcpy(&addr.sin_addr,
-               &reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr,
-               sizeof(addr.sin_addr));
-        freeaddrinfo(res);
-        
+
+      if (ResolveIPv4WithTimeout(host, std::chrono::seconds(2),
+                                 &addr.sin_addr)) {
         if (connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
           close(sock);
           CEDAR_LOG_ERROR() << "[ClusterInitializer] MetaD is ready at " << meta_server << std::endl;
@@ -575,8 +651,14 @@ Status ClusterInitializer::WaitForMetaD() {
       
       close(sock);
     }
-    
-    std::this_thread::sleep_for(std::chrono::seconds(config_.retry_interval_seconds));
+
+    auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      break;
+    }
+    auto sleep_time = std::min<std::chrono::steady_clock::duration>(
+        std::chrono::seconds(config_.retry_interval_seconds), deadline - now);
+    std::this_thread::sleep_for(sleep_time);
     std::cerr << "." << std::flush;
   }
   

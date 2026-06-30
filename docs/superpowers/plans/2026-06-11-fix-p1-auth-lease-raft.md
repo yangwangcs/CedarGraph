@@ -70,14 +70,14 @@ Handlers and their permissions:
 - [ ] **Step 3: Build cedar target**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
 ```
 Expected: compiles without errors.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/gcn/gcn_service.cc && git commit -m "fix(gcn): add CheckAuth to all GCN service handlers"
+cd <repo-root> && git add src/gcn/gcn_service.cc && git commit -m "fix(gcn): add CheckAuth to all GCN service handlers"
 ```
 
 ---
@@ -135,13 +135,13 @@ Permissions per handler:
 - [ ] **Step 3: Build cedar target**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/dtx/grpc/meta_service_grpc.cc && git commit -m "fix(metad): add CheckAuth to all MetaD gRPC handlers"
+cd <repo-root> && git add src/dtx/grpc/meta_service_grpc.cc && git commit -m "fix(metad): add CheckAuth to all MetaD gRPC handlers"
 ```
 
 ---
@@ -170,13 +170,13 @@ Permissions:
 - [ ] **Step 3: Build cedar target**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/dtx/dtx_service_impl.cc && git commit -m "fix(dtx): add CheckAuth to all DTX service handlers"
+cd <repo-root> && git add src/dtx/dtx_service_impl.cc && git commit -m "fix(dtx): add CheckAuth to all DTX service handlers"
 ```
 
 ---
@@ -229,14 +229,14 @@ Note: Some locations use `grpc::Status`, others use internal `Status`. Use the c
 - [ ] **Step 3: Build and run storage service auth tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target test_storage_service_auth -j$(sysctl -n hw.ncpu) && ./tests/test_storage_service_auth
+cd <repo-root>/build && cmake --build . --target test_storage_service_auth -j$(sysctl -n hw.ncpu) && ./tests/test_storage_service_auth
 ```
 Expected: all tests pass.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/dtx/storage_impl/storage_service_impl.cc && git commit -m "fix(storage): enforce IsLeaseValid on all write paths"
+cd <repo-root> && git add src/dtx/storage_impl/storage_service_impl.cc && git commit -m "fix(storage): enforce IsLeaseValid on all write paths"
 ```
 
 ---
@@ -297,13 +297,13 @@ With:
 - [ ] **Step 3: Build cedar target**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/dtx/storage/braft_partition_state_machine.cc && git commit -m "fix(raft): rollback on storage apply error to prevent replica divergence"
+cd <repo-root> && git add src/dtx/storage/braft_partition_state_machine.cc && git commit -m "fix(raft): rollback on storage apply error to prevent replica divergence"
 ```
 
 ---
@@ -313,7 +313,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/dtx/storage/braft_part
 - [ ] **Step 1: Run full test suite**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ctest --output-on-failure -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && ctest --output-on-failure -j$(sysctl -n hw.ncpu)
 ```
 Expected: 1285/1285 passed, 0 failed.
 

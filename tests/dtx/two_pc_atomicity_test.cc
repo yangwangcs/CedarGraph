@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 
@@ -96,4 +97,21 @@ TEST(TwoPCAtomicityTest, DecisionLogFileFormat) {
 
   // Cleanup
   std::filesystem::remove_all(test_dir);
+}
+
+TEST(TwoPCAtomicityTest, ShutdownWakesAdaptiveTuningThreadPromptly) {
+  TwoPCConfig config;
+  config.enable_adaptive_tuning = true;
+  config.tuning_interval_sec = 30;
+  config.parallel_threads = 1;
+
+  Optimized2PCEngine engine(config);
+  auto init_status = engine.Initialize({});
+  ASSERT_TRUE(init_status.ok()) << init_status.ToString();
+
+  auto start = std::chrono::steady_clock::now();
+  engine.Shutdown();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 500);
 }

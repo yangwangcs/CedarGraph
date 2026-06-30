@@ -293,3 +293,53 @@ TEST_F(StorageServiceAuthTest, FlushValidTokenAccepted) {
   EXPECT_NE(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
   EXPECT_NE(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
 }
+
+TEST_F(StorageServiceAuthTest, ScanEdgeV2InvalidDirectionFailsExplicitly) {
+  grpc::ClientContext ctx;
+  ctx.AddMetadata("authorization", "Bearer " + GetValidToken());
+  cedar::storage::ScanEdgeRequestV2 req;
+  req.set_partition_id(0);
+  req.set_node_id(1);
+  req.set_direction(static_cast<cedar::storage::Direction>(999));
+  cedar::storage::ScanResponse resp;
+
+  auto status = stub_->ScanEdgeV2(&ctx, req, &resp);
+
+  EXPECT_TRUE(status.ok());
+  EXPECT_FALSE(resp.success());
+  EXPECT_NE(resp.error_msg().find("Invalid edge scan direction"), std::string::npos);
+}
+
+TEST_F(StorageServiceAuthTest, ScanLabelLimitZeroReturnsEmptySuccess) {
+  grpc::ClientContext ctx;
+  ctx.AddMetadata("authorization", "Bearer " + GetValidToken());
+  cedar::storage::ScanLabelRequest req;
+  req.set_label("Person");
+  req.set_min_id(0);
+  req.set_max_id(100);
+  req.set_limit(0);
+  cedar::storage::ScanLabelResponse resp;
+
+  auto status = stub_->ScanLabel(&ctx, req, &resp);
+
+  ASSERT_TRUE(status.ok()) << status.error_message();
+  EXPECT_TRUE(resp.success());
+  EXPECT_EQ(resp.entity_ids_size(), 0);
+}
+
+TEST_F(StorageServiceAuthTest, ScanLabelInvalidRangeReturnsEmptySuccess) {
+  grpc::ClientContext ctx;
+  ctx.AddMetadata("authorization", "Bearer " + GetValidToken());
+  cedar::storage::ScanLabelRequest req;
+  req.set_label("Person");
+  req.set_min_id(100);
+  req.set_max_id(1);
+  req.set_limit(50);
+  cedar::storage::ScanLabelResponse resp;
+
+  auto status = stub_->ScanLabel(&ctx, req, &resp);
+
+  ASSERT_TRUE(status.ok()) << status.error_message();
+  EXPECT_TRUE(resp.success());
+  EXPECT_EQ(resp.entity_ids_size(), 0);
+}

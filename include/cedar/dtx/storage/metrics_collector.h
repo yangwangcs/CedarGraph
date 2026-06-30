@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -300,6 +301,10 @@ class MetricsCollector {
   
   std::unique_ptr<std::thread> collection_thread_;
   std::unique_ptr<std::thread> http_thread_;
+  std::condition_variable collection_cv_;
+  std::mutex collection_cv_mutex_;
+  int http_server_fd_{-1};
+  std::mutex http_server_mutex_;
   
   mutable std::shared_mutex nodes_mutex_;
   std::unordered_map<PartitionID, std::unique_ptr<StorageNodeMetrics>> node_metrics_;

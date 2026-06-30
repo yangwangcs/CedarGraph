@@ -1,5 +1,7 @@
 # CedarGraph-Core Production Readiness Audit
 
+> **Historical archive note:** This audit records the repository state on 2026-06-14 and is not the current release verdict. Its 196-test result is historical; current readiness evidence comes from `README.md`, `docs/user-manual/README.md`, and the latest `./scripts/preflight_release_gate.sh` run.
+
 **Date:** 2026-06-14
 **Previous Audit:** 2026-06-11
 **Changes Since Last Audit:** 45+ fixes across all modules
@@ -17,7 +19,7 @@
 | **Monitoring & Alerting** | ❌ FAIL (0 blockers) | ✅ PASS | Enhanced |
 | **Test Coverage** | ✅ PASS | ✅ PASS | 196/196 passing |
 
-**Overall: PRODUCTION-READY** (0 remaining blockers)
+**Historical conclusion on 2026-06-14:** the audit recorded 0 remaining blockers at that time. This is not the current production verdict; use the latest release gate and target-environment validation for current readiness.
 
 ---
 

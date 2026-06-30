@@ -1,19 +1,17 @@
 metad:
   binary_path: build/cedar-metad
   bind_address: "127.0.0.1"
-  port: 10559
+  port: 9559
+  grpc_port: 10559
   data_dir: /tmp/cedar/standalone/meta
-  config_file: config/cedar.yaml
 
 storaged:
   binary_path: build/cedar-storaged
   bind_address: "127.0.0.1"
   port: 9779
   data_dir: /tmp/cedar/standalone/storage
-  config_file: config/cedar.yaml
 
 graphd:
   binary_path: build/cedar-graphd
   bind_address: "127.0.0.1"
   port: 9669
-  config_file: config/cedar.yaml

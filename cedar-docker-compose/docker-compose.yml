@@ -12,10 +12,8 @@
 # 连接集群:
 #   ./scripts/cedar-cli.sh -e "SHOW HOSTS"
 
-version: '3.8'
-
 x-cedar-base: &cedar-base
-  image: cedargraph/cedar:${CEDAR_VERSION:-latest}
+  image: cedargraph/cedar:${CEDAR_VERSION:-k8s-fix-20260630}
   restart: unless-stopped
   networks:
     - cedar-net
@@ -31,16 +29,16 @@ services:
     environment:
       - NODE_ROLE=metad
       - NODE_ID=0
-      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
       - DATA_DIR=/data/meta
     volumes:
       - ./data/meta0:/data/meta
       - ./logs/meta0:/logs
     ports:
       - "9559:9559"
-    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+      - "10559:10559"
+    command: ["--node_id", "1", "--listen", "0.0.0.0:9559", "--grpc_port", "10559", "--data_dir", "/data/meta", "--peer", "1:metad0:9559", "--peer", "2:metad1:9559", "--peer", "3:metad2:9559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9559 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 10559 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -53,7 +51,6 @@ services:
     environment:
       - NODE_ROLE=metad
       - NODE_ID=1
-      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
       - DATA_DIR=/data/meta
     volumes:
       - ./data/meta1:/data/meta
@@ -61,9 +58,9 @@ services:
     depends_on:
       metad0:
         condition: service_healthy
-    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+    command: ["--node_id", "2", "--listen", "0.0.0.0:9559", "--grpc_port", "10559", "--data_dir", "/data/meta", "--peer", "1:metad0:9559", "--peer", "2:metad1:9559", "--peer", "3:metad2:9559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9559 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 10559 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -76,7 +73,6 @@ services:
     environment:
       - NODE_ROLE=metad
       - NODE_ID=2
-      - META_PEERS=metad0:9559,metad1:9559,metad2:9559
       - DATA_DIR=/data/meta
     volumes:
       - ./data/meta2:/data/meta
@@ -84,9 +80,9 @@ services:
     depends_on:
       metad0:
         condition: service_healthy
-    command: ["cedar-metad", "--bind=0.0.0.0:9559", "--data_dir=/data/meta"]
+    command: ["--node_id", "3", "--listen", "0.0.0.0:9559", "--grpc_port", "10559", "--data_dir", "/data/meta", "--peer", "1:metad0:9559", "--peer", "2:metad1:9559", "--peer", "3:metad2:9559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9559 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 10559 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -102,7 +98,7 @@ services:
     environment:
       - NODE_ROLE=storaged
       - NODE_ID=0
-      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - META_SERVERS=metad0:10559,metad1:10559,metad2:10559
       - DATA_DIR=/data/storage
     volumes:
       - ./data/storage0:/data/storage
@@ -116,9 +112,9 @@ services:
         condition: service_healthy
       metad2:
         condition: service_healthy
-    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    command: ["--bind", "0.0.0.0", "--data_dir", "/data/storage", "--meta", "metad0:10559,metad1:10559,metad2:10559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9779 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 9779 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -131,7 +127,7 @@ services:
     environment:
       - NODE_ROLE=storaged
       - NODE_ID=1
-      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - META_SERVERS=metad0:10559,metad1:10559,metad2:10559
       - DATA_DIR=/data/storage
     volumes:
       - ./data/storage1:/data/storage
@@ -139,9 +135,9 @@ services:
     depends_on:
       storaged0:
         condition: service_healthy
-    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    command: ["--node_id", "1", "--bind", "0.0.0.0", "--data_dir", "/data/storage", "--meta", "metad0:10559,metad1:10559,metad2:10559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9779 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 9779 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -154,7 +150,7 @@ services:
     environment:
       - NODE_ROLE=storaged
       - NODE_ID=2
-      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - META_SERVERS=metad0:10559,metad1:10559,metad2:10559
       - DATA_DIR=/data/storage
     volumes:
       - ./data/storage2:/data/storage
@@ -162,9 +158,9 @@ services:
     depends_on:
       storaged0:
         condition: service_healthy
-    command: ["cedar-storaged", "--bind=0.0.0.0:9779", "--data_dir=/data/storage", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    command: ["--node_id", "2", "--bind", "0.0.0.0", "--data_dir", "/data/storage", "--meta", "metad0:10559,metad1:10559,metad2:10559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9779 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 9779 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -179,15 +175,30 @@ services:
     hostname: graphd
     environment:
       - NODE_ROLE=graphd
-      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
+      - META_SERVERS=metad0:10559,metad1:10559,metad2:10559
+      - CEDAR_METAD_ENDPOINT=metad0:10559,metad1:10559,metad2:10559
       - AUTO_DISCOVERY=true
       - QUERY_PORT=9669
-      - HTTP_PORT=19669
+      - HEALTH_PORT=9668
+      - METRICS_PORT=9667
+      - CEDAR_GRAPHD_AUTH_JWT_SECRET=${CEDAR_GRAPHD_AUTH_JWT_SECRET:-dev-only-change-me-32-byte-secret}
+      - CEDAR_GRAPHD_AUTH_USER=${CEDAR_GRAPHD_AUTH_USER:-admin}
+      - CEDAR_GRAPHD_AUTH_PASSWORD=${CEDAR_GRAPHD_AUTH_PASSWORD:-admin}
+      - CEDAR_GRAPHD_AUTH_ROLE=${CEDAR_GRAPHD_AUTH_ROLE:-admin}
+      - CEDAR_GRPC_TLS_ENABLED=${CEDAR_GRPC_TLS_ENABLED:-0}
+      - CEDAR_GRPC_SERVER_CERT=${CEDAR_GRPC_SERVER_CERT:-/etc/cedar/tls/tls.crt}
+      - CEDAR_GRPC_SERVER_KEY=${CEDAR_GRPC_SERVER_KEY:-/etc/cedar/tls/tls.key}
+      - CEDAR_GRPC_CA_CERT=${CEDAR_GRPC_CA_CERT:-/etc/cedar/tls/ca.crt}
+      - CEDAR_GRPC_MTLS_ENABLED=${CEDAR_GRPC_MTLS_ENABLED:-0}
+      - CEDAR_GRPC_CLIENT_CERT=${CEDAR_GRPC_CLIENT_CERT:-/etc/cedar/tls/client.crt}
+      - CEDAR_GRPC_CLIENT_KEY=${CEDAR_GRPC_CLIENT_KEY:-/etc/cedar/tls/client.key}
     volumes:
       - ./logs/graphd:/logs
+      - ${CEDAR_TLS_DIR:-./certs}:/etc/cedar/tls:ro
     ports:
       - "9669:9669"     # 查询端口
-      - "19669:19669"   # HTTP 端口
+      - "9668:9668"     # 健康检查端口
+      - "9667:9667"     # 指标端口
     depends_on:
       storaged0:
         condition: service_healthy
@@ -195,39 +206,9 @@ services:
         condition: service_healthy
       storaged2:
         condition: service_healthy
-    command: ["cedar-graphd", "--bind=0.0.0.0:9669", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
+    command: ["--bind", "0.0.0.0", "--meta", "metad0:10559,metad1:10559,metad2:10559"]
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9669 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  # ============================================================================
-  # Query Service - 查询分发服务
-  # ============================================================================
-  queryd:
-    <<: *cedar-base
-    container_name: cedar-queryd
-    hostname: queryd
-    environment:
-      - NODE_ROLE=queryd
-      - META_SERVERS=metad0:9559,metad1:9559,metad2:9559
-      - QUERY_PORT=9889
-    volumes:
-      - ./logs/queryd:/logs
-    ports:
-      - "9889:9889"
-    depends_on:
-      storaged0:
-        condition: service_healthy
-      storaged1:
-        condition: service_healthy
-      storaged2:
-        condition: service_healthy
-    command: ["cedar-queryd", "--bind=0.0.0.0:9889", "--meta_servers=metad0:9559,metad1:9559,metad2:9559"]
-    healthcheck:
-      test: ["CMD-SHELL", "/usr/local/bin/cedar_health_check.sh localhost:9889 || exit 1"]
+      test: ["CMD-SHELL", "nc -z localhost 9669 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -241,6 +222,7 @@ services:
     container_name: cedar-console
     environment:
       - NODE_ROLE=console
+    entrypoint: []
     command: ["sh", "-c", "echo 'CedarGraph console ready. Use cedar-cli to connect.' && sleep infinity"]
     depends_on:
       graphd:
@@ -258,7 +240,7 @@ services:
   # Studio - Web 可视化界面 (可选)
   # ============================================================================
   studio:
-    image: cedargraph/studio:${CEDAR_VERSION:-latest}
+    image: cedargraph/studio:${CEDAR_VERSION:-k8s-fix-20260630}
     container_name: cedar-studio
     environment:
       - CEDAR_GRAPHD_HOST=graphd

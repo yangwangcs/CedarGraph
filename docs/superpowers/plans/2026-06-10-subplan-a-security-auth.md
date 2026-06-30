@@ -135,7 +135,7 @@ grpc::Status CheckAuth(grpc::ServerContext* context,
 
 **Verify compile (do NOT link yet):**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target storaged -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected output:**
@@ -233,7 +233,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 
 **Compile check:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target storaged -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected:** `[100%] Built target storaged`
@@ -313,7 +313,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 
 **Compile check:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target storaged -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected:** `[100%] Built target storaged`
@@ -354,7 +354,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 
 **Commit:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && \
+cd <repo-root> && \
   git add src/dtx/storage/storage_server_with_grpc.cc && \
   git commit -m "P0-1: wire auth into all StorageService handlers (storage_server_with_grpc)"
 ```
@@ -380,14 +380,14 @@ The permission mapping is identical to Steps 1.2–1.4:
 
 **Compile check:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target cedar -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected:** `[100%] Built target cedar`
 
 **Commit:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && \
+cd <repo-root> && \
   git add src/dtx/storage_impl/storage_service_impl.cc && \
   git commit -m "P0-1: wire auth into all StorageService handlers (storage_service_impl)"
 ```
@@ -496,7 +496,7 @@ grpc::Status GraphServiceRouter::BeginTransaction(grpc::ServerContext* context,
 
 **Compile check:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target graphd -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected:** `[100%] Built target graphd`
@@ -534,14 +534,14 @@ Example pattern for each:
 
 **Compile check:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target graphd -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected:** `[100%] Built target graphd`
 
 **Commit:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && \
+cd <repo-root> && \
   git add include/cedar/service/graph_service_router.h src/service/graph_service_router.cc && \
   git commit -m "P0-2: wire auth into GraphServiceRouter entry points"
 ```
@@ -657,7 +657,7 @@ StatusOr<std::shared_ptr<ChannelCredentials>> TlsCredentialFactory::CreateClient
 
 **Compile check:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target cedar -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected:** `[100%] Built target cedar`
@@ -740,7 +740,7 @@ TEST(TlsCredentialFactory, EnvUnsetReturnsError) {
 
 **Run the test (TDD — expect pass after the impl change):**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_tls_fail_secure -- -j$(sysctl -n hw.ncpu) && \
   ./tests/test_tls_fail_secure
 ```
@@ -769,7 +769,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 
 **Commit:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && \
+cd <repo-root> && \
   git add src/dtx/raft/grpc_tls.cc tests/dtx/test_tls_fail_secure.cc && \
   git commit -m "P0-3: remove insecure TLS fallback; fail hard on missing credentials"
 ```
@@ -807,7 +807,7 @@ Status QueryMetaClient::Init() {
 
 **Compile check:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target cedar_queryd -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected:** `[100%] Built target cedar_queryd`
@@ -838,14 +838,14 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 
 **Compile check:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target cedar_queryd -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected:** `[100%] Built target cedar_queryd`
 
 **Commit:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && \
+cd <repo-root> && \
   git add src/queryd/meta_client.cpp src/queryd/query_storage_client.cpp && \
   git commit -m "P0-4: replace hard-coded insecure channels with mandatory TLS factory"
 ```
@@ -1106,7 +1106,7 @@ gtest_discover_tests(test_graph_service_router_auth)
 
 **Configure & build:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake .. && \
   cmake --build . --target test_storage_service_auth -- -j$(sysctl -n hw.ncpu) && \
   cmake --build . --target test_graph_service_router_auth -- -j$(sysctl -n hw.ncpu)
@@ -1125,7 +1125,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 - [ ] Run the auth tests.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   ./tests/test_storage_service_auth && \
   ./tests/test_graph_service_router_auth
 ```
@@ -1165,7 +1165,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 
 **Final commit:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && \
+cd <repo-root> && \
   git add tests/security/test_storage_service_auth.cc \
           tests/service/test_graph_service_router_auth.cc \
           tests/CMakeLists.txt && \

@@ -43,16 +43,22 @@ class CedarGraphClient {
           // Print rows
           for (const auto& row : result_set.rows()) {
             for (const auto& val : row.values()) {
-              if (val.has_int_val()) {
-                result += std::to_string(val.int_val()) + "\t";
-              } else if (val.has_string_val()) {
-                result += val.string_val() + "\t";
-              } else if (val.has_float_val()) {
-                result += std::to_string(val.float_val()) + "\t";
-              } else if (val.has_bool_val()) {
-                result += std::string(val.bool_val() ? "true" : "false") + "\t";
-              } else {
-                result += "null\t";
+              switch (val.value_type_case()) {
+                case cedar::query::Value::kIntVal:
+                  result += std::to_string(val.int_val()) + "\t";
+                  break;
+                case cedar::query::Value::kStringVal:
+                  result += val.string_val() + "\t";
+                  break;
+                case cedar::query::Value::kFloatVal:
+                  result += std::to_string(val.float_val()) + "\t";
+                  break;
+                case cedar::query::Value::kBoolVal:
+                  result += std::string(val.bool_val() ? "true" : "false") + "\t";
+                  break;
+                default:
+                  result += "null\t";
+                  break;
               }
             }
             result += "\n";

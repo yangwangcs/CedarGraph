@@ -8,50 +8,68 @@
 namespace cedar {
 namespace service {
 
+namespace {
+
+using QueryValue = QueryResultAggregator::Value;
+
+bool IsValueType(const QueryValue& value, QueryValue::ValueTypeCase type) {
+  return value.value_type_case() == type;
+}
+
+std::string ValueTypeName(const QueryValue& value) {
+  switch (value.value_type_case()) {
+    case QueryValue::kBoolVal:
+      return "bool";
+    case QueryValue::kIntVal:
+      return "int";
+    case QueryValue::kFloatVal:
+      return "float";
+    case QueryValue::kStringVal:
+      return "string";
+    case QueryValue::kBytesVal:
+      return "bytes";
+    case QueryValue::kListVal:
+      return "list";
+    case QueryValue::kMapVal:
+      return "map";
+    case QueryValue::kNullVal:
+      return "null";
+    default:
+      return "other";
+  }
+}
+
+}  // namespace
+
 // Helper to compare two values
 static int CompareValues(const QueryResultAggregator::Value& a, 
                          const QueryResultAggregator::Value& b) {
   // Handle null values
-  if (a.has_null_val() && b.has_null_val()) return 0;
-  if (a.has_null_val()) return -1;
-  if (b.has_null_val()) return 1;
+  if (IsValueType(a, QueryValue::kNullVal) && IsValueType(b, QueryValue::kNullVal)) return 0;
+  if (IsValueType(a, QueryValue::kNullVal)) return -1;
+  if (IsValueType(b, QueryValue::kNullVal)) return 1;
 
   // Compare based on type
-  if (a.has_int_val() && b.has_int_val()) {
+  if (IsValueType(a, QueryValue::kIntVal) && IsValueType(b, QueryValue::kIntVal)) {
     int64_t av = a.int_val();
     int64_t bv = b.int_val();
     if (av < bv) return -1;
     if (av > bv) return 1;
     return 0;
   }
-  if (a.has_float_val() && b.has_float_val()) {
+  if (IsValueType(a, QueryValue::kFloatVal) && IsValueType(b, QueryValue::kFloatVal)) {
     double diff = a.float_val() - b.float_val();
     return diff < 0 ? -1 : (diff > 0 ? 1 : 0);
   }
-  if (a.has_string_val() && b.has_string_val()) {
+  if (IsValueType(a, QueryValue::kStringVal) && IsValueType(b, QueryValue::kStringVal)) {
     return a.string_val().compare(b.string_val());
   }
-  if (a.has_bool_val() && b.has_bool_val()) {
+  if (IsValueType(a, QueryValue::kBoolVal) && IsValueType(b, QueryValue::kBoolVal)) {
     return static_cast<int>(a.bool_val()) - static_cast<int>(b.bool_val());
   }
   
   // Different types - order by type name for consistency
-  std::string type_a, type_b;
-  if (a.has_bool_val()) type_a = "bool";
-  else if (a.has_int_val()) type_a = "int";
-  else if (a.has_float_val()) type_a = "float";
-  else if (a.has_string_val()) type_a = "string";
-  else if (a.has_bytes_val()) type_a = "bytes";
-  else type_a = "other";
-
-  if (b.has_bool_val()) type_b = "bool";
-  else if (b.has_int_val()) type_b = "int";
-  else if (b.has_float_val()) type_b = "float";
-  else if (b.has_string_val()) type_b = "string";
-  else if (b.has_bytes_val()) type_b = "bytes";
-  else type_b = "other";
-
-  return type_a.compare(type_b);
+  return ValueTypeName(a).compare(ValueTypeName(b));
 }
 
 // Generate a fingerprint for a row for deduplication
@@ -60,17 +78,17 @@ static std::string RowFingerprint(const QueryResultAggregator::Row& row) {
   for (int i = 0; i < row.values_size(); ++i) {
     if (i > 0) ss << "|";
     const auto& val = row.values(i);
-    if (val.has_null_val()) {
+    if (IsValueType(val, QueryValue::kNullVal)) {
       ss << "null";
-    } else if (val.has_bool_val()) {
+    } else if (IsValueType(val, QueryValue::kBoolVal)) {
       ss << (val.bool_val() ? "1" : "0");
-    } else if (val.has_int_val()) {
+    } else if (IsValueType(val, QueryValue::kIntVal)) {
       ss << val.int_val();
-    } else if (val.has_float_val()) {
+    } else if (IsValueType(val, QueryValue::kFloatVal)) {
       ss << val.float_val();
-    } else if (val.has_string_val()) {
+    } else if (IsValueType(val, QueryValue::kStringVal)) {
       ss << val.string_val();
-    } else if (val.has_bytes_val()) {
+    } else if (IsValueType(val, QueryValue::kBytesVal)) {
       ss << val.bytes_val();
     } else {
       ss << "?";
@@ -81,11 +99,11 @@ static std::string RowFingerprint(const QueryResultAggregator::Row& row) {
 
 // Extract numeric value from a Value for aggregation
 static bool ExtractNumeric(const QueryResultAggregator::Value& value, double* out) {
-  if (value.has_int_val()) {
+  if (IsValueType(value, QueryValue::kIntVal)) {
     *out = static_cast<double>(value.int_val());
     return true;
   }
-  if (value.has_float_val()) {
+  if (IsValueType(value, QueryValue::kFloatVal)) {
     *out = value.float_val();
     return true;
   }
@@ -237,7 +255,8 @@ QueryResultAggregator::CalculateAggregate(const std::string& function,
     int64_t count = 0;
     for (int i = 0; i < results.rows_size(); ++i) {
       const auto& row = results.rows(i);
-      if (col_idx < row.values_size() && !row.values(col_idx).has_null_val()) {
+      if (col_idx < row.values_size() &&
+          !IsValueType(row.values(col_idx), QueryValue::kNullVal)) {
         ++count;
       }
     }

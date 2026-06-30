@@ -121,7 +121,7 @@ TEST_F(AccumulatedBufferRaceTest, GetAllSeesAccumulatedEntries) {
 
 **Build & run (expect RED/fail):**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_accumulated_buffer_race -j$(sysctl -n hw.ncpu) && \
   ./tests/test_accumulated_buffer_race --gtest_filter="AccumulatedBufferRaceTest.GetRangeSeesAccumulatedEntries:AccumulatedBufferRaceTest.GetAllSeesAccumulatedEntries"
 ```
@@ -162,7 +162,7 @@ Then update the existing comment `// 3. Query SST files` → `// 4. Query SST fi
 
 **Build & run (expect partial GREEN):**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_accumulated_buffer_race -j$(sysctl -n hw.ncpu) && \
   ./tests/test_accumulated_buffer_race --gtest_filter="AccumulatedBufferRaceTest.GetAllSeesAccumulatedEntries"
 ```
@@ -204,7 +204,7 @@ Then update the existing comment `// 3. Query SST files` → `// 4. Query SST fi
 
 **Build & run (expect full GREEN):**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_accumulated_buffer_race -j$(sysctl -n hw.ncpu) && \
   ./tests/test_accumulated_buffer_race --gtest_filter="AccumulatedBufferRaceTest.*"
 ```
@@ -218,7 +218,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 Verify no regressions in existing accumulated-buffer race tests or general LSM lifecycle tests.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_accumulated_buffer_race lsm_engine_lifecycle_test -j$(sysctl -n hw.ncpu) && \
   ./tests/test_accumulated_buffer_race && \
   ./tests/lsm_engine_lifecycle_test

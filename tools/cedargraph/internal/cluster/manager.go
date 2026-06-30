@@ -32,7 +32,7 @@ func NewManager(config *ClusterConfig, baseDir string) *Manager {
 }
 
 func (m *Manager) StartMetaD() (*NodeInfo, error) {
-	return m.startNode("metad", m.config.MetaD)
+	return m.startMetaD()
 }
 
 func (m *Manager) StartStorageD() (*NodeInfo, error) {
@@ -41,6 +41,32 @@ func (m *Manager) StartStorageD() (*NodeInfo, error) {
 
 func (m *Manager) StartGraphD() (*NodeInfo, error) {
 	return m.startNode("graphd", m.config.GraphD)
+}
+
+func (m *Manager) startMetaD() (*NodeInfo, error) {
+	cfg := m.config.MetaD
+	binary := filepath.Join(m.baseDir, cfg.BinaryPath)
+	if _, err := os.Stat(binary); err != nil {
+		return nil, fmt.Errorf("binary not found: %s (run 'make metad' first)", binary)
+	}
+
+	args := []string{}
+	if cfg.ConfigFile != "" {
+		args = append(args, "--config", filepath.Join(m.baseDir, cfg.ConfigFile))
+	}
+	if cfg.BindAddr != "" {
+		args = append(args, "--listen", fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.Port))
+	}
+	if cfg.GrpcPort > 0 {
+		args = append(args, "--grpc_port", strconv.Itoa(cfg.GrpcPort))
+	}
+	if cfg.DataDir != "" {
+		os.MkdirAll(cfg.DataDir, 0755)
+		args = append(args, "--data_dir", cfg.DataDir)
+	}
+	args = append(args, cfg.ExtraArgs...)
+
+	return m.startCommand("metad", binary, args, cfg)
 }
 
 func (m *Manager) startNode(name string, cfg NodeConfig) (*NodeInfo, error) {
@@ -54,7 +80,10 @@ func (m *Manager) startNode(name string, cfg NodeConfig) (*NodeInfo, error) {
 		args = append(args, "--config", filepath.Join(m.baseDir, cfg.ConfigFile))
 	}
 	if cfg.BindAddr != "" {
-		args = append(args, "--bind", fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.Port))
+		args = append(args, "--bind", cfg.BindAddr)
+	}
+	if cfg.Port > 0 {
+		args = append(args, "--port", strconv.Itoa(cfg.Port))
 	}
 	if cfg.DataDir != "" {
 		os.MkdirAll(cfg.DataDir, 0755)
@@ -62,6 +91,10 @@ func (m *Manager) startNode(name string, cfg NodeConfig) (*NodeInfo, error) {
 	}
 	args = append(args, cfg.ExtraArgs...)
 
+	return m.startCommand(name, binary, args, cfg)
+}
+
+func (m *Manager) startCommand(name string, binary string, args []string, cfg NodeConfig) (*NodeInfo, error) {
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = m.baseDir
 	cmd.Stdout = os.Stdout

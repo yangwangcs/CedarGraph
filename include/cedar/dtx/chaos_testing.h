@@ -28,9 +28,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <random>
 #include <thread>
 #include <vector>
@@ -117,6 +119,7 @@ class FaultInjector {
   void FaultWorkerLoop();
   void ApplyFault(const FaultSpec& spec);
   void RevertFault(const FaultSpec& spec);
+  bool WaitForShutdown(std::chrono::milliseconds timeout);
   
   std::vector<FaultSpec> specs_;
   mutable std::mutex specs_mutex_;
@@ -130,6 +133,8 @@ class FaultInjector {
   std::thread worker_thread_;
   std::atomic<bool> running_{false};
   std::atomic<bool> shutdown_{false};
+  mutable std::mutex shutdown_mutex_;
+  std::condition_variable shutdown_cv_;
   
   std::mt19937 rng_;
 };
@@ -268,6 +273,7 @@ class LongTermStabilityTest {
   // Helper
   void UpdateLatencyStats(int64_t latency_us);
   void LogMessage(const std::string& level, const std::string& message);
+  bool WaitForStop(std::chrono::microseconds timeout);
   
   Config config_;
   AtomicTestStats stats_;
@@ -286,6 +292,8 @@ class LongTermStabilityTest {
   
   std::atomic<bool> running_{false};
   std::atomic<bool> stop_requested_{false};
+  mutable std::mutex stop_mutex_;
+  std::condition_variable stop_cv_;
   
   // Latency histogram for P99 calculation
   std::vector<int64_t> latency_histogram_;
@@ -363,6 +371,7 @@ class AutomatedRecoveryManager {
   // Helper
   FailureType DetectFailureType(const std::string& error_message);
   Status ExecuteRecovery(const FailureEvent& event);
+  bool WaitForStop(std::chrono::milliseconds timeout);
   
   std::vector<std::string> node_addresses_;
   mutable std::mutex nodes_mutex_;
@@ -382,6 +391,8 @@ class AutomatedRecoveryManager {
   
   std::atomic<bool> running_{false};
   std::atomic<bool> auto_recovery_enabled_{true};
+  mutable std::mutex stop_mutex_;
+  std::condition_variable stop_cv_;
 };
 
 }  // namespace dtx

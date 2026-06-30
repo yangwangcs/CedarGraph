@@ -61,13 +61,13 @@ With:
 - [ ] **Step 3: Build cedar target**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar -j$(sysctl -n hw.ncpu)
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add src/dtx/security/security_manager.cc && git commit -m "fix(security): use constant-time comparison for JWT signature verification"
+cd <repo-root> && git add src/dtx/security/security_manager.cc && git commit -m "fix(security): use constant-time comparison for JWT signature verification"
 ```
 
 ---
@@ -124,14 +124,14 @@ gtest_discover_tests(test_security_manager_jwt)
 - [ ] **Step 3: Build and run test**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake . >/dev/null && cmake --build . --target test_security_manager_jwt -j$(sysctl -n hw.ncpu) && ./tests/test_security_manager_jwt
+cd <repo-root>/build && cmake . >/dev/null && cmake --build . --target test_security_manager_jwt -j$(sysctl -n hw.ncpu) && ./tests/test_security_manager_jwt
 ```
 Expected: 3 tests pass.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add tests/dtx/test_security_manager_jwt.cc tests/CMakeLists.txt && git commit -m "test(security): add constant-time comparison unit tests"
+cd <repo-root> && git add tests/dtx/test_security_manager_jwt.cc tests/CMakeLists.txt && git commit -m "test(security): add constant-time comparison unit tests"
 ```
 
 ---
@@ -141,6 +141,6 @@ cd /Users/wangyang/Desktop/CedarGraph-Core && git add tests/dtx/test_security_ma
 - [ ] **Step 1: Run full test suite**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ctest --output-on-failure -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && ctest --output-on-failure -j$(sysctl -n hw.ncpu)
 ```
 Expected: 1285/1285 passed, 0 failed.

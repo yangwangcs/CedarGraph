@@ -16,8 +16,10 @@
 #define CEDAR_COMPUTE_EPOCH_CHUNK_H_
 
 #include "cedar/compute/temporal_edge.h"
-#include <cstdint>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <sys/types.h>
 
 namespace cedar {
 

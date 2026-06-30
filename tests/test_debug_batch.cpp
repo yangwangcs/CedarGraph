@@ -26,7 +26,7 @@ int main() {
     key->set_partition_id(0);
     
     int32_t neighbor_id = 200 + e;  // Neighbor: 200, 201, 202, 203, 204
-    req.mutable_descriptor_()->set_data(
+    req.mutable_value_descriptor()->set_data(
         reinterpret_cast<const char*>(&neighbor_id), sizeof(neighbor_id));
     req.mutable_txn_version()->set_value(5000000);
     
@@ -59,8 +59,8 @@ int main() {
     cout << "  Success: " << resp.success() << endl;
     cout << "  Found: " << resp.found() << endl;
     
-    if (resp.found() && resp.has_descriptor_() && resp.descriptor_().data().size() >= 4) {
-      int32_t val = *reinterpret_cast<const int32_t*>(resp.descriptor_().data().data());
+    if (resp.found() && resp.has_value_descriptor() && resp.value_descriptor().data().size() >= 4) {
+      int32_t val = *reinterpret_cast<const int32_t*>(resp.value_descriptor().data().data());
       cout << "  Value: " << val << " (expected: 200)" << endl;
     }
   }
@@ -112,8 +112,8 @@ int main() {
     
     cout << "  col=" << (100+e) << ": " 
          << (status.ok() && resp.found() ? "FOUND" : "NOT FOUND");
-    if (resp.found() && resp.has_descriptor_() && resp.descriptor_().data().size() >= 4) {
-      int32_t val = *reinterpret_cast<const int32_t*>(resp.descriptor_().data().data());
+    if (resp.found() && resp.has_value_descriptor() && resp.value_descriptor().data().size() >= 4) {
+      int32_t val = *reinterpret_cast<const int32_t*>(resp.value_descriptor().data().data());
       cout << " -> " << val;
     }
     cout << endl;

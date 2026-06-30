@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Cluster Test Tool for CedarGraph Distributed Storage
-// Usage: ./cluster_test_tool --meta 127.0.0.1:9559 --timeout 30
+// Usage: ./cluster_test_tool --meta 127.0.0.1:10559 --timeout 30
 
 #include <iostream>
 #include <vector>
@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
     }
   }
   if (config.meta_endpoints.empty()) {
-    config.meta_endpoints = {"127.0.0.1:9559"};
+    config.meta_endpoints = {"127.0.0.1:10559"};
   }
   ClusterTestTool tool(config);
   tool.RunAllTests();

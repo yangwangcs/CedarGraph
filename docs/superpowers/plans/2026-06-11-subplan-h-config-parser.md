@@ -119,7 +119,7 @@ Replace the hand-rolled line parser in `CedarConfig::LoadFromFile` with a proper
 
 **Run existing tests (expect some failures because LoadFromFile still skips most sections):**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_cedar_config -- -j$(sysctl -n hw.ncpu) && \
   ./tests/test_cedar_config --gtest_filter='CedarConfigTest.LoadFromFileParsesYamlSecurityAndTls:CedarConfigTest.LoadFromFileParsesJsonSecurityAndTls:CedarConfigTest.SaveAndLoadRoundTripSecurityTls:CedarConfigManagerTest.ReloadConfigDoesNotDeadlock'
 ```
@@ -395,7 +395,7 @@ TEST(CedarConfigTest, FullRoundTripAllSections) {
 
 **Run the test (expect FAILURE because LoadFromFile currently skips 6 sections):**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_cedar_config -- -j$(sysctl -n hw.ncpu) && \
   ./tests/test_cedar_config --gtest_filter='CedarConfigTest.FullRoundTripAllSections'
 ```
@@ -420,7 +420,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 
 **Verify compile:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target cedar -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected:** `[100%] Built target cedar` (no rapidjson-related errors).
@@ -827,7 +827,7 @@ Status CedarConfig::LoadFromFile(const std::string& path) {
 
 **Run the full round-trip test:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_cedar_config -- -j$(sysctl -n hw.ncpu) && \
   ./tests/test_cedar_config --gtest_filter='CedarConfigTest.FullRoundTripAllSections'
 ```
@@ -1144,7 +1144,7 @@ Status CedarConfig::SaveToFile(const std::string& path) const {
 
 **Run all config tests:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_cedar_config -- -j$(sysctl -n hw.ncpu) && \
   ./tests/test_cedar_config
 ```
@@ -1167,7 +1167,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 
 **Verify compile:**
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target cedar -- -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
 ```
 **Expected:** `[100%] Built target cedar` with zero warnings about unused functions.
@@ -1182,7 +1182,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 - [ ] Run all `test_cedar_config` tests plus the config-manager test.
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
+cd <repo-root>/build && \
   cmake --build . --target test_cedar_config -- -j$(sysctl -n hw.ncpu) && \
   ./tests/test_cedar_config && \
   cmake --build . --target test_config_manager -- -j$(sysctl -n hw.ncpu) && \
@@ -1202,7 +1202,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core/build && \
 **Time:** 1 min  
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && \
+cd <repo-root> && \
   git add src/storage/cedar_config.cc tests/storage/test_cedar_config.cc && \
   git commit -m "feat(config): replace hand-rolled parser with rapidjson
 

@@ -1,15 +1,16 @@
 #!/bin/bash
 # CedarGraph Cluster Health Check Script
-# Usage: ./cedar_health_check.sh [storaged_host:port] [metad_host:port] [graphd_host:port]
+# Usage: ./cedar_health_check.sh [storaged_health] [metad_grpc] [graphd_health] [storaged_metrics] [graphd_metrics]
 
 set -e
 
-STORAGED_ADDR="${1:-localhost:9090}"
-METAD_ADDR="${2:-localhost:9091}"
-GRAPHD_ADDR="${3:-localhost:9092}"
+STORAGED_HEALTH_ADDR="${1:-localhost:7000}"
+METAD_GRPC_ADDR="${2:-localhost:10559}"
+GRAPHD_HEALTH_ADDR="${3:-localhost:9668}"
+STORAGED_METRICS_ADDR="${4:-localhost:7001}"
+GRAPHD_METRICS_ADDR="${5:-localhost:9667}"
 
 HEALTH_ENDPOINT="/health"
-READY_ENDPOINT="/ready"
 METRICS_ENDPOINT="/metrics"
 
 RED='\033[0;31m'
@@ -49,6 +50,22 @@ check_http() {
     fi
 }
 
+check_tcp() {
+    local name="$1"
+    local addr="$2"
+    local host port
+    host=$(echo "$addr" | cut -d: -f1)
+    port=$(echo "$addr" | cut -d: -f2)
+
+    if nc -z "${host}" "${port}" 2>/dev/null; then
+        echo -e "${GREEN}[OK]${NC} ${name} TCP ${addr}"
+        return 0
+    fi
+
+    echo -e "${RED}[FAIL]${NC} ${name} TCP ${addr} unreachable"
+    return 1
+}
+
 echo "=========================================="
 echo "CedarGraph Cluster Health Check"
 echo "=========================================="
@@ -56,19 +73,18 @@ echo ""
 
 ERRORS=0
 
-echo "--- StorageD (${STORAGED_ADDR}) ---"
-check_http "StorageD" "${STORAGED_ADDR}" "${HEALTH_ENDPOINT}" || ERRORS=$((ERRORS + 1))
-check_http "StorageD" "${STORAGED_ADDR}" "${READY_ENDPOINT}" || ERRORS=$((ERRORS + 1))
+echo "--- StorageD (${STORAGED_HEALTH_ADDR}) ---"
+check_http "StorageD" "${STORAGED_HEALTH_ADDR}" "${HEALTH_ENDPOINT}" || ERRORS=$((ERRORS + 1))
+check_http "StorageD Metrics" "${STORAGED_METRICS_ADDR}" "${METRICS_ENDPOINT}" || ERRORS=$((ERRORS + 1))
 echo ""
 
-echo "--- MetaD (${METAD_ADDR}) ---"
-check_http "MetaD" "${METAD_ADDR}" "${HEALTH_ENDPOINT}" || ERRORS=$((ERRORS + 1))
-check_http "MetaD" "${METAD_ADDR}" "${READY_ENDPOINT}" || ERRORS=$((ERRORS + 1))
+echo "--- MetaD (${METAD_GRPC_ADDR}) ---"
+check_tcp "MetaD gRPC" "${METAD_GRPC_ADDR}" || ERRORS=$((ERRORS + 1))
 echo ""
 
-echo "--- GraphD (${GRAPHD_ADDR}) ---"
-check_http "GraphD" "${GRAPHD_ADDR}" "${HEALTH_ENDPOINT}" || ERRORS=$((ERRORS + 1))
-check_http "GraphD" "${GRAPHD_ADDR}" "${READY_ENDPOINT}" || ERRORS=$((ERRORS + 1))
+echo "--- GraphD (${GRAPHD_HEALTH_ADDR}) ---"
+check_http "GraphD" "${GRAPHD_HEALTH_ADDR}" "${HEALTH_ENDPOINT}" || ERRORS=$((ERRORS + 1))
+check_http "GraphD Metrics" "${GRAPHD_METRICS_ADDR}" "${METRICS_ENDPOINT}" || ERRORS=$((ERRORS + 1))
 echo ""
 
 echo "=========================================="

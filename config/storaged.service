@@ -13,7 +13,7 @@ Group=cedar
 WorkingDirectory=/var/lib/cedar/storage
 
 # Executable
-ExecStart=/usr/local/bin/storaged --config /etc/cedar/storaged.conf
+ExecStart=/usr/local/bin/cedar-storaged --config /etc/cedar/storaged.conf
 ExecReload=/bin/kill -HUP $MAINPID
 
 # Restart policy - auto recovery on failure

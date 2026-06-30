@@ -23,6 +23,22 @@ cd cedar-docker-compose
 ./scripts/quick-start.sh
 ```
 
+GraphD 在非测试模式下需要认证配置。开发一键部署会设置本地默认账号；生产部署必须覆盖为真实 Secret：
+
+```bash
+export CEDAR_GRAPHD_AUTH_JWT_SECRET='replace-with-at-least-32-bytes-secret'
+export CEDAR_GRAPHD_AUTH_USER='admin'
+export CEDAR_GRAPHD_AUTH_PASSWORD='replace-with-strong-password'
+export CEDAR_GRAPHD_AUTH_ROLE='admin'
+```
+
+生产建议同时启用 TLS，并挂载 `CEDAR_TLS_DIR` 到容器内 `/etc/cedar/tls`：
+
+```bash
+export CEDAR_GRPC_TLS_ENABLED=1
+export CEDAR_TLS_DIR=/path/to/certs
+```
+
 ### 3. 连接集群
 
 ```bash
@@ -66,7 +82,8 @@ cd cedar-docker-compose
 ### 清理并重新部署
 
 ```bash
-./scripts/quick-start.sh --clean
+# 确认已完成备份后再允许脚本删除 data/logs
+CEDAR_QUICKSTART_ALLOW_CLEAN=1 ./scripts/quick-start.sh --clean
 ```
 
 ---
@@ -76,8 +93,10 @@ cd cedar-docker-compose
 | 服务 | 端口 | 说明 |
 |------|------|------|
 | GraphD | 9669 | 查询服务 |
-| GraphD HTTP | 19669 | HTTP API |
-| MetaD | 9559 | 元数据服务 |
+| GraphD health | 9668 | 健康检查 |
+| GraphD metrics | 9667 | 指标服务 |
+| MetaD Raft | 9559 | 元数据共识复制 |
+| MetaD gRPC | 10559 | 元数据客户端 API |
 | StorageD | 9779-9781 | 存储服务 |
 | Studio | 7001 | Web UI (可选) |
 
@@ -92,8 +111,9 @@ cd cedar-docker-compose
 # 查看存储节点
 ./scripts/cedar-cli.sh -e "SHOW HOSTS"
 
-# 查看图空间
-./scripts/cedar-cli.sh -e "SHOW SPACES"
+# 当前 cedar-cli 脚本只做轻量状态查看。
+# CREATE SPACE、SHOW SPACES、CREATE TAG/EDGE、SHOW EDGES、INSERT、MATCH
+# 等图操作需要通过已验证的 GraphD/服务端接口或完整客户端路径执行。
 
 # 指定服务器
 ./scripts/cedar-cli.sh -h graphd -P 9669
@@ -145,13 +165,13 @@ cedar-docker-compose/
 ./scripts/quick-start.sh --stop
 
 # 查看日志
-docker-compose logs -f
+docker compose logs -f
 
 # 进入容器
-docker-compose exec graphd /bin/sh
+docker compose exec graphd /bin/sh
 
 # 扩容存储节点
-docker-compose up -d storaged3 storaged4 storaged5
+docker compose up -d storaged3 storaged4 storaged5
 ```
 
 ---
@@ -161,24 +181,24 @@ docker-compose up -d storaged3 storaged4 storaged5
 ### 检查服务状态
 
 ```bash
-docker-compose ps
+docker compose ps
 ```
 
 ### 查看日志
 
 ```bash
 # 所有服务
-docker-compose logs -f
+docker compose logs -f
 
 # 特定服务
-docker-compose logs -f graphd
+docker compose logs -f graphd
 ```
 
 ### 重置集群
 
 ```bash
 ./scripts/quick-start.sh --stop
-./scripts/quick-start.sh --clean
+CEDAR_QUICKSTART_ALLOW_CLEAN=1 ./scripts/quick-start.sh --clean
 ./scripts/quick-start.sh
 ```
 

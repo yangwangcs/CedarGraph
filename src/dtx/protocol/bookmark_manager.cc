@@ -14,10 +14,10 @@
 
 #include "cedar/dtx/bookmark_manager.h"
 
-#include <iostream>
-#include <sstream>
-#include <thread>
 #include <chrono>
+#include <iostream>
+#include <mutex>
+#include <sstream>
 
 namespace cedar {
 namespace dtx {
@@ -292,19 +292,50 @@ Status BookmarkManager::WaitForBookmark(const DistributedBookmark& bookmark,
                                          std::chrono::milliseconds timeout) {
   ++causal_waits_;
   auto start = std::chrono::steady_clock::now();
-  
-  auto deadline = start + timeout;
-  
+
+  if (IsBookmarkSatisfied(bookmark)) {
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - start);
+    causal_wait_time_us_ += elapsed.count();
+    return Status::OK();
+  }
+
+  const auto deadline = start + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
+    auto current_hlc = GetCurrentHLC();
+    auto next_check = deadline;
+    if (bookmark.hlc > current_hlc &&
+        bookmark.hlc.wall_time > current_hlc.wall_time) {
+      auto hlc_wait = std::chrono::microseconds(
+          bookmark.hlc.wall_time - current_hlc.wall_time);
+      next_check = std::min(next_check, std::chrono::steady_clock::now() + hlc_wait);
+    }
+
+    std::unique_lock<std::mutex> lock(watermarks_mutex_);
+    watermarks_cv_.wait_until(lock, next_check, [&]() {
+      for (const auto& [pid, wm] : bookmark.shard_watermarks) {
+        auto it = watermarks_.find(pid);
+        if (it == watermarks_.end() || it->second < wm) {
+          return false;
+        }
+      }
+      return true;
+    });
+    lock.unlock();
+
     if (IsBookmarkSatisfied(bookmark)) {
       auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - start);
       causal_wait_time_us_ += elapsed.count();
       return Status::OK();
     }
-    
-    // 短暂等待后重试
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
+  }
+
+  if (IsBookmarkSatisfied(bookmark)) {
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - start);
+    causal_wait_time_us_ += elapsed.count();
+    return Status::OK();
   }
   
   auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -337,13 +368,21 @@ bool BookmarkManager::IsBookmarkSatisfied(const DistributedBookmark& bookmark) {
 }
 
 void BookmarkManager::UpdateLocalWatermark(PartitionID pid, uint64_t watermark) {
-  std::lock_guard<std::mutex> lock(watermarks_mutex_);
-  
-  auto& current = watermarks_[pid];
-  
-  // 只更新更大的水位
-  if (watermark > current) {
-    current = watermark;
+  bool advanced = false;
+  {
+    std::lock_guard<std::mutex> lock(watermarks_mutex_);
+
+    auto& current = watermarks_[pid];
+
+    // 只更新更大的水位
+    if (watermark > current) {
+      current = watermark;
+      advanced = true;
+    }
+  }
+
+  if (advanced) {
+    watermarks_cv_.notify_all();
   }
 }
 

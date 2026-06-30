@@ -447,7 +447,7 @@ std::unique_ptr<PhysicalOperator> CreateOperator::Clone() const {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. -DBUILD_TESTS=ON && make cedar_cypher -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake .. -DBUILD_TESTS=ON && make cedar_cypher -j$(sysctl -n hw.ncpu)
 ```
 
 Expected: `cedar_cypher` builds successfully with no errors.
@@ -590,7 +590,7 @@ add_test(NAME test_write_operators COMMAND test_write_operators)
 - [ ] **Step 3: Build and run the test**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. -DBUILD_TESTS=ON && make test_write_operators -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake .. -DBUILD_TESTS=ON && make test_write_operators -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_write_operators
 ```
 
@@ -732,7 +732,7 @@ std::unique_ptr<PhysicalOperator> SetOperator::Clone() const {
 - [ ] **Step 2: Build and run existing tests to verify no regression**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && make test_write_operators -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_write_operators
 ```
 
@@ -876,7 +876,7 @@ TEST_F(SetOperatorTest, SetScalarVariable) {
 - [ ] **Step 2: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && make test_write_operators -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_write_operators
 ```
 
@@ -991,7 +991,7 @@ std::unique_ptr<PhysicalOperator> DeleteOperator::Clone() const {
 - [ ] **Step 2: Build and run existing tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && make test_write_operators -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_write_operators
 ```
 
@@ -1108,7 +1108,7 @@ TEST_F(DeleteOperatorTest, DeleteOperatorExhaustsAfterChildEmpty) {
 - [ ] **Step 2: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && make test_write_operators -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_write_operators
 ```
 
@@ -1186,7 +1186,7 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildCreatePlan(
 - [ ] **Step 4: Build and run all cypher tests**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_execution_operators test_write_operators test_set_delete_parsing -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && make test_execution_operators test_write_operators test_set_delete_parsing -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_execution_operators
 ./tests/cypher/test_write_operators
 ./tests/test_set_delete_parsing
@@ -1242,7 +1242,7 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildSetPlan(
 - [ ] **Step 3: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators test_execution_operators -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && make test_write_operators test_execution_operators -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_write_operators
 ./tests/cypher/test_execution_operators
 ```
@@ -1297,7 +1297,7 @@ std::shared_ptr<PhysicalOperator> ExecutionPlanBuilder::BuildDeletePlan(
 - [ ] **Step 3: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators test_execution_operators test_set_delete_parsing -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && make test_write_operators test_execution_operators test_set_delete_parsing -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_write_operators
 ./tests/cypher/test_execution_operators
 ./tests/test_set_delete_parsing
@@ -1405,7 +1405,7 @@ TEST(ExecutionPlanBuilderWriteTest, BuildPlanWithDeleteClause) {
 - [ ] **Step 2: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && make test_write_operators -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_write_operators
 ```
 
@@ -1441,7 +1441,7 @@ gtest_discover_tests(test_write_operators)
 - [ ] **Step 2: Verify ctest discovery**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. -DBUILD_TESTS=ON
+cd <repo-root>/build && cmake .. -DBUILD_TESTS=ON
 ctest -N | grep write_operators
 ```
 
@@ -1503,7 +1503,7 @@ TEST_F(CreateOperatorTest, CreateThenReadRoundTrip) {
 - [ ] **Step 2: Build and run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && make test_write_operators -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_write_operators --gtest_filter="*RoundTrip*"
 ```
 
@@ -1543,7 +1543,7 @@ Verify every requirement from the context has a task:
 
 Search the plan for red flags:
 ```bash
-grep -i -E "TBD|TODO|implement later|fill in|placeholder|similar to" /Users/wangyang/Desktop/CedarGraph-Core/docs/superpowers/plans/2026-05-26-subplan-1-cypher-write-operators.md || echo "No placeholders found"
+grep -i -E "TBD|TODO|implement later|fill in|placeholder|similar to" <repo-root>/docs/superpowers/plans/2026-05-26-subplan-1-cypher-write-operators.md || echo "No placeholders found"
 ```
 
 Expected: "No placeholders found" or empty result.
@@ -1559,7 +1559,7 @@ Verify that:
 - [x] **Step 4: Final full test run**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_write_operators test_execution_operators test_set_delete_parsing -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && make test_write_operators test_execution_operators test_set_delete_parsing -j$(sysctl -n hw.ncpu)
 ./tests/cypher/test_write_operators
 ./tests/cypher/test_execution_operators
 ./tests/test_set_delete_parsing

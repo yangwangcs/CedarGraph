@@ -9,6 +9,7 @@
 #include <mutex>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <thread>
 #include <grpcpp/grpcpp.h>
 #include "meta_service.grpc.pb.h"
@@ -40,13 +41,21 @@ class GraphDLoadBalancer {
     Strategy strategy = Strategy::ROUND_ROBIN;
     int refresh_interval_seconds = 10;
     int connection_timeout_ms = 5000;
+    bool enable_tls = false;
+    bool mtls_enabled = false;
+    std::string ca_cert_path;
+    std::string client_cert_path;
+    std::string client_key_path;
   };
 
   explicit GraphDLoadBalancer(const Config& config);
-  ~GraphDLoadBalancer() = default;
+  ~GraphDLoadBalancer();
 
   // Initialize and start refreshing node list
   bool Initialize();
+
+  // Stop background refresh, if running.
+  void Stop();
 
   // Select a GraphD node based on load balancing strategy
   GraphDNode SelectNode();
@@ -67,9 +76,9 @@ class GraphDLoadBalancer {
   size_t GetNodeCount() const;
 
  private:
-  GraphDNode SelectRoundRobin();
-  GraphDNode SelectLeastConnections();
-  GraphDNode SelectRandom();
+  GraphDNode SelectRoundRobin(const std::vector<size_t>& candidate_indexes);
+  GraphDNode SelectLeastConnections(const std::vector<size_t>& candidate_indexes);
+  GraphDNode SelectRandom(const std::vector<size_t>& candidate_indexes);
 
   Config config_;
   std::vector<GraphDNode> nodes_;
@@ -78,6 +87,8 @@ class GraphDLoadBalancer {
   std::unique_ptr<cedar::meta::MetaService::Stub> stub_;
   std::unique_ptr<std::thread> refresh_thread_;
   std::atomic<bool> running_{false};
+  std::condition_variable refresh_cv_;
+  std::mutex refresh_cv_mutex_;
   
   // Failover tracking
   struct FailedNode {

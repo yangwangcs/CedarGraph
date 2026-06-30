@@ -119,7 +119,7 @@ class ColumnGroupTaskQueue {
   ~ColumnGroupTaskQueue();
   
   // 添加任务
-  void Push(PrioritizedCompactionTask task);
+  bool Push(PrioritizedCompactionTask task);
   
   // 获取任务（阻塞）
   bool Pop(PrioritizedCompactionTask* out_task, std::chrono::milliseconds timeout);
@@ -130,6 +130,8 @@ class ColumnGroupTaskQueue {
   // 标记列忙/闲
   void MarkColumnBusy(const std::string& column_key, bool busy);
   bool IsColumnBusy(const std::string& column_key) const;
+  bool WaitForColumnAvailable(const std::string& column_key,
+                              std::chrono::milliseconds timeout);
   
   // 获取队列大小
   size_t Size() const;
@@ -175,7 +177,7 @@ class ThreadPoolCompactionExecutor {
   size_t PendingTasks() const;
 
   // 提交带优先级的任务
-  void Push(PrioritizedCompactionTask task);
+  bool Push(PrioritizedCompactionTask task);
 
  private:
   void WorkerThread();
@@ -187,7 +189,10 @@ class ThreadPoolCompactionExecutor {
   std::vector<std::thread> workers_;
   std::atomic<bool> shutdown_{false};
   std::atomic<int> active_tasks_{0};
+  std::atomic<int> outstanding_tasks_{0};
   std::atomic<uint64_t> task_counter_{0};
+  mutable std::mutex completion_mutex_;
+  std::condition_variable completion_cv_;
 };
 
 // =============================================================================

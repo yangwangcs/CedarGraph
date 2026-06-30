@@ -5,9 +5,12 @@
 #include "cedar/client/docker_manager.h"
 
 #include <array>
+#include <cctype>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <sys/wait.h>
 
 namespace cedar {
 namespace client {
@@ -27,7 +30,7 @@ bool DockerComposeManager::Up(bool detach) {
     return false;
   }
 
-  std::string command = "docker-compose -f " + compose_file_ + " up";
+  std::string command = ComposeBaseCommand() + " up";
   if (detach) {
     command += " -d";
   }
@@ -41,7 +44,7 @@ bool DockerComposeManager::Down() {
     return false;
   }
 
-  std::string command = "docker-compose -f " + compose_file_ + " down";
+  std::string command = ComposeBaseCommand() + " down";
   std::string output = ExecuteComposeCommand(command);
   return output.find("Error") == std::string::npos;
 }
@@ -51,7 +54,7 @@ bool DockerComposeManager::Restart() {
     return false;
   }
 
-  std::string command = "docker-compose -f " + compose_file_ + " restart";
+  std::string command = ComposeBaseCommand() + " restart";
   std::string output = ExecuteComposeCommand(command);
   return output.find("Error") == std::string::npos;
 }
@@ -60,8 +63,11 @@ bool DockerComposeManager::StartService(const std::string& service) {
   if (!initialized_) {
     return false;
   }
+  if (!IsValidServiceName(service)) {
+    return false;
+  }
 
-  std::string command = "docker-compose -f " + compose_file_ + " start " + service;
+  std::string command = ComposeBaseCommand() + " start " + service;
   std::string output = ExecuteComposeCommand(command);
   return output.find("Error") == std::string::npos;
 }
@@ -70,8 +76,11 @@ bool DockerComposeManager::StopService(const std::string& service) {
   if (!initialized_) {
     return false;
   }
+  if (!IsValidServiceName(service)) {
+    return false;
+  }
 
-  std::string command = "docker-compose -f " + compose_file_ + " stop " + service;
+  std::string command = ComposeBaseCommand() + " stop " + service;
   std::string output = ExecuteComposeCommand(command);
   return output.find("Error") == std::string::npos;
 }
@@ -80,8 +89,11 @@ bool DockerComposeManager::RestartService(const std::string& service) {
   if (!initialized_) {
     return false;
   }
+  if (!IsValidServiceName(service)) {
+    return false;
+  }
 
-  std::string command = "docker-compose -f " + compose_file_ + " restart " + service;
+  std::string command = ComposeBaseCommand() + " restart " + service;
   std::string output = ExecuteComposeCommand(command);
   return output.find("Error") == std::string::npos;
 }
@@ -90,8 +102,11 @@ bool DockerComposeManager::Scale(const std::string& service, int replicas) {
   if (!initialized_) {
     return false;
   }
+  if (!IsValidServiceName(service) || replicas < 0) {
+    return false;
+  }
 
-  std::string command = "docker-compose -f " + compose_file_ + 
+  std::string command = ComposeBaseCommand() +
                         " up -d --scale " + service + "=" + std::to_string(replicas);
   std::string output = ExecuteComposeCommand(command);
   return output.find("Error") == std::string::npos;
@@ -102,12 +117,16 @@ std::vector<ContainerStatus> DockerComposeManager::Ps() {
     return {};
   }
 
-  std::string command = "docker-compose -f " + compose_file_ + " ps";
+  std::string command = ComposeBaseCommand() + " ps";
   std::string output = ExecuteComposeCommand(command);
   return ParsePsOutput(output);
 }
 
 bool DockerComposeManager::IsServiceRunning(const std::string& service) {
+  if (!IsValidServiceName(service)) {
+    return false;
+  }
+
   auto containers = Ps();
 
   for (const auto& container : containers) {
@@ -122,6 +141,10 @@ bool DockerComposeManager::IsServiceRunning(const std::string& service) {
 }
 
 int DockerComposeManager::GetServiceReplicas(const std::string& service) {
+  if (!IsValidServiceName(service)) {
+    return 0;
+  }
+
   auto containers = Ps();
 
   int count = 0;
@@ -138,8 +161,11 @@ std::string DockerComposeManager::Logs(const std::string& service, int lines) {
   if (!initialized_) {
     return "";
   }
+  if (!IsValidServiceName(service) || lines < 0) {
+    return "";
+  }
 
-  std::string command = "docker-compose -f " + compose_file_ + 
+  std::string command = ComposeBaseCommand() +
                         " logs --tail=" + std::to_string(lines) + " " + service;
   return ExecuteComposeCommand(command);
 }
@@ -148,8 +174,11 @@ std::string DockerComposeManager::LogsAll(int lines) {
   if (!initialized_) {
     return "";
   }
+  if (lines < 0) {
+    return "";
+  }
 
-  std::string command = "docker-compose -f " + compose_file_ + 
+  std::string command = ComposeBaseCommand() +
                         " logs --tail=" + std::to_string(lines);
   return ExecuteComposeCommand(command);
 }
@@ -159,7 +188,7 @@ bool DockerComposeManager::Pull() {
     return false;
   }
 
-  std::string command = "docker-compose -f " + compose_file_ + " pull";
+  std::string command = ComposeBaseCommand() + " pull";
   std::string output = ExecuteComposeCommand(command);
   return output.find("Error") == std::string::npos;
 }
@@ -169,7 +198,7 @@ bool DockerComposeManager::Build() {
     return false;
   }
 
-  std::string command = "docker-compose -f " + compose_file_ + " build";
+  std::string command = ComposeBaseCommand() + " build";
   std::string output = ExecuteComposeCommand(command);
   return output.find("Error") == std::string::npos;
 }
@@ -178,8 +207,11 @@ std::string DockerComposeManager::Exec(const std::string& service, const std::st
   if (!initialized_) {
     return "";
   }
+  if (!IsValidServiceName(service) || command.empty()) {
+    return "";
+  }
 
-  std::string full_command = "docker-compose -f " + compose_file_ + 
+  std::string full_command = ComposeBaseCommand() +
                              " exec " + service + " " + command;
   return ExecuteComposeCommand(full_command);
 }
@@ -188,18 +220,68 @@ std::string DockerComposeManager::Exec(const std::string& service, const std::st
 // Private methods
 // ============================================================================
 
+bool DockerComposeManager::IsValidServiceName(const std::string& service) const {
+  if (service.empty()) {
+    return false;
+  }
+  for (unsigned char c : service) {
+    if (!std::isalnum(c) && c != '_' && c != '-' && c != '.') {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string DockerComposeManager::ShellQuote(const std::string& arg) const {
+  std::string quoted = "'";
+  for (char c : arg) {
+    if (c == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += c;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+std::string DockerComposeManager::ComposeBaseCommand() const {
+  return "docker-compose -f " + ShellQuote(compose_file_);
+}
+
 std::string DockerComposeManager::ExecuteComposeCommand(const std::string& command) {
   std::array<char, 128> buffer;
   std::string result;
 
-  std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+  std::string redirected_command = command + " 2>&1";
+  FILE* pipe = popen(redirected_command.c_str(), "r");
 
   if (!pipe) {
     return "Error: Failed to execute command";
   }
 
-  while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+  while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
     result += buffer.data();
+  }
+
+  int exit_status = pclose(pipe);
+  if (exit_status == -1) {
+    if (!result.empty() && result.back() != '\n') {
+      result += '\n';
+    }
+    result += "Error: Failed to close command pipe";
+  } else if (WIFEXITED(exit_status) && WEXITSTATUS(exit_status) != 0) {
+    if (!result.empty() && result.back() != '\n') {
+      result += '\n';
+    }
+    result += "Error: command exited with status " +
+              std::to_string(WEXITSTATUS(exit_status));
+  } else if (WIFSIGNALED(exit_status)) {
+    if (!result.empty() && result.back() != '\n') {
+      result += '\n';
+    }
+    result += "Error: command terminated by signal " +
+              std::to_string(WTERMSIG(exit_status));
   }
 
   return result;

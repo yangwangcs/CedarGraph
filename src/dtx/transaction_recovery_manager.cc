@@ -315,7 +315,11 @@ void TransactionRecoveryManager::RecoveryLoop() {
               std::lock_guard<std::mutex> relock(mutex_);
               recovery_queue_.push(txn_id);
             }
-            std::this_thread::sleep_for(backoff);
+            {
+              std::unique_lock<std::mutex> relock(mutex_);
+              cv_.wait_for(relock, backoff, [this] { return !running_.load(); });
+            }
+            if (!running_) break;
             cv_.notify_one();
           }
         } else {

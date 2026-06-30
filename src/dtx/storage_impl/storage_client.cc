@@ -47,9 +47,14 @@ Status StorageClient::Initialize(const ClientConfig& config) {
   
   config_ = config;
   
-  // Initialize gRPC channel and stub
-  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
-  if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  // Initialize gRPC channel and stub. Prefer the explicit client config, but
+  // honor the process-wide development override used by Docker/Compose.
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::EnvAllowsInsecure()
+      ? cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict()
+      : cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
+  if (!creds.ok() && cedar::dtx::raft::TlsCredentialFactory::EnvTlsEnabled()) {
+    creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+  }
   if (!creds.ok()) {
     return Status::IOError("Failed to create client TLS credentials: " + creds.status().ToString());
   }
@@ -113,6 +118,7 @@ void StorageClient::Shutdown() {
   
   shutdown_ = true;
   connected_ = false;
+  retry_shutdown_cv_.notify_all();
   
   // Clean up gRPC resources
   stub_.reset();
@@ -142,7 +148,7 @@ Status StorageClient::Put(const CedarKey& key, const Descriptor& descriptor,
     pb_key->set_partition_id(key.part_id());
 
     uint64_t raw_value = descriptor.AsRaw();
-    request.mutable_descriptor_()->set_data(
+    request.mutable_value_descriptor()->set_data(
         reinterpret_cast<const char*>(&raw_value), sizeof(raw_value));
 
     request.mutable_txn_version()->set_value(static_cast<uint64_t>(txn_version));
@@ -213,7 +219,7 @@ StatusOr<Descriptor> StorageClient::Get(const CedarKey& key, Timestamp read_time
       return Status::NotFound("Key not found");
     }
     
-    const std::string& data = response.descriptor_().data();
+    const std::string& data = response.value_descriptor().data();
     if (data.size() >= sizeof(uint64_t)) {
       uint64_t raw_value;
       std::memcpy(&raw_value, data.data(), sizeof(uint64_t));
@@ -327,7 +333,7 @@ Status StorageClient::ScanNodeV2(uint64_t node_id, Timestamp start_time, Timesta
 
     results->clear();
     for (const auto& item : response.items()) {
-      const std::string& data = item.descriptor_().data();
+      const std::string& data = item.value_descriptor().data();
       Descriptor desc;
       if (data.size() >= sizeof(uint64_t)) {
         uint64_t raw_value;
@@ -380,7 +386,7 @@ Status StorageClient::ScanEdgeV2(uint64_t node_id, uint16_t edge_type,
     for (const auto& item : response.items()) {
       EdgeScanEntry entry;
       entry.timestamp = Timestamp(item.timestamp());
-      const std::string& data = item.descriptor_().data();
+      const std::string& data = item.value_descriptor().data();
       if (data.size() >= sizeof(uint64_t)) {
         uint64_t raw_value;
         std::memcpy(&raw_value, data.data(), sizeof(uint64_t));
@@ -646,8 +652,12 @@ Status StorageClient::ConnectToLeader(const std::string& leader_address) {
     return Status::OK();
   }
   std::unique_lock<std::shared_mutex> lock(stub_mutex_);
-  auto creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
-  if (!creds.ok()) creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnv();
+  auto creds = cedar::dtx::raft::TlsCredentialFactory::EnvAllowsInsecure()
+      ? cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict()
+      : cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentials(config_.tls);
+  if (!creds.ok() && cedar::dtx::raft::TlsCredentialFactory::EnvTlsEnabled()) {
+    creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+  }
   if (!creds.ok()) {
     return Status::IOError("Failed to create TLS credentials for leader switch");
   }
@@ -802,7 +812,11 @@ Status StorageClient::RetryWithBackoff(std::function<Status()> operation,
         return Status::IOError("Operation aborted: client shutting down");
       }
 
-      std::this_thread::sleep_for(delay);
+      std::unique_lock<std::mutex> lock(retry_shutdown_mutex_);
+      if (retry_shutdown_cv_.wait_for(
+              lock, delay, [this]() { return shutdown_.load(); })) {
+        return Status::IOError("Operation aborted: client shutting down");
+      }
     }
   }
 
@@ -827,7 +841,12 @@ Status StorageClientPool::Initialize(const PoolConfig& config) {
   cleanup_thread_ = std::thread([this]() {
     try {
       while (!shutdown_.load()) {
-        std::this_thread::sleep_for(config_.idle_timeout / 2);
+        std::unique_lock<std::mutex> lock(cleanup_mutex_);
+        cleanup_cv_.wait_for(lock, config_.idle_timeout / 2,
+                             [this]() { return shutdown_.load(); });
+        if (shutdown_.load()) {
+          break;
+        }
         EvictIdleConnections();
       }
     } catch (const std::exception& e) {
@@ -842,6 +861,7 @@ void StorageClientPool::Shutdown() {
   if (shutdown_.exchange(true)) {
     return;
   }
+  cleanup_cv_.notify_all();
   
   // Wait for cleanup thread
   if (cleanup_thread_.joinable()) {

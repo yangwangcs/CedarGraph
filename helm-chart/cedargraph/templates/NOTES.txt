@@ -17,19 +17,41 @@ Installed components:
 {{- end }}
 
 Services:
-  - MetaD: {{ include "cedargraph.fullname" . }}-metad:{{ .Values.metad.service.port }}
-  - StorageD: {{ include "cedargraph.fullname" . }}-storaged:{{ .Values.storaged.service.port }}
+  - MetaD Raft: {{ include "cedargraph.fullname" . }}-metad:{{ .Values.metad.service.port }}
+  - MetaD gRPC: {{ include "cedargraph.fullname" . }}-metad:{{ .Values.metad.service.grpcPort }}
+  - StorageD: {{ include "cedargraph.fullname" . }}-storaged:{{ .Values.storaged.service.ports.grpc }}
+  - StorageD Health: {{ include "cedargraph.fullname" . }}-storaged:{{ .Values.storaged.service.ports.health }}
+  - StorageD Metrics: {{ include "cedargraph.fullname" . }}-storaged:{{ .Values.storaged.service.ports.metrics }}
   - GraphD Query: {{ include "cedargraph.fullname" . }}-graphd:{{ .Values.graphd.service.ports.query }}
-  - GraphD HTTP: {{ include "cedargraph.fullname" . }}-graphd:{{ .Values.graphd.service.ports.http }}
+  - GraphD Health: {{ include "cedargraph.fullname" . }}-graphd:{{ .Values.graphd.service.ports.health }}
+  - GraphD Metrics: {{ include "cedargraph.fullname" . }}-graphd:{{ .Values.graphd.service.ports.metrics }}
+
+Required GraphD secrets:
+  - Auth: {{ .Values.graphd.auth.existingSecret }}
+  - TLS: {{ .Values.graphd.tls.existingSecret }}
+
+Create them before install/upgrade if they do not already exist:
+  kubectl create secret generic {{ .Values.graphd.auth.existingSecret }} \
+    --from-literal=jwt-secret='replace-with-at-least-32-bytes-secret' \
+    --from-literal=user='admin' \
+    --from-literal=password='replace-with-strong-password' \
+    --from-literal=role='admin'
+
+  kubectl create secret generic {{ .Values.graphd.tls.existingSecret }} \
+    --from-file=tls.crt=/path/to/tls.crt \
+    --from-file=tls.key=/path/to/tls.key \
+    --from-file=ca.crt=/path/to/ca.crt \
+    --from-file=client.crt=/path/to/client.crt \
+    --from-file=client.key=/path/to/client.key
 
 {{- if .Values.global.monitoring.enabled }}
 Monitoring:
-  - Metrics are exposed on port 9090 (StorageD)
+  - StorageD metrics are exposed on port 7001
 {{- else }}
 Monitoring is disabled. Enable with --set global.monitoring.enabled=true
 {{- end }}
 
-{{- if .Values.autoscaling.graphd.enabled }}
+{{- if and .Values.autoscaling.enabled .Values.autoscaling.graphd.enabled }}
 Auto-scaling:
   - GraphD HPA is enabled ({{ .Values.autoscaling.graphd.minReplicas }}-{{ .Values.autoscaling.graphd.maxReplicas }} replicas)
 {{- end }}

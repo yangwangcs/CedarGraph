@@ -5,12 +5,14 @@
 #include "cedar/client/cluster_manager.h"
 
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <iostream>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <sys/wait.h>
 
 namespace cedar {
 namespace client {
@@ -29,19 +31,22 @@ bool ClusterManager::Initialize(const ClusterConfig& config) {
 }
 
 bool ClusterManager::StartCluster() {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (!initialized_) {
-    return false;
+  ClusterConfig config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return false;
+    }
+    config = config_;
   }
 
   AddEvent("cluster", "Normal", "Starting", "Starting CedarGraph cluster");
 
-  switch (config_.mode) {
+  switch (config.mode) {
     case DeploymentMode::DOCKER_COMPOSE:
-      return StartDockerCompose();
+      return StartDockerCompose(config);
     case DeploymentMode::KUBERNETES:
-      return StartKubernetes();
+      return StartKubernetes(config);
     case DeploymentMode::LOCAL:
       // Local mode - not implemented yet
       return false;
@@ -51,19 +56,22 @@ bool ClusterManager::StartCluster() {
 }
 
 bool ClusterManager::StopCluster() {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (!initialized_) {
-    return false;
+  ClusterConfig config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return false;
+    }
+    config = config_;
   }
 
   AddEvent("cluster", "Normal", "Stopping", "Stopping CedarGraph cluster");
 
-  switch (config_.mode) {
+  switch (config.mode) {
     case DeploymentMode::DOCKER_COMPOSE:
-      return StopDockerCompose();
+      return StopDockerCompose(config);
     case DeploymentMode::KUBERNETES:
-      return StopKubernetes();
+      return StopKubernetes(config);
     case DeploymentMode::LOCAL:
       return false;
     default:
@@ -79,17 +87,23 @@ bool ClusterManager::RestartCluster() {
 }
 
 bool ClusterManager::StartComponent(const std::string& component) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (!initialized_) {
-    return false;
+  ClusterConfig config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return false;
+    }
+    config = config_;
   }
 
   AddEvent(component, "Normal", "Starting", "Starting " + component);
 
-  if (config_.mode == DeploymentMode::DOCKER_COMPOSE) {
-    std::string command = "docker-compose -f " + config_.config_file_path + 
-                          " start " + component;
+  if (config.mode == DeploymentMode::DOCKER_COMPOSE) {
+    if (!IsValidComponentName(component)) {
+      AddEvent(component, "Warning", "InvalidComponent", "Invalid component name");
+      return false;
+    }
+    std::string command = ComposeBaseCommand(config) + " start " + component;
     std::string output = ExecuteCommand(command);
     return output.find("Error") == std::string::npos;
   }
@@ -98,17 +112,23 @@ bool ClusterManager::StartComponent(const std::string& component) {
 }
 
 bool ClusterManager::StopComponent(const std::string& component) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (!initialized_) {
-    return false;
+  ClusterConfig config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return false;
+    }
+    config = config_;
   }
 
   AddEvent(component, "Normal", "Stopping", "Stopping " + component);
 
-  if (config_.mode == DeploymentMode::DOCKER_COMPOSE) {
-    std::string command = "docker-compose -f " + config_.config_file_path + 
-                          " stop " + component;
+  if (config.mode == DeploymentMode::DOCKER_COMPOSE) {
+    if (!IsValidComponentName(component)) {
+      AddEvent(component, "Warning", "InvalidComponent", "Invalid component name");
+      return false;
+    }
+    std::string command = ComposeBaseCommand(config) + " stop " + component;
     std::string output = ExecuteCommand(command);
     return output.find("Error") == std::string::npos;
   }
@@ -117,17 +137,23 @@ bool ClusterManager::StopComponent(const std::string& component) {
 }
 
 bool ClusterManager::RestartComponent(const std::string& component) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (!initialized_) {
-    return false;
+  ClusterConfig config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return false;
+    }
+    config = config_;
   }
 
   AddEvent(component, "Normal", "Restarting", "Restarting " + component);
 
-  if (config_.mode == DeploymentMode::DOCKER_COMPOSE) {
-    std::string command = "docker-compose -f " + config_.config_file_path + 
-                          " restart " + component;
+  if (config.mode == DeploymentMode::DOCKER_COMPOSE) {
+    if (!IsValidComponentName(component)) {
+      AddEvent(component, "Warning", "InvalidComponent", "Invalid component name");
+      return false;
+    }
+    std::string command = ComposeBaseCommand(config) + " restart " + component;
     std::string output = ExecuteCommand(command);
     return output.find("Error") == std::string::npos;
   }
@@ -136,18 +162,21 @@ bool ClusterManager::RestartComponent(const std::string& component) {
 }
 
 ClusterStatusInfo ClusterManager::GetClusterStatus() {
-  std::lock_guard<std::mutex> lock(mutex_);
-
   ClusterStatusInfo info;
   info.status = ClusterStatus::UNKNOWN;
 
-  if (!initialized_) {
-    return info;
+  ClusterConfig config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return info;
+    }
+    config = config_;
   }
 
-  if (config_.mode == DeploymentMode::DOCKER_COMPOSE) {
+  if (config.mode == DeploymentMode::DOCKER_COMPOSE) {
     // Get docker-compose ps output
-    std::string command = "docker-compose -f " + config_.config_file_path + " ps";
+    std::string command = ComposeBaseCommand(config) + " ps";
     std::string output = ExecuteCommand(command);
 
     // Parse output
@@ -193,16 +222,19 @@ ClusterStatusInfo ClusterManager::GetClusterStatus() {
 }
 
 std::vector<NodeInfo> ClusterManager::GetNodes() {
-  std::lock_guard<std::mutex> lock(mutex_);
-
   std::vector<NodeInfo> nodes;
 
-  if (!initialized_) {
-    return nodes;
+  ClusterConfig config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return nodes;
+    }
+    config = config_;
   }
 
-  if (config_.mode == DeploymentMode::DOCKER_COMPOSE) {
-    std::string command = "docker-compose -f " + config_.config_file_path + " ps";
+  if (config.mode == DeploymentMode::DOCKER_COMPOSE) {
+    std::string command = ComposeBaseCommand(config) + " ps";
     std::string output = ExecuteCommand(command);
 
     auto containers = ParseDockerPs(output);
@@ -252,17 +284,24 @@ std::vector<NodeInfo> ClusterManager::GetNodesByRole(NodeRole role) {
 }
 
 bool ClusterManager::ScaleComponent(const std::string& component, int replicas) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (!initialized_) {
-    return false;
+  ClusterConfig config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return false;
+    }
+    config = config_;
   }
 
   AddEvent(component, "Normal", "Scaling", 
            "Scaling " + component + " to " + std::to_string(replicas) + " replicas");
 
-  if (config_.mode == DeploymentMode::DOCKER_COMPOSE) {
-    std::string command = "docker-compose -f " + config_.config_file_path + 
+  if (config.mode == DeploymentMode::DOCKER_COMPOSE) {
+    if (!IsValidComponentName(component) || replicas < 0) {
+      AddEvent(component, "Warning", "InvalidScaleRequest", "Invalid scale request");
+      return false;
+    }
+    std::string command = ComposeBaseCommand(config) +
                           " up -d --scale " + component + "=" + std::to_string(replicas);
     std::string output = ExecuteCommand(command);
     return output.find("Error") == std::string::npos;
@@ -312,14 +351,20 @@ bool ClusterManager::ScaleDown(const std::string& component) {
 }
 
 std::string ClusterManager::GetLogs(const std::string& component, int lines) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (!initialized_) {
-    return "";
+  ClusterConfig config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return "";
+    }
+    config = config_;
   }
 
-  if (config_.mode == DeploymentMode::DOCKER_COMPOSE) {
-    std::string command = "docker-compose -f " + config_.config_file_path + 
+  if (config.mode == DeploymentMode::DOCKER_COMPOSE) {
+    if (!IsValidComponentName(component) || lines < 0) {
+      return "";
+    }
+    std::string command = ComposeBaseCommand(config) +
                           " logs --tail=" + std::to_string(lines) + " " + component;
     return ExecuteCommand(command);
   }
@@ -328,13 +373,19 @@ std::string ClusterManager::GetLogs(const std::string& component, int lines) {
 }
 
 std::string ClusterManager::GetNodeLogs(const std::string& node_id, int lines) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (!initialized_) {
-    return "";
+  ClusterConfig config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return "";
+    }
+    config = config_;
   }
 
-  if (config_.mode == DeploymentMode::DOCKER_COMPOSE) {
+  if (config.mode == DeploymentMode::DOCKER_COMPOSE) {
+    if (!IsValidResourceName(node_id) || lines < 0) {
+      return "";
+    }
     std::string command = "docker logs --tail=" + std::to_string(lines) + " " + node_id;
     return ExecuteCommand(command);
   }
@@ -344,6 +395,10 @@ std::string ClusterManager::GetNodeLogs(const std::string& node_id, int lines) {
 
 std::vector<ClusterEvent> ClusterManager::GetEvents(int limit) {
   std::lock_guard<std::mutex> lock(mutex_);
+
+  if (limit <= 0) {
+    return {};
+  }
 
   if (events_.size() > limit) {
     return std::vector<ClusterEvent>(events_.end() - limit, events_.end());
@@ -391,8 +446,8 @@ void ClusterManager::UpdateConfig(const ClusterConfig& config) {
 // Internal methods
 // ============================================================================
 
-bool ClusterManager::StartDockerCompose() {
-  std::string command = "docker-compose -f " + config_.config_file_path + " up -d";
+bool ClusterManager::StartDockerCompose(const ClusterConfig& config) {
+  std::string command = ComposeBaseCommand(config) + " up -d";
   std::string output = ExecuteCommand(command);
 
   if (output.find("Error") != std::string::npos) {
@@ -404,8 +459,8 @@ bool ClusterManager::StartDockerCompose() {
   return true;
 }
 
-bool ClusterManager::StopDockerCompose() {
-  std::string command = "docker-compose -f " + config_.config_file_path + " down";
+bool ClusterManager::StopDockerCompose(const ClusterConfig& config) {
+  std::string command = ComposeBaseCommand(config) + " down";
   std::string output = ExecuteCommand(command);
 
   if (output.find("Error") != std::string::npos) {
@@ -417,8 +472,8 @@ bool ClusterManager::StopDockerCompose() {
   return true;
 }
 
-bool ClusterManager::StartKubernetes() {
-  std::string command = "kubectl apply -f " + config_.config_file_path;
+bool ClusterManager::StartKubernetes(const ClusterConfig& config) {
+  std::string command = "kubectl apply -f " + ShellQuote(config.config_file_path);
   std::string output = ExecuteCommand(command);
 
   if (output.find("Error") != std::string::npos) {
@@ -430,8 +485,8 @@ bool ClusterManager::StartKubernetes() {
   return true;
 }
 
-bool ClusterManager::StopKubernetes() {
-  std::string command = "kubectl delete -f " + config_.config_file_path;
+bool ClusterManager::StopKubernetes(const ClusterConfig& config) {
+  std::string command = "kubectl delete -f " + ShellQuote(config.config_file_path);
   std::string output = ExecuteCommand(command);
 
   if (output.find("Error") != std::string::npos) {
@@ -535,26 +590,98 @@ void ClusterManager::AddEvent(const std::string& component, const std::string& t
   event.reason = reason;
   event.message = message;
 
-  events_.push_back(event);
-
-  // Call callback if set
-  if (event_callback_) {
-    event_callback_(event);
+  ClusterEventCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    events_.push_back(event);
+    callback = event_callback_;
   }
+
+  if (callback) {
+    try {
+      callback(event);
+    } catch (const std::exception& e) {
+      std::cerr << "Cluster event callback exception: " << e.what()
+                << std::endl;
+    } catch (...) {
+      std::cerr << "Cluster event callback unknown exception" << std::endl;
+    }
+  }
+}
+
+bool ClusterManager::IsValidComponentName(const std::string& component) const {
+  if (component.empty()) {
+    return false;
+  }
+  if (component != "metad" && component != "storaged" &&
+      component != "graphd" && component != "queryd") {
+    return false;
+  }
+  return IsValidResourceName(component);
+}
+
+bool ClusterManager::IsValidResourceName(const std::string& name) const {
+  if (name.empty()) {
+    return false;
+  }
+  for (unsigned char c : name) {
+    if (!std::isalnum(c) && c != '_' && c != '-' && c != '.') {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string ClusterManager::ShellQuote(const std::string& arg) const {
+  std::string quoted = "'";
+  for (char c : arg) {
+    if (c == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += c;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+std::string ClusterManager::ComposeBaseCommand(const ClusterConfig& config) const {
+  return "docker-compose -f " + ShellQuote(config.config_file_path);
 }
 
 std::string ClusterManager::ExecuteCommand(const std::string& command) {
   std::array<char, 128> buffer;
   std::string result;
 
-  std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+  std::string redirected_command = command + " 2>&1";
+  FILE* pipe = popen(redirected_command.c_str(), "r");
 
   if (!pipe) {
     return "Error: Failed to execute command";
   }
 
-  while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+  while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
     result += buffer.data();
+  }
+
+  int exit_status = pclose(pipe);
+  if (exit_status == -1) {
+    if (!result.empty() && result.back() != '\n') {
+      result += '\n';
+    }
+    result += "Error: Failed to close command pipe";
+  } else if (WIFEXITED(exit_status) && WEXITSTATUS(exit_status) != 0) {
+    if (!result.empty() && result.back() != '\n') {
+      result += '\n';
+    }
+    result += "Error: command exited with status " +
+              std::to_string(WEXITSTATUS(exit_status));
+  } else if (WIFSIGNALED(exit_status)) {
+    if (!result.empty() && result.back() != '\n') {
+      result += '\n';
+    }
+    result += "Error: command terminated by signal " +
+              std::to_string(WTERMSIG(exit_status));
   }
 
   return result;

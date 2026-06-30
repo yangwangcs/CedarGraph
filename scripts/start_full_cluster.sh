@@ -37,8 +37,8 @@ print_error() {
 
 # Check if binaries exist
 if [ ! -f build/cedar-metad ]; then
-    print_info "Building metad_server..."
-    cd build && make metad_server -j4
+    print_info "Building cedar-metad..."
+    cd build && make metad -j4
     cd ..
 fi
 
@@ -113,21 +113,21 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 # Start MetaD Node 1
-print_info "Starting MetaD Node 1 on 127.0.0.1:6001..."
+print_info "Starting MetaD Node 1 on Raft 127.0.0.1:6001 / gRPC 127.0.0.1:6101..."
 ./build/cedar-metad --config scripts/cluster_node1.conf > /tmp/cedar/cluster/metad_node1.log 2>&1 &
 METAD1_PID=$!
 METAD_PIDS="$METAD_PIDS $METAD1_PID"
 sleep 2
 
 # Start MetaD Node 2
-print_info "Starting MetaD Node 2 on 127.0.0.1:6002..."
+print_info "Starting MetaD Node 2 on Raft 127.0.0.1:6002 / gRPC 127.0.0.1:6102..."
 ./build/cedar-metad --config scripts/cluster_node2.conf > /tmp/cedar/cluster/metad_node2.log 2>&1 &
 METAD2_PID=$!
 METAD_PIDS="$METAD_PIDS $METAD2_PID"
 sleep 1
 
 # Start MetaD Node 3
-print_info "Starting MetaD Node 3 on 127.0.0.1:6003..."
+print_info "Starting MetaD Node 3 on Raft 127.0.0.1:6003 / gRPC 127.0.0.1:6103..."
 ./build/cedar-metad --config scripts/cluster_node3.conf > /tmp/cedar/cluster/metad_node3.log 2>&1 &
 METAD3_PID=$!
 METAD_PIDS="$METAD_PIDS $METAD3_PID"
@@ -161,30 +161,42 @@ echo ""
 
 # Create StorageD configs
 cat > /tmp/cedar/cluster/storage_node1.conf <<EOF
-node_id = 1
-bind_address = 127.0.0.1:7001
-data_dir = /tmp/cedar/cluster/storage/node1
-metad_endpoints = 1:127.0.0.1:6001,2:127.0.0.1:6002,3:127.0.0.1:6003
-io_threads = 4
-worker_threads = 8
+storaged:
+  node_id: 1
+  bind_address: "127.0.0.1"
+  advertise_address: "127.0.0.1"
+  port: 7001
+  data_dir: "/tmp/cedar/cluster/storage/node1"
+  meta_server: "127.0.0.1:6101,127.0.0.1:6102,127.0.0.1:6103"
+
+tls:
+  enabled: false
 EOF
 
 cat > /tmp/cedar/cluster/storage_node2.conf <<EOF
-node_id = 2
-bind_address = 127.0.0.1:7002
-data_dir = /tmp/cedar/cluster/storage/node2
-metad_endpoints = 1:127.0.0.1:6001,2:127.0.0.1:6002,3:127.0.0.1:6003
-io_threads = 4
-worker_threads = 8
+storaged:
+  node_id: 2
+  bind_address: "127.0.0.1"
+  advertise_address: "127.0.0.1"
+  port: 7002
+  data_dir: "/tmp/cedar/cluster/storage/node2"
+  meta_server: "127.0.0.1:6101,127.0.0.1:6102,127.0.0.1:6103"
+
+tls:
+  enabled: false
 EOF
 
 cat > /tmp/cedar/cluster/storage_node3.conf <<EOF
-node_id = 3
-bind_address = 127.0.0.1:7003
-data_dir = /tmp/cedar/cluster/storage/node3
-metad_endpoints = 1:127.0.0.1:6001,2:127.0.0.1:6002,3:127.0.0.1:6003
-io_threads = 4
-worker_threads = 8
+storaged:
+  node_id: 3
+  bind_address: "127.0.0.1"
+  advertise_address: "127.0.0.1"
+  port: 7003
+  data_dir: "/tmp/cedar/cluster/storage/node3"
+  meta_server: "127.0.0.1:6101,127.0.0.1:6102,127.0.0.1:6103"
+
+tls:
+  enabled: false
 EOF
 
 # Start StorageD Node 1
@@ -233,9 +245,9 @@ echo "  Cluster Startup Complete!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "  MetaD Endpoints:"
-echo "    - Node 1: 127.0.0.1:6001"
-echo "    - Node 2: 127.0.0.1:6002"
-echo "    - Node 3: 127.0.0.1:6003"
+echo "    - Node 1: Raft 127.0.0.1:6001 / gRPC 127.0.0.1:6101"
+echo "    - Node 2: Raft 127.0.0.1:6002 / gRPC 127.0.0.1:6102"
+echo "    - Node 3: Raft 127.0.0.1:6003 / gRPC 127.0.0.1:6103"
 echo ""
 echo "  StorageD Endpoints:"
 echo "    - Node 1: 127.0.0.1:7001"

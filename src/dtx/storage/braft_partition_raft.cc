@@ -23,7 +23,9 @@
 
 #include <cstring>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
+#include <mutex>
 
 DEFINE_int64(raft_propose_timeout_ms, 5000, "Raft proposal timeout");
 
@@ -799,7 +801,8 @@ class BraftPartitionNode::Impl {
       }
     }
     // Stop lease renewal thread
-    shutdown_lease_thread_ = true;
+    shutdown_lease_thread_.store(true);
+    lease_shutdown_cv_.notify_all();
     if (lease_renewal_thread_.joinable()) {
       lease_renewal_thread_.join();
     }
@@ -861,7 +864,12 @@ class BraftPartitionNode::Impl {
 
   void RenewLeaseLoop() {
     while (!shutdown_lease_thread_.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(election_timeout_ms_) / 2);
+      {
+        std::unique_lock<std::mutex> lock(lease_shutdown_mutex_);
+        lease_shutdown_cv_.wait_for(
+            lock, std::chrono::milliseconds(election_timeout_ms_) / 2,
+            [this]() { return shutdown_lease_thread_.load(); });
+      }
       if (shutdown_lease_thread_.load()) break;
 
       try {
@@ -968,8 +976,14 @@ class BraftPartitionNode::Impl {
           return Status::OK();
         }
       }
-      // Sleep outside lock so Propose/IsLeader/Shutdown are not blocked
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      // Wait outside node_mutex_ so Propose/IsLeader/Shutdown are not blocked.
+      std::unique_lock<std::mutex> wait_lock(lease_shutdown_mutex_);
+      lease_shutdown_cv_.wait_for(
+          wait_lock, std::chrono::milliseconds(5),
+          [this]() { return shutdown_lease_thread_.load(); });
+      if (shutdown_lease_thread_.load()) {
+        return Status::IOError("Node shutting down");
+      }
     }
     return Status::IOError("WaitForApplied timeout");
   }
@@ -1039,6 +1053,8 @@ class BraftPartitionNode::Impl {
   std::chrono::steady_clock::time_point leader_lease_expiry_{
       std::chrono::steady_clock::time_point::min()};
   std::atomic<bool> shutdown_lease_thread_{false};
+  std::mutex lease_shutdown_mutex_;
+  std::condition_variable lease_shutdown_cv_;
   std::thread lease_renewal_thread_;
 
   RaftCircuitBreaker circuit_breaker_;

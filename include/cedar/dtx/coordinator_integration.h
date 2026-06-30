@@ -22,6 +22,7 @@
 #include <memory>
 #include <unordered_map>
 #include <shared_mutex>
+#include <condition_variable>
 
 #include "cedar/core/status.h"
 #include "cedar/types/descriptor.h"
@@ -153,6 +154,8 @@ private:
     
     std::atomic<bool> running_{false};
     std::thread health_check_thread_;
+    std::condition_variable health_check_cv_;
+    std::mutex health_check_cv_mutex_;
 };
 
 // =============================================================================

@@ -333,6 +333,8 @@ Status SizeTieredCompactionEngine::Close() {
   
   shutdown_.store(true);
   queue_cv_.notify_all();
+  pause_cv_.notify_all();
+  compaction_done_cv_.notify_all();
   
   // 等待后台线程结束
   for (auto& t : compaction_threads_) {
@@ -694,19 +696,26 @@ void SizeTieredCompactionEngine::ScheduleCompaction() {
   if (task.has_value()) {
     pending_tasks_.push(task.value());
     queue_cv_.notify_one();
+    compaction_done_cv_.notify_all();
   }
 }
 
 void SizeTieredCompactionEngine::WaitForCompactions() {
-  while (true) {
-    {
-      std::lock_guard<std::mutex> lock(queue_mutex_);
-      if (pending_tasks_.empty() && stats_.active_compactions.load() == 0) {
-        break;
-      }
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+  std::unique_lock<std::mutex> done_lock(compaction_done_mutex_);
+  compaction_done_cv_.wait(done_lock, [this]() {
+    std::lock_guard<std::mutex> queue_lock(queue_mutex_);
+    return shutdown_.load() ||
+           (pending_tasks_.empty() &&
+            reserved_compactions_.load() == 0 &&
+            stats_.active_compactions.load() == 0);
+  });
+}
+
+void SizeTieredCompactionEngine::WaitForActiveCompactions() {
+  std::unique_lock<std::mutex> done_lock(compaction_done_mutex_);
+  compaction_done_cv_.wait(done_lock, [this]() {
+    return shutdown_.load() || stats_.active_compactions.load() == 0;
+  });
 }
 
 void SizeTieredCompactionEngine::SetCompactionObserver(CompactionObserver observer) {
@@ -715,7 +724,7 @@ void SizeTieredCompactionEngine::SetCompactionObserver(CompactionObserver observ
 
 void SizeTieredCompactionEngine::PauseCompaction() {
   pause_requested_.store(true);
-  WaitForCompactions();
+  WaitForActiveCompactions();
 }
 
 void SizeTieredCompactionEngine::ResumeCompaction() {
@@ -763,22 +772,34 @@ void SizeTieredCompactionEngine::BackgroundCompactionThread() {
     
     CompactionTask task = pending_tasks_.front();
     pending_tasks_.pop();
+    reserved_compactions_.fetch_add(1);
+    compaction_done_cv_.notify_all();
     
     lock.unlock();
     
     // Skip compaction if paused (e.g., during snapshot save)
     if (pause_requested_.load()) {
       std::unique_lock<std::mutex> pause_lock(pause_mutex_);
-      pause_cv_.wait(pause_lock, [this] { return !pause_requested_.load(); });
+      pause_cv_.wait(pause_lock, [this] {
+        return shutdown_.load() || !pause_requested_.load();
+      });
+      if (shutdown_.load()) {
+        reserved_compactions_.fetch_sub(1);
+        compaction_done_cv_.notify_all();
+        break;
+      }
     }
     
     stats_.active_compactions.fetch_add(1);
+    reserved_compactions_.fetch_sub(1);
+    compaction_done_cv_.notify_all();
     stats_.pending_compaction_bytes.fetch_add(task.estimated_output_size);
     
     Status s = ExecuteCompaction(task);
     
     stats_.active_compactions.fetch_sub(1);
     stats_.pending_compaction_bytes.fetch_sub(task.estimated_output_size);
+    compaction_done_cv_.notify_all();
     
     if (!s.ok()) {
       // Compaction task error logged; continue processing other tasks.

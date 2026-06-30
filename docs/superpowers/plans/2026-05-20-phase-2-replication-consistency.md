@@ -83,7 +83,7 @@
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -125,7 +125,7 @@ Add to `CrossDCReplicator` private section:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build may fail with undefined refs — expected.
 
@@ -204,7 +204,7 @@ Status CrossDCReplicator::SendToRemoteDCWithRetry(const ReplicationLog& log,
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -249,7 +249,7 @@ In `ReceiveReplication`:
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -258,7 +258,7 @@ Expected: Build succeeds.
 ### Step 2.1.5: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/cross_dc_replicator.cc include/cedar/dtx/cross_dc_replicator.h
 git commit -m "fix(phase2): CrossDCReplicator ordered persistent replication with TLS
 
@@ -285,7 +285,7 @@ BLOCKER fix: Security #5, Distributed Correctness #4"
 Check if `shared_storage_` (type `CedarGraphStorage` or similar) supports batch writes. Search for `WriteBatch` or `BatchPut`:
 
 ```bash
-grep -rn "WriteBatch\|BatchPut\|batch" /Users/wangyang/Desktop/CedarGraph-Core/include/cedar/storage/ | head -30
+grep -rn "WriteBatch\|BatchPut\|batch" <repo-root>/include/cedar/storage/ | head -30
 ```
 
 If no batch API exists, we simulate atomicity by collecting all writes first, then applying them only if all succeed (best-effort within the transaction layer).
@@ -364,7 +364,7 @@ If no batch API exists, we simulate atomicity by collecting all writes first, th
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -385,7 +385,7 @@ enum class DistributedTxnState {
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_dtx -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -394,7 +394,7 @@ Expected: Build succeeds.
 ### Step 2.2.4: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/dtx/storage_impl/partition_storage.cc include/cedar/dtx/types.h
 git commit -m "fix(phase2): PartitionStorage atomic batch write with partial commit recovery
 
@@ -450,7 +450,7 @@ BLOCKER fix: Distributed Correctness #2"
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_gcn -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_gcn -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -477,7 +477,7 @@ EventApplier::EventApplier(TMVEngine* engine, size_t max_reorder_buffer)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target cedar_gcn -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && cmake --build . --target cedar_gcn -j$(sysctl -n hw.ncpu)
 ```
 Expected: Build succeeds.
 
@@ -555,7 +555,7 @@ add_test(NAME event_applier_backpressure_test COMMAND event_applier_backpressure
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake --build . --target event_applier_backpressure_test -j$(sysctl -n hw.ncpu) && ./tests/gcn/event_applier_backpressure_test
+cd <repo-root>/build && cmake --build . --target event_applier_backpressure_test -j$(sysctl -n hw.ncpu) && ./tests/gcn/event_applier_backpressure_test
 ```
 Expected: Test passes.
 
@@ -564,7 +564,7 @@ Expected: Test passes.
 ### Step 2.3.4: Commit
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add src/gcn/event_applier.cc include/cedar/gcn/event_applier.h tests/gcn/event_applier_backpressure_test.cc tests/gcn/CMakeLists.txt
 git commit -m "fix(phase2): EventApplier backpressure instead of silent drop
 
@@ -584,7 +584,7 @@ BLOCKER fix: Distributed Correctness #4 (drop aspect)"
 ### Step 2.4.1: Clean rebuild
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . -j$(sysctl -n hw.ncpu)
 ```
 Expected: Zero project-code warnings.
@@ -594,7 +594,7 @@ Expected: Zero project-code warnings.
 ### Step 2.4.2: Run all tests
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ctest --output-on-failure
 ```
 Expected: All tests pass.
@@ -604,7 +604,7 @@ Expected: All tests pass.
 ### Step 2.4.3: Commit phase completion
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git tag phase-2-complete
 git log --oneline -10
 ```

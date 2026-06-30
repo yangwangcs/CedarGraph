@@ -45,7 +45,7 @@ enum class TxnState {
 
 // Participant state in 2PC
 struct ParticipantState {
-  dtx::PartitionID partition_id;
+  dtx::PartitionID partition_id = dtx::kInvalidPartitionID;
   std::string address;
   enum class State {
     kUnknown,
@@ -61,8 +61,8 @@ struct ParticipantState {
 
 // Transaction state record
 struct TransactionRecord {
-  dtx::TxnID txn_id;
-  TxnState state;
+  dtx::TxnID txn_id = dtx::kInvalidTxnID;
+  TxnState state = TxnState::kUnknown;
   Timestamp commit_ts;
   std::vector<dtx::PartitionID> participants;
   std::map<dtx::PartitionID, ParticipantState> participant_states;

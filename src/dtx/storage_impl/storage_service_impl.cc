@@ -18,10 +18,10 @@
 #include "cedar/storage/lsm_engine.h"
 #include "cedar/dtx/security.h"
 #include "cedar/storage/cedar_config.h"
+#include "cedar/core/logging.h"
 
 #include <algorithm>
 #include <cstring>
-#include "cedar/common/logging.h"
 #include <iostream>
 
 namespace cedar {
@@ -309,7 +309,7 @@ grpc::Status StorageServiceImpl::Put(grpc::ServerContext* context,
   CedarKey key = ProtoToCedarKey(request->key());
   
   // Convert descriptor (inject column_id from key for InlineInt compatibility)
-  Descriptor desc = ProtoToDescriptor(request->descriptor_(), key.column_id());
+  Descriptor desc = ProtoToDescriptor(request->value_descriptor(), key.column_id());
   
   // Convert timestamp and txn_id
   Timestamp txn_version(request->txn_version().value());
@@ -462,7 +462,7 @@ grpc::Status StorageServiceImpl::Get(grpc::ServerContext* context,
   if (result.ok()) {
     response->set_success(true);
     response->set_found(true);
-    *response->mutable_descriptor_() = DescriptorToProto(result.value());
+    *response->mutable_value_descriptor() = DescriptorToProto(result.value());
     return grpc::Status::OK;
   } else if (result.status().IsNotFound()) {
     response->set_success(true);
@@ -599,7 +599,7 @@ grpc::Status StorageServiceImpl::Scan(grpc::ServerContext* context,
   for (const auto& [ts, desc] : results) {
     auto* item = response->add_items();
     item->set_timestamp(ts.value());
-    item->mutable_descriptor_()->set_data(SerializeDescriptorSimple(desc));
+    item->mutable_value_descriptor()->set_data(SerializeDescriptorSimple(desc));
   }
 
   response->set_success(true);
@@ -661,7 +661,7 @@ grpc::Status StorageServiceImpl::ScanNodeV2(grpc::ServerContext* context,
   for (const auto& [ts, desc] : results) {
     auto* item = response->add_items();
     item->set_timestamp(ts.value());
-    item->mutable_descriptor_()->set_data(SerializeDescriptorSimple(desc));
+    item->mutable_value_descriptor()->set_data(SerializeDescriptorSimple(desc));
   }
 
   response->set_success(true);
@@ -677,6 +677,13 @@ grpc::Status StorageServiceImpl::ScanEdgeV2(grpc::ServerContext* context,
   if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
       !st.ok()) {
     return st;
+  }
+  if (request->direction() != cedar::storage::Direction::OUTGOING &&
+      request->direction() != cedar::storage::Direction::INCOMING &&
+      request->direction() != cedar::storage::Direction::BOTH) {
+    response->set_success(false);
+    response->set_error_msg("Invalid edge scan direction");
+    return grpc::Status::OK;
   }
 
   // Read consistency check
@@ -743,7 +750,7 @@ grpc::Status StorageServiceImpl::ScanEdgeV2(grpc::ServerContext* context,
   for (const auto& [ts, desc] : results) {
     auto* item = response->add_items();
     item->set_timestamp(ts.value());
-    item->mutable_descriptor_()->set_data(SerializeDescriptorSimple(desc));
+    item->mutable_value_descriptor()->set_data(SerializeDescriptorSimple(desc));
   }
 
   response->set_success(true);
@@ -805,7 +812,7 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
     deduped.push_back(*it);
   }
   if (deduped_count > 0) {
-    LOG(WARNING) << "BatchPut deduplicated " << deduped_count << " duplicate keys";
+    CEDAR_LOG_WARN() << "BatchPut deduplicated " << deduped_count << " duplicate keys\n";
   }
   // Reverse back to sorted order
   std::reverse(deduped.begin(), deduped.end());
@@ -830,7 +837,7 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
         continue;
       }
       CedarKey key = ProtoToCedarKey(item->key());
-      Descriptor desc = ProtoToDescriptor(item->descriptor_(), key.column_id());
+      Descriptor desc = ProtoToDescriptor(item->value_descriptor(), key.column_id());
       StorageLogEntry entry;
       entry.type = StorageLogEntry::Type::kPut;
       entry.key = key;
@@ -861,7 +868,7 @@ grpc::Status StorageServiceImpl::BatchPut(grpc::ServerContext* context,
     }
     
     CedarKey key = ProtoToCedarKey(item->key());
-    Descriptor desc = ProtoToDescriptor(item->descriptor_(), key.column_id());
+    Descriptor desc = ProtoToDescriptor(item->value_descriptor(), key.column_id());
     
     auto status = partition->Put(key, desc, txn_version, txn_id);
     response->add_item_success(status.ok());
@@ -1773,6 +1780,14 @@ grpc::Status StorageServiceImpl::ScanLabel(
     return st;
   }
 
+  uint64_t min_id = request->min_id();
+  uint64_t max_id = request->max_id();
+  uint64_t limit = request->limit();
+  if (limit == 0 || min_id > max_id) {
+    response->set_success(true);
+    return grpc::Status::OK;
+  }
+
   if (!partition_manager_) {
     response->set_success(false);
     response->set_error_message("Partition manager not initialized");
@@ -1794,9 +1809,6 @@ grpc::Status StorageServiceImpl::ScanLabel(
   }
 
   const std::string& label = request->label();
-  uint64_t min_id = request->min_id();
-  uint64_t max_id = request->max_id();
-  uint64_t limit = request->limit();
 
   // Use the label index to find entity IDs
   std::vector<uint64_t> entity_ids = engine->LookupLabelIndex(label);

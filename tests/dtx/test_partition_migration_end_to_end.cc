@@ -5,7 +5,11 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <chrono>
+#include <future>
+#include <sstream>
 #include <thread>
+
+#include <grpcpp/grpcpp.h>
 
 #include "cedar/dtx/storage/partition_migrator.h"
 #include "cedar/dtx/storage_service_impl.h"
@@ -37,6 +41,25 @@ class MockMetaServiceNodeClient : public MetaServiceNodeClient {
   }
 };
 
+class RejectingMigrationService
+    : public cedar::migration::PartitionMigrationService::Service {
+ public:
+  ::grpc::Status SyncData(
+      ::grpc::ServerContext* /*context*/,
+      ::grpc::ServerReader<::cedar::migration::SyncDataRequest>* reader,
+      ::cedar::migration::SyncDataResponse* response) override {
+    ::cedar::migration::SyncDataRequest request;
+    uint64_t bytes_received = 0;
+    while (reader->Read(&request)) {
+      bytes_received += request.data().size();
+    }
+    response->set_success(false);
+    response->set_error_msg("target rejected snapshot");
+    response->set_bytes_received(bytes_received);
+    return ::grpc::Status::OK;
+  }
+};
+
 namespace cedar {
 namespace dtx {
 namespace storage {
@@ -52,6 +75,13 @@ class PartitionMigrationEndToEndTest : public ::testing::Test {
   Status CopyData(MigrationTask& task) { return migrator_->CopyData(task); }
   Status RollbackMigration(MigrationTask& task) {
     return migrator_->RollbackMigration(task);
+  }
+  Status SwitchTraffic(MigrationTask& task) {
+    return migrator_->SwitchTraffic(task);
+  }
+  Status StreamSnapshotToTarget(const MigrationTask& task,
+                                const std::string& snapshot_path) {
+    return migrator_->StreamSnapshotToTarget(task, snapshot_path);
   }
 
   void SetUp() override {
@@ -135,6 +165,29 @@ TEST_F(PartitionMigrationEndToEndTest, CopyDataCreatesSnapshot) {
   std::filesystem::remove_all(snapshot_dir);
 }
 
+TEST_F(PartitionMigrationEndToEndTest, SaveSnapshotSkipsExistingMigrationSnapshots) {
+  auto partition = partition_manager_->GetPartition(1);
+  ASSERT_NE(partition, nullptr);
+
+  std::string old_snapshot_dir = data_dir_ + "/migration_snap_old";
+  ASSERT_TRUE(std::filesystem::create_directories(old_snapshot_dir));
+  {
+    std::ofstream old_file(old_snapshot_dir + "/stale.sst", std::ios::binary);
+    ASSERT_TRUE(old_file.is_open());
+    old_file << "stale snapshot bytes";
+  }
+
+  std::string snapshot_dir = data_dir_ + "/migration_snap_new";
+  auto status = partition->SaveSnapshotForMigration(snapshot_dir);
+  ASSERT_TRUE(status.ok()) << status.ToString();
+
+  EXPECT_FALSE(std::filesystem::exists(snapshot_dir + "/migration_snap_old"))
+      << "migration snapshots must not recursively include older snapshots";
+
+  std::filesystem::remove_all(old_snapshot_dir);
+  std::filesystem::remove_all(snapshot_dir);
+}
+
 TEST_F(PartitionMigrationEndToEndTest, LoadSnapshotRestoresData) {
   auto partition = partition_manager_->GetPartition(1);
   ASSERT_NE(partition, nullptr);
@@ -165,6 +218,114 @@ TEST_F(PartitionMigrationEndToEndTest, LoadSnapshotRestoresData) {
   EXPECT_FALSE(std::filesystem::is_empty(data_dir_));
 
   std::filesystem::remove_all(snapshot_dir);
+}
+
+TEST_F(PartitionMigrationEndToEndTest, LoadSnapshotMissingPathReturnsStatus) {
+  auto id_result = migrator_->SubmitMigration(1, 1, 2, MigrationType::kRebalance);
+  ASSERT_TRUE(id_result.ok());
+
+  std::string missing_snapshot_dir = data_dir_ + "/missing_snapshot";
+  std::filesystem::remove_all(missing_snapshot_dir);
+
+  auto status = migrator_->LoadSnapshotForMigration(id_result.value(),
+                                                    missing_snapshot_dir);
+  EXPECT_FALSE(status.ok());
+  EXPECT_TRUE(status.IsNotFound()) << status.ToString();
+}
+
+TEST(PartitionMigratorLifecycleTest, ShutdownWakesIdleWorkersPromptly) {
+  PartitionMigrator migrator;
+  MigrationConfig config;
+  config.max_concurrent_batches = 1;
+  ASSERT_TRUE(migrator.Initialize(config).ok());
+
+  auto start = std::chrono::steady_clock::now();
+  migrator.Shutdown();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            50);
+}
+
+TEST_F(PartitionMigrationEndToEndTest, ShutdownWakesSwitchTrafficDrainPromptly) {
+  auto partition = partition_manager_->GetPartition(1);
+  ASSERT_NE(partition, nullptr);
+
+  cedar::CedarKey key;
+  key.SetEntityId(777);
+  key.SetColumnId(1);
+  key.SetEntityType(1);
+  cedar::Descriptor desc;
+  ASSERT_TRUE(partition->Prepare(
+      777, {}, {key},
+      {{static_cast<uint64_t>(cedar::dtx::CedarKeyHash{}(key)), desc}},
+      cedar::Timestamp(1)).ok());
+
+  MigrationTask task;
+  task.migration_id = 777;
+  task.partition_id = 1;
+  task.source_node = 1;
+  task.target_node = 2;
+  task.type = MigrationType::kRebalance;
+  task.state = MigrationState::kSwitching;
+
+  auto switch_future = std::async(std::launch::async, [&]() {
+    return SwitchTraffic(task);
+  });
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  auto start = std::chrono::steady_clock::now();
+  migrator_->Shutdown();
+  ASSERT_EQ(switch_future.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_TRUE(switch_future.get().ok());
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            500);
+}
+
+TEST_F(PartitionMigrationEndToEndTest, StreamSnapshotRejectsUnsuccessfulResponse) {
+  std::string snapshot_dir = data_dir_ + "/reject_snapshot";
+  ASSERT_TRUE(std::filesystem::create_directories(snapshot_dir));
+  {
+    std::ofstream file(snapshot_dir + "/data.sst", std::ios::binary);
+    ASSERT_TRUE(file.is_open());
+    file << "snapshot bytes";
+  }
+
+  RejectingMigrationService service;
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort("127.0.0.1:0",
+                           grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&service);
+  auto server = builder.BuildAndStart();
+  ASSERT_NE(server, nullptr);
+
+  std::ostringstream address;
+  address << "127.0.0.1:" << port;
+  auto channel = grpc::CreateChannel(address.str(),
+                                    grpc::InsecureChannelCredentials());
+  migrator_->SetMigrationServiceStub(
+      cedar::migration::PartitionMigrationService::NewStub(channel));
+
+  MigrationTask task;
+  task.migration_id = 42;
+  task.partition_id = 1;
+  task.source_node = 1;
+  task.target_node = 2;
+  task.type = MigrationType::kRebalance;
+  task.state = MigrationState::kCopying;
+
+  auto status = StreamSnapshotToTarget(task, snapshot_dir);
+  EXPECT_FALSE(status.ok());
+  EXPECT_TRUE(status.IsIOError()) << status.ToString();
+  EXPECT_NE(status.ToString().find("target rejected snapshot"), std::string::npos)
+      << status.ToString();
+
+  server->Shutdown();
+  server->Wait();
 }
 
 TEST_F(PartitionMigrationEndToEndTest, FullMigrationPipelineAsync) {

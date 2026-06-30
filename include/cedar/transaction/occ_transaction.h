@@ -16,7 +16,10 @@
 #define CEDAR_OCC_TRANSACTION_H_
 
 #include <atomic>
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -33,6 +36,25 @@
 #include <thread>
 
 namespace cedar {
+
+namespace occ_detail {
+
+inline std::chrono::milliseconds SaturatingExponentialBackoff(
+    uint64_t base_ms, uint32_t attempt) {
+  if (base_ms == 0) {
+    return std::chrono::milliseconds(0);
+  }
+  constexpr uint32_t kMaxShift = 20;
+  const uint32_t shift = std::min(attempt, kMaxShift);
+  const uint64_t max_ms =
+      static_cast<uint64_t>(std::chrono::milliseconds::max().count());
+  if (base_ms > (max_ms >> shift)) {
+    return std::chrono::milliseconds::max();
+  }
+  return std::chrono::milliseconds(base_ms << shift);
+}
+
+}  // namespace occ_detail
 
 class LsmEngine;
 
@@ -398,7 +420,7 @@ class TransactionRetryWrapper {
       last_status = s;
       if (attempt < options_.max_retries) {
         std::this_thread::sleep_for(
-            std::chrono::milliseconds(10 * (1 << attempt)));
+            occ_detail::SaturatingExponentialBackoff(10, attempt));
       }
     }
     return last_status;

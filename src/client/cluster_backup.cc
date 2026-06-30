@@ -6,10 +6,13 @@
 #include "cedar/client/cluster_manager.h"
 
 #include <chrono>
+#include <cctype>
 #include <filesystem>
 #include <iostream>
 #include <random>
 #include <sstream>
+#include <system_error>
+#include <sys/wait.h>
 
 namespace cedar {
 namespace client {
@@ -19,78 +22,58 @@ ClusterBackup::ClusterBackup() = default;
 ClusterBackup::~ClusterBackup() = default;
 
 bool ClusterBackup::Initialize(const BackupConfig& config, ClusterManager* cluster_manager) {
+  initialized_ = false;
+  if (config.encrypt) {
+    return false;
+  }
+
   config_ = config;
   cluster_manager_ = cluster_manager;
 
   // Create backup directory
-  return CreateBackupDirectory(config_.backup_dir);
+  initialized_ = CreateBackupDirectory(config_.backup_dir);
+  return initialized_;
 }
 
 BackupInfo ClusterBackup::CreateBackup(const std::string& component, BackupType type) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
   BackupInfo info;
   info.backup_id = GenerateBackupId();
   info.type = type;
   info.status = BackupStatus::IN_PROGRESS;
   info.component = component;
-  info.start_time = std::chrono::system_clock::now().time_since_epoch().count();
+  info.start_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+
+  if (!initialized_) {
+    info.status = BackupStatus::FAILED;
+    info.error_message = "ClusterBackup is not initialized";
+    return info;
+  }
 
   // Create backup path
   info.backup_path = config_.backup_dir + "/" + info.backup_id;
 
-  // Add to backups list
-  backups_.push_back(info);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    backups_.push_back(info);
+  }
 
-  // Notify callback
   NotifyCallback(info);
 
-  // Execute backup based on component
-  std::string command;
-  if (component == "metad") {
-    command = "docker exec cedar-metad-0 cedar-backup --type=" + 
-              std::to_string(static_cast<int>(type)) + 
-              " --output=" + info.backup_path;
-  } else if (component == "storaged") {
-    command = "docker exec cedar-storaged-0 cedar-backup --type=" + 
-              std::to_string(static_cast<int>(type)) + 
-              " --output=" + info.backup_path;
-  } else if (component == "all") {
-    command = "docker-compose exec metad cedar-backup --type=" + 
-              std::to_string(static_cast<int>(type)) + 
-              " --output=" + info.backup_path;
+  auto fail_backup = [this, &info](const std::string& error_message) {
+    info = UpdateBackupStatus(info.backup_id, BackupStatus::FAILED, error_message);
+    NotifyCallback(info);
+    return info;
+  };
+
+  if (component != "metad" && component != "storaged" && component != "all" &&
+      component != "graphd") {
+    return fail_backup("Unknown backup component: " + component);
   }
 
-  // Execute backup command
-  std::string output = ExecuteBackupCommand(command);
-
-  // Update status
-  if (output.find("Error") != std::string::npos) {
-    UpdateBackupStatus(info.backup_id, BackupStatus::FAILED, output);
-  } else {
-    UpdateBackupStatus(info.backup_id, BackupStatus::COMPLETED);
-
-    // Compress if configured
-    if (config_.compress) {
-      CompressBackup(info.backup_path);
-    }
-
-    // Encrypt if configured
-    if (config_.encrypt) {
-      EncryptBackup(info.backup_path);
-    }
-
-    // Update size
-    auto it = std::find_if(backups_.begin(), backups_.end(),
-                           [&info](const BackupInfo& b) { return b.backup_id == info.backup_id; });
-    if (it != backups_.end()) {
-      it->size_bytes = GetBackupSize(it->backup_path);
-      it->end_time = std::chrono::system_clock::now().time_since_epoch().count();
-      info = *it;
-    }
-  }
-
-  return info;
+  return fail_backup(
+      "ClusterBackup client backup is not implemented in this build; use "
+      "scripts/deploy.sh backup or the storage BackupManager API instead");
 }
 
 bool ClusterBackup::DeleteBackup(const std::string& backup_id) {
@@ -98,9 +81,19 @@ bool ClusterBackup::DeleteBackup(const std::string& backup_id) {
 
   for (auto it = backups_.begin(); it != backups_.end(); ++it) {
     if (it->backup_id == backup_id) {
-      // Delete backup files
-      std::string command = "rm -rf " + it->backup_path;
-      ExecuteBackupCommand(command);
+      if (!IsPathWithinBackupDir(it->backup_path)) {
+        it->status = BackupStatus::FAILED;
+        it->error_message = "Backup path is outside configured backup directory";
+        return false;
+      }
+
+      std::error_code ec;
+      std::filesystem::remove_all(it->backup_path, ec);
+      if (ec) {
+        it->status = BackupStatus::FAILED;
+        it->error_message = ec.message();
+        return false;
+      }
 
       backups_.erase(it);
       return true;
@@ -123,69 +116,69 @@ bool ClusterBackup::VerifyBackup(const std::string& backup_id) {
 }
 
 bool ClusterBackup::RestoreBackup(const RestoreOptions& options) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // Find backup
-  BackupInfo* backup = nullptr;
-  for (auto& b : backups_) {
-    if (b.backup_id == options.backup_id) {
-      backup = &b;
-      break;
-    }
+  if (!initialized_) {
+    return false;
   }
 
-  if (!backup) {
+  BackupInfo backup;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = std::find_if(backups_.begin(), backups_.end(),
+                           [&options](const BackupInfo& b) {
+                             return b.backup_id == options.backup_id;
+                           });
+    if (it == backups_.end()) {
+      return false;
+    }
+    backup = *it;
+  }
+
+  auto fail_restore = [this, &backup](const std::string& error_message) {
+    backup = UpdateBackupStatus(backup.backup_id, BackupStatus::FAILED,
+                                error_message);
+    NotifyCallback(backup);
     return false;
+  };
+
+  if (!IsPathWithinBackupDir(backup.backup_path)) {
+    return fail_restore("Backup path is outside configured backup directory");
   }
 
   // Verify backup if requested
   if (options.verify) {
-    if (!VerifyBackupIntegrity(backup->backup_path)) {
-      return false;
+    if (!VerifyBackupIntegrity(backup.backup_path)) {
+      return fail_restore("Backup integrity verification failed");
     }
   }
 
   // Update status
-  backup->status = BackupStatus::RESTORING;
-  NotifyCallback(*backup);
+  backup = UpdateBackupStatus(backup.backup_id, BackupStatus::RESTORING);
+  NotifyCallback(backup);
 
   // Decompress if needed
   if (config_.compress) {
-    DecompressBackup(backup->backup_path);
+    if (!DecompressBackup(backup.backup_path)) {
+      return fail_restore("Backup decompression failed");
+    }
   }
 
   // Decrypt if needed
   if (config_.encrypt) {
-    DecryptBackup(backup->backup_path);
+    if (!DecryptBackup(backup.backup_path)) {
+      return fail_restore("Backup decryption failed");
+    }
   }
 
-  // Execute restore based on component
-  std::string component = options.target_component.empty() ? backup->component : options.target_component;
-  
-  std::string command;
-  if (component == "metad") {
-    command = "docker exec cedar-metad-0 cedar-restore --input=" + backup->backup_path;
-  } else if (component == "storaged") {
-    command = "docker exec cedar-storaged-0 cedar-restore --input=" + backup->backup_path;
-  } else if (component == "all") {
-    command = "docker-compose exec metad cedar-restore --input=" + backup->backup_path;
+  std::string component = options.target_component.empty() ? backup.component : options.target_component;
+
+  if (component != "metad" && component != "storaged" && component != "all" &&
+      component != "graphd") {
+    return fail_restore("Unknown restore component: " + component);
   }
 
-  // Execute restore command
-  std::string output = ExecuteBackupCommand(command);
-
-  // Update status
-  if (output.find("Error") != std::string::npos) {
-    backup->status = BackupStatus::FAILED;
-    backup->error_message = output;
-    NotifyCallback(*backup);
-    return false;
-  }
-
-  backup->status = BackupStatus::RESTORED;
-  NotifyCallback(*backup);
-
-  return true;
+  return fail_restore(
+      "ClusterBackup client restore is not implemented in this build; use "
+      "scripts/deploy.sh restore or the storage BackupManager API instead");
 }
 
 bool ClusterBackup::RestoreLatest(const std::string& component) {
@@ -247,64 +240,90 @@ BackupInfo ClusterBackup::GetBackupInfo(const std::string& backup_id) {
 }
 
 bool ClusterBackup::UploadToS3(const std::string& backup_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // Find backup
-  BackupInfo* backup = nullptr;
-  for (auto& b : backups_) {
-    if (b.backup_id == backup_id) {
-      backup = &b;
-      break;
-    }
+  if (!initialized_) {
+    return false;
   }
 
-  if (!backup) {
+  BackupInfo backup;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = std::find_if(backups_.begin(), backups_.end(),
+                           [&backup_id](const BackupInfo& b) {
+                             return b.backup_id == backup_id;
+                           });
+    if (it == backups_.end()) {
+      return false;
+    }
+    backup = *it;
+  }
+
+  if (!IsPathWithinBackupDir(backup.backup_path) ||
+      backup.status != BackupStatus::COMPLETED ||
+      !VerifyBackupIntegrity(backup.backup_path) ||
+      !IsSafeS3Part(config_.s3_bucket, false) ||
+      !IsSafeS3Part(config_.s3_prefix, true) ||
+      !IsSafeS3Part(backup_id, false)) {
     return false;
   }
 
   // Upload to S3
-  std::string command = "aws s3 cp " + backup->backup_path + " s3://" + 
-                        config_.s3_bucket + "/" + config_.s3_prefix + "/" + backup_id;
+  std::string s3_uri = "s3://" + config_.s3_bucket + "/" +
+                       config_.s3_prefix + "/" + backup_id;
+  std::string command = "aws s3 cp " + ShellQuote(backup.backup_path) + " " +
+                        ShellQuote(s3_uri);
   std::string output = ExecuteBackupCommand(command);
 
   return output.find("Error") == std::string::npos;
 }
 
 bool ClusterBackup::DownloadFromS3(const std::string& backup_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  if (!initialized_) {
+    return false;
+  }
 
-  // Download from S3
-  std::string command = "aws s3 cp s3://" + config_.s3_bucket + "/" + 
-                        config_.s3_prefix + "/" + backup_id + " " + 
-                        config_.backup_dir + "/" + backup_id;
-  std::string output = ExecuteBackupCommand(command);
+  if (!IsSafeS3Part(config_.s3_bucket, false) ||
+      !IsSafeS3Part(config_.s3_prefix, true) ||
+      !IsSafeS3Part(backup_id, false)) {
+    return false;
+  }
 
-  return output.find("Error") == std::string::npos;
+  // Remote backup metadata registration is not implemented. Downloading a
+  // payload without a verified manifest would create an unusable local backup.
+  return false;
 }
 
 bool ClusterBackup::CleanupOldBackups() {
+  if (!initialized_) {
+    return false;
+  }
   return CleanupByRetention(config_.retention_days);
 }
 
 bool ClusterBackup::CleanupByRetention(int retention_days) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  auto now = std::chrono::system_clock::now().time_since_epoch().count();
-  auto cutoff = now - (retention_days * 24 * 60 * 60 * 1000000000LL);
+  if (!initialized_) {
+    return false;
+  }
+  auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  auto cutoff = now - (static_cast<int64_t>(retention_days) * 24 * 60 * 60 * 1000);
 
   std::vector<std::string> to_delete;
 
-  for (const auto& backup : backups_) {
-    if (backup.start_time < cutoff) {
-      to_delete.push_back(backup.backup_id);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& backup : backups_) {
+      if (backup.start_time < cutoff) {
+        to_delete.push_back(backup.backup_id);
+      }
     }
   }
 
+  bool ok = true;
   for (const auto& id : to_delete) {
-    DeleteBackup(id);
+    ok = DeleteBackup(id) && ok;
   }
 
-  return true;
+  return ok;
 }
 
 void ClusterBackup::SetCallback(BackupCallback callback) {
@@ -363,75 +382,164 @@ std::string ClusterBackup::ExecuteBackupCommand(const std::string& command) {
   std::array<char, 128> buffer;
   std::string result;
 
-  std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+  std::string redirected_command = command + " 2>&1";
+  FILE* raw_pipe = popen(redirected_command.c_str(), "r");
 
-  if (!pipe) {
+  if (!raw_pipe) {
     return "Error: Failed to execute command";
   }
 
-  while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+  while (fgets(buffer.data(), buffer.size(), raw_pipe) != nullptr) {
     result += buffer.data();
+  }
+
+  int exit_status = pclose(raw_pipe);
+  if (exit_status == -1) {
+    result += "Error: Failed to close command pipe";
+  } else if (WIFEXITED(exit_status) && WEXITSTATUS(exit_status) != 0) {
+    result += "Error: command exited with status " +
+              std::to_string(WEXITSTATUS(exit_status));
+  } else if (WIFSIGNALED(exit_status)) {
+    result += "Error: command terminated by signal " +
+              std::to_string(WTERMSIG(exit_status));
   }
 
   return result;
 }
 
 bool ClusterBackup::CompressBackup(const std::string& backup_path) {
-  std::string command = "tar -czf " + backup_path + ".tar.gz -C " + 
-                        config_.backup_dir + " " + backup_path;
+  if (!IsPathWithinBackupDir(backup_path)) {
+    return false;
+  }
+  auto member = std::filesystem::path(backup_path).filename().string();
+  std::string command = "tar -czf " + ShellQuote(backup_path + ".tar.gz") +
+                        " -C " + ShellQuote(config_.backup_dir) + " " +
+                        ShellQuote(member);
   std::string output = ExecuteBackupCommand(command);
   return output.find("Error") == std::string::npos;
 }
 
 bool ClusterBackup::DecompressBackup(const std::string& backup_path) {
-  std::string command = "tar -xzf " + backup_path + ".tar.gz -C " + config_.backup_dir;
+  if (!IsPathWithinBackupDir(backup_path)) {
+    return false;
+  }
+  std::string command = "tar -xzf " + ShellQuote(backup_path + ".tar.gz") +
+                        " -C " + ShellQuote(config_.backup_dir);
   std::string output = ExecuteBackupCommand(command);
   return output.find("Error") == std::string::npos;
 }
 
 bool ClusterBackup::EncryptBackup(const std::string& backup_path) {
-  // TODO: Implement encryption
-  return true;
+  return false;
 }
 
 bool ClusterBackup::DecryptBackup(const std::string& backup_path) {
-  // TODO: Implement decryption
-  return true;
+  return false;
 }
 
 bool ClusterBackup::VerifyBackupIntegrity(const std::string& backup_path) {
-  // Check if backup exists
-  std::string command = "test -d " + backup_path + " && echo 'OK' || echo 'FAIL'";
-  std::string output = ExecuteBackupCommand(command);
-  return output.find("OK") != std::string::npos;
+  std::error_code ec;
+  return IsPathWithinBackupDir(backup_path) &&
+         std::filesystem::exists(backup_path, ec) &&
+         std::filesystem::is_directory(backup_path, ec);
 }
 
 int64_t ClusterBackup::GetBackupSize(const std::string& backup_path) {
-  std::string command = "du -sb " + backup_path + " | cut -f1";
-  std::string output = ExecuteBackupCommand(command);
-  
-  try {
-    return std::stoll(output);
-  } catch (...) {
+  if (!IsPathWithinBackupDir(backup_path)) {
     return 0;
   }
+
+  std::error_code ec;
+  int64_t total = 0;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(backup_path, ec)) {
+    if (ec) {
+      return 0;
+    }
+    if (entry.is_regular_file(ec)) {
+      total += static_cast<int64_t>(entry.file_size(ec));
+      if (ec) {
+        return 0;
+      }
+    }
+  }
+
+  return total;
 }
 
-void ClusterBackup::UpdateBackupStatus(const std::string& backup_id, BackupStatus status,
-                                         const std::string& error_message) {
+bool ClusterBackup::IsPathWithinBackupDir(const std::string& backup_path) const {
+  std::error_code ec;
+  auto root = std::filesystem::weakly_canonical(config_.backup_dir, ec);
+  if (ec) {
+    return false;
+  }
+
+  auto path = std::filesystem::weakly_canonical(backup_path, ec);
+  if (ec) {
+    path = std::filesystem::weakly_canonical(
+        std::filesystem::path(backup_path).parent_path(), ec);
+    if (ec) {
+      return false;
+    }
+  }
+
+  auto root_it = root.begin();
+  auto path_it = path.begin();
+  for (; root_it != root.end(); ++root_it, ++path_it) {
+    if (path_it == path.end() || *root_it != *path_it) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ClusterBackup::IsSafeS3Part(const std::string& value, bool allow_slash) const {
+  if (value.empty()) {
+    return allow_slash;
+  }
+  for (unsigned char c : value) {
+    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' ||
+        (allow_slash && c == '/')) {
+      continue;
+    }
+    return false;
+  }
+  return value.find("..") == std::string::npos;
+}
+
+std::string ClusterBackup::ShellQuote(const std::string& arg) const {
+  std::string quoted = "'";
+  for (char c : arg) {
+    if (c == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += c;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+BackupInfo ClusterBackup::UpdateBackupStatus(const std::string& backup_id, BackupStatus status,
+                                             const std::string& error_message) {
+  std::lock_guard<std::mutex> lock(mutex_);
   for (auto& backup : backups_) {
     if (backup.backup_id == backup_id) {
       backup.status = status;
       backup.error_message = error_message;
-      NotifyCallback(backup);
-      break;
+      return backup;
     }
   }
+  return {};
 }
 
 void ClusterBackup::NotifyCallback(const BackupInfo& info) {
-  if (callback_) {
-    callback_(info);
+  BackupCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    callback = callback_;
+  }
+  if (callback) {
+    callback(info);
   }
 }
 

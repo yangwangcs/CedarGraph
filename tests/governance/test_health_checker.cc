@@ -406,6 +406,18 @@ TEST_F(HealthCheckerTest, StartAndStopBackgroundChecks) {
   EXPECT_FALSE(checker_->IsRunning());
 }
 
+TEST_F(HealthCheckerTest, StopWakesBackgroundThreadPromptly) {
+  EXPECT_TRUE(checker_->Start(60000).ok());
+
+  auto start = std::chrono::steady_clock::now();
+  checker_->Stop();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            1000);
+  EXPECT_FALSE(checker_->IsRunning());
+}
+
 TEST_F(HealthCheckerTest, StartBackgroundInvalidInterval) {
   EXPECT_TRUE(checker_->Start(0).IsInvalidArgument());
   EXPECT_TRUE(checker_->Start(-1).IsInvalidArgument());

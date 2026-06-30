@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <iostream>
 
 #include "cedar/driver/retry_policy.h"
@@ -61,18 +62,23 @@ ErrorClass ErrorClassifier::Classify(const Status& status) {
 std::chrono::milliseconds RetryPolicy::CalculateDelay(
     std::chrono::milliseconds base_delay) const {
   
-  std::chrono::milliseconds delay = base_delay;
+  auto delay_count = std::max<int64_t>(0, base_delay.count());
   
   // 添加抖动
   if (config_.jitter) {
     static thread_local std::mt19937 rng(std::random_device{}());
     std::uniform_real_distribution<double> dist(0.0, config_.jitter_factor);
     double jitter_mult = 1.0 + dist(rng);
-    delay = std::chrono::milliseconds(
-        static_cast<int64_t>(delay.count() * jitter_mult));
+    auto max_count = std::chrono::milliseconds::max().count();
+    double jittered = static_cast<double>(delay_count) * jitter_mult;
+    if (jittered >= static_cast<double>(max_count)) {
+      delay_count = max_count;
+    } else {
+      delay_count = static_cast<int64_t>(jittered);
+    }
   }
   
-  return delay;
+  return std::chrono::milliseconds(delay_count);
 }
 
 std::chrono::milliseconds RetryPolicy::NextDelay(
@@ -82,15 +88,29 @@ std::chrono::milliseconds RetryPolicy::NextDelay(
     case BackoffStrategy::kFixed:
       return config_.initial_backoff;
     
-    case BackoffStrategy::kLinear:
+    case BackoffStrategy::kLinear: {
+      auto max_count = config_.max_backoff.count();
+      auto current_count = current.count();
+      auto increment = config_.initial_backoff.count();
+      if (current_count >= max_count ||
+          increment > max_count - current_count) {
+        return config_.max_backoff;
+      }
       return std::min(
           current + config_.initial_backoff,
           config_.max_backoff);
+    }
     
-    case BackoffStrategy::kExponential:
+    case BackoffStrategy::kExponential: {
+      auto max_count = config_.max_backoff.count();
+      auto current_count = current.count();
+      if (current_count >= max_count || current_count > max_count / 2) {
+        return config_.max_backoff;
+      }
       return std::min(
           std::chrono::milliseconds(current.count() * 2),
           config_.max_backoff);
+    }
     default:
       std::cerr << "[RetryPolicy] Unknown backoff strategy" << std::endl;
       return std::chrono::milliseconds(0);

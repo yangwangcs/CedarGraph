@@ -12,13 +12,26 @@ mkdir -p /tmp/cedar/cluster
 
 # Build if needed
 if [ ! -f build/cedar-metad ]; then
-    echo "Building metad_server..."
+    echo "Building cedar-metad..."
     cd build && make metad -j4
     cd ..
 fi
 
 echo "Starting 3-node CedarGraph metad cluster..."
 echo ""
+
+cleanup() {
+    echo "Stopping cluster..."
+    for pid in ${PID1:-} ${PID2:-} ${PID3:-}; do
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+    wait ${PID1:-} ${PID2:-} ${PID3:-} 2>/dev/null || true
+}
+
+trap 'cleanup; exit 0' INT TERM
+trap cleanup EXIT
 
 # Start node 1
 ./build/cedar-metad --config scripts/cluster_node1.conf &
@@ -39,6 +52,4 @@ echo ""
 echo "Cluster started! Press Ctrl+C to stop all nodes."
 echo ""
 
-# Wait for interrupt
-trap "echo 'Stopping cluster...'; kill $PID1 $PID2 $PID3 2>/dev/null; exit 0" INT
 wait

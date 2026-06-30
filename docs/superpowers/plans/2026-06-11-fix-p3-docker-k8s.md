@@ -77,7 +77,7 @@ Read `cedar-docker-compose/Dockerfile` and find the HEALTHCHECK line. If it hard
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add cedar-docker-compose/docker-entrypoint.sh cedar-docker-compose/Dockerfile && git commit -m "fix(docker): add queryd role to entrypoint and healthcheck"
+cd <repo-root> && git add cedar-docker-compose/docker-entrypoint.sh cedar-docker-compose/Dockerfile && git commit -m "fix(docker): add queryd role to entrypoint and healthcheck"
 ```
 
 ---
@@ -149,7 +149,7 @@ spec:
 - [ ] **Step 2: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add k8s/network-policy.yaml && git commit -m "fix(k8s): add storaged (9779) and queryd (9889) to network policy"
+cd <repo-root> && git add k8s/network-policy.yaml && git commit -m "fix(k8s): add storaged (9779) and queryd (9889) to network policy"
 ```
 
 ---
@@ -218,7 +218,7 @@ spec:
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core && git add k8s/pod-disruption-budget.yaml && git commit -m "fix(k8s): replace over-broad PDB with per-component PDBs"
+cd <repo-root> && git add k8s/pod-disruption-budget.yaml && git commit -m "fix(k8s): replace over-broad PDB with per-component PDBs"
 ```
 
 ---
@@ -228,7 +228,7 @@ cd /Users/wangyang/Desktop/CedarGraph-Core && git add k8s/pod-disruption-budget.
 - [ ] **Step 1: Run full test suite**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ctest --output-on-failure -j$(sysctl -n hw.ncpu)
+cd <repo-root>/build && ctest --output-on-failure -j$(sysctl -n hw.ncpu)
 ```
 Expected: 1285/1285 passed, 0 failed.
 

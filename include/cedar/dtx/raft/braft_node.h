@@ -61,6 +61,7 @@ enum class RaftCommandType : uint8_t {
   kUpdateNode = 4,
   kUpdateAssignment = 5,
   kBatch = 6,  // Multiple commands in one log entry
+  kUpdateNodeStatus = 7,
 };
 
 // Serialized Raft command
@@ -114,6 +115,7 @@ class BRaftNode {
   struct Options {
     NodeID node_id;
     std::string listen_address;  // e.g., "0.0.0.0:9090"
+    std::string advertise_address;  // e.g., "metad0:9090"; defaults to listen_address
     std::string data_path;       // Raft log storage path
     std::vector<std::string> initial_peers;  // Other nodes in cluster
     int election_timeout_ms = 5000;

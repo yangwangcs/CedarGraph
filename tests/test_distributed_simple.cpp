@@ -79,7 +79,7 @@ int main() {
     req.mutable_key()->set_type_flags(0 << 16);
     req.mutable_key()->set_partition_id(0);
 
-    req.mutable_descriptor_()->set_data(
+    req.mutable_value_descriptor()->set_data(
         reinterpret_cast<const char*>(&write_value), sizeof(write_value));
     req.mutable_txn_version()->set_value(timestamp);
     req.set_txn_id(0);
@@ -122,8 +122,8 @@ int main() {
     } else {
       std::cout << "  Read:  ✅ SUCCESS" << std::endl;
       std::cout << "  Found: " << resp.found() << std::endl;
-      if (resp.has_descriptor_()) {
-        const auto& data = resp.descriptor_().data();
+      if (resp.has_value_descriptor()) {
+        const auto& data = resp.value_descriptor().data();
         if (data.size() >= sizeof(int32_t)) {
           int32_t read_value = *reinterpret_cast<const int32_t*>(data.data());
           std::cout << "  Value: " << read_value << " (expected: " << write_value << ")" << std::endl;
@@ -154,7 +154,7 @@ int main() {
     req.mutable_key()->set_partition_id(0);
 
     int32_t val = i;
-    req.mutable_descriptor_()->set_data(
+    req.mutable_value_descriptor()->set_data(
         reinterpret_cast<const char*>(&val), sizeof(val));
     req.mutable_txn_version()->set_value(3000000 + i);
 

@@ -12,11 +12,8 @@ else()
 endif()
 
 set(CEDAR_TEST_LIBS
-    cedar
-    cedar_graph
     cedar_cypher
     ${GTEST_MAIN_TARGET}
-    pthread
 )
 
 # Add gRPC libraries if DTX is enabled
@@ -147,6 +144,10 @@ gtest_discover_tests(test_lsm_engine_index)
 add_executable(test_accumulated_buffer_race storage/test_accumulated_buffer_race.cc)
 target_link_libraries(test_accumulated_buffer_race ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_accumulated_buffer_race)
+
+add_executable(test_adaptive_thread_pool_lifecycle storage/test_adaptive_thread_pool_lifecycle.cc)
+target_link_libraries(test_adaptive_thread_pool_lifecycle ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_adaptive_thread_pool_lifecycle)
 add_cedar_test(test_cedar_update)
 add_cedar_test(test_cedar_update_validation)
 add_cedar_test(test_cedar_update_e2e)
@@ -197,6 +198,17 @@ add_executable(test_supporting_critical security/test_supporting_critical.cc)
 target_link_libraries(test_supporting_critical ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_supporting_critical)
 
+add_executable(test_disabled_tests_documented test_disabled_tests_documented.cc)
+target_link_libraries(test_disabled_tests_documented ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_disabled_tests_documented)
+
+add_executable(test_optimized_temporal_thread_pool
+  dtx/test_optimized_temporal_thread_pool.cc
+  ../src/dtx/optimized_temporal_benchmark.cc
+)
+target_link_libraries(test_optimized_temporal_thread_pool ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_optimized_temporal_thread_pool)
+
 add_cedar_test(test_cedar_scan)
 add_cedar_test(test_cedar_scan_simple)
 add_cedar_test(test_cedar_scan_view)
@@ -219,7 +231,7 @@ add_cedar_test(test_driver_transaction)
 # End-to-end partition test
 add_executable(test_end_to_end_partition test_end_to_end_partition.cc)
 target_link_libraries(test_end_to_end_partition ${CEDAR_TEST_LIBS})
-gtest_discover_tests(test_end_to_end_partition)
+add_test(NAME test_end_to_end_partition COMMAND test_end_to_end_partition)
 
 # Streaming partitioner thread safety test
 add_executable(test_streaming_partitioner_thread_safety partition/test_streaming_partitioner_thread_safety.cc)
@@ -273,6 +285,10 @@ add_executable(test_hybrid_logical_clock_unit dtx/unit/test_hybrid_logical_clock
 target_link_libraries(test_hybrid_logical_clock_unit ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_hybrid_logical_clock_unit)
 
+add_executable(test_transaction_timeout_manager dtx/unit/test_transaction_timeout_manager.cc)
+target_link_libraries(test_transaction_timeout_manager ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_transaction_timeout_manager)
+
 add_executable(test_dtx_integration dtx/unit/test_integration.cc)
 target_link_libraries(test_dtx_integration ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_dtx_integration)
@@ -296,6 +312,14 @@ gtest_discover_tests(test_partition_index_build)
 add_executable(test_partition_migration_end_to_end dtx/test_partition_migration_end_to_end.cc)
 target_link_libraries(test_partition_migration_end_to_end ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_partition_migration_end_to_end)
+
+add_executable(test_storage_client_pool_shutdown dtx/test_storage_client_pool_shutdown.cc)
+target_link_libraries(test_storage_client_pool_shutdown ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_client_pool_shutdown)
+
+add_executable(test_storage_client_retry_shutdown dtx/test_storage_client_retry_shutdown.cc)
+target_link_libraries(test_storage_client_retry_shutdown ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_client_retry_shutdown)
 
 add_executable(test_migration_checksum dtx/test_migration_checksum.cc)
 target_link_libraries(test_migration_checksum ${CEDAR_TEST_LIBS})
@@ -570,11 +594,20 @@ gtest_discover_tests(test_dtx_rpc_client_promise_safety)
 # P1-5: ServiceDiscovery DNS use-after-free fix
 add_executable(test_service_discovery_dns_safety dtx/test_service_discovery_dns_safety.cc)
 target_link_libraries(test_service_discovery_dns_safety ${CEDAR_TEST_LIBS})
+target_compile_definitions(test_service_discovery_dns_safety PRIVATE CEDAR_TESTING)
 gtest_discover_tests(test_service_discovery_dns_safety)
 
 add_executable(test_cluster_initializer_registration dtx/test_cluster_initializer_registration.cc)
 target_link_libraries(test_cluster_initializer_registration ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cluster_initializer_registration)
+
+add_executable(test_meta_service_node_client_shutdown dtx/test_meta_service_node_client_shutdown.cc)
+target_link_libraries(test_meta_service_node_client_shutdown ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_meta_service_node_client_shutdown)
+
+add_executable(test_monitoring_shutdown dtx/test_monitoring_shutdown.cc)
+target_link_libraries(test_monitoring_shutdown ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_monitoring_shutdown)
 
 add_executable(test_braft_read_index dtx/test_braft_read_index.cc)
 target_link_libraries(test_braft_read_index ${CEDAR_TEST_LIBS})
@@ -603,6 +636,10 @@ gtest_discover_tests(test_metrics_registry)
 add_executable(test_metrics_labels metrics/test_metrics_labels.cc)
 target_link_libraries(test_metrics_labels ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_metrics_labels)
+
+add_executable(test_storage_metrics_collector metrics/test_storage_metrics_collector.cc)
+target_link_libraries(test_storage_metrics_collector ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_metrics_collector)
 
 add_executable(prometheus_escape_test metrics/prometheus_escape_test.cc)
 target_link_libraries(prometheus_escape_test ${CEDAR_TEST_LIBS})
@@ -649,7 +686,7 @@ gtest_discover_tests(test_partition_raft)
 
 # Cluster test tool
 add_executable(cluster_test_tool ../tools/cluster_test_tool.cc)
-target_link_libraries(cluster_test_tool cedar cedar_graph ${GTEST_MAIN_TARGET} pthread)
+target_link_libraries(cluster_test_tool cedar_graph ${GTEST_MAIN_TARGET})
 if(TARGET gRPC::grpc++)
     target_link_libraries(cluster_test_tool gRPC::grpc++)
 elseif(GRPC_FOUND)
@@ -699,6 +736,10 @@ gtest_discover_tests(test_storage_subquery)
 add_executable(test_parallel_compaction_scheduler storage/test_parallel_compaction_scheduler.cc)
 target_link_libraries(test_parallel_compaction_scheduler ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_parallel_compaction_scheduler)
+
+add_executable(test_async_index_builder_lifecycle storage/test_async_index_builder_lifecycle.cc)
+target_link_libraries(test_async_index_builder_lifecycle ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_async_index_builder_lifecycle)
 
 add_executable(test_storage_critical_batch storage/test_storage_critical_batch.cc)
 target_link_libraries(test_storage_critical_batch ${CEDAR_TEST_LIBS})
@@ -769,6 +810,10 @@ gtest_discover_tests(test_queryd_blockers)
 add_executable(test_queryd_critical queryd/test_queryd_critical.cc)
 target_link_libraries(test_queryd_critical ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_queryd_critical)
+
+add_executable(test_meta_client_shutdown queryd/test_meta_client_shutdown.cc)
+target_link_libraries(test_meta_client_shutdown ${CEDAR_TEST_LIBS} cedar_queryd)
+gtest_discover_tests(test_meta_client_shutdown)
 
 add_executable(test_match_optimization queryd/test_match_optimization.cc)
 target_link_libraries(test_match_optimization ${CEDAR_TEST_LIBS} cedar_queryd)
@@ -854,7 +899,7 @@ add_executable(test_graph_service_router
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
 )
-target_link_libraries(test_graph_service_router cedar cedar_cypher cedar_queryd gRPC::grpc++ ${GTEST_MAIN_TARGET})
+target_link_libraries(test_graph_service_router cedar_cypher ${GTEST_MAIN_TARGET})
 target_link_directories(test_graph_service_router PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_graph_service_router)
 
@@ -866,7 +911,7 @@ add_executable(test_graph_service_router_auth
     ${CMAKE_BINARY_DIR}/generated_proto/query_service.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/query_service.grpc.pb.cc
 )
-target_link_libraries(test_graph_service_router_auth cedar cedar_cypher cedar_queryd gRPC::grpc++ ${GTEST_MAIN_TARGET})
+target_link_libraries(test_graph_service_router_auth cedar_cypher ${GTEST_MAIN_TARGET})
 target_link_directories(test_graph_service_router_auth PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_graph_service_router_auth)
 
@@ -886,7 +931,7 @@ add_executable(test_service_meta_critical
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
 )
-target_link_libraries(test_service_meta_critical cedar cedar_graph cedar_cypher cedar_queryd gRPC::grpc++ ${GTEST_MAIN_TARGET} pthread)
+target_link_libraries(test_service_meta_critical cedar_cypher ${GTEST_MAIN_TARGET})
 target_link_directories(test_service_meta_critical PRIVATE /opt/homebrew/lib)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(test_service_meta_critical PRIVATE -Wno-vla-cxx-extension)
@@ -934,6 +979,10 @@ add_executable(test_full_pipeline end_to_end/test_full_pipeline.cc)
 target_link_libraries(test_full_pipeline ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_full_pipeline)
 
+add_executable(test_backup_manager test_backup_manager.cc)
+target_link_libraries(test_backup_manager cedar_client ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_backup_manager)
+
 # Client Library Test
 add_executable(test_client test_client.cc)
 target_link_libraries(test_client cedar_client cedar_cypher gtest gtest_main pthread)
@@ -941,14 +990,14 @@ gtest_discover_tests(test_client)
 
 # Async Query Benchmark
 add_executable(test_async_query_benchmark test_async_query_benchmark.cc)
-target_link_libraries(test_async_query_benchmark cedar_client cedar_cypher gtest gtest_main pthread)
+target_link_libraries(test_async_query_benchmark cedar_client cedar_cypher gtest gtest_main)
 gtest_discover_tests(test_async_query_benchmark)
 
 # Stress Test
 add_executable(test_stress test_stress.cc)
-target_link_libraries(test_stress cedar cedar_cypher gtest gtest_main pthread)
+target_link_libraries(test_stress cedar_cypher gtest gtest_main)
 gtest_discover_tests(test_stress)
 
 # Data Insert Test
 add_executable(test_data_insert ../tools/test_data_insert.cc)
-target_link_libraries(test_data_insert cedar cedar_cypher cedar_queryd gRPC::grpc++ protobuf::libprotobuf gtest gtest_main pthread)
+target_link_libraries(test_data_insert cedar_cypher gtest gtest_main)

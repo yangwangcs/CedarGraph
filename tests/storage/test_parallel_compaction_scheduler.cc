@@ -13,7 +13,10 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <chrono>
 #include <filesystem>
+#include <future>
+#include <thread>
 
 #include "cedar/storage/parallel_compaction_engine.h"
 #include "cedar/storage/size_tiered_compaction.h"
@@ -80,4 +83,101 @@ TEST_F(ParallelCompactionSchedulerTest, ScheduleIfNeededEnqueuesTask) {
 
   parallel_engine.Stop();
   engine.Close().IgnoreError();
+}
+
+TEST_F(ParallelCompactionSchedulerTest, WaitForAllObservesAcceptedTasks) {
+  SizeTieredConfig config;
+  config.l0_max_files = 1;
+  config.enable_background_compaction = false;
+
+  SizeTieredCompactionEngine engine(test_dir_, config, env_);
+  ASSERT_TRUE(engine.Open().ok());
+
+  for (uint64_t i = 1; i <= 2; ++i) {
+    ZoneSstMeta meta;
+    meta.file_number = i;
+    meta.file_size = 1024;
+    meta.level = 0;
+    meta.min_entity_id = i * 100;
+    meta.max_entity_id = i * 100 + 99;
+    meta.min_timestamp = 1000;
+    meta.max_timestamp = 2000;
+    meta.column_id = 1;
+    meta.entity_type = 0;
+    ASSERT_TRUE(engine.AddSSTFile(meta).ok());
+  }
+
+  ParallelCompactionConfig parallel_config;
+  parallel_config.num_threads = 1;
+  ParallelCompactionEngine parallel_engine(&engine, parallel_config);
+  parallel_engine.Start();
+
+  ASSERT_TRUE(parallel_engine.ScheduleIfNeeded());
+
+  auto wait_future = std::async(std::launch::async, [&]() {
+    parallel_engine.WaitForAll();
+  });
+
+  EXPECT_EQ(wait_future.wait_for(std::chrono::seconds(2)),
+            std::future_status::ready);
+  EXPECT_EQ(parallel_engine.PendingTasks(), 0u);
+  EXPECT_EQ(parallel_engine.ActiveTasks(), 0);
+
+  parallel_engine.Stop();
+  engine.Close().IgnoreError();
+}
+
+TEST_F(ParallelCompactionSchedulerTest, CloseWakesPausedBackgroundCompaction) {
+  SizeTieredConfig config;
+  config.l0_max_files = 1;
+  config.enable_background_compaction = true;
+  config.compaction_threads = 1;
+
+  SizeTieredCompactionEngine engine(test_dir_, config, env_);
+  ASSERT_TRUE(engine.Open().ok());
+
+  engine.PauseCompaction();
+
+  for (uint64_t i = 1; i <= 2; ++i) {
+    ZoneSstMeta meta;
+    meta.file_number = i;
+    meta.file_size = 1024;
+    meta.level = 0;
+    meta.min_entity_id = i * 100;
+    meta.max_entity_id = i * 100 + 99;
+    meta.min_timestamp = 1000;
+    meta.max_timestamp = 2000;
+    meta.column_id = 1;
+    meta.entity_type = 0;
+    ASSERT_TRUE(engine.AddSSTFile(meta).ok());
+  }
+
+  auto close_future = std::async(std::launch::async, [&]() {
+    return engine.Close();
+  });
+
+  ASSERT_EQ(close_future.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  EXPECT_TRUE(close_future.get().ok());
+}
+
+TEST_F(ParallelCompactionSchedulerTest, ColumnAvailabilityNotificationWakesWaiter) {
+  ParallelCompactionConfig config;
+  ColumnGroupTaskQueue queue(config);
+  queue.MarkColumnBusy("vertex:1", true);
+
+  auto wait_future = std::async(std::launch::async, [&]() {
+    return queue.WaitForColumnAvailable("vertex:1", std::chrono::seconds(30));
+  });
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  auto start = std::chrono::steady_clock::now();
+  queue.MarkColumnBusy("vertex:1", false);
+
+  ASSERT_EQ(wait_future.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  EXPECT_TRUE(wait_future.get());
+  auto elapsed = std::chrono::steady_clock::now() - start;
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            500);
 }

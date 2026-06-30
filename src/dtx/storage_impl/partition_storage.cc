@@ -21,11 +21,47 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <system_error>
 #include <sys/uio.h>
 #include <unistd.h>
 
 namespace cedar {
 namespace dtx {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+Status FilesystemStatus(const std::string& operation,
+                        const fs::path& path,
+                        const std::error_code& ec) {
+  return Status::IOError(operation + ": " + path.string(), ec.message());
+}
+
+bool IsSameOrChildPath(const fs::path& path, const fs::path& parent) {
+  auto path_it = path.begin();
+  auto parent_it = parent.begin();
+  for (; parent_it != parent.end(); ++parent_it, ++path_it) {
+    if (path_it == path.end() || *path_it != *parent_it) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool IsMigrationSnapshotDirectory(const fs::path& path) {
+  const std::string name = path.filename().string();
+  return name.rfind("migration_snap_", 0) == 0;
+}
+
+bool HasParentTraversal(const fs::path& path) {
+  for (const auto& part : path) {
+    if (part == "..") return true;
+  }
+  return false;
+}
+
+}  // namespace
 
 // =============================================================================
 // PartitionStorage Implementation - Shared LSM-Tree Architecture
@@ -555,19 +591,98 @@ std::string PartitionStorage::GetDataRoot() const {
 }
 
 Status PartitionStorage::SaveSnapshotForMigration(const std::string& snapshot_path) const {
-  std::filesystem::create_directories(snapshot_path);
-
-  auto data_root = GetDataRoot();
-  for (const auto& entry : std::filesystem::recursive_directory_iterator(data_root)) {
-    if (!entry.is_regular_file()) continue;
-    auto rel_path = std::filesystem::relative(entry.path(), data_root);
-    auto dst_path = snapshot_path + "/" + rel_path.string();
-    std::filesystem::create_directories(std::filesystem::path(dst_path).parent_path());
-    std::filesystem::copy_file(entry.path(), dst_path,
-                                std::filesystem::copy_options::overwrite_existing);
+  const fs::path snapshot_dir(snapshot_path);
+  std::error_code ec;
+  fs::create_directories(snapshot_dir, ec);
+  if (ec) {
+    return FilesystemStatus("SaveSnapshotForMigration create snapshot directory",
+                            snapshot_dir, ec);
   }
 
-  auto txn_state_path = snapshot_path + "/txn_state";
+  const fs::path data_root(GetDataRoot());
+  auto canonical_data_root = fs::weakly_canonical(data_root, ec);
+  if (ec) {
+    return FilesystemStatus("SaveSnapshotForMigration resolve data root",
+                            data_root, ec);
+  }
+  auto canonical_snapshot_dir = fs::weakly_canonical(snapshot_dir, ec);
+  if (ec) {
+    return FilesystemStatus("SaveSnapshotForMigration resolve snapshot directory",
+                            snapshot_dir, ec);
+  }
+  if (canonical_data_root == canonical_snapshot_dir) {
+    return Status::InvalidArgument(
+        "Snapshot path cannot be the partition data root",
+        canonical_snapshot_dir.string());
+  }
+
+  fs::recursive_directory_iterator it(
+      canonical_data_root, fs::directory_options::skip_permission_denied, ec);
+  if (ec) {
+    return FilesystemStatus("SaveSnapshotForMigration iterate data root",
+                            canonical_data_root, ec);
+  }
+  const fs::recursive_directory_iterator end;
+  for (; it != end; it.increment(ec)) {
+    if (ec) {
+      return FilesystemStatus("SaveSnapshotForMigration advance iterator",
+                              canonical_data_root, ec);
+    }
+
+    const auto& entry = *it;
+    auto canonical_entry = fs::weakly_canonical(entry.path(), ec);
+    if (ec) {
+      return FilesystemStatus("SaveSnapshotForMigration resolve entry",
+                              entry.path(), ec);
+    }
+
+    if (entry.is_directory(ec)) {
+      if (IsSameOrChildPath(canonical_entry, canonical_snapshot_dir) ||
+          IsMigrationSnapshotDirectory(canonical_entry)) {
+        it.disable_recursion_pending();
+      }
+      continue;
+    }
+    if (ec) {
+      return FilesystemStatus("SaveSnapshotForMigration inspect directory",
+                              entry.path(), ec);
+    }
+
+    if (IsSameOrChildPath(canonical_entry, canonical_snapshot_dir)) {
+      continue;
+    }
+    if (!entry.is_regular_file(ec)) {
+      if (ec) {
+        return FilesystemStatus("SaveSnapshotForMigration inspect file",
+                                entry.path(), ec);
+      }
+      continue;
+    }
+
+    auto rel_path = fs::relative(canonical_entry, canonical_data_root, ec);
+    if (ec) {
+      return FilesystemStatus("SaveSnapshotForMigration derive relative path",
+                              canonical_entry, ec);
+    }
+    if (rel_path.is_absolute() || HasParentTraversal(rel_path)) {
+      return Status::InvalidArgument("Unsafe snapshot relative path",
+                                     rel_path.string());
+    }
+
+    auto dst_path = canonical_snapshot_dir / rel_path;
+    fs::create_directories(dst_path.parent_path(), ec);
+    if (ec) {
+      return FilesystemStatus("SaveSnapshotForMigration create destination directory",
+                              dst_path.parent_path(), ec);
+    }
+    fs::copy_file(canonical_entry, dst_path,
+                  fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+      return FilesystemStatus("SaveSnapshotForMigration copy file", dst_path, ec);
+    }
+  }
+
+  auto txn_state_path = (canonical_snapshot_dir / "txn_state").string();
   auto s = SavePreparedTxns(txn_state_path);
   if (!s.ok()) return s;
 

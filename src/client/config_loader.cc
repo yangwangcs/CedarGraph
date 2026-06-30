@@ -36,6 +36,7 @@ bool ConfigLoader::LoadFromString(const std::string& content) {
   std::istringstream stream(content);
   std::string line;
   std::string current_section;
+  std::unordered_map<std::string, ConfigSection> parsed_sections;
 
   while (std::getline(stream, line)) {
     // Trim whitespace
@@ -59,10 +60,11 @@ bool ConfigLoader::LoadFromString(const std::string& content) {
       value = ExpandEnvironmentVariables(value);
 
       // Store in current section
-      sections_[current_section][key] = value;
+      parsed_sections[current_section][key] = value;
     }
   }
 
+  sections_ = std::move(parsed_sections);
   return true;
 }
 

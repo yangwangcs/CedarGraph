@@ -71,7 +71,7 @@ add_test(NAME test_execution_operators COMMAND test_execution_operators)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_execution_operators -j$(nproc)
+cd <repo-root>/build && cmake .. && make test_execution_operators -j$(nproc)
 ```
 
 Expected: compilation succeeds or shows specific missing-symbol errors.
@@ -88,7 +88,7 @@ If the compiler reports `Record::Set` or `Record::Get` is not found, verify `Rec
 
 Run the build again:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && make test_execution_operators -j$(nproc)
+cd <repo-root>/build && make test_execution_operators -j$(nproc)
 ```
 
 Expected: `Linking CXX executable tests/cypher/test_execution_operators` succeeds.
@@ -97,7 +97,7 @@ Expected: `Linking CXX executable tests/cypher/test_execution_operators` succeed
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ./tests/cypher/test_execution_operators
+cd <repo-root>/build && ./tests/cypher/test_execution_operators
 ```
 
 Expected: 13 tests pass.
@@ -105,7 +105,7 @@ Expected: 13 tests pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/cypher/CMakeLists.txt tests/cypher/test_execution_operators.cc
 git commit -m "test(cypher): register orphan test_execution_operators (13 tests)"
 ```
@@ -210,7 +210,7 @@ gtest_discover_tests(test_version_chain)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_bookmark_manager test_lnd_occ test_temporal_window test_twcd_engine test_version_chain -j$(nproc)
+cd <repo-root>/build && cmake .. && make test_bookmark_manager test_lnd_occ test_temporal_window test_twcd_engine test_version_chain -j$(nproc)
 ```
 
 Expected: all 5 binaries link successfully.
@@ -219,7 +219,7 @@ Expected: all 5 binaries link successfully.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ./tests/test_bookmark_manager && ./tests/test_lnd_occ && ./tests/test_temporal_window && ./tests/test_twcd_engine && ./tests/test_version_chain
+cd <repo-root>/build && ./tests/test_bookmark_manager && ./tests/test_lnd_occ && ./tests/test_temporal_window && ./tests/test_twcd_engine && ./tests/test_version_chain
 ```
 
 Expected: 26 + 14 + 35 + 17 + 15 = 107 tests pass.
@@ -227,7 +227,7 @@ Expected: 26 + 14 + 35 + 17 + 15 = 107 tests pass.
 - [ ] **Step 9: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/CMakeLists.txt tests/dtx/unit/test_bookmark_manager.cc tests/dtx/unit/test_lnd_occ.cc tests/dtx/unit/test_temporal_window.cc tests/dtx/unit/test_twcd_engine.cc tests/dtx/unit/test_version_chain.cc
 git commit -m "test(dtx): register 5 orphan unit tests (107 tests)"
 ```
@@ -285,14 +285,14 @@ gtest_discover_tests(test_storage_server_unit)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_deadlock_detector test_hybrid_logical_clock_unit test_dtx_integration test_partition_unit test_storage_server_unit -j$(nproc)
+cd <repo-root>/build && cmake .. && make test_deadlock_detector test_hybrid_logical_clock_unit test_dtx_integration test_partition_unit test_storage_server_unit -j$(nproc)
 ```
 
 Expected: all 5 link.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ./tests/test_deadlock_detector
 ./tests/test_hybrid_logical_clock_unit
 ./tests/test_dtx_integration
@@ -305,7 +305,7 @@ Expected: all tests pass (counts: ~7 + ~10 + ~4 + ~19 + ~5 = 45).
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/CMakeLists.txt tests/dtx/unit/test_deadlock_detector.cc tests/dtx/unit/test_integration.cc tests/dtx/unit/test_partition.cc tests/dtx/unit/test_storage_server.cc
 git commit -m "test(dtx): register 6 remaining orphan unit tests (~45 tests)"
 ```
@@ -364,7 +364,7 @@ We re-enable 7 functional tests and leave 3 performance tests disabled.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_cedar_scan test_cedar_scan_simple test_cedar_scan_view test_compaction_merger_v2 test_skeleton_cache test_skeleton_cache_lsm_integration test_cedarscan_crash -j$(nproc)
+cd <repo-root>/build && cmake .. && make test_cedar_scan test_cedar_scan_simple test_cedar_scan_view test_compaction_merger_v2 test_skeleton_cache test_skeleton_cache_lsm_integration test_cedarscan_crash -j$(nproc)
 ```
 
 If any test fails to compile, capture the error. Common fixes:
@@ -379,7 +379,7 @@ For `test_skeleton_cache.cc`, if `SkeletonCache` methods changed, update calls t
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 ./tests/test_cedar_scan
 ./tests/test_cedar_scan_simple
 ./tests/test_cedar_scan_view
@@ -394,7 +394,7 @@ Expected: all 7 binaries pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/CMakeLists.txt
 git commit -m "test(storage): re-enable 7 disabled scan/cache tests"
 ```
@@ -454,7 +454,7 @@ gtest_discover_tests(test_end_to_end_partition)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_sst_capacity_analysis test_auto_compaction_file_based test_sst_structure_analysis test_sstv2_production test_sstv2_integration test_large_sst test_small_file_compaction test_end_to_end_partition -j$(nproc)
+cd <repo-root>/build && cmake .. && make test_sst_capacity_analysis test_auto_compaction_file_based test_sst_structure_analysis test_sstv2_production test_sstv2_integration test_large_sst test_small_file_compaction test_end_to_end_partition -j$(nproc)
 ```
 
 Expected: all link. If compilation fails, apply same fix strategy as Task B1.
@@ -463,7 +463,7 @@ Expected: all link. If compilation fails, apply same fix strategy as Task B1.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 for t in test_sst_capacity_analysis test_auto_compaction_file_based test_sst_structure_analysis test_sstv2_production test_sstv2_integration test_large_sst test_small_file_compaction test_end_to_end_partition; do
   echo "=== $t ==="
   ./tests/$t || echo "FAILED: $t"
@@ -475,7 +475,7 @@ Expected: all pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/CMakeLists.txt
 git commit -m "test(sst,e2e): re-enable 8 disabled sst and partition e2e tests"
 ```
@@ -648,7 +648,7 @@ Do this for all 9 missing-file entries.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_storage_integration test_partition_raft test_partition_raft_manager test_partition_storage_integration test_partition_metadata_service test_partition_router_leader_only test_cypher_validator test_storage_interface_predicate test_cedar_basic_persistence -j$(nproc)
+cd <repo-root>/build && cmake .. && make test_storage_integration test_partition_raft test_partition_raft_manager test_partition_storage_integration test_partition_metadata_service test_partition_router_leader_only test_cypher_validator test_storage_interface_predicate test_cedar_basic_persistence -j$(nproc)
 ```
 
 Expected: all 9 link.
@@ -657,7 +657,7 @@ Expected: all 9 link.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 for t in test_storage_integration test_partition_raft test_partition_raft_manager test_partition_storage_integration test_partition_metadata_service test_partition_router_leader_only test_cypher_validator test_storage_interface_predicate test_cedar_basic_persistence; do
   echo "=== $t ==="
   ./tests/$t || echo "FAILED: $t"
@@ -669,7 +669,7 @@ Expected: 9 tests pass.
 - [ ] **Step 13: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/CMakeLists.txt tests/cluster/test_storage_integration.cc tests/cluster/test_partition_raft.cc tests/cluster/test_partition_raft_manager.cc tests/cluster/test_partition_storage_integration.cc tests/cluster/test_partition_metadata_service.cc tests/test_partition_router_leader_only.cc tests/test_cypher_validator.cc tests/test_storage_interface_predicate.cc tests/test_cedar_basic_persistence.cc
 git commit -m "test(stubs): create missing source files and re-enable 9 disabled tests"
 ```
@@ -793,7 +793,7 @@ gtest_discover_tests(test_active_entity_bitmap)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_active_entity_bitmap -j$(nproc)
+cd <repo-root>/build && cmake .. && make test_active_entity_bitmap -j$(nproc)
 ```
 
 Expected: links successfully.
@@ -802,7 +802,7 @@ Expected: links successfully.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ./tests/test_active_entity_bitmap
+cd <repo-root>/build && ./tests/test_active_entity_bitmap
 ```
 
 Expected: 10 tests pass.
@@ -810,7 +810,7 @@ Expected: 10 tests pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/storage/test_active_entity_bitmap.cc tests/CMakeLists.txt
 git commit -m "test(storage): add ActiveEntityBitmap, VSLNodeHint, AnchorCache tests (10 tests)"
 ```
@@ -917,7 +917,7 @@ gtest_discover_tests(test_block_cache)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_block_cache -j$(nproc) && ./tests/test_block_cache
+cd <repo-root>/build && cmake .. && make test_block_cache -j$(nproc) && ./tests/test_block_cache
 ```
 
 Expected: 8 tests pass.
@@ -925,7 +925,7 @@ Expected: 8 tests pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/storage/test_block_cache.cc tests/CMakeLists.txt
 git commit -m "test(storage): add BlockCache and BlockCacheManager tests (8 tests)"
 ```
@@ -1074,7 +1074,7 @@ gtest_discover_tests(test_versioned_skiplist_lockfree)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_versioned_skiplist_lockfree -j$(nproc) && ./tests/test_versioned_skiplist_lockfree
+cd <repo-root>/build && cmake .. && make test_versioned_skiplist_lockfree -j$(nproc) && ./tests/test_versioned_skiplist_lockfree
 ```
 
 Expected: 10 tests pass. If `Descriptor::AsInlineInt()` doesn't compile, check `include/cedar/types/descriptor.h` for the correct accessor name (e.g., `inline_int_value()` or similar) and adjust.
@@ -1082,7 +1082,7 @@ Expected: 10 tests pass. If `Descriptor::AsInlineInt()` doesn't compile, check `
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/storage/test_versioned_skiplist_lockfree.cc tests/CMakeLists.txt
 git commit -m "test(storage): add LFNode and LockedVSL tests (10 tests)"
 ```
@@ -1159,7 +1159,7 @@ gtest_discover_tests(test_mth_partitioner)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_mth_partitioner -j$(nproc) && ./tests/test_mth_partitioner
+cd <repo-root>/build && cmake .. && make test_mth_partitioner -j$(nproc) && ./tests/test_mth_partitioner
 ```
 
 Expected: 5 tests pass. If `NumPartitions()` doesn't exist on `TemporalSketch`, remove that assertion or check the actual `TemporalSketch` API.
@@ -1167,7 +1167,7 @@ Expected: 5 tests pass. If `NumPartitions()` doesn't exist on `TemporalSketch`, 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/partition/test_mth_partitioner.cc tests/CMakeLists.txt
 git commit -m "test(partition): add MTHPartitioner tests (5 tests)"
 ```
@@ -1297,7 +1297,7 @@ gtest_discover_tests(test_partition_strategy_manager)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_partition_strategy_manager -j$(nproc) && ./tests/test_partition_strategy_manager
+cd <repo-root>/build && cmake .. && make test_partition_strategy_manager -j$(nproc) && ./tests/test_partition_strategy_manager
 ```
 
 Expected: 8 tests pass.
@@ -1305,7 +1305,7 @@ Expected: 8 tests pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/partition/test_partition_strategy_manager.cc tests/CMakeLists.txt
 git commit -m "test(partition): add PartitionStrategyManager tests (8 tests)"
 ```
@@ -1411,7 +1411,7 @@ gtest_discover_tests(test_bloom_filter)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_bloom_filter -j$(nproc) && ./tests/test_bloom_filter
+cd <repo-root>/build && cmake .. && make test_bloom_filter -j$(nproc) && ./tests/test_bloom_filter
 ```
 
 Expected: 8 tests pass.
@@ -1419,7 +1419,7 @@ Expected: 8 tests pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/sst/test_bloom_filter.cc tests/CMakeLists.txt
 git commit -m "test(sst): add BloomFilter tests (8 tests)"
 ```
@@ -1580,7 +1580,7 @@ gtest_discover_tests(test_column_coders)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_column_coders -j$(nproc) && ./tests/test_column_coders
+cd <repo-root>/build && cmake .. && make test_column_coders -j$(nproc) && ./tests/test_column_coders
 ```
 
 Expected: 15 tests pass. If `Descriptor::InlineInt` doesn't compile, check `include/cedar/types/descriptor.h` for the correct factory method name.
@@ -1588,7 +1588,7 @@ Expected: 15 tests pass. If `Descriptor::InlineInt` doesn't compile, check `incl
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/sst/test_column_coders.cc tests/CMakeLists.txt
 git commit -m "test(sst): add column coder tests (15 tests)"
 ```
@@ -1729,7 +1729,7 @@ gtest_discover_tests(test_full_pipeline)
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make test_full_pipeline -j$(nproc) && ./tests/test_full_pipeline
+cd <repo-root>/build && cmake .. && make test_full_pipeline -j$(nproc) && ./tests/test_full_pipeline
 ```
 
 Expected: 3 tests pass. If `Descriptor::AsInlineInt()` doesn't compile, check `include/cedar/types/descriptor.h` for the correct accessor and adjust.
@@ -1737,7 +1737,7 @@ Expected: 3 tests pass. If `Descriptor::AsInlineInt()` doesn't compile, check `i
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add tests/end_to_end/test_full_pipeline.cc tests/CMakeLists.txt
 git commit -m "test(e2e): add full pipeline test Space→Put→Get→Cypher (3 tests)"
 ```
@@ -1752,7 +1752,7 @@ git commit -m "test(e2e): add full pipeline test Space→Put→Get→Cypher (3 t
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && cmake .. && make -j$(nproc)
+cd <repo-root>/build && cmake .. && make -j$(nproc)
 ```
 
 Expected: Build completes with zero errors.
@@ -1761,7 +1761,7 @@ Expected: Build completes with zero errors.
 
 Run:
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build && ctest --output-on-failure -j$(nproc)
+cd <repo-root>/build && ctest --output-on-failure -j$(nproc)
 ```
 
 Expected: All tests pass. The count should be approximately:
@@ -1776,7 +1776,7 @@ Expected: All tests pass. The count should be approximately:
 - [ ] **Step 3: Commit final state**
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core
+cd <repo-root>
 git add -A
 git commit -m "test: complete test coverage restoration (~1079 tests passing)"
 ```

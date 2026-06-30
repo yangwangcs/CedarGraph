@@ -677,7 +677,7 @@ class BackpressureController {
 ### Build
 
 ```bash
-cd /Users/wangyang/Desktop/CedarGraph-Core/build
+cd <repo-root>/build
 cmake --build . --target cedar_queryd --target cedar_storaged --target cedar_metad
 # 0 errors, 0 warnings in modified files
 ```

@@ -9,6 +9,7 @@ if(APPLE)
         "-Wl,-U,_ProfilerStop"
         "-Wl,-U,_mallctl"
         "-Wl,-U,_malloc_stats_print"
+        "-Wl,-no_warn_duplicate_libraries"
     )
     # Global link directory for Homebrew libraries (gflags, grpc, etc.)
     link_directories(/opt/homebrew/lib)
@@ -40,6 +41,8 @@ include_directories(/opt/homebrew/opt/nlohmann-json/include)  # nlohmann/json
 set(PROTO_OUT_DIR ${CMAKE_BINARY_DIR}/generated_proto)
 file(MAKE_DIRECTORY ${PROTO_OUT_DIR})
 include_directories(${PROTO_OUT_DIR})  # For generated protobuf files
+
+find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin REQUIRED)
 
 # Generate protobuf files
 set(PROTO_FILES 
@@ -79,7 +82,7 @@ add_custom_command(
     COMMAND protobuf::protoc
     ARGS --grpc_out=${PROTO_OUT_DIR}
          --cpp_out=${PROTO_OUT_DIR}
-         --plugin=protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+         --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN_EXECUTABLE}
          -I ${CMAKE_SOURCE_DIR}/proto
          ${PROTO_FILES}
     DEPENDS ${PROTO_FILES}
@@ -126,6 +129,24 @@ else()
     # Include gRPC directories
     include_directories(${gRPC_INCLUDE_DIRS})
 endif()
+if(NOT TARGET gRPC::grpc++)
+    add_library(gRPC::grpc++ INTERFACE IMPORTED)
+    set_target_properties(gRPC::grpc++ PROPERTIES
+        INTERFACE_LINK_LIBRARIES "${GRPC_LIBRARIES}"
+        INTERFACE_INCLUDE_DIRECTORIES "${GRPC_INCLUDE_DIRS}"
+    )
+endif()
+if(NOT TARGET yaml-cpp::yaml-cpp)
+    if(TARGET yaml-cpp)
+        add_library(yaml-cpp::yaml-cpp ALIAS yaml-cpp)
+    else()
+        find_library(YAML_CPP_LIBRARY NAMES yaml-cpp REQUIRED)
+        add_library(yaml-cpp::yaml-cpp UNKNOWN IMPORTED)
+        set_target_properties(yaml-cpp::yaml-cpp PROPERTIES
+            IMPORTED_LOCATION "${YAML_CPP_LIBRARY}"
+        )
+    endif()
+endif()
 
 # =============================================================================
 # Required: braft + brpc for production Raft consensus and RPC
@@ -165,13 +186,30 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/brpc EXCLUDE_FROM_ALL)
 
-# Point braft to our brpc
+# Point braft to vendored brpc. Without these cache entries, braft's
+# find_path/find_library may pick up Homebrew brpc/butil headers on macOS.
 set(brpc_DIR ${CMAKE_BINARY_DIR}/third_party/brpc CACHE PATH "" FORCE)
+set(BRPC_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/third_party/brpc/src CACHE PATH "" FORCE)
+set(BRPC_LIB brpc-static CACHE STRING "" FORCE)
 
 # Build braft
 set(BRAFT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(BRAFT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/braft EXCLUDE_FROM_ALL)
+if(TARGET OBJ_LIB AND TARGET PROTO_LIB)
+    add_dependencies(OBJ_LIB PROTO_LIB)
+    target_include_directories(OBJ_LIB BEFORE PRIVATE
+        ${CMAKE_BINARY_DIR}/third_party/brpc/output/include
+    )
+endif()
+
+# Vendored brpc/braft are noisy on modern macOS SDKs. Treat them as third-party
+# code so Cedar builds surface Cedar warnings instead of dependency churn.
+foreach(_cedar_third_party_target IN ITEMS PROTO_LIB BUTIL_LIB SOURCES_LIB OBJ_LIB)
+    if(TARGET ${_cedar_third_party_target})
+        target_compile_options(${_cedar_third_party_target} PRIVATE -w)
+    endif()
+endforeach()
 
 set(braft_FOUND TRUE)
 
@@ -352,7 +390,7 @@ set(CEDAR_GOVERNANCE_SOURCES
 )
 
 # Create cedar library
-add_library(cedar STATIC 
+add_library(cedar STATIC
     ${CEDAR_CORE_SOURCES}
     ${CEDAR_STORAGE_SOURCES}
     ${CEDAR_TRANSACTION_SOURCES}
@@ -375,6 +413,9 @@ add_library(cedar STATIC
     ${PROTO_OUT_DIR}/dtx_protocol.pb.cc
     ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc
 )
+if(TARGET OBJ_LIB)
+    add_dependencies(cedar OBJ_LIB)
+endif()
 
 target_link_libraries(cedar ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES} CURL::libcurl OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf gRPC::grpc++ yaml-cpp::yaml-cpp)
 target_include_directories(cedar PUBLIC ${LZ4_INCLUDE_DIRS})
@@ -390,12 +431,14 @@ else()
     message(FATAL_ERROR "braft target not found (expected braft-static or braft)")
 endif()
 # Add braft and brpc include directories from vendored third_party
-target_include_directories(cedar PUBLIC 
+target_include_directories(cedar SYSTEM BEFORE PUBLIC
     ${CMAKE_SOURCE_DIR}/third_party/braft/include
     ${CMAKE_BINARY_DIR}/third_party/braft/src
+    ${CMAKE_BINARY_DIR}/third_party/braft
     ${CMAKE_SOURCE_DIR}/third_party/braft/src
     ${CMAKE_SOURCE_DIR}/third_party/brpc/src
     ${CMAKE_BINARY_DIR}/third_party/brpc/src
+    ${CMAKE_BINARY_DIR}/third_party/brpc/output/include
 )
 
 # Graph sources
@@ -482,7 +525,7 @@ target_include_directories(graphd PRIVATE
     ${CMAKE_SOURCE_DIR}
 )
 target_link_directories(graphd PRIVATE /opt/homebrew/lib)
-target_link_libraries(graphd cedar cedar_cypher cedar_queryd gRPC::grpc++ gflags pthread)
+target_link_libraries(graphd cedar_cypher)
 target_compile_definitions(graphd PRIVATE CEDAR_NO_GLOG)
 
 # Test client for GraphD
@@ -944,7 +987,7 @@ set(CEDAR_CLIENT_SOURCES
 )
 
 add_library(cedar_client STATIC ${CEDAR_CLIENT_SOURCES})
-target_link_libraries(cedar_client cedar gRPC::grpc++ pthread)
+target_link_libraries(cedar_client cedar gRPC::grpc++ OpenSSL::Crypto pthread)
 
 # =============================================================================
 # GCN (Graph Compute Node)
@@ -959,7 +1002,7 @@ target_link_libraries(cedar_gcn cedar gflags)
 
 add_executable(graphcomputenode tools/graphcomputenode.cc)
 target_link_directories(graphcomputenode PRIVATE /opt/homebrew/lib)
-target_link_libraries(graphcomputenode cedar_gcn cedar cedar_graph ${BRAFT_LIBRARIES} brpc-static gRPC::grpc++ gflags pthread)
+target_link_libraries(graphcomputenode cedar_gcn cedar cedar_graph gRPC::grpc++ gflags pthread)
 
 message(STATUS "")
 message(STATUS "=== CedarGraph Build Configuration ===")
@@ -989,8 +1032,11 @@ add_executable(test_sharded_memtable
 )
 target_link_libraries(test_sharded_memtable cedar)
 
-# GraphD Load Balancer Test
-add_executable(test_graphd_load_balancer
-    tests/client/test_graphd_load_balancer.cc
-)
-target_link_libraries(test_graphd_load_balancer cedar cedar_client gtest gtest_main)
+if(BUILD_TESTS)
+    # GraphD Load Balancer Test
+    add_executable(test_graphd_load_balancer
+        tests/client/test_graphd_load_balancer.cc
+    )
+    target_link_libraries(test_graphd_load_balancer cedar cedar_client gtest gtest_main)
+    gtest_discover_tests(test_graphd_load_balancer)
+endif()
