@@ -11,6 +11,8 @@ out/
 *.swo
 *~
 .DS_Store
+**/.DS_Store
+*.bak
 
 # Compiled files
 *.o
@@ -56,6 +58,7 @@ tools/cedargraph/cedargraph
 # Runtime data
 data/
 logs/
+certs/
 Testing/
 test_results/
 .preflight-backups/
