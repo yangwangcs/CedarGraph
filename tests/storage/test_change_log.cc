@@ -270,6 +270,27 @@ TEST_F(PartitionChangeLogTest, RejectsManifestSegmentRangeMismatch) {
   EXPECT_TRUE(result.status().IsCorruption()) << result.status().ToString();
 }
 
+TEST_F(PartitionChangeLogTest, KeepsManifestAuthoritativeOverStaleSegments) {
+  auto log = OpenLog(Options());
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->AppendCommittedBatch(100, MakeBatch(2)).ok());
+  auto segments = SegmentFiles();
+  ASSERT_EQ(segments.size(), 1);
+  const auto stale = test_dir_ / "99999999999999999999.seg";
+  std::filesystem::copy_file(segments.front(), stale);
+
+  log.reset();
+  auto reopened = OpenLog(Options());
+  ASSERT_NE(reopened, nullptr);
+  reopened.reset();
+
+  auto reopened_again = OpenLog(Options());
+  ASSERT_NE(reopened_again, nullptr);
+  auto result = reopened_again->ReadAfter(0, 10, 1 << 20);
+  ASSERT_TRUE(result.ok()) << result.status().ToString();
+  ASSERT_EQ(result.ValueOrDie().size(), 2);
+}
+
 TEST_F(PartitionChangeLogTest, CompactDropsEarlierOffsets) {
   auto log = OpenLog(Options());
   ASSERT_NE(log, nullptr);

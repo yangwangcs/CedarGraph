@@ -128,6 +128,12 @@ StatusOr<ManifestInfo> ReadManifest(const std::filesystem::path& dir) {
                            "cannot open manifest " + path.string());
   }
   info.present = true;
+  bool saw_version = false;
+  bool saw_partition_id = false;
+  bool saw_partition_epoch = false;
+  bool saw_earliest_offset = false;
+  bool saw_high_watermark = false;
+  bool saw_committed_version = false;
   bool in_segments = false;
   std::string line;
   while (std::getline(in, line)) {
@@ -142,6 +148,7 @@ StatusOr<ManifestInfo> ReadManifest(const std::filesystem::path& dir) {
     std::string key;
     parsed >> key;
     if (key == "version") {
+      saw_version = true;
       uint64_t version = 0;
       parsed >> version;
       if (version != 1) {
@@ -150,18 +157,23 @@ StatusOr<ManifestInfo> ReadManifest(const std::filesystem::path& dir) {
       }
     }
     if (key == "partition_id") {
+      saw_partition_id = true;
       parsed >> info.partition_id;
     }
     if (key == "partition_epoch") {
+      saw_partition_epoch = true;
       parsed >> info.partition_epoch;
     }
     if (key == "earliest_offset") {
+      saw_earliest_offset = true;
       parsed >> info.earliest_offset;
     }
     if (key == "high_watermark") {
+      saw_high_watermark = true;
       parsed >> info.high_watermark;
     }
     if (key == "committed_version") {
+      saw_committed_version = true;
       parsed >> info.committed_version;
     }
   }
@@ -203,6 +215,12 @@ StatusOr<ManifestInfo> ReadManifest(const std::filesystem::path& dir) {
                                 "empty manifest segment name");
     }
     info.segments.push_back(segment);
+  }
+  if (!saw_version || !saw_partition_id || !saw_partition_epoch ||
+      !saw_earliest_offset || !saw_high_watermark ||
+      !saw_committed_version) {
+    return Status::Corruption("PartitionChangeLog",
+                              "manifest missing required scalar");
   }
   return info;
 }
@@ -392,8 +410,7 @@ Status PartitionChangeLog::Compact(uint64_t retain_from_offset) {
                  records_.end());
   state_.earliest_offset = records_.empty() ? state_.high_watermark + 1
                                             : records_.front().offset();
-  CEDAR_RETURN_IF_ERROR(RewriteSegmentsLocked());
-  return PersistManifestLocked();
+  return RewriteSegmentsLocked();
 }
 
 Status PartitionChangeLog::Recover() {
@@ -424,6 +441,7 @@ Status PartitionChangeLog::Recover() {
                                   "manifest segment missing");
       }
       segments.push_back(path);
+      manifest_segment_names_.push_back(segment.name);
     }
   } else {
     for (const auto& entry :
@@ -553,7 +571,12 @@ Status PartitionChangeLog::Recover() {
                                 "manifest watermark mismatch");
     }
   }
-  return PersistManifestLocked();
+  if (!manifest.ValueOrDie().present) {
+    manifest_segment_names_.clear();
+  }
+  Status manifest_status = PersistManifestLocked();
+  manifest_segment_names_.clear();
+  return manifest_status;
 }
 
 Status PartitionChangeLog::AppendRecordFrame(const ChangeRecord& record) {
