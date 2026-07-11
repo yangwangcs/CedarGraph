@@ -396,6 +396,7 @@ set(CEDAR_GOVERNANCE_SOURCES
 
 set(CEDAR_CDC_SOURCES
     src/cdc/partition_change_log.cc
+    src/cdc/change_log_maintenance.cc
 )
 
 # Create cedar library

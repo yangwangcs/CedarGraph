@@ -18,6 +18,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <filesystem>
 #include <execinfo.h>
@@ -37,6 +38,7 @@
 #include "cedar/dtx/raft/grpc_tls.h"
 #include "cedar/dtx/storage/storaged_raft_state_machine.h"
 #include "cedar/dtx/storage/partition_raft_manager.h"
+#include "cedar/cdc/change_log_maintenance.h"
 #include "cedar/cdc/partition_change_log.h"
 #include "cedar/cdc/rpc_limits.h"
 #include "cedar/core/crc32c.h"
@@ -220,6 +222,8 @@ struct Config {
   int heartbeat_interval_sec = 10;
   int health_port = 7000;
   int metrics_port = 7001;
+  cedar::cdc::ChangeLogMaintenance::Config cdc;
+  std::string cdc_config_error;
   cedar::dtx::raft::TlsConfig tls;
 
   Config() {
@@ -239,6 +243,57 @@ static void LoadConfigFromFile(Config* config, const std::string& path) {
   if (cm.HasKey("storaged.heartbeat_interval_sec")) config->heartbeat_interval_sec = cm.GetInt("storaged.heartbeat_interval_sec", config->heartbeat_interval_sec);
   if (cm.HasKey("storaged.health_port")) config->health_port = cm.GetInt("storaged.health_port", config->health_port);
   if (cm.HasKey("storaged.metrics_port")) config->metrics_port = cm.GetInt("storaged.metrics_port", config->metrics_port);
+  auto read_cdc_uint64 = [&](const std::string& key, uint64_t* target) {
+    if (!cm.HasKey(key) || !config->cdc_config_error.empty()) return;
+    auto parsed = cedar::cdc::ParseUnsignedConfigValue(key, cm.GetString(key, ""));
+    if (!parsed.ok()) {
+      config->cdc_config_error = parsed.status().ToString();
+      return;
+    }
+    *target = parsed.ValueOrDie();
+  };
+  read_cdc_uint64("storaged.cdc.min_retention_hours",
+                  &config->cdc.min_retention_hours);
+  read_cdc_uint64("storaged.cdc.max_retained_bytes",
+                  &config->cdc.max_retained_bytes);
+  read_cdc_uint64("storaged.cdc.segment_size_bytes",
+                  &config->cdc.segment_size_bytes);
+  if (cm.HasKey("storaged.cdc.maintenance_interval_ms") &&
+      config->cdc_config_error.empty()) {
+    auto parsed = cedar::cdc::ParseUnsignedConfigValue(
+        "storaged.cdc.maintenance_interval_ms",
+        cm.GetString("storaged.cdc.maintenance_interval_ms", ""));
+    if (!parsed.ok()) {
+      config->cdc_config_error = parsed.status().ToString();
+    } else if (parsed.ValueOrDie() >
+               static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      config->cdc_config_error =
+          "InvalidArgument: CDC config storaged.cdc.maintenance_interval_ms "
+          "is out of range";
+    } else {
+      config->cdc.maintenance_interval =
+          std::chrono::milliseconds(static_cast<int64_t>(parsed.ValueOrDie()));
+    }
+  }
+  if (cm.HasKey("storaged.cdc.max_rpc_records") &&
+      config->cdc_config_error.empty()) {
+    auto parsed = cedar::cdc::ParseUnsignedConfigValue(
+        "storaged.cdc.max_rpc_records",
+        cm.GetString("storaged.cdc.max_rpc_records", ""));
+    if (!parsed.ok()) {
+      config->cdc_config_error = parsed.status().ToString();
+    } else if (parsed.ValueOrDie() >
+               static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
+      config->cdc_config_error =
+          "InvalidArgument: CDC config storaged.cdc.max_rpc_records "
+          "is out of range";
+    } else {
+      config->cdc.max_rpc_records =
+          static_cast<uint32_t>(parsed.ValueOrDie());
+    }
+  }
+  read_cdc_uint64("storaged.cdc.max_rpc_bytes",
+                  &config->cdc.max_rpc_bytes);
   config->tls.enabled = cm.GetBool("tls.enabled", config->tls.enabled);
   config->tls.server_cert_file = cm.GetString("tls.server_cert", config->tls.server_cert_file);
   config->tls.server_key_file = cm.GetString("tls.server_key", config->tls.server_key_file);
@@ -310,18 +365,26 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
  public:
   explicit StorageServiceImpl(cedar::CedarGraphStorage* storage,
                                cedar::dtx::PartitionRaftManager* raft_manager = nullptr,
-                               const std::string& data_dir = "") 
-      : storage_(storage), raft_manager_(raft_manager), data_dir_(data_dir) {
+                               const std::string& data_dir = "",
+                               cedar::cdc::ChangeLogMaintenance::Config cdc_config = {})
+      : storage_(storage),
+        raft_manager_(raft_manager),
+        data_dir_(data_dir),
+        cdc_config_(std::move(cdc_config)) {
     if (storage_) {
       cypher_engine_ = std::make_unique<cedar::cypher::CypherEngine>(storage_);
       if (data_dir_.empty()) {
         data_dir_ = storage_->GetDbPath();
       }
       RecoverCdcIntents();
+      StartCdcMaintenance();
     }
   }
 
   ~StorageServiceImpl() override {
+    if (cdc_maintenance_) {
+      cdc_maintenance_->Stop();
+    }
     // Ensure proper cleanup
     storage_ = nullptr;
     raft_manager_ = nullptr;
@@ -490,14 +553,21 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
           (void)storage_timestamp;
           records.push_back(std::move(record));
         }
+        const auto append_start = std::chrono::steady_clock::now();
         auto s = log->AppendCommittedBatch(ctx.commit_ts.value(),
                                            std::move(records));
+        const double append_latency =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          append_start)
+                .count();
         if (!s.ok()) {
           all_ok = false;
           std::cerr << "[StorageD] CDC append failed: " << s.ToString()
                     << std::endl;
           break;
         }
+        RecordCdcMetrics(partition_id, log->GetState(), 0, 0,
+                         append_latency, 0.0, true, false);
         auto cleanup = DeleteCdcIntent(partition_id, request->txn_id());
         if (!cleanup.ok()) {
           std::cerr << "[StorageD] CDC intent cleanup warning: "
@@ -1203,12 +1273,14 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     if (request->expected_epoch() != 0 &&
         request->expected_epoch() != state.partition_epoch) {
       FillCdcState(response, request->partition_id(), state);
+      RecordCdcMetrics(request->partition_id(), state, 1);
       response->set_success(false);
       response->set_error_code(cedar::storage::CDC_STALE_EPOCH);
       response->set_error_msg("CDC partition epoch mismatch");
       return grpc::Status::OK;
     }
     FillCdcState(response, request->partition_id(), state);
+    RecordCdcMetrics(request->partition_id(), state);
     return grpc::Status::OK;
   }
 
@@ -1247,14 +1319,20 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     if (request->expected_epoch() != 0 &&
         request->expected_epoch() != state.partition_epoch) {
       FillCdcState(response, request->partition_id(), state);
+      RecordCdcMetrics(request->partition_id(), state, 1);
       response->set_success(false);
       response->set_error_code(cedar::storage::CDC_STALE_EPOCH);
       response->set_error_msg("CDC partition epoch mismatch");
       return grpc::Status::OK;
     }
+    const auto fetch_start = std::chrono::steady_clock::now();
     auto records = log->ReadAfter(request->after_offset(),
                                   request->limit_records(),
                                   request->limit_bytes());
+    const double fetch_latency =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      fetch_start)
+            .count();
     if (!records.ok()) {
       FillCdcState(response, request->partition_id(), state);
       response->set_success(false);
@@ -1263,6 +1341,8 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       return grpc::Status::OK;
     }
     FillCdcState(response, request->partition_id(), state);
+    RecordCdcMetrics(request->partition_id(), state, 0, 0, 0.0,
+                     fetch_latency, false, true);
     uint64_t next_offset = request->after_offset();
     for (const auto& record : records.ValueOrDie()) {
       *response->add_records() = record;
@@ -1395,6 +1475,39 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     response->set_committed_version(state.committed_version);
   }
 
+  void RecordCdcMetrics(uint32_t partition_id,
+                        const cedar::cdc::ChangeLogState& state,
+                        uint64_t stale_epoch_total = 0,
+                        uint64_t checksum_failures_total = 0,
+                        double append_latency_seconds = 0.0,
+                        double fetch_latency_seconds = 0.0,
+                        bool has_append_latency = false,
+                        bool has_fetch_latency = false) {
+    cedar::dtx::storage::MetricsCollector::CdcPartitionMetrics metrics;
+    metrics.state = state;
+    if (stale_epoch_total > 0) {
+      cdc_stale_epoch_totals_[partition_id] += stale_epoch_total;
+    }
+    if (checksum_failures_total > 0) {
+      cdc_checksum_failure_totals_[partition_id] += checksum_failures_total;
+    }
+    metrics.stale_epoch_total = cdc_stale_epoch_totals_[partition_id];
+    metrics.checksum_failures_total =
+        cdc_checksum_failure_totals_[partition_id];
+    metrics.append_latency_seconds = append_latency_seconds;
+    metrics.fetch_latency_seconds = fetch_latency_seconds;
+    metrics.has_append_latency = has_append_latency;
+    metrics.has_fetch_latency = has_fetch_latency;
+    cdc_metrics_collector_.RecordCdcPartitionMetrics(partition_id, metrics);
+  }
+
+  bool CdcLimitsValid(uint32_t limit_records, uint64_t limit_bytes) const {
+    return limit_records != 0 &&
+           limit_records <= cdc_config_.max_rpc_records &&
+           limit_bytes != 0 &&
+           limit_bytes <= cdc_config_.max_rpc_bytes;
+  }
+
   grpc::Status CheckCdcReadLeader(uint32_t partition_id) {
     if (!raft_manager_) {
       return grpc::Status::OK;
@@ -1418,6 +1531,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   }
 
   cedar::cdc::PartitionChangeLog* GetOrOpenChangeLog(uint32_t partition_id) {
+    std::lock_guard<std::mutex> lock(change_logs_mutex_);
     auto it = change_logs_.find(partition_id);
     if (it != change_logs_.end()) {
       return it->second.get();
@@ -1430,6 +1544,9 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                         std::to_string(partition_id);
     options.partition_id = partition_id;
     options.partition_epoch = 1;
+    options.max_segment_bytes = static_cast<size_t>(cdc_config_.segment_size_bytes);
+    options.max_fetch_records = cdc_config_.max_rpc_records;
+    options.max_fetch_bytes = static_cast<size_t>(cdc_config_.max_rpc_bytes);
     auto opened = cedar::cdc::PartitionChangeLog::Open(options);
     if (!opened.ok()) {
       std::cerr << "[StorageD] Failed to open CDC log for partition "
@@ -1441,6 +1558,25 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     auto* raw = log.get();
     change_logs_[partition_id] = std::move(log);
     return raw;
+  }
+
+  void StartCdcMaintenance() {
+    cdc_maintenance_ =
+        std::make_unique<cedar::cdc::ChangeLogMaintenance>(cdc_config_);
+    auto status = cdc_maintenance_->Start([this]() {
+      std::lock_guard<std::mutex> lock(change_logs_mutex_);
+      std::vector<cedar::cdc::PartitionChangeLog*> logs;
+      logs.reserve(change_logs_.size());
+      for (auto& [partition_id, log] : change_logs_) {
+        (void)partition_id;
+        logs.push_back(log.get());
+      }
+      return logs;
+    });
+    if (!status.ok()) {
+      std::cerr << "[StorageD] CDC maintenance disabled: "
+                << status.ToString() << std::endl;
+    }
   }
 
   std::filesystem::path CdcIntentDir(uint32_t partition_id) const {
@@ -1685,13 +1821,20 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
           if (records.empty() && !batch.records.empty()) {
             continue;
           }
+          const auto append_start = std::chrono::steady_clock::now();
           auto s = log->AppendCommittedBatch(batch.commit_version,
                                              std::move(records));
+          const double append_latency =
+              std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                            append_start)
+                  .count();
           if (!s.ok()) {
             std::cerr << "[StorageD] CDC intent recovery append failed: "
                       << s.ToString() << std::endl;
             continue;
           }
+          RecordCdcMetrics(partition_id, log->GetState(), 0, 0,
+                           append_latency, 0.0, true, false);
         }
         std::filesystem::remove(intent.path(), ec);
       }
@@ -1748,10 +1891,16 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   cedar::dtx::PartitionRaftManager* raft_manager_;
   std::unique_ptr<cedar::cypher::CypherEngine> cypher_engine_;
   std::string data_dir_;
+  cedar::cdc::ChangeLogMaintenance::Config cdc_config_;
   std::mutex txn_mutex_;
   std::mutex cypher_mutex_;  // Protect CypherEngine execution
+  std::mutex change_logs_mutex_;
   std::unordered_map<uint64_t, TxnContext> txn_states_;
   std::unordered_map<uint32_t, std::unique_ptr<cedar::cdc::PartitionChangeLog>> change_logs_;
+  std::unordered_map<uint32_t, uint64_t> cdc_stale_epoch_totals_;
+  std::unordered_map<uint32_t, uint64_t> cdc_checksum_failure_totals_;
+  std::unique_ptr<cedar::cdc::ChangeLogMaintenance> cdc_maintenance_;
+  cedar::dtx::storage::MetricsCollector cdc_metrics_collector_;
 };
 
 // MetaD 客户端 - 处理注册和心跳
@@ -1976,6 +2125,18 @@ int main(int argc, char* argv[]) {
   
   Config config = ParseArgs(argc, argv);
   ApplyTlsEnvOverrides(&config.tls);
+  if (!config.cdc_config_error.empty()) {
+    std::cerr << "[StorageD] Invalid CDC config: "
+              << config.cdc_config_error << std::endl;
+    return 1;
+  }
+  auto cdc_config_status =
+      cedar::cdc::ChangeLogMaintenance::ValidateConfig(config.cdc);
+  if (!cdc_config_status.ok()) {
+    std::cerr << "[StorageD] Invalid CDC config: "
+              << cdc_config_status.ToString() << std::endl;
+    return 1;
+  }
   
   // 使用 node_id 区分数据目录
   config.data_dir += "/node" + std::to_string(config.node_id);
@@ -2058,7 +2219,8 @@ int main(int argc, char* argv[]) {
   std::thread heartbeat_thread(HeartbeatLoop, &meta_client, config.heartbeat_interval_sec);
 
   // 5. 创建 gRPC 服务 (heap allocation to avoid lifetime issues)
-  auto service_impl = std::make_unique<StorageServiceImpl>(storage, &raft_manager, config.data_dir);
+  auto service_impl = std::make_unique<StorageServiceImpl>(
+      storage, &raft_manager, config.data_dir, config.cdc);
   
   // 6. 启动 gRPC 服务器
   std::string server_address = config.bind_address + ":" + std::to_string(config.port);

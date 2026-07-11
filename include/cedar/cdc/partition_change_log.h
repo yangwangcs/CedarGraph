@@ -18,6 +18,11 @@ struct ChangeLogState {
   uint64_t earliest_offset = 1;
   uint64_t high_watermark = 0;
   uint64_t committed_version = 0;
+  uint64_t segment_bytes = 0;
+  uint64_t segment_count = 0;
+  uint64_t active_segment_first_offset = 1;
+  uint64_t oldest_closed_segment_age_hours = 0;
+  uint64_t youngest_closed_segment_age_hours = 0;
 };
 
 class PartitionChangeLog {

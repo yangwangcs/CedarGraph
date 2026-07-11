@@ -29,6 +29,13 @@ storaged:
   data_dir: "/var/lib/cedar/storaged"
   meta_server: "127.0.0.1:10559"
   heartbeat_interval_sec: 10
+  cdc:
+    min_retention_hours: 24
+    max_retained_bytes: 1073741824
+    segment_size_bytes: 67108864
+    maintenance_interval_ms: 60000
+    max_rpc_records: 4096
+    max_rpc_bytes: 4194304
 
 # =============================================================================
 # GraphD - Graph Query Router

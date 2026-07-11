@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -395,7 +396,40 @@ StatusOr<std::vector<ChangeRecord>> PartitionChangeLog::ReadAfter(
 
 ChangeLogState PartitionChangeLog::GetState() const {
   std::lock_guard<std::mutex> lock(mu_);
-  return state_;
+  ChangeLogState state = state_;
+  state.active_segment_first_offset = active_segment_first_offset_;
+  state.segment_count = manifest_segment_names_.size();
+  state.segment_bytes = 0;
+  const std::filesystem::path dir(options_.directory);
+  const auto now = std::filesystem::file_time_type::clock::now();
+  bool saw_closed_segment = false;
+  for (size_t i = 0; i < manifest_segment_names_.size(); ++i) {
+    const auto& segment_name = manifest_segment_names_[i];
+    std::error_code ec;
+    const auto path = dir / segment_name;
+    const auto bytes = std::filesystem::file_size(path, ec);
+    if (!ec) {
+      state.segment_bytes += bytes;
+    }
+    if (i + 1 < manifest_segment_names_.size()) {
+      const auto mtime = std::filesystem::last_write_time(path, ec);
+      if (!ec) {
+        const auto age = std::chrono::duration_cast<std::chrono::hours>(
+            now - mtime);
+        state.oldest_closed_segment_age_hours = std::max(
+            state.oldest_closed_segment_age_hours,
+            static_cast<uint64_t>(std::max<int64_t>(0, age.count())));
+        const auto bounded_age =
+            static_cast<uint64_t>(std::max<int64_t>(0, age.count()));
+        if (!saw_closed_segment ||
+            bounded_age < state.youngest_closed_segment_age_hours) {
+          state.youngest_closed_segment_age_hours = bounded_age;
+        }
+        saw_closed_segment = true;
+      }
+    }
+  }
+  return state;
 }
 
 Status PartitionChangeLog::Compact(uint64_t retain_from_offset) {
@@ -709,9 +743,19 @@ Status PartitionChangeLog::RewriteSegmentsLocked() {
       return Status::IOError("PartitionChangeLog", ec.message());
     }
   }
-  active_segment_first_offset_ = records_.empty() ? state_.high_watermark + 1
-                                                  : records_.back().offset();
-  active_segment_size_ = 0;
+  if (records_.empty() || manifest_segment_names_.empty()) {
+    active_segment_first_offset_ = state_.high_watermark + 1;
+    active_segment_size_ = 0;
+  } else {
+    active_segment_first_offset_ =
+        std::stoull(manifest_segment_names_.back().substr(0, 20));
+    std::error_code ec;
+    active_segment_size_ =
+        std::filesystem::file_size(dir / manifest_segment_names_.back(), ec);
+    if (ec) {
+      active_segment_size_ = 0;
+    }
+  }
   return FsyncDirectory(dir);
 }
 
