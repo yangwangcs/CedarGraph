@@ -9,16 +9,22 @@
 // Provides data storage, Raft replication, and local query execution
 
 #include <iostream>
+#include <algorithm>
 #include <string>
 #include <thread>
 #include <chrono>
 #include <csignal>
 #include <atomic>
+#include <cstring>
+#include <fcntl.h>
+#include <fstream>
 #include <memory>
 #include <filesystem>
 #include <execinfo.h>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
+#include <unistd.h>
 
 #include <grpcpp/grpcpp.h>
 
@@ -31,6 +37,7 @@
 #include "cedar/dtx/raft/grpc_tls.h"
 #include "cedar/dtx/storage/storaged_raft_state_machine.h"
 #include "cedar/dtx/storage/partition_raft_manager.h"
+#include "cedar/cdc/partition_change_log.h"
 #include "cedar/common/json_logger.h"
 #include "cedar/common/grpc_request_id.h"
 #include "cedar/cypher/cypher_engine.h"
@@ -287,6 +294,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       if (data_dir_.empty()) {
         data_dir_ = storage_->GetDbPath();
       }
+      RecoverCdcIntents();
     }
   }
 
@@ -352,11 +360,12 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       return grpc::Status::OK;
     }
     auto& ctx = it->second;
-    if (ctx.state != TxnState::kPrepared) {
+    if (ctx.state != TxnState::kPrepared && ctx.state != TxnState::kCommitting) {
       response->set_success(false);
-      response->set_error_msg("Transaction not in prepared state");
+      response->set_error_msg("Transaction not in committable state");
       return grpc::Status::OK;
     }
+    ctx.state = TxnState::kCommitting;
     
     // 如果有 Raft Manager，通过 Raft Propose 提交
     if (raft_manager_) {
@@ -390,15 +399,87 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     bool all_ok = true;
     cedar::WriteOptions write_options;
     write_options.sync = true;
+    struct CommitWrite {
+      cedar::CedarKey key;
+      cedar::Descriptor desc;
+    };
+    std::vector<CommitWrite> commit_writes;
+    std::unordered_map<uint32_t, std::vector<std::pair<uint64_t, cedar::cdc::ChangeRecord>>> cdc_batches;
     for (const auto& key : ctx.write_set) {
       uint64_t key_hash = static_cast<uint64_t>(
           std::hash<std::string>{}(std::string(reinterpret_cast<const char*>(&key), sizeof(key))));
       auto desc_it = ctx.write_descriptors.find(key_hash);
       cedar::Descriptor desc = (desc_it != ctx.write_descriptors.end()) ? desc_it->second : cedar::Descriptor(0);
-      auto s = storage_->Put(write_options, key.entity_id(), key.timestamp().value(), desc, ctx.commit_ts);
+      commit_writes.push_back({key, desc});
+      cedar::cdc::ChangeRecord record;
+      record.set_txn_id(request->txn_id());
+      record.set_entity_id(key.entity_id());
+      record.set_target_id(key.target_id());
+      record.set_entity_type(static_cast<uint32_t>(key.entity_type()));
+      record.set_edge_type(key.IsEdge() ? key.column_id() : 0);
+      record.set_column_id(key.column_id());
+      record.set_operation(desc.IsTombstone()
+                               ? cedar::cdc::CHANGE_OPERATION_DELETE
+                               : cedar::cdc::CHANGE_OPERATION_UPDATE);
+      record.set_valid_from(ctx.commit_ts.value());
+      uint64_t raw_descriptor = desc.AsRaw();
+      record.set_payload(
+          std::string(reinterpret_cast<const char*>(&raw_descriptor),
+                      sizeof(raw_descriptor)));
+      cdc_batches[key.part_id()].push_back({key.timestamp().value(),
+                                            std::move(record)});
+    }
+    for (const auto& [partition_id, records] : cdc_batches) {
+      auto s = PersistCdcIntent(partition_id, request->txn_id(),
+                                ctx.commit_ts.value(), records);
       if (!s.ok()) {
         all_ok = false;
-        std::cerr << "[StorageD] Commit Put failed: " << s.ToString() << std::endl;
+        std::cerr << "[StorageD] CDC intent persist failed: "
+                  << s.ToString() << std::endl;
+        break;
+      }
+    }
+    if (all_ok) {
+      for (const auto& entry : commit_writes) {
+        auto s = storage_->Put(write_options, entry.key.entity_id(),
+                               entry.key.timestamp().value(), entry.desc,
+                               ctx.commit_ts);
+        if (!s.ok()) {
+          all_ok = false;
+          std::cerr << "[StorageD] Commit Put failed: " << s.ToString()
+                    << std::endl;
+          break;
+        }
+      }
+    }
+    if (all_ok) {
+      for (auto& [partition_id, intent_records] : cdc_batches) {
+        auto* log = GetOrOpenChangeLog(partition_id);
+        if (!log) {
+          all_ok = false;
+          std::cerr << "[StorageD] CDC log unavailable for partition "
+                    << partition_id << std::endl;
+          break;
+        }
+        std::vector<cedar::cdc::ChangeRecord> records;
+        records.reserve(intent_records.size());
+        for (auto& [storage_timestamp, record] : intent_records) {
+          (void)storage_timestamp;
+          records.push_back(std::move(record));
+        }
+        auto s = log->AppendCommittedBatch(ctx.commit_ts.value(),
+                                           std::move(records));
+        if (!s.ok()) {
+          all_ok = false;
+          std::cerr << "[StorageD] CDC append failed: " << s.ToString()
+                    << std::endl;
+          break;
+        }
+        auto cleanup = DeleteCdcIntent(partition_id, request->txn_id());
+        if (!cleanup.ok()) {
+          std::cerr << "[StorageD] CDC intent cleanup warning: "
+                    << cleanup.ToString() << std::endl;
+        }
       }
     }
     
@@ -406,9 +487,9 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       ctx.state = TxnState::kCommitted;
       response->set_success(true);
     } else {
-      ctx.state = TxnState::kPrepared;
+      ctx.state = TxnState::kCommitting;
       response->set_success(false);
-      response->set_error_msg("Some writes failed during commit");
+      response->set_error_msg("Commit incomplete; retry will continue from committing state");
     }
     return grpc::Status::OK;
   }
@@ -440,6 +521,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
       case TxnState::kPrepared:
         response->set_state(cedar::storage::InquireResponse::PREPARED);
         break;
+      case TxnState::kCommitting:
       case TxnState::kCommitted:
         response->set_state(cedar::storage::InquireResponse::COMMITTED);
         break;
@@ -1074,6 +1156,287 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   uint32_t GetPartitionId(uint64_t entity_id) const {
     return static_cast<uint32_t>(entity_id % 32768);
   }
+
+  cedar::cdc::PartitionChangeLog* GetOrOpenChangeLog(uint32_t partition_id) {
+    auto it = change_logs_.find(partition_id);
+    if (it != change_logs_.end()) {
+      return it->second.get();
+    }
+    if (data_dir_.empty()) {
+      return nullptr;
+    }
+    cedar::cdc::PartitionChangeLog::Options options;
+    options.directory = data_dir_ + "/cdc/partition_" +
+                        std::to_string(partition_id);
+    options.partition_id = partition_id;
+    options.partition_epoch = 1;
+    auto opened = cedar::cdc::PartitionChangeLog::Open(options);
+    if (!opened.ok()) {
+      std::cerr << "[StorageD] Failed to open CDC log for partition "
+                << partition_id << ": " << opened.status().ToString()
+                << std::endl;
+      return nullptr;
+    }
+    auto log = std::move(opened.ValueOrDie());
+    auto* raw = log.get();
+    change_logs_[partition_id] = std::move(log);
+    return raw;
+  }
+
+  std::filesystem::path CdcIntentDir(uint32_t partition_id) const {
+    return std::filesystem::path(data_dir_) / "cdc_intents" /
+           ("partition_" + std::to_string(partition_id));
+  }
+
+  std::filesystem::path CdcIntentPath(uint32_t partition_id,
+                                      uint64_t txn_id) const {
+    return CdcIntentDir(partition_id) /
+           ("txn_" + std::to_string(txn_id) + ".intent");
+  }
+
+  cedar::Status PersistCdcIntent(
+      uint32_t partition_id, uint64_t txn_id, uint64_t commit_version,
+      const std::vector<std::pair<uint64_t, cedar::cdc::ChangeRecord>>& records) const {
+    if (records.empty()) {
+      return cedar::Status::OK();
+    }
+    auto dir = CdcIntentDir(partition_id);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+      return cedar::Status::IOError("PersistCdcIntent", ec.message());
+    }
+    auto final_path = CdcIntentPath(partition_id, txn_id);
+    auto tmp_path = final_path;
+    tmp_path += ".tmp";
+    int fd = ::open(tmp_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+      return cedar::Status::IOError("PersistCdcIntent", "open failed");
+    }
+    auto write_all = [&](const void* data, size_t size) -> cedar::Status {
+      const char* cursor = static_cast<const char*>(data);
+      while (size > 0) {
+        ssize_t written = ::write(fd, cursor, size);
+        if (written <= 0) {
+          return cedar::Status::IOError("PersistCdcIntent", "write failed");
+        }
+        cursor += written;
+        size -= static_cast<size_t>(written);
+      }
+      return cedar::Status::OK();
+    };
+
+    const std::string magic = "CEDAR_CDC_INTENT_V1";
+    uint32_t magic_size = static_cast<uint32_t>(magic.size());
+    uint32_t record_count = static_cast<uint32_t>(records.size());
+    cedar::Status s = write_all(&magic_size, sizeof(magic_size));
+    if (s.ok()) s = write_all(magic.data(), magic.size());
+    if (s.ok()) s = write_all(&txn_id, sizeof(txn_id));
+    if (s.ok()) s = write_all(&commit_version, sizeof(commit_version));
+    if (s.ok()) s = write_all(&record_count, sizeof(record_count));
+    for (const auto& [storage_timestamp, record] : records) {
+      if (!s.ok()) break;
+      std::string serialized;
+      if (!record.SerializeToString(&serialized)) {
+        s = cedar::Status::Corruption("PersistCdcIntent",
+                                      "serialize failed");
+        break;
+      }
+      uint32_t size = static_cast<uint32_t>(serialized.size());
+      s = write_all(&storage_timestamp, sizeof(storage_timestamp));
+      if (!s.ok()) break;
+      s = write_all(&size, sizeof(size));
+      if (s.ok()) s = write_all(serialized.data(), serialized.size());
+    }
+    if (s.ok() && ::fsync(fd) < 0) {
+      s = cedar::Status::IOError("PersistCdcIntent", "fsync failed");
+    }
+    ::close(fd);
+    if (!s.ok()) {
+      std::filesystem::remove(tmp_path, ec);
+      return s;
+    }
+    std::filesystem::rename(tmp_path, final_path, ec);
+    if (ec) {
+      return cedar::Status::IOError("PersistCdcIntent", ec.message());
+    }
+    int dir_fd = ::open(dir.c_str(), O_RDONLY);
+    if (dir_fd >= 0) {
+      ::fsync(dir_fd);
+      ::close(dir_fd);
+    }
+    return cedar::Status::OK();
+  }
+
+  cedar::Status DeleteCdcIntent(uint32_t partition_id, uint64_t txn_id) const {
+    std::error_code ec;
+    std::filesystem::remove(CdcIntentPath(partition_id, txn_id), ec);
+    if (ec) {
+      return cedar::Status::IOError("DeleteCdcIntent", ec.message());
+    }
+    return cedar::Status::OK();
+  }
+
+  struct CdcIntentBatch {
+    uint64_t txn_id = 0;
+    uint64_t commit_version = 0;
+    std::vector<std::pair<uint64_t, cedar::cdc::ChangeRecord>> records;
+  };
+
+  cedar::StatusOr<CdcIntentBatch> ReadCdcIntent(
+      const std::filesystem::path& path) const {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+      return cedar::Status::IOError("ReadCdcIntent", "open failed");
+    }
+    uint32_t magic_size = 0;
+    in.read(reinterpret_cast<char*>(&magic_size), sizeof(magic_size));
+    if (!in || magic_size == 0 || magic_size > 1024) {
+      return cedar::Status::Corruption("ReadCdcIntent", "bad magic size");
+    }
+    std::string magic(magic_size, '\0');
+    in.read(magic.data(), magic.size());
+    if (!in || magic != "CEDAR_CDC_INTENT_V1") {
+      return cedar::Status::Corruption("ReadCdcIntent", "bad magic");
+    }
+    CdcIntentBatch batch;
+    uint32_t record_count = 0;
+    in.read(reinterpret_cast<char*>(&batch.txn_id), sizeof(batch.txn_id));
+    in.read(reinterpret_cast<char*>(&batch.commit_version),
+            sizeof(batch.commit_version));
+    in.read(reinterpret_cast<char*>(&record_count), sizeof(record_count));
+    if (!in || record_count > 1000000) {
+      return cedar::Status::Corruption("ReadCdcIntent", "bad record count");
+    }
+    batch.records.reserve(record_count);
+    for (uint32_t i = 0; i < record_count; ++i) {
+      uint64_t storage_timestamp = 0;
+      in.read(reinterpret_cast<char*>(&storage_timestamp),
+              sizeof(storage_timestamp));
+      if (!in) {
+        return cedar::Status::Corruption("ReadCdcIntent",
+                                         "bad storage timestamp");
+      }
+      uint32_t size = 0;
+      in.read(reinterpret_cast<char*>(&size), sizeof(size));
+      if (!in || size == 0 || size > 16 * 1024 * 1024) {
+        return cedar::Status::Corruption("ReadCdcIntent", "bad record size");
+      }
+      std::string serialized(size, '\0');
+      in.read(serialized.data(), serialized.size());
+      cedar::cdc::ChangeRecord record;
+      if (!in || !record.ParseFromString(serialized)) {
+        return cedar::Status::Corruption("ReadCdcIntent", "bad record");
+      }
+      batch.records.push_back({storage_timestamp, std::move(record)});
+    }
+    return batch;
+  }
+
+  bool ChangeLogContainsBatch(cedar::cdc::PartitionChangeLog* log,
+                              const CdcIntentBatch& batch) const {
+    uint64_t offset = 0;
+    std::vector<bool> matched_indexes(batch.records.size(), false);
+    while (true) {
+      auto page = log->ReadAfter(offset, 4096, 4 * 1024 * 1024);
+      if (!page.ok() || page.ValueOrDie().empty()) {
+        return false;
+      }
+      for (const auto& record : page.ValueOrDie()) {
+        offset = std::max(offset, record.offset());
+        if (record.txn_id() == batch.txn_id &&
+            record.commit_version() == batch.commit_version &&
+            record.batch_size() == batch.records.size() &&
+            record.batch_index() < batch.records.size()) {
+          const auto& expected = batch.records[record.batch_index()].second;
+          if (record.entity_id() == expected.entity_id() &&
+              record.target_id() == expected.target_id() &&
+              record.entity_type() == expected.entity_type() &&
+              record.column_id() == expected.column_id() &&
+              record.operation() == expected.operation() &&
+              record.payload() == expected.payload()) {
+            matched_indexes[record.batch_index()] = true;
+          }
+        }
+      }
+      if (!matched_indexes.empty() &&
+          std::all_of(matched_indexes.begin(), matched_indexes.end(),
+                      [](bool matched) { return matched; })) {
+        return true;
+      }
+    }
+  }
+
+  void RecoverCdcIntents() {
+    auto root = std::filesystem::path(data_dir_) / "cdc_intents";
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) {
+      return;
+    }
+    for (const auto& partition_dir : std::filesystem::directory_iterator(root, ec)) {
+      if (ec || !partition_dir.is_directory()) {
+        continue;
+      }
+      const std::string name = partition_dir.path().filename().string();
+      if (name.rfind("partition_", 0) != 0) {
+        continue;
+      }
+      uint32_t partition_id = static_cast<uint32_t>(
+          std::stoul(name.substr(std::string("partition_").size())));
+      auto* log = GetOrOpenChangeLog(partition_id);
+      if (!log) {
+        continue;
+      }
+      for (const auto& intent : std::filesystem::directory_iterator(partition_dir.path(), ec)) {
+        if (ec || !intent.is_regular_file() ||
+            intent.path().extension() != ".intent") {
+          continue;
+        }
+        auto batch_or = ReadCdcIntent(intent.path());
+        if (!batch_or.ok()) {
+          std::cerr << "[StorageD] CDC intent recovery read failed: "
+                    << batch_or.status().ToString() << std::endl;
+          continue;
+        }
+        auto batch = std::move(batch_or.ValueOrDie());
+        if (!ChangeLogContainsBatch(log, batch)) {
+          std::vector<cedar::cdc::ChangeRecord> records;
+          records.reserve(batch.records.size());
+          for (const auto& [storage_timestamp, record] : batch.records) {
+            cedar::Descriptor desc;
+            if (record.payload().size() >= sizeof(uint64_t)) {
+              uint64_t raw_descriptor = 0;
+              std::memcpy(&raw_descriptor, record.payload().data(),
+                          sizeof(raw_descriptor));
+              desc = cedar::Descriptor(raw_descriptor);
+            }
+            auto put_status = storage_->Put(record.entity_id(),
+                                           storage_timestamp,
+                                           desc,
+                                           cedar::Timestamp(batch.commit_version));
+            if (!put_status.ok()) {
+              std::cerr << "[StorageD] CDC intent recovery storage replay failed: "
+                        << put_status.ToString() << std::endl;
+              records.clear();
+              break;
+            }
+            records.push_back(record);
+          }
+          if (records.empty() && !batch.records.empty()) {
+            continue;
+          }
+          auto s = log->AppendCommittedBatch(batch.commit_version,
+                                             std::move(records));
+          if (!s.ok()) {
+            std::cerr << "[StorageD] CDC intent recovery append failed: "
+                      << s.ToString() << std::endl;
+            continue;
+          }
+        }
+        std::filesystem::remove(intent.path(), ec);
+      }
+    }
+  }
   
   // 通过 Raft Propose 写入
   grpc::Status ProposeWrite(uint32_t partition_id,
@@ -1113,7 +1476,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     return grpc::Status::OK;
   }
   
-  enum class TxnState { kPrepared, kCommitted, kAborted };
+  enum class TxnState { kPrepared, kCommitting, kCommitted, kAborted };
   struct TxnContext {
     TxnState state = TxnState::kPrepared;
     std::vector<cedar::CedarKey> read_set;
@@ -1128,6 +1491,7 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   std::mutex txn_mutex_;
   std::mutex cypher_mutex_;  // Protect CypherEngine execution
   std::unordered_map<uint64_t, TxnContext> txn_states_;
+  std::unordered_map<uint32_t, std::unique_ptr<cedar::cdc::PartitionChangeLog>> change_logs_;
 };
 
 // MetaD 客户端 - 处理注册和心跳
