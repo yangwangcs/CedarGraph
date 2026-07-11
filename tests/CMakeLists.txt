@@ -415,6 +415,10 @@ add_executable(test_storage_cdc_commit dtx/test_storage_cdc_commit.cc)
 target_link_libraries(test_storage_cdc_commit ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_storage_cdc_commit)
 
+add_executable(test_storage_cdc_rpc dtx/test_storage_cdc_rpc.cc)
+target_link_libraries(test_storage_cdc_rpc ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_cdc_rpc)
+
 # Storage Service auth tests (P0-5)
 add_executable(test_storage_service_auth dtx/test_storage_service_auth.cc)
 target_link_libraries(test_storage_service_auth ${CEDAR_TEST_LIBS} cedar_queryd)

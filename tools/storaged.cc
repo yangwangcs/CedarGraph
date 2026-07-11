@@ -38,6 +38,8 @@
 #include "cedar/dtx/storage/storaged_raft_state_machine.h"
 #include "cedar/dtx/storage/partition_raft_manager.h"
 #include "cedar/cdc/partition_change_log.h"
+#include "cedar/cdc/rpc_limits.h"
+#include "cedar/core/crc32c.h"
 #include "cedar/common/json_logger.h"
 #include "cedar/common/grpc_request_id.h"
 #include "cedar/cypher/cypher_engine.h"
@@ -74,6 +76,27 @@ static void RecordStorageOp(const std::string& op, bool success, uint64_t latenc
 std::atomic<bool> g_running{true};
 std::unique_ptr<grpc::Server> g_grpc_server;
 static volatile sig_atomic_t g_shutdown_requested = 0;
+
+static bool DeadlineExpired(grpc::ServerContext* context) {
+  return context->deadline() <= std::chrono::system_clock::now();
+}
+
+static bool CdcLimitsValid(uint32_t limit_records, uint64_t limit_bytes) {
+  return limit_records != 0 &&
+         limit_records <= cedar::cdc::kMaxCdcRpcRecords &&
+         limit_bytes != 0 &&
+         limit_bytes <= cedar::cdc::kMaxCdcRpcBytes;
+}
+
+static uint32_t ComputeSnapshotChecksum(
+    const cedar::storage::ComputeSnapshotBatch& batch) {
+  std::string encoded;
+  if (!batch.SerializeToString(&encoded)) {
+    return 0;
+  }
+  uint32_t checksum = cedar::crc32c::Value(encoded.data(), encoded.size());
+  return checksum == 0 ? 1 : checksum;
+}
 
 void SignalHandler(int sig) {
   (void)sig;
@@ -1151,7 +1174,244 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
     return grpc::Status::OK;
   }
 
+  grpc::Status GetChangeLogState(
+      grpc::ServerContext* context,
+      const cedar::storage::GetChangeLogStateRequest* request,
+      cedar::storage::GetChangeLogStateResponse* response) override {
+    if (DeadlineExpired(context)) {
+      return grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED,
+                          "deadline expired before CDC state read");
+    }
+    if (context->IsCancelled()) {
+      return grpc::Status::CANCELLED;
+    }
+    auto leader_status = CheckCdcReadLeader(request->partition_id());
+    if (!leader_status.ok()) {
+      response->set_success(false);
+      response->set_error_code(cedar::storage::CDC_UNAVAILABLE);
+      response->set_error_msg(leader_status.error_message());
+      return grpc::Status::OK;
+    }
+    auto* log = GetOrOpenChangeLog(request->partition_id());
+    if (!log) {
+      response->set_success(false);
+      response->set_error_code(cedar::storage::CDC_PARTITION_NOT_FOUND);
+      response->set_error_msg("CDC log not found");
+      return grpc::Status::OK;
+    }
+    auto state = log->GetState();
+    if (request->expected_epoch() != 0 &&
+        request->expected_epoch() != state.partition_epoch) {
+      FillCdcState(response, request->partition_id(), state);
+      response->set_success(false);
+      response->set_error_code(cedar::storage::CDC_STALE_EPOCH);
+      response->set_error_msg("CDC partition epoch mismatch");
+      return grpc::Status::OK;
+    }
+    FillCdcState(response, request->partition_id(), state);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status FetchChanges(
+      grpc::ServerContext* context,
+      const cedar::storage::FetchChangesRequest* request,
+      cedar::storage::FetchChangesResponse* response) override {
+    if (DeadlineExpired(context)) {
+      return grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED,
+                          "deadline expired before CDC fetch");
+    }
+    if (context->IsCancelled()) {
+      return grpc::Status::CANCELLED;
+    }
+    if (!CdcLimitsValid(request->limit_records(), request->limit_bytes())) {
+      response->set_success(false);
+      response->set_error_code(cedar::storage::CDC_INVALID_LIMIT);
+      response->set_error_msg("Invalid CDC fetch limits");
+      return grpc::Status::OK;
+    }
+    auto leader_status = CheckCdcReadLeader(request->partition_id());
+    if (!leader_status.ok()) {
+      response->set_success(false);
+      response->set_error_code(cedar::storage::CDC_UNAVAILABLE);
+      response->set_error_msg(leader_status.error_message());
+      return grpc::Status::OK;
+    }
+    auto* log = GetOrOpenChangeLog(request->partition_id());
+    if (!log) {
+      response->set_success(false);
+      response->set_error_code(cedar::storage::CDC_PARTITION_NOT_FOUND);
+      response->set_error_msg("CDC log not found");
+      return grpc::Status::OK;
+    }
+    auto state = log->GetState();
+    if (request->expected_epoch() != 0 &&
+        request->expected_epoch() != state.partition_epoch) {
+      FillCdcState(response, request->partition_id(), state);
+      response->set_success(false);
+      response->set_error_code(cedar::storage::CDC_STALE_EPOCH);
+      response->set_error_msg("CDC partition epoch mismatch");
+      return grpc::Status::OK;
+    }
+    auto records = log->ReadAfter(request->after_offset(),
+                                  request->limit_records(),
+                                  request->limit_bytes());
+    if (!records.ok()) {
+      FillCdcState(response, request->partition_id(), state);
+      response->set_success(false);
+      response->set_error_code(cedar::storage::CDC_UNAVAILABLE);
+      response->set_error_msg(records.status().ToString());
+      return grpc::Status::OK;
+    }
+    FillCdcState(response, request->partition_id(), state);
+    uint64_t next_offset = request->after_offset();
+    for (const auto& record : records.ValueOrDie()) {
+      *response->add_records() = record;
+      next_offset = record.offset();
+    }
+    response->set_next_offset(next_offset);
+    response->set_has_more(next_offset < state.high_watermark);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status GetComputeSnapshot(
+      grpc::ServerContext* context,
+      const cedar::storage::GetComputeSnapshotRequest* request,
+      grpc::ServerWriter<cedar::storage::ComputeSnapshotBatch>* writer) override {
+    if (DeadlineExpired(context)) {
+      return grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED,
+                          "deadline expired before CDC snapshot");
+    }
+    if (context->IsCancelled()) {
+      return grpc::Status::CANCELLED;
+    }
+    if (!CdcLimitsValid(request->limit_records(), request->limit_bytes())) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "Invalid CDC snapshot limits");
+    }
+    auto leader_status = CheckCdcReadLeader(request->partition_id());
+    if (!leader_status.ok()) {
+      return leader_status;
+    }
+    auto* log = GetOrOpenChangeLog(request->partition_id());
+    if (!log) {
+      return grpc::Status(grpc::StatusCode::NOT_FOUND,
+                          "CDC log not found");
+    }
+    auto state = log->GetState();
+    if (request->expected_epoch() != 0 &&
+        request->expected_epoch() != state.partition_epoch) {
+      return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                          "CDC partition epoch mismatch");
+    }
+    if (DeadlineExpired(context)) {
+      return grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED,
+                          "deadline expired before CDC snapshot read");
+    }
+    const uint64_t snapshot_version = request->snapshot_version() == 0
+                                          ? state.committed_version
+                                          : request->snapshot_version();
+    uint64_t cursor = request->resume_offset();
+    uint64_t sequence = 0;
+    bool wrote_batch = false;
+
+    while (true) {
+      if (DeadlineExpired(context)) {
+        return grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED,
+                            "deadline expired during CDC snapshot read");
+      }
+      if (context->IsCancelled()) {
+        return grpc::Status::CANCELLED;
+      }
+
+      auto records = log->ReadAfter(cursor,
+                                    request->limit_records(),
+                                    request->limit_bytes());
+      if (!records.ok()) {
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                            records.status().ToString());
+      }
+
+      const auto& batch_records = records.ValueOrDie();
+      if (batch_records.empty() && cursor < state.high_watermark) {
+        return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                            "next CDC record exceeds snapshot byte limit");
+      }
+
+      uint64_t max_seen_offset = cursor;
+      cedar::storage::ComputeSnapshotBatch batch;
+      batch.set_partition_id(request->partition_id());
+      batch.set_partition_epoch(state.partition_epoch);
+      batch.set_snapshot_version(snapshot_version);
+      batch.set_resume_offset(cursor);
+      batch.set_sequence(sequence);
+      for (const auto& record : batch_records) {
+        max_seen_offset = std::max(max_seen_offset, record.offset());
+        if (record.commit_version() <= snapshot_version) {
+          *batch.add_records() = record;
+        }
+      }
+
+      const bool reached_log_end = max_seen_offset >= state.high_watermark ||
+                                   batch_records.empty();
+      if (batch.records_size() == 0 && wrote_batch && !reached_log_end) {
+        cursor = max_seen_offset;
+        continue;
+      }
+      if (batch.records_size() == 0 && wrote_batch && reached_log_end) {
+        batch.set_resume_offset(cursor);
+      }
+      batch.set_final(reached_log_end);
+      batch.set_checksum(ComputeSnapshotChecksum(batch));
+
+      if (DeadlineExpired(context)) {
+        return grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED,
+                            "deadline expired before CDC snapshot write");
+      }
+      if (!writer->Write(batch)) {
+        return grpc::Status(grpc::StatusCode::CANCELLED,
+                            "client closed CDC snapshot stream");
+      }
+
+      wrote_batch = true;
+      ++sequence;
+      cursor = max_seen_offset;
+      if (reached_log_end) {
+        return grpc::Status::OK;
+      }
+    }
+  }
+
  private:
+  template <typename Response>
+  void FillCdcState(Response* response,
+                    uint32_t partition_id,
+                    const cedar::cdc::ChangeLogState& state) {
+    response->set_success(true);
+    response->set_error_code(cedar::storage::CDC_OK);
+    response->set_partition_id(partition_id);
+    response->set_partition_epoch(state.partition_epoch);
+    response->set_earliest_offset(state.earliest_offset);
+    response->set_high_watermark(state.high_watermark);
+    response->set_committed_version(state.committed_version);
+  }
+
+  grpc::Status CheckCdcReadLeader(uint32_t partition_id) {
+    if (!raft_manager_) {
+      return grpc::Status::OK;
+    }
+    auto* raft_group = raft_manager_->GetRaftGroup(partition_id);
+    if (!raft_group) {
+      return grpc::Status::OK;
+    }
+    if (raft_group->IsLeader() && raft_group->IsLeaseValid()) {
+      return grpc::Status::OK;
+    }
+    auto leader_addr = raft_group->GetLeaderAddress();
+    std::string hint = leader_addr.value_or("unknown");
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                        "Not leader, redirect to: " + hint);
+  }
+
   // 根据 entity_id 计算分区 ID (简化: 取模)
   uint32_t GetPartitionId(uint64_t entity_id) const {
     return static_cast<uint32_t>(entity_id % 32768);

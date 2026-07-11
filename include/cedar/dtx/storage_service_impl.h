@@ -346,6 +346,18 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
                                    const cedar::storage::GetCommittedVersionRequest* request,
                                    cedar::storage::GetCommittedVersionResponse* response) override;
 
+  grpc::Status GetChangeLogState(grpc::ServerContext* context,
+                                 const cedar::storage::GetChangeLogStateRequest* request,
+                                 cedar::storage::GetChangeLogStateResponse* response) override;
+
+  grpc::Status FetchChanges(grpc::ServerContext* context,
+                            const cedar::storage::FetchChangesRequest* request,
+                            cedar::storage::FetchChangesResponse* response) override;
+
+  grpc::Status GetComputeSnapshot(grpc::ServerContext* context,
+                                  const cedar::storage::GetComputeSnapshotRequest* request,
+                                  grpc::ServerWriter<cedar::storage::ComputeSnapshotBatch>* writer) override;
+
   // Partition management
   grpc::Status GetPartitionInfo(grpc::ServerContext* context,
                                 const cedar::storage::GetPartitionInfoRequest* request,

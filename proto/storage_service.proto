@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package cedar.storage;
 
+import "cdc_service.proto";
+
 // StorageD - 分布式存储节点服务
 
 // ============================================================================
@@ -320,6 +322,9 @@ service StorageService {
     // GCN compute-optimized APIs
     rpc GetRangeForCompute(GetRangeForComputeRequest) returns (GetRangeForComputeResponse);
     rpc GetCommittedVersion(GetCommittedVersionRequest) returns (GetCommittedVersionResponse);
+    rpc GetChangeLogState(GetChangeLogStateRequest) returns (GetChangeLogStateResponse);
+    rpc FetchChanges(FetchChangesRequest) returns (FetchChangesResponse);
+    rpc GetComputeSnapshot(GetComputeSnapshotRequest) returns (stream ComputeSnapshotBatch);
 
     // QueryD sub-query execution (Adaptive Execution Path)
     rpc ExecuteSubQuery(ExecuteSubQueryRequest) returns (stream SubQueryResultBatch);
@@ -385,6 +390,78 @@ message GetCommittedVersionRequest {}
 message GetCommittedVersionResponse {
     uint64 committed_version = 1;
     uint64 watermark = 2;
+}
+
+// ============================================================================
+// CDC pull and compute snapshot APIs
+// ============================================================================
+
+enum CdcErrorCode {
+    CDC_OK = 0;
+    CDC_STALE_EPOCH = 1;
+    CDC_INVALID_LIMIT = 2;
+    CDC_PARTITION_NOT_FOUND = 3;
+    CDC_UNAVAILABLE = 4;
+}
+
+message GetChangeLogStateRequest {
+    uint32 partition_id = 1;
+    uint64 expected_epoch = 2;  // 0 means "accept current epoch"
+}
+
+message GetChangeLogStateResponse {
+    bool success = 1;
+    string error_msg = 2;
+    CdcErrorCode error_code = 3;
+    uint32 partition_id = 4;
+    uint64 partition_epoch = 5;
+    uint64 earliest_offset = 6;
+    uint64 high_watermark = 7;
+    uint64 committed_version = 8;
+}
+
+message FetchChangesRequest {
+    uint32 partition_id = 1;
+    uint64 after_offset = 2;
+    uint32 limit_records = 3;
+    uint64 limit_bytes = 4;
+    uint64 expected_epoch = 5;  // 0 means "accept current epoch"
+}
+
+message FetchChangesResponse {
+    bool success = 1;
+    string error_msg = 2;
+    CdcErrorCode error_code = 3;
+    uint32 partition_id = 4;
+    uint64 partition_epoch = 5;
+    uint64 earliest_offset = 6;
+    uint64 high_watermark = 7;
+    uint64 committed_version = 8;
+    repeated cedar.cdc.ChangeRecord records = 9;
+    // Last returned offset; clients should pass this as the next after_offset.
+    uint64 next_offset = 10;
+    bool has_more = 11;
+}
+
+message GetComputeSnapshotRequest {
+    uint32 partition_id = 1;
+    uint64 snapshot_version = 2;  // 0 means latest committed version
+    uint64 resume_offset = 3;
+    uint32 limit_records = 4;
+    uint64 limit_bytes = 5;
+    uint64 expected_epoch = 6;
+}
+
+message ComputeSnapshotBatch {
+    uint32 partition_id = 1;
+    uint64 partition_epoch = 2;
+    uint64 snapshot_version = 3;
+    uint64 resume_offset = 4;
+    uint64 sequence = 5;
+    repeated cedar.cdc.ChangeRecord records = 6;
+    bool final = 7;
+    // CRC32C over this batch with checksum cleared/defaulted.
+    uint32 checksum = 8;
 }
 
 // Sub-query execution for Adaptive Execution Path (AEP)

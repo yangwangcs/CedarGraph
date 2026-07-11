@@ -198,6 +198,22 @@ TEST_F(StorageServiceAuthTest, GetCommittedVersionMissingTokenRejected) {
   EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
 }
 
+TEST_F(StorageServiceAuthTest, GetChangeLogStateMissingTokenRejected) {
+  auto ctx = MakeContext();
+  cedar::storage::GetChangeLogStateRequest req;
+  cedar::storage::GetChangeLogStateResponse resp;
+  auto status = service_->GetChangeLogState(ctx.get(), &req, &resp);
+  EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+}
+
+TEST_F(StorageServiceAuthTest, FetchChangesMissingTokenRejected) {
+  auto ctx = MakeContext();
+  cedar::storage::FetchChangesRequest req;
+  cedar::storage::FetchChangesResponse resp;
+  auto status = service_->FetchChanges(ctx.get(), &req, &resp);
+  EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+}
+
 TEST_F(StorageServiceAuthTest, GetPartitionInfoMissingTokenRejected) {
   auto ctx = MakeContext();
   cedar::storage::GetPartitionInfoRequest req;
@@ -229,6 +245,13 @@ TEST_F(StorageServiceAuthTest, ExecuteSubQueryMissingTokenRejected) {
   auto ctx = MakeContext();
   cedar::storage::ExecuteSubQueryRequest req;
   auto status = service_->ExecuteSubQuery(ctx.get(), &req, nullptr);
+  EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+}
+
+TEST_F(StorageServiceAuthTest, GetComputeSnapshotMissingTokenRejected) {
+  auto ctx = MakeContext();
+  cedar::storage::GetComputeSnapshotRequest req;
+  auto status = service_->GetComputeSnapshot(ctx.get(), &req, nullptr);
   EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
 }
 
