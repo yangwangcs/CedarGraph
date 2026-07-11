@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -29,6 +30,12 @@ struct FrameHeader {
   uint16_t flags;
   uint32_t payload_size;
   uint32_t crc32c;
+};
+
+struct ManifestInfo {
+  bool present = false;
+  uint64_t high_watermark = 0;
+  std::vector<std::string> segment_names;
 };
 
 static_assert(sizeof(FrameHeader) == kFrameHeaderBytes,
@@ -96,6 +103,43 @@ std::string SegmentFileName(uint64_t first_offset) {
 
 bool IsSegmentFile(const std::filesystem::path& path) {
   return path.extension() == ".seg";
+}
+
+StatusOr<ManifestInfo> ReadManifest(const std::filesystem::path& dir) {
+  ManifestInfo info;
+  const auto path = dir / kManifestName;
+  if (!std::filesystem::exists(path)) {
+    return info;
+  }
+  std::ifstream in(path);
+  if (!in.is_open()) {
+    return Status::IOError("PartitionChangeLog",
+                           "cannot open manifest " + path.string());
+  }
+  info.present = true;
+  bool in_segments = false;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line == "segments") {
+      in_segments = true;
+      continue;
+    }
+    std::istringstream parsed(line);
+    if (in_segments) {
+      std::string name;
+      parsed >> name;
+      if (!name.empty()) {
+        info.segment_names.push_back(name);
+      }
+      continue;
+    }
+    std::string key;
+    parsed >> key;
+    if (key == "high_watermark") {
+      parsed >> info.high_watermark;
+    }
+  }
+  return info;
 }
 
 Status TruncateFile(const std::filesystem::path& path, uint64_t size) {
@@ -298,16 +342,30 @@ Status PartitionChangeLog::Recover() {
   active_segment_size_ = 0;
 
   std::vector<std::filesystem::path> segments;
-  for (const auto& entry : std::filesystem::directory_iterator(options_.directory)) {
-    if (entry.is_regular_file() && IsSegmentFile(entry.path())) {
-      segments.push_back(entry.path());
+  auto manifest = ReadManifest(options_.directory);
+  if (!manifest.ok()) {
+    return manifest.status();
+  }
+  if (manifest.ValueOrDie().present) {
+    for (const auto& name : manifest.ValueOrDie().segment_names) {
+      segments.push_back(std::filesystem::path(options_.directory) / name);
+    }
+  } else {
+    for (const auto& entry :
+         std::filesystem::directory_iterator(options_.directory)) {
+      if (entry.is_regular_file() && IsSegmentFile(entry.path())) {
+        segments.push_back(entry.path());
+      }
     }
   }
   std::sort(segments.begin(), segments.end());
 
   uint64_t expected_offset = 0;
   uint64_t last_segment_first_offset = 1;
-  for (const auto& path : segments) {
+  for (size_t segment_index = 0; segment_index < segments.size();
+       ++segment_index) {
+    const auto& path = segments[segment_index];
+    const bool is_last_segment = segment_index + 1 == segments.size();
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open()) {
       return Status::IOError("PartitionChangeLog",
@@ -322,6 +380,12 @@ Status PartitionChangeLog::Recover() {
         break;
       }
       if (header_read != static_cast<std::streamsize>(sizeof(header))) {
+        if (!is_last_segment ||
+            (manifest.ValueOrDie().present &&
+             manifest.ValueOrDie().high_watermark > expected_offset)) {
+          return Status::Corruption("PartitionChangeLog",
+                                    "partial frame before log tail");
+        }
         CEDAR_RETURN_IF_ERROR(TruncateFile(path, valid_bytes));
         break;
       }
@@ -332,6 +396,12 @@ Status PartitionChangeLog::Recover() {
       std::string payload(header.payload_size, '\0');
       in.read(payload.data(), payload.size());
       if (in.gcount() != static_cast<std::streamsize>(payload.size())) {
+        if (!is_last_segment ||
+            (manifest.ValueOrDie().present &&
+             manifest.ValueOrDie().high_watermark > expected_offset)) {
+          return Status::Corruption("PartitionChangeLog",
+                                    "partial payload before log tail");
+        }
         CEDAR_RETURN_IF_ERROR(TruncateFile(path, valid_bytes));
         break;
       }
@@ -423,21 +493,92 @@ Status PartitionChangeLog::AppendRecordFrame(const ChangeRecord& record) {
 Status PartitionChangeLog::RewriteSegmentsLocked() {
   const std::filesystem::path dir(options_.directory);
   std::filesystem::create_directories(dir);
+  std::vector<std::filesystem::path> old_segments;
   for (const auto& entry : std::filesystem::directory_iterator(dir)) {
     if (entry.is_regular_file() && IsSegmentFile(entry.path())) {
-      std::error_code ec;
-      std::filesystem::remove(entry.path(), ec);
-      if (ec) {
-        return Status::IOError("PartitionChangeLog", ec.message());
-      }
+      old_segments.push_back(entry.path());
     }
   }
-  active_segment_first_offset_ = records_.empty() ? state_.high_watermark + 1
-                                                  : records_.front().offset();
+  manifest_segment_names_.clear();
   active_segment_size_ = 0;
+
+  int fd = -1;
+  auto close_current = [&]() -> Status {
+    if (fd < 0) {
+      return Status::OK();
+    }
+    if (::fsync(fd) != 0) {
+      int saved = errno;
+      ::close(fd);
+      fd = -1;
+      errno = saved;
+      return PosixError("fsync compacted segment");
+    }
+    if (::close(fd) != 0) {
+      fd = -1;
+      return PosixError("close compacted segment");
+    }
+    fd = -1;
+    return Status::OK();
+  };
+
+  std::vector<std::filesystem::path> temp_segments;
   for (const auto& record : records_) {
-    CEDAR_RETURN_IF_ERROR(AppendRecordFrame(record));
+    std::string payload;
+    if (!record.SerializeToString(&payload)) {
+      return Status::Corruption("PartitionChangeLog",
+                                "failed to serialize compacted record");
+    }
+    const size_t frame_size = kFrameHeaderBytes + payload.size();
+    if (active_segment_size_ == 0 ||
+        active_segment_size_ + frame_size > options_.max_segment_bytes) {
+      CEDAR_RETURN_IF_ERROR(close_current());
+      const std::string final_name = SegmentFileName(record.offset());
+      manifest_segment_names_.push_back(final_name);
+      const auto tmp = dir / (final_name + ".rewrite");
+      fd = ::open(tmp.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0644);
+      if (fd < 0) {
+        manifest_segment_names_.clear();
+        return PosixError("open compacted segment: " + tmp.string());
+      }
+      temp_segments.push_back(tmp);
+      active_segment_size_ = 0;
+    }
+    FrameHeader header{kFrameMagic, kFrameVersion, 0,
+                       static_cast<uint32_t>(payload.size()),
+                       crc32c::Value(payload.data(), payload.size())};
+    CEDAR_RETURN_IF_ERROR(WriteAll(fd, &header, sizeof(header)));
+    CEDAR_RETURN_IF_ERROR(WriteAll(fd, payload.data(), payload.size()));
+    active_segment_size_ += frame_size;
   }
+  CEDAR_RETURN_IF_ERROR(close_current());
+
+  for (size_t i = 0; i < temp_segments.size(); ++i) {
+    const auto final_path = dir / manifest_segment_names_[i];
+    if (::rename(temp_segments[i].c_str(), final_path.c_str()) != 0) {
+      manifest_segment_names_.clear();
+      return PosixError("rename compacted segment: " + final_path.string());
+    }
+  }
+  CEDAR_RETURN_IF_ERROR(FsyncDirectory(dir));
+  CEDAR_RETURN_IF_ERROR(PersistManifestLocked());
+  std::set<std::string> retained(manifest_segment_names_.begin(),
+                                 manifest_segment_names_.end());
+  for (const auto& path : old_segments) {
+    if (retained.find(path.filename().string()) != retained.end()) {
+      continue;
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    if (ec) {
+      manifest_segment_names_.clear();
+      return Status::IOError("PartitionChangeLog", ec.message());
+    }
+  }
+  manifest_segment_names_.clear();
+  active_segment_first_offset_ = records_.empty() ? state_.high_watermark + 1
+                                                  : records_.back().offset();
+  active_segment_size_ = 0;
   return FsyncDirectory(dir);
 }
 
@@ -453,9 +594,15 @@ Status PartitionChangeLog::PersistManifestLocked() const {
   std::filesystem::path dir(options_.directory);
   if (std::filesystem::exists(dir)) {
     std::vector<std::filesystem::path> segments;
-    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-      if (entry.is_regular_file() && IsSegmentFile(entry.path())) {
-        segments.push_back(entry.path().filename());
+    if (!manifest_segment_names_.empty()) {
+      for (const auto& name : manifest_segment_names_) {
+        segments.push_back(name);
+      }
+    } else {
+      for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (entry.is_regular_file() && IsSegmentFile(entry.path())) {
+          segments.push_back(entry.path().filename());
+        }
       }
     }
     std::sort(segments.begin(), segments.end());

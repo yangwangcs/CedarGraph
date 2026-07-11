@@ -92,6 +92,25 @@ class PartitionChangeLogTest : public ::testing::Test {
     ASSERT_TRUE(file.good());
   }
 
+  void InflateSecondRecordPayloadSize() const {
+    auto segments = SegmentFiles();
+    ASSERT_FALSE(segments.empty());
+    std::fstream file(segments.front(), std::ios::in | std::ios::out |
+                                            std::ios::binary);
+    ASSERT_TRUE(file.is_open());
+    constexpr std::streamoff kHeaderBytes = 16;
+    uint32_t first_payload_size = 0;
+    file.seekg(8);
+    file.read(reinterpret_cast<char*>(&first_payload_size),
+              sizeof(first_payload_size));
+    ASSERT_TRUE(file.good());
+    const uint32_t inflated_payload_size = 1 << 20;
+    file.seekp(kHeaderBytes + first_payload_size + 8);
+    file.write(reinterpret_cast<const char*>(&inflated_payload_size),
+               sizeof(inflated_payload_size));
+    ASSERT_TRUE(file.good());
+  }
+
   std::filesystem::path test_dir_;
 };
 
@@ -181,6 +200,18 @@ TEST_F(PartitionChangeLogTest, RejectsMiddleRecordCorruption) {
   ASSERT_NE(log, nullptr);
   ASSERT_TRUE(log->AppendCommittedBatch(100, MakeBatch(3)).ok());
   CorruptSecondRecord();
+
+  log.reset();
+  auto result = PartitionChangeLog::Open(Options());
+  ASSERT_FALSE(result.ok());
+  EXPECT_TRUE(result.status().IsCorruption()) << result.status().ToString();
+}
+
+TEST_F(PartitionChangeLogTest, RejectsInflatedMiddlePayloadSize) {
+  auto log = OpenLog(Options());
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->AppendCommittedBatch(100, MakeBatch(3)).ok());
+  InflateSecondRecordPayloadSize();
 
   log.reset();
   auto result = PartitionChangeLog::Open(Options());
