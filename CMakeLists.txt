@@ -56,6 +56,7 @@ set(PROTO_FILES
     ${CMAKE_SOURCE_DIR}/proto/storage_service.proto
     ${CMAKE_SOURCE_DIR}/proto/dtx_protocol.proto
     ${CMAKE_SOURCE_DIR}/proto/gcn_service.proto
+    ${CMAKE_SOURCE_DIR}/proto/cdc_service.proto
 )
 
 add_custom_command(
@@ -79,6 +80,8 @@ add_custom_command(
            ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.h
            ${PROTO_OUT_DIR}/gcn_service.pb.cc ${PROTO_OUT_DIR}/gcn_service.pb.h
            ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc ${PROTO_OUT_DIR}/gcn_service.grpc.pb.h
+           ${PROTO_OUT_DIR}/cdc_service.pb.cc ${PROTO_OUT_DIR}/cdc_service.pb.h
+           ${PROTO_OUT_DIR}/cdc_service.grpc.pb.cc ${PROTO_OUT_DIR}/cdc_service.grpc.pb.h
     COMMAND protobuf::protoc
     ARGS --grpc_out=${PROTO_OUT_DIR}
          --cpp_out=${PROTO_OUT_DIR}
@@ -108,6 +111,8 @@ add_custom_target(generate_proto ALL
             ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.h
             ${PROTO_OUT_DIR}/gcn_service.pb.cc ${PROTO_OUT_DIR}/gcn_service.pb.h
             ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc ${PROTO_OUT_DIR}/gcn_service.grpc.pb.h
+            ${PROTO_OUT_DIR}/cdc_service.pb.cc ${PROTO_OUT_DIR}/cdc_service.pb.h
+            ${PROTO_OUT_DIR}/cdc_service.grpc.pb.cc ${PROTO_OUT_DIR}/cdc_service.grpc.pb.h
 )
 
 # Find required packages
@@ -412,6 +417,8 @@ add_library(cedar STATIC
     ${PROTO_OUT_DIR}/migration_service.grpc.pb.cc
     ${PROTO_OUT_DIR}/dtx_protocol.pb.cc
     ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc
+    ${PROTO_OUT_DIR}/cdc_service.pb.cc
+    ${PROTO_OUT_DIR}/cdc_service.grpc.pb.cc
 )
 if(TARGET OBJ_LIB)
     add_dependencies(cedar OBJ_LIB)
