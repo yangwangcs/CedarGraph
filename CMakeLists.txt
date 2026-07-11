@@ -394,6 +394,10 @@ set(CEDAR_GOVERNANCE_SOURCES
     src/governance/health_checker.cc
 )
 
+set(CEDAR_CDC_SOURCES
+    src/cdc/partition_change_log.cc
+)
+
 # Create cedar library
 add_library(cedar STATIC
     ${CEDAR_CORE_SOURCES}
@@ -406,6 +410,7 @@ add_library(cedar STATIC
     ${CEDAR_DRIVER_SOURCES}
     ${CEDAR_DTX_SOURCES}
     ${CEDAR_PARTITION_SOURCES}
+    ${CEDAR_CDC_SOURCES}
     src/service/partition_migration_service.cc
     ${PROTO_OUT_DIR}/raft_service.pb.cc
     ${PROTO_OUT_DIR}/raft_service.grpc.pb.cc

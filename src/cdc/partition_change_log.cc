@@ -1,0 +1,475 @@
+#include "cedar/cdc/partition_change_log.h"
+
+#include <algorithm>
+#include <cerrno>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <string>
+#include <system_error>
+
+#include <fcntl.h>
+#include <unistd.h>
+
+#include "cedar/core/crc32c.h"
+
+namespace cedar::cdc {
+namespace {
+
+constexpr uint32_t kFrameMagic = 0x43444331;  // CDC1
+constexpr uint16_t kFrameVersion = 1;
+constexpr size_t kFrameHeaderBytes = 16;
+constexpr const char* kManifestName = "MANIFEST";
+
+struct FrameHeader {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t flags;
+  uint32_t payload_size;
+  uint32_t crc32c;
+};
+
+static_assert(sizeof(FrameHeader) == kFrameHeaderBytes,
+              "frame header must stay 16 bytes");
+
+Status PosixError(const std::string& context) {
+  return Status::IOError(context, std::strerror(errno));
+}
+
+Status WriteAll(int fd, const void* data, size_t size) {
+  const char* cursor = static_cast<const char*>(data);
+  while (size > 0) {
+    ssize_t written = ::write(fd, cursor, size);
+    if (written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return PosixError("write");
+    }
+    cursor += written;
+    size -= static_cast<size_t>(written);
+  }
+  return Status::OK();
+}
+
+Status FsyncPath(const std::filesystem::path& path) {
+  int fd = ::open(path.c_str(), O_RDONLY);
+  if (fd < 0) {
+    return PosixError("open for fsync: " + path.string());
+  }
+  if (::fsync(fd) != 0) {
+    int saved = errno;
+    ::close(fd);
+    errno = saved;
+    return PosixError("fsync: " + path.string());
+  }
+  if (::close(fd) != 0) {
+    return PosixError("close: " + path.string());
+  }
+  return Status::OK();
+}
+
+Status FsyncDirectory(const std::filesystem::path& path) {
+  int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY);
+  if (fd < 0) {
+    return PosixError("open directory for fsync: " + path.string());
+  }
+  if (::fsync(fd) != 0) {
+    int saved = errno;
+    ::close(fd);
+    errno = saved;
+    return PosixError("fsync directory: " + path.string());
+  }
+  if (::close(fd) != 0) {
+    return PosixError("close directory: " + path.string());
+  }
+  return Status::OK();
+}
+
+std::string SegmentFileName(uint64_t first_offset) {
+  std::ostringstream out;
+  out << std::setw(20) << std::setfill('0') << first_offset << ".seg";
+  return out.str();
+}
+
+bool IsSegmentFile(const std::filesystem::path& path) {
+  return path.extension() == ".seg";
+}
+
+Status TruncateFile(const std::filesystem::path& path, uint64_t size) {
+  if (::truncate(path.c_str(), static_cast<off_t>(size)) != 0) {
+    return PosixError("truncate: " + path.string());
+  }
+  CEDAR_RETURN_IF_ERROR(FsyncPath(path));
+  return FsyncDirectory(path.parent_path());
+}
+
+Status AtomicWriteFile(const std::filesystem::path& path,
+                       const std::string& data) {
+  std::filesystem::create_directories(path.parent_path());
+  std::filesystem::path tmp = path;
+  tmp += ".tmp";
+  int fd = ::open(tmp.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  if (fd < 0) {
+    return PosixError("open temp file: " + tmp.string());
+  }
+  Status s = WriteAll(fd, data.data(), data.size());
+  if (s.ok() && ::fsync(fd) != 0) {
+    s = PosixError("fsync temp file: " + tmp.string());
+  }
+  if (::close(fd) != 0 && s.ok()) {
+    s = PosixError("close temp file: " + tmp.string());
+  }
+  if (!s.ok()) {
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored);
+    return s;
+  }
+  if (::rename(tmp.c_str(), path.c_str()) != 0) {
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored);
+    return PosixError("rename " + tmp.string() + " to " + path.string());
+  }
+  return FsyncDirectory(path.parent_path());
+}
+
+Status ReadSegmentRange(const std::filesystem::path& path, uint64_t* first,
+                        uint64_t* last, uint64_t* bytes) {
+  *first = 0;
+  *last = 0;
+  *bytes = 0;
+  std::ifstream in(path, std::ios::binary);
+  if (!in.is_open()) {
+    return Status::IOError("PartitionChangeLog",
+                           "cannot open segment " + path.string());
+  }
+  while (true) {
+    FrameHeader header{};
+    in.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (in.gcount() == 0 && in.eof()) {
+      break;
+    }
+    if (in.gcount() != static_cast<std::streamsize>(sizeof(header)) ||
+        header.magic != kFrameMagic || header.version != kFrameVersion) {
+      return Status::Corruption("PartitionChangeLog",
+                                "invalid segment for manifest");
+    }
+    std::string payload(header.payload_size, '\0');
+    in.read(payload.data(), payload.size());
+    if (in.gcount() != static_cast<std::streamsize>(payload.size())) {
+      return Status::Corruption("PartitionChangeLog",
+                                "truncated segment for manifest");
+    }
+    if (crc32c::Value(payload.data(), payload.size()) != header.crc32c) {
+      return Status::Corruption("PartitionChangeLog",
+                                "segment checksum mismatch for manifest");
+    }
+    ChangeRecord record;
+    if (!record.ParseFromString(payload)) {
+      return Status::Corruption("PartitionChangeLog",
+                                "invalid segment payload for manifest");
+    }
+    if (*first == 0) {
+      *first = record.offset();
+    }
+    *last = record.offset();
+    *bytes += kFrameHeaderBytes + payload.size();
+  }
+  return Status::OK();
+}
+
+}  // namespace
+
+PartitionChangeLog::PartitionChangeLog(Options options)
+    : options_(std::move(options)) {
+  state_.partition_epoch = options_.partition_epoch;
+}
+
+StatusOr<std::unique_ptr<PartitionChangeLog>> PartitionChangeLog::Open(
+    Options options) {
+  if (options.directory.empty()) {
+    return Status::InvalidArgument("PartitionChangeLog", "directory is empty");
+  }
+  if (options.max_segment_bytes <= kFrameHeaderBytes) {
+    return Status::InvalidArgument("PartitionChangeLog",
+                                   "max_segment_bytes too small");
+  }
+  if (options.max_fetch_records == 0 || options.max_fetch_bytes == 0) {
+    return Status::InvalidArgument("PartitionChangeLog",
+                                   "fetch limits must be non-zero");
+  }
+  auto log = std::unique_ptr<PartitionChangeLog>(
+      new PartitionChangeLog(std::move(options)));
+  CEDAR_RETURN_IF_ERROR(log->Recover());
+  return log;
+}
+
+Status PartitionChangeLog::AppendCommittedBatch(
+    uint64_t commit_version, std::vector<ChangeRecord> records) {
+  std::lock_guard<std::mutex> lock(mu_);
+  uint64_t next = state_.high_watermark + 1;
+  for (size_t i = 0; i < records.size(); ++i) {
+    records[i].set_partition_id(options_.partition_id);
+    records[i].set_partition_epoch(options_.partition_epoch);
+    records[i].set_offset(next + i);
+    records[i].set_commit_version(commit_version);
+    records[i].set_batch_index(static_cast<uint32_t>(i));
+    records[i].set_batch_size(static_cast<uint32_t>(records.size()));
+    CEDAR_RETURN_IF_ERROR(AppendRecordFrame(records[i]));
+    records_.push_back(records[i]);
+  }
+  if (!records.empty()) {
+    state_.high_watermark += records.size();
+    state_.committed_version = std::max(state_.committed_version,
+                                        commit_version);
+    if (state_.earliest_offset == 0) {
+      state_.earliest_offset = records_.front().offset();
+    }
+  }
+  return PersistManifestLocked();
+}
+
+StatusOr<std::vector<ChangeRecord>> PartitionChangeLog::ReadAfter(
+    uint64_t offset, size_t limit_records, size_t limit_bytes) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  const size_t effective_records =
+      std::min(limit_records, options_.max_fetch_records);
+  const size_t effective_bytes = std::min(limit_bytes, options_.max_fetch_bytes);
+  std::vector<ChangeRecord> out;
+  if (effective_records == 0 || effective_bytes == 0) {
+    return out;
+  }
+  size_t bytes = 0;
+  for (const auto& record : records_) {
+    if (record.offset() <= offset) {
+      continue;
+    }
+    std::string payload;
+    if (!record.SerializeToString(&payload)) {
+      return Status::Corruption("PartitionChangeLog",
+                                "failed to size ChangeRecord");
+    }
+    if (!out.empty() && bytes + payload.size() > effective_bytes) {
+      break;
+    }
+    if (out.empty() && payload.size() > effective_bytes) {
+      break;
+    }
+    out.push_back(record);
+    bytes += payload.size();
+    if (out.size() >= effective_records) {
+      break;
+    }
+  }
+  return out;
+}
+
+ChangeLogState PartitionChangeLog::GetState() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return state_;
+}
+
+Status PartitionChangeLog::Compact(uint64_t retain_from_offset) {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (retain_from_offset == 0 || retain_from_offset <= state_.earliest_offset) {
+    return Status::OK();
+  }
+  records_.erase(std::remove_if(records_.begin(), records_.end(),
+                                [retain_from_offset](const ChangeRecord& r) {
+                                  return r.offset() < retain_from_offset;
+                                }),
+                 records_.end());
+  state_.earliest_offset = records_.empty() ? state_.high_watermark + 1
+                                            : records_.front().offset();
+  CEDAR_RETURN_IF_ERROR(RewriteSegmentsLocked());
+  return PersistManifestLocked();
+}
+
+Status PartitionChangeLog::Recover() {
+  std::lock_guard<std::mutex> lock(mu_);
+  std::filesystem::create_directories(options_.directory);
+  state_ = ChangeLogState{};
+  state_.partition_epoch = options_.partition_epoch;
+  state_.earliest_offset = 1;
+  records_.clear();
+  active_segment_first_offset_ = 1;
+  active_segment_size_ = 0;
+
+  std::vector<std::filesystem::path> segments;
+  for (const auto& entry : std::filesystem::directory_iterator(options_.directory)) {
+    if (entry.is_regular_file() && IsSegmentFile(entry.path())) {
+      segments.push_back(entry.path());
+    }
+  }
+  std::sort(segments.begin(), segments.end());
+
+  uint64_t expected_offset = 0;
+  uint64_t last_segment_first_offset = 1;
+  for (const auto& path : segments) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) {
+      return Status::IOError("PartitionChangeLog",
+                             "cannot open segment " + path.string());
+    }
+    uint64_t valid_bytes = 0;
+    while (true) {
+      FrameHeader header{};
+      in.read(reinterpret_cast<char*>(&header), sizeof(header));
+      const std::streamsize header_read = in.gcount();
+      if (header_read == 0 && in.eof()) {
+        break;
+      }
+      if (header_read != static_cast<std::streamsize>(sizeof(header))) {
+        CEDAR_RETURN_IF_ERROR(TruncateFile(path, valid_bytes));
+        break;
+      }
+      if (header.magic != kFrameMagic || header.version != kFrameVersion) {
+        return Status::Corruption("PartitionChangeLog",
+                                  "invalid frame header in " + path.string());
+      }
+      std::string payload(header.payload_size, '\0');
+      in.read(payload.data(), payload.size());
+      if (in.gcount() != static_cast<std::streamsize>(payload.size())) {
+        CEDAR_RETURN_IF_ERROR(TruncateFile(path, valid_bytes));
+        break;
+      }
+      const uint32_t actual_crc =
+          crc32c::Value(payload.data(), payload.size());
+      if (actual_crc != header.crc32c) {
+        return Status::Corruption("PartitionChangeLog",
+                                  "frame checksum mismatch in " +
+                                      path.string());
+      }
+      ChangeRecord record;
+      if (!record.ParseFromString(payload)) {
+        return Status::Corruption("PartitionChangeLog",
+                                  "invalid ChangeRecord payload");
+      }
+      if (record.partition_id() != options_.partition_id ||
+          record.partition_epoch() != options_.partition_epoch) {
+        return Status::Corruption("PartitionChangeLog",
+                                  "record partition metadata mismatch");
+      }
+      if (expected_offset != 0 && record.offset() != expected_offset) {
+        return Status::Corruption("PartitionChangeLog", "offset gap");
+      }
+      if (valid_bytes == 0) {
+        last_segment_first_offset = record.offset();
+      }
+      records_.push_back(record);
+      state_.high_watermark = record.offset();
+      state_.committed_version =
+          std::max<uint64_t>(state_.committed_version, record.commit_version());
+      expected_offset = record.offset() + 1;
+      valid_bytes += kFrameHeaderBytes + payload.size();
+    }
+  }
+
+  if (!records_.empty()) {
+    state_.earliest_offset = records_.front().offset();
+    active_segment_first_offset_ = last_segment_first_offset;
+    active_segment_size_ =
+        segments.empty() ? 0 : std::filesystem::file_size(segments.back());
+  } else {
+    state_.earliest_offset = state_.high_watermark + 1;
+    active_segment_first_offset_ = state_.high_watermark + 1;
+    active_segment_size_ = 0;
+  }
+  return PersistManifestLocked();
+}
+
+Status PartitionChangeLog::AppendRecordFrame(const ChangeRecord& record) {
+  std::string payload;
+  if (!record.SerializeToString(&payload)) {
+    return Status::Corruption("PartitionChangeLog",
+                              "failed to serialize ChangeRecord");
+  }
+  const size_t frame_size = kFrameHeaderBytes + payload.size();
+  if (active_segment_size_ > 0 &&
+      active_segment_size_ + frame_size > options_.max_segment_bytes) {
+    active_segment_first_offset_ = record.offset();
+    active_segment_size_ = 0;
+  }
+
+  const std::filesystem::path dir(options_.directory);
+  std::filesystem::create_directories(dir);
+  const auto path = dir / SegmentFileName(active_segment_first_offset_);
+  int fd = ::open(path.c_str(), O_CREAT | O_APPEND | O_WRONLY, 0644);
+  if (fd < 0) {
+    return PosixError("open segment: " + path.string());
+  }
+  FrameHeader header{kFrameMagic, kFrameVersion, 0,
+                     static_cast<uint32_t>(payload.size()),
+                     crc32c::Value(payload.data(), payload.size())};
+  Status s = WriteAll(fd, &header, sizeof(header));
+  if (s.ok()) {
+    s = WriteAll(fd, payload.data(), payload.size());
+  }
+  if (s.ok() && ::fsync(fd) != 0) {
+    s = PosixError("fsync segment: " + path.string());
+  }
+  if (::close(fd) != 0 && s.ok()) {
+    s = PosixError("close segment: " + path.string());
+  }
+  if (!s.ok()) {
+    return s;
+  }
+  active_segment_size_ += frame_size;
+  return FsyncDirectory(dir);
+}
+
+Status PartitionChangeLog::RewriteSegmentsLocked() {
+  const std::filesystem::path dir(options_.directory);
+  std::filesystem::create_directories(dir);
+  for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+    if (entry.is_regular_file() && IsSegmentFile(entry.path())) {
+      std::error_code ec;
+      std::filesystem::remove(entry.path(), ec);
+      if (ec) {
+        return Status::IOError("PartitionChangeLog", ec.message());
+      }
+    }
+  }
+  active_segment_first_offset_ = records_.empty() ? state_.high_watermark + 1
+                                                  : records_.front().offset();
+  active_segment_size_ = 0;
+  for (const auto& record : records_) {
+    CEDAR_RETURN_IF_ERROR(AppendRecordFrame(record));
+  }
+  return FsyncDirectory(dir);
+}
+
+Status PartitionChangeLog::PersistManifestLocked() const {
+  std::ostringstream out;
+  out << "version 1\n";
+  out << "partition_id " << options_.partition_id << "\n";
+  out << "partition_epoch " << state_.partition_epoch << "\n";
+  out << "earliest_offset " << state_.earliest_offset << "\n";
+  out << "high_watermark " << state_.high_watermark << "\n";
+  out << "committed_version " << state_.committed_version << "\n";
+  out << "segments\n";
+  std::filesystem::path dir(options_.directory);
+  if (std::filesystem::exists(dir)) {
+    std::vector<std::filesystem::path> segments;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+      if (entry.is_regular_file() && IsSegmentFile(entry.path())) {
+        segments.push_back(entry.path().filename());
+      }
+    }
+    std::sort(segments.begin(), segments.end());
+    for (const auto& segment : segments) {
+      uint64_t first = 0;
+      uint64_t last = 0;
+      uint64_t bytes = 0;
+      CEDAR_RETURN_IF_ERROR(ReadSegmentRange(dir / segment, &first, &last,
+                                             &bytes));
+      out << segment.string() << " first_offset " << first << " last_offset "
+          << last << " bytes " << bytes << "\n";
+    }
+  }
+  return AtomicWriteFile(dir / kManifestName, out.str());
+}
+
+}  // namespace cedar::cdc

@@ -121,6 +121,10 @@ add_executable(test_change_record storage/test_change_record.cc)
 target_link_libraries(test_change_record ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_change_record)
 
+add_executable(test_change_log storage/test_change_log.cc)
+target_link_libraries(test_change_log ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_change_log)
+
 add_executable(test_edge_atomicity storage/test_edge_atomicity.cc)
 target_link_libraries(test_edge_atomicity ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_edge_atomicity)
