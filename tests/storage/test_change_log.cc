@@ -111,6 +111,21 @@ class PartitionChangeLogTest : public ::testing::Test {
     ASSERT_TRUE(file.good());
   }
 
+  void ReplaceInManifest(const std::string& from, const std::string& to) const {
+    const auto path = test_dir_ / "MANIFEST";
+    std::ifstream input(path);
+    ASSERT_TRUE(input.is_open());
+    std::string contents((std::istreambuf_iterator<char>(input)),
+                         std::istreambuf_iterator<char>());
+    const auto pos = contents.find(from);
+    ASSERT_NE(pos, std::string::npos) << contents;
+    contents.replace(pos, from.size(), to);
+    std::ofstream output(path, std::ios::trunc);
+    ASSERT_TRUE(output.is_open());
+    output << contents;
+    ASSERT_TRUE(output.good());
+  }
+
   std::filesystem::path test_dir_;
 };
 
@@ -212,6 +227,42 @@ TEST_F(PartitionChangeLogTest, RejectsInflatedMiddlePayloadSize) {
   ASSERT_NE(log, nullptr);
   ASSERT_TRUE(log->AppendCommittedBatch(100, MakeBatch(3)).ok());
   InflateSecondRecordPayloadSize();
+
+  log.reset();
+  auto result = PartitionChangeLog::Open(Options());
+  ASSERT_FALSE(result.ok());
+  EXPECT_TRUE(result.status().IsCorruption()) << result.status().ToString();
+}
+
+TEST_F(PartitionChangeLogTest, RejectsManifestHighWatermarkMismatch) {
+  auto log = OpenLog(Options());
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->AppendCommittedBatch(100, MakeBatch(3)).ok());
+  ReplaceInManifest("high_watermark 3", "high_watermark 1");
+
+  log.reset();
+  auto result = PartitionChangeLog::Open(Options());
+  ASSERT_FALSE(result.ok());
+  EXPECT_TRUE(result.status().IsCorruption()) << result.status().ToString();
+}
+
+TEST_F(PartitionChangeLogTest, RejectsManifestPartitionEpochMismatch) {
+  auto log = OpenLog(Options());
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->AppendCommittedBatch(100, MakeBatch(2)).ok());
+  ReplaceInManifest("partition_epoch 9", "partition_epoch 8");
+
+  log.reset();
+  auto result = PartitionChangeLog::Open(Options());
+  ASSERT_FALSE(result.ok());
+  EXPECT_TRUE(result.status().IsCorruption()) << result.status().ToString();
+}
+
+TEST_F(PartitionChangeLogTest, RejectsManifestSegmentRangeMismatch) {
+  auto log = OpenLog(Options());
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->AppendCommittedBatch(100, MakeBatch(2)).ok());
+  ReplaceInManifest("first_offset 1", "first_offset 2");
 
   log.reset();
   auto result = PartitionChangeLog::Open(Options());

@@ -33,9 +33,20 @@ struct FrameHeader {
 };
 
 struct ManifestInfo {
+  struct Segment {
+    std::string name;
+    uint64_t first_offset = 0;
+    uint64_t last_offset = 0;
+    uint64_t bytes = 0;
+  };
+
   bool present = false;
+  uint32_t partition_id = 0;
+  uint64_t partition_epoch = 0;
+  uint64_t earliest_offset = 1;
   uint64_t high_watermark = 0;
-  std::vector<std::string> segment_names;
+  uint64_t committed_version = 0;
+  std::vector<Segment> segments;
 };
 
 static_assert(sizeof(FrameHeader) == kFrameHeaderBytes,
@@ -124,20 +135,74 @@ StatusOr<ManifestInfo> ReadManifest(const std::filesystem::path& dir) {
       in_segments = true;
       continue;
     }
-    std::istringstream parsed(line);
     if (in_segments) {
-      std::string name;
-      parsed >> name;
-      if (!name.empty()) {
-        info.segment_names.push_back(name);
-      }
       continue;
     }
+    std::istringstream parsed(line);
     std::string key;
     parsed >> key;
+    if (key == "version") {
+      uint64_t version = 0;
+      parsed >> version;
+      if (version != 1) {
+        return Status::Corruption("PartitionChangeLog",
+                                  "unsupported manifest version");
+      }
+    }
+    if (key == "partition_id") {
+      parsed >> info.partition_id;
+    }
+    if (key == "partition_epoch") {
+      parsed >> info.partition_epoch;
+    }
+    if (key == "earliest_offset") {
+      parsed >> info.earliest_offset;
+    }
     if (key == "high_watermark") {
       parsed >> info.high_watermark;
     }
+    if (key == "committed_version") {
+      parsed >> info.committed_version;
+    }
+  }
+  if (!info.present) {
+    return info;
+  }
+  in.clear();
+  in.seekg(0);
+  in_segments = false;
+  while (std::getline(in, line)) {
+    if (line == "segments") {
+      in_segments = true;
+      continue;
+    }
+    if (!in_segments || line.empty()) {
+      continue;
+    }
+    std::istringstream parsed(line);
+    ManifestInfo::Segment segment;
+    parsed >> segment.name;
+    std::string label;
+    parsed >> label >> segment.first_offset;
+    if (label != "first_offset") {
+      return Status::Corruption("PartitionChangeLog",
+                                "invalid manifest segment first_offset");
+    }
+    parsed >> label >> segment.last_offset;
+    if (label != "last_offset") {
+      return Status::Corruption("PartitionChangeLog",
+                                "invalid manifest segment last_offset");
+    }
+    parsed >> label >> segment.bytes;
+    if (label != "bytes") {
+      return Status::Corruption("PartitionChangeLog",
+                                "invalid manifest segment bytes");
+    }
+    if (segment.name.empty()) {
+      return Status::Corruption("PartitionChangeLog",
+                                "empty manifest segment name");
+    }
+    info.segments.push_back(segment);
   }
   return info;
 }
@@ -347,8 +412,18 @@ Status PartitionChangeLog::Recover() {
     return manifest.status();
   }
   if (manifest.ValueOrDie().present) {
-    for (const auto& name : manifest.ValueOrDie().segment_names) {
-      segments.push_back(std::filesystem::path(options_.directory) / name);
+    if (manifest.ValueOrDie().partition_id != options_.partition_id ||
+        manifest.ValueOrDie().partition_epoch != options_.partition_epoch) {
+      return Status::Corruption("PartitionChangeLog",
+                                "manifest partition metadata mismatch");
+    }
+    for (const auto& segment : manifest.ValueOrDie().segments) {
+      const auto path = std::filesystem::path(options_.directory) / segment.name;
+      if (!std::filesystem::exists(path)) {
+        return Status::Corruption("PartitionChangeLog",
+                                  "manifest segment missing");
+      }
+      segments.push_back(path);
     }
   } else {
     for (const auto& entry :
@@ -362,10 +437,13 @@ Status PartitionChangeLog::Recover() {
 
   uint64_t expected_offset = 0;
   uint64_t last_segment_first_offset = 1;
+  bool truncated_tail = false;
   for (size_t segment_index = 0; segment_index < segments.size();
        ++segment_index) {
     const auto& path = segments[segment_index];
     const bool is_last_segment = segment_index + 1 == segments.size();
+    uint64_t segment_first_offset = 0;
+    uint64_t segment_last_offset = 0;
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open()) {
       return Status::IOError("PartitionChangeLog",
@@ -387,6 +465,7 @@ Status PartitionChangeLog::Recover() {
                                     "partial frame before log tail");
         }
         CEDAR_RETURN_IF_ERROR(TruncateFile(path, valid_bytes));
+        truncated_tail = true;
         break;
       }
       if (header.magic != kFrameMagic || header.version != kFrameVersion) {
@@ -403,6 +482,7 @@ Status PartitionChangeLog::Recover() {
                                     "partial payload before log tail");
         }
         CEDAR_RETURN_IF_ERROR(TruncateFile(path, valid_bytes));
+        truncated_tail = true;
         break;
       }
       const uint32_t actual_crc =
@@ -427,13 +507,28 @@ Status PartitionChangeLog::Recover() {
       }
       if (valid_bytes == 0) {
         last_segment_first_offset = record.offset();
+        segment_first_offset = record.offset();
       }
+      segment_last_offset = record.offset();
       records_.push_back(record);
       state_.high_watermark = record.offset();
       state_.committed_version =
           std::max<uint64_t>(state_.committed_version, record.commit_version());
       expected_offset = record.offset() + 1;
       valid_bytes += kFrameHeaderBytes + payload.size();
+    }
+    if (manifest.ValueOrDie().present) {
+      const auto& expected_segment = manifest.ValueOrDie().segments[segment_index];
+      const bool allow_truncated_last =
+          truncated_tail && is_last_segment &&
+          manifest.ValueOrDie().high_watermark == expected_offset;
+      if (segment_first_offset != expected_segment.first_offset ||
+          (!allow_truncated_last && valid_bytes != expected_segment.bytes) ||
+          (!allow_truncated_last &&
+           segment_last_offset != expected_segment.last_offset)) {
+        return Status::Corruption("PartitionChangeLog",
+                                  "manifest segment range mismatch");
+      }
     }
   }
 
@@ -446,6 +541,17 @@ Status PartitionChangeLog::Recover() {
     state_.earliest_offset = state_.high_watermark + 1;
     active_segment_first_offset_ = state_.high_watermark + 1;
     active_segment_size_ = 0;
+  }
+  if (manifest.ValueOrDie().present) {
+    const bool allow_truncated_tail =
+        truncated_tail && manifest.ValueOrDie().high_watermark == expected_offset;
+    if (state_.earliest_offset != manifest.ValueOrDie().earliest_offset ||
+        (!allow_truncated_tail &&
+         state_.high_watermark != manifest.ValueOrDie().high_watermark) ||
+        state_.committed_version != manifest.ValueOrDie().committed_version) {
+      return Status::Corruption("PartitionChangeLog",
+                                "manifest watermark mismatch");
+    }
   }
   return PersistManifestLocked();
 }
