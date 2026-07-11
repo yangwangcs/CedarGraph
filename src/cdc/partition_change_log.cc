@@ -574,9 +574,7 @@ Status PartitionChangeLog::Recover() {
   if (!manifest.ValueOrDie().present) {
     manifest_segment_names_.clear();
   }
-  Status manifest_status = PersistManifestLocked();
-  manifest_segment_names_.clear();
-  return manifest_status;
+  return PersistManifestLocked();
 }
 
 Status PartitionChangeLog::AppendRecordFrame(const ChangeRecord& record) {
@@ -590,6 +588,13 @@ Status PartitionChangeLog::AppendRecordFrame(const ChangeRecord& record) {
       active_segment_size_ + frame_size > options_.max_segment_bytes) {
     active_segment_first_offset_ = record.offset();
     active_segment_size_ = 0;
+  }
+  if (active_segment_size_ == 0) {
+    const std::string segment_name = SegmentFileName(active_segment_first_offset_);
+    if (std::find(manifest_segment_names_.begin(), manifest_segment_names_.end(),
+                  segment_name) == manifest_segment_names_.end()) {
+      manifest_segment_names_.push_back(segment_name);
+    }
   }
 
   const std::filesystem::path dir(options_.directory);
@@ -704,7 +709,6 @@ Status PartitionChangeLog::RewriteSegmentsLocked() {
       return Status::IOError("PartitionChangeLog", ec.message());
     }
   }
-  manifest_segment_names_.clear();
   active_segment_first_offset_ = records_.empty() ? state_.high_watermark + 1
                                                   : records_.back().offset();
   active_segment_size_ = 0;

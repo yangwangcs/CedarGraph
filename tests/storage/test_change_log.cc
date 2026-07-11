@@ -282,13 +282,15 @@ TEST_F(PartitionChangeLogTest, KeepsManifestAuthoritativeOverStaleSegments) {
   log.reset();
   auto reopened = OpenLog(Options());
   ASSERT_NE(reopened, nullptr);
+  ASSERT_TRUE(reopened->AppendCommittedBatch(101, MakeBatch(1)).ok());
   reopened.reset();
 
   auto reopened_again = OpenLog(Options());
   ASSERT_NE(reopened_again, nullptr);
   auto result = reopened_again->ReadAfter(0, 10, 1 << 20);
   ASSERT_TRUE(result.ok()) << result.status().ToString();
-  ASSERT_EQ(result.ValueOrDie().size(), 2);
+  ASSERT_EQ(result.ValueOrDie().size(), 3);
+  EXPECT_EQ(result.ValueOrDie()[2].offset(), 3);
 }
 
 TEST_F(PartitionChangeLogTest, CompactDropsEarlierOffsets) {
