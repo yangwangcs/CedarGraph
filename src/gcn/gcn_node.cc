@@ -16,9 +16,11 @@
 
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <unordered_set>
 
 #include "cedar/dtx/raft/grpc_tls.h"
 #include "cedar/gcn/scatter_gather_router.h"
@@ -36,10 +38,14 @@ DEFINE_bool(gcn_backfill_enabled, false, "Enable storage to TMV backfill on star
 DEFINE_uint64(gcn_backfill_start_id, 1, "Start entity ID for backfill");
 DEFINE_uint64(gcn_backfill_end_id, 1000, "End entity ID for backfill");
 DEFINE_int32(gcn_heartbeat_interval_ms, 5000, "GCN heartbeat interval in milliseconds");
+DEFINE_string(gcn_checkpoint_dir, "/tmp/cedar-gcn-checkpoints",
+              "Directory for GCN partition checkpoints");
 
 namespace cedar {
 
 GcnNode::GcnNode() = default;
+
+GcnNode::GcnNode(Options options) : options_(std::move(options)) {}
 
 GcnNode::~GcnNode() {
   if (running_.load()) {
@@ -60,8 +66,23 @@ GcnNode::~GcnNode() {
     std::cerr << "[GCN] Coordinator overridden by CEDAR_GCN_COORDINATOR: " << FLAGS_gcn_coordinator << std::endl;
   }
 
+  const size_t tmv_max_chunks =
+      options_.tmv_max_chunks == 0
+          ? static_cast<size_t>(FLAGS_gcn_tmv_max_chunks)
+          : options_.tmv_max_chunks;
+  const std::string checkpoint_dir =
+      options_.checkpoint_directory.empty() ? FLAGS_gcn_checkpoint_dir
+                                            : options_.checkpoint_directory;
+  const std::string bind_address =
+      options_.bind_address.empty() ? FLAGS_gcn_bind_address
+                                    : options_.bind_address;
+  const int port = options_.port == 0 ? FLAGS_gcn_port : options_.port;
+  const std::string coordinator_endpoint =
+      options_.coordinator_endpoint.empty() ? FLAGS_gcn_coordinator
+                                            : options_.coordinator_endpoint;
+
   // Create TMVEngine
-  engine_ = std::make_unique<gcn::TMVEngine>(static_cast<size_t>(FLAGS_gcn_tmv_max_chunks));
+  engine_ = std::make_unique<gcn::TMVEngine>(tmv_max_chunks);
 
   // Storage backfill (optional, or lazy on-demand)
   if (storage_) {
@@ -73,11 +94,14 @@ GcnNode::~GcnNode() {
 
   // Create WatermarkGc and start it (watermark = 0 means no GC yet)
   constexpr uint64_t kWatermarkGcIntervalMs = 5000;
-  watermark_gc_ = std::make_unique<gcn::WatermarkGc>(engine_.get());
-  watermark_gc_->Start(kWatermarkGcIntervalMs);
+  if (options_.enable_watermark_gc) {
+    watermark_gc_ = std::make_unique<gcn::WatermarkGc>(engine_.get());
+    watermark_gc_->Start(kWatermarkGcIntervalMs);
+  }
 
   // Create EventApplier
   event_applier_ = std::make_unique<gcn::EventApplier>(engine_.get());
+  checkpoint_store_ = std::make_unique<gcn::CheckpointStore>(checkpoint_dir);
 
   // Create GcnServiceImpl with callback forwarding to EventApplier
   auto callback = [this](const cedar::gcn::CDCEvent& proto_event) {
@@ -119,6 +143,7 @@ GcnNode::~GcnNode() {
   };
   service_impl_ = std::make_unique<gcn::GcnServiceImpl>(
       engine_.get(), backfill_service_.get(), std::move(callback));
+  service_impl_->SetNodeReadiness(false, "GCN node not started");
 
   // Register peers in ScatterGatherRouter for multi-GCN routing
   auto router = std::make_shared<gcn::ScatterGatherRouter>();
@@ -134,20 +159,25 @@ GcnNode::~GcnNode() {
   service_impl_->SetScatterGatherRouter(router);
 
   // Create CoordinatorClient connection to metad
-  auto coordinator_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
-  if (!coordinator_creds.ok()) {
-    return cedar::Status::IOError("Failed to create coordinator TLS credentials: " + coordinator_creds.status().ToString());
+  if (options_.enable_coordinator) {
+    auto coordinator_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+    if (!coordinator_creds.ok()) {
+      return cedar::Status::IOError("Failed to create coordinator TLS credentials: " + coordinator_creds.status().ToString());
+    }
+    auto coordinator_channel = grpc::CreateChannel(
+        coordinator_endpoint, coordinator_creds.ValueOrDie());
+    coordinator_client_ =
+        std::make_unique<gcn::CoordinatorClient>(coordinator_channel);
+    coordinator_client_->SetGcnNodeId(static_cast<uint32_t>(port));
   }
-  auto coordinator_channel = grpc::CreateChannel(
-      FLAGS_gcn_coordinator, coordinator_creds.ValueOrDie());
-  coordinator_client_ =
-      std::make_unique<gcn::CoordinatorClient>(coordinator_channel);
-  coordinator_client_->SetGcnNodeId(
-      static_cast<uint32_t>(FLAGS_gcn_port));
+
+  if (!options_.enable_grpc_server) {
+    return cedar::Status::OK();
+  }
 
   // Build and start gRPC server
   std::ostringstream address;
-  address << FLAGS_gcn_bind_address << ":" << FLAGS_gcn_port;
+  address << bind_address << ":" << port;
   std::string server_address = address.str();
 
   grpc::ServerBuilder builder;
@@ -169,13 +199,75 @@ GcnNode::~GcnNode() {
 }
 
  cedar::Status GcnNode::Start() {
-  if (!grpc_server_) {
+  if (options_.enable_grpc_server && !grpc_server_) {
     return cedar::Status::InvalidArgument("GcnNode not initialized");
+  }
+  if (!checkpoint_store_ || !event_applier_ || !engine_ || !service_impl_) {
+    return cedar::Status::InvalidArgument("GcnNode not initialized");
+  }
+  if (options_.cdc_poll_interval.count() <= 0) {
+    service_impl_->SetNodeReadiness(false, "invalid CDC poll interval");
+    return cedar::Status::InvalidArgument("CDC poll interval must be positive");
+  }
+
+  std::unordered_set<uint32_t> seen_partitions;
+  for (const auto& lease : options_.partition_leases) {
+    if (!seen_partitions.insert(lease.partition_id).second) {
+      service_impl_->SetNodeReadiness(false, "duplicate partition lease");
+      return cedar::Status::InvalidArgument(
+          "duplicate partition lease " + std::to_string(lease.partition_id));
+    }
+    auto source_it = options_.storage_cdc_sources.find(lease.partition_id);
+    if (source_it == options_.storage_cdc_sources.end() || !source_it->second) {
+      service_impl_->SetNodeReadiness(false, "missing StorageD CDC source");
+      return cedar::Status::InvalidArgument(
+          "missing StorageD CDC source for partition " +
+          std::to_string(lease.partition_id));
+    }
+  }
+
+  gcn::PartitionCheckpoint probe_checkpoint;
+  probe_checkpoint.partition_id = std::numeric_limits<uint32_t>::max();
+  auto checkpoint_status = checkpoint_store_->Save(probe_checkpoint);
+  if (checkpoint_status.ok()) {
+    checkpoint_status = checkpoint_store_->Remove(probe_checkpoint.partition_id);
+  }
+  if (!checkpoint_status.ok()) {
+    service_impl_->SetNodeReadiness(false, "checkpoint store is not writable");
+    return checkpoint_status;
   }
 
   running_ = true;
+  service_impl_->SetNodeReadiness(false, "partition consumers starting");
 
-  // Start CDC listener thread
+  consumers_.clear();
+  for (const auto& lease : options_.partition_leases) {
+    auto source_it = options_.storage_cdc_sources.find(lease.partition_id);
+    gcn::PartitionConsumer::Options consumer_options;
+    consumer_options.poll_interval = options_.cdc_poll_interval;
+    auto consumer = std::make_unique<gcn::PartitionConsumer>(
+        source_it->second.get(), checkpoint_store_.get(), event_applier_.get(),
+        engine_.get(), consumer_options);
+    auto status = consumer->Start(lease);
+    if (!status.ok()) {
+      for (auto& started : consumers_) {
+        if (started) {
+          started->Stop(std::chrono::milliseconds(1000)).IgnoreError();
+        }
+      }
+      consumers_.clear();
+      running_ = false;
+      service_impl_->SetNodeReadiness(false, status.ToString());
+      return status;
+    }
+    consumers_.push_back(std::move(consumer));
+  }
+
+  if (consumers_.empty()) {
+    service_impl_->SetNodeReadiness(false, "no partition leases configured");
+  }
+
+  // Start CDC progress publication thread.
   cdc_thread_ = std::thread(&GcnNode::CdcListenerLoop, this);
 
   // Start heartbeat thread to report liveness to metad
@@ -187,6 +279,12 @@ GcnNode::~GcnNode() {
  cedar::Status GcnNode::Stop() {
   running_ = false;
   stop_cv_.notify_all();
+
+  for (auto& consumer : consumers_) {
+    if (consumer) {
+      consumer->Stop(std::chrono::milliseconds(1000)).IgnoreError();
+    }
+  }
 
   if (grpc_server_) {
     grpc_server_->Shutdown();
@@ -207,6 +305,8 @@ GcnNode::~GcnNode() {
   service_impl_.reset();
   coordinator_client_.reset();
   backfill_service_.reset();
+  consumers_.clear();
+  checkpoint_store_.reset();
   event_applier_.reset();
   watermark_gc_.reset();
   engine_.reset();
@@ -215,39 +315,55 @@ GcnNode::~GcnNode() {
 }
 
 void GcnNode::CdcListenerLoop() {
-  uint64_t last_polled_version = 0;
   while (running_.load()) {
-    // TODO(#C-CDC-001): Full CDC streaming integration.
-    // For now, we poll storage directly if co-located, or rely on
-    // coordinator heartbeats for watermark advancement.
-    if (storage_) {
-      // Simple polling: scan for active entities and apply as CDC events
-      // This is a best-effort fallback for development/demo scenarios.
-      auto entities = storage_->GetActiveEntities(
-          cedar::EntityType::Vertex,
-          cedar::Timestamp(std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::system_clock::now().time_since_epoch()).count()));
-      for (uint64_t entity_id : entities) {
-        gcn::GraphCDCEvent event;
-        event.entity_id = entity_id;
-        event.target_id = entity_id;
-        event.edge_type = 0;
-        event.valid_from = static_cast<uint32_t>(
-            std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
-        event.valid_to = std::numeric_limits<uint32_t>::max();
-        event.op = gcn::CDCEventOp::kCreate;
-        auto s = event_applier_->ApplyUnordered(event);
-        if (!s.ok()) {
-          CEDAR_LOG_WARN() << "CDC apply failed for entity " << entity_id << ": " << s.ToString() << "\n";
-        }
-      }
-    }
+    PublishConsumerProgress();
     std::unique_lock<std::mutex> lock(stop_mutex_);
-    stop_cv_.wait_for(lock, std::chrono::seconds(5), [this]() {
+    stop_cv_.wait_for(lock, options_.cdc_poll_interval, [this]() {
       return !running_.load();
     });
   }
+}
+
+void GcnNode::PublishConsumerProgress() {
+  if (!service_impl_) {
+    return;
+  }
+  bool all_ready = !consumers_.empty();
+  std::string not_ready_reason = consumers_.empty()
+                                     ? "no partition leases configured"
+                                     : "partition consumers catching up";
+  for (const auto& consumer : consumers_) {
+    if (!consumer) {
+      all_ready = false;
+      continue;
+    }
+    auto progress = consumer->GetProgress();
+    service_impl_->SetPartitionProgress(
+        progress.partition_id, progress.partition_epoch,
+        progress.applied_version, progress.query_ready);
+    if (!progress.query_ready) {
+      all_ready = false;
+      if (!progress.error.empty()) {
+        not_ready_reason = progress.error;
+      }
+    }
+  }
+  service_impl_->SetNodeReadiness(all_ready,
+                                  all_ready ? "ready" : not_ready_reason);
+}
+
+gcn::PartitionConsumerProgress GcnNode::GetPartitionProgress(
+    uint32_t partition_id) const {
+  for (const auto& consumer : consumers_) {
+    if (!consumer) {
+      continue;
+    }
+    auto progress = consumer->GetProgress();
+    if (progress.partition_id == partition_id) {
+      return progress;
+    }
+  }
+  return gcn::PartitionConsumerProgress{};
 }
 
 void GcnNode::HeartbeatLoop() {

@@ -830,6 +830,10 @@ add_executable(test_gcn_cdc_consumer gcn/test_gcn_cdc_consumer.cc)
 target_link_libraries(test_gcn_cdc_consumer cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_gcn_cdc_consumer)
 
+add_executable(test_gcn_node_cdc gcn/test_gcn_node_cdc.cc)
+target_link_libraries(test_gcn_node_cdc cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_node_cdc)
+
 add_executable(test_adaptive_execution queryd/test_adaptive_execution.cc)
 target_link_libraries(test_adaptive_execution ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_adaptive_execution)
@@ -855,6 +859,10 @@ add_executable(test_query_dispatcher gcn/test_query_dispatcher.cc)
 target_link_directories(test_query_dispatcher PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_query_dispatcher cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_query_dispatcher)
+
+add_executable(test_gcn_version_gate gcn/test_gcn_version_gate.cc)
+target_link_libraries(test_gcn_version_gate cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_version_gate)
 
 add_executable(test_coordinator_client gcn/test_coordinator_client.cc)
 target_link_directories(test_coordinator_client PRIVATE /opt/homebrew/lib)

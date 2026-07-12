@@ -92,3 +92,14 @@ TEST_F(GcnServiceTest, OnCacheInvalidateReturnsEmpty) {
 
   EXPECT_TRUE(status.ok());
 }
+
+TEST_F(GcnServiceTest, GetHealthReturnsReadinessState) {
+  HealthRequest request;
+  HealthResponse response;
+  grpc::ClientContext context;
+  grpc::Status status = stub_->GetHealth(&context, request, &response);
+
+  EXPECT_TRUE(status.ok());
+  EXPECT_FALSE(response.ready());
+  EXPECT_EQ(response.reason(), "Dispatcher not available");
+}

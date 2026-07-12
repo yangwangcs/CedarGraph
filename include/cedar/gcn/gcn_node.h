@@ -16,7 +16,9 @@
 #define CEDAR_GCN_GCN_NODE_H_
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -26,9 +28,12 @@
 
 #include "cedar/core/status.h"
 #include "cedar/gcn/coordinator_client.h"
+#include "cedar/gcn/checkpoint_store.h"
 #include "cedar/gcn/event_applier.h"
 #include "cedar/gcn/gcn_service.h"
+#include "cedar/gcn/partition_consumer.h"
 #include "cedar/gcn/storage_backfill_service.h"
+#include "cedar/gcn/storage_cdc_client.h"
 #include "cedar/gcn/tmv_engine.h"
 #include "cedar/gcn/watermark_gc.h"
 
@@ -41,7 +46,23 @@ class CedarGraphStorage;
 // threads (garbage collection, CDC listener).
 class GcnNode {
  public:
+  struct Options {
+    bool enable_grpc_server = true;
+    bool enable_coordinator = true;
+    bool enable_watermark_gc = true;
+    std::string bind_address;
+    int port = 0;
+    std::string coordinator_endpoint;
+    size_t tmv_max_chunks = 0;
+    std::string checkpoint_directory;
+    std::vector<gcn::PartitionLease> partition_leases;
+    std::map<uint32_t, std::shared_ptr<gcn::StorageCdcSource>>
+        storage_cdc_sources;
+    std::chrono::milliseconds cdc_poll_interval{50};
+  };
+
   GcnNode();
+  explicit GcnNode(Options options);
   ~GcnNode();
 
   // Non-copyable, non-movable
@@ -67,12 +88,18 @@ class GcnNode {
     peer_addresses_ = addresses;
   }
 
+  gcn::PartitionConsumerProgress GetPartitionProgress(
+      uint32_t partition_id) const;
+
  private:
   void CdcListenerLoop();
   void HeartbeatLoop();
+  void PublishConsumerProgress();
 
+  Options options_;
   std::unique_ptr<gcn::TMVEngine> engine_;
   std::unique_ptr<gcn::EventApplier> event_applier_;
+  std::unique_ptr<gcn::CheckpointStore> checkpoint_store_;
   std::unique_ptr<gcn::StorageBackfillService> backfill_service_;
   std::unique_ptr<gcn::GcnServiceImpl> service_impl_;
   std::unique_ptr<grpc::Server> grpc_server_;
@@ -81,6 +108,7 @@ class GcnNode {
   CedarGraphStorage* storage_ = nullptr;
 
   std::unique_ptr<gcn::WatermarkGc> watermark_gc_;
+  std::vector<std::unique_ptr<gcn::PartitionConsumer>> consumers_;
 
   std::vector<std::string> peer_addresses_;
 

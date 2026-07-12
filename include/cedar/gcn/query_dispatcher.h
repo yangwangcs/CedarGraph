@@ -19,6 +19,8 @@
 #pragma once
 
 #include <grpcpp/grpcpp.h>
+#include <mutex>
+#include <unordered_map>
 
 #include "cedar/gcn/tmv_engine.h"
 #include "gcn_service.pb.h"
@@ -36,6 +38,11 @@ class QueryDispatcher {
     backfill_service_ = svc;
   }
 
+  void SetPartitionProgress(uint32_t partition_id,
+                            uint64_t partition_epoch,
+                            uint64_t applied_version,
+                            bool query_ready);
+
   // Routes a traversal request:
   //   - Local hit: vertex cached with edges at query_time -> fill response
   //   - Local miss: vertex not cached -> empty response (bootstrap in Task 4.x)
@@ -51,8 +58,16 @@ class QueryDispatcher {
   TMVEngine* engine() const { return engine_; }
 
  private:
+  struct PartitionProgress {
+    uint64_t partition_epoch = 0;
+    uint64_t applied_version = 0;
+    bool query_ready = false;
+  };
+
   TMVEngine* engine_;
   class StorageBackfillService* backfill_service_ = nullptr;
+  mutable std::mutex progress_mutex_;
+  std::unordered_map<uint32_t, PartitionProgress> partition_progress_;
 };
 
 }  // namespace gcn
