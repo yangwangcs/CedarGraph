@@ -14,6 +14,7 @@
 
 #include "cedar/gcn/gcn_node.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -102,6 +103,8 @@ GcnNode::~GcnNode() {
   // Create EventApplier
   event_applier_ = std::make_unique<gcn::EventApplier>(engine_.get());
   checkpoint_store_ = std::make_unique<gcn::CheckpointStore>(checkpoint_dir);
+  tmv_snapshot_store_ =
+      std::make_unique<gcn::TmvSnapshotStore>(checkpoint_dir + "/tmv_snapshots");
 
   // Create GcnServiceImpl with callback forwarding to EventApplier
   auto callback = [this](const cedar::gcn::CDCEvent& proto_event) {
@@ -247,7 +250,7 @@ GcnNode::~GcnNode() {
     consumer_options.poll_interval = options_.cdc_poll_interval;
     auto consumer = std::make_unique<gcn::PartitionConsumer>(
         source_it->second.get(), checkpoint_store_.get(), event_applier_.get(),
-        engine_.get(), consumer_options);
+        engine_.get(), consumer_options, tmv_snapshot_store_.get());
     auto status = consumer->Start(lease);
     if (!status.ok()) {
       for (auto& started : consumers_) {
@@ -307,6 +310,7 @@ GcnNode::~GcnNode() {
   backfill_service_.reset();
   consumers_.clear();
   checkpoint_store_.reset();
+  tmv_snapshot_store_.reset();
   event_applier_.reset();
   watermark_gc_.reset();
   engine_.reset();
@@ -378,13 +382,35 @@ void GcnNode::HeartbeatLoop() {
         CEDAR_LOG_WARN() << "GCN heartbeat failed: " << status.ToString() << "\n";
       }
     }
-    // Advance watermark based on a safe time-based heuristic.
-    // (Production-grade watermark should come from min active query time or CDC commit pointer.)
     if (watermark_gc_) {
-      auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
-          std::chrono::system_clock::now().time_since_epoch()).count();
-      constexpr int64_t kWatermarkLagSeconds = 60;
-      watermark_gc_->UpdateWatermark(static_cast<uint64_t>(now_sec - kWatermarkLagSeconds));
+      uint64_t minimum_applied_version = std::numeric_limits<uint64_t>::max();
+      bool all_partitions_have_applied_state = !consumers_.empty();
+      for (const auto& consumer : consumers_) {
+        if (!consumer) {
+          all_partitions_have_applied_state = false;
+          continue;
+        }
+        auto progress = consumer->GetProgress();
+        if (progress.applied_version == 0) {
+          all_partitions_have_applied_state = false;
+        } else {
+          minimum_applied_version =
+              std::min(minimum_applied_version, progress.applied_version);
+        }
+      }
+      if (!all_partitions_have_applied_state ||
+          minimum_applied_version == std::numeric_limits<uint64_t>::max()) {
+        watermark_gc_->UpdateWatermark(0);
+      } else {
+        watermark_gc_->UpdateWatermark(gcn::ComputeSafeWatermark(
+            gcn::WatermarkInputs{
+                .minimum_applied_version = minimum_applied_version,
+                .minimum_active_query_version =
+                    service_impl_
+                        ? service_impl_->MinimumActiveQueryVersion()
+                        : std::numeric_limits<uint64_t>::max(),
+                .retention_floor_version = minimum_applied_version}));
+      }
     }
     std::unique_lock<std::mutex> lock(stop_mutex_);
     stop_cv_.wait_for(

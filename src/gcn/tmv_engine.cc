@@ -261,6 +261,12 @@ cedar::Status TMVEngine::ReplacePartitionEdgesAtomic(
     uint32_t partition_id,
     const std::vector<EdgeAppend>& appends) {
   std::lock_guard<std::mutex> append_guard(append_mutex_);
+  for (const auto& append : appends) {
+    if (append.edge.reserved != partition_id) {
+      return cedar::Status::InvalidArgument(
+          "partition replacement append belongs to a different partition");
+    }
+  }
 
   std::vector<VertexBackup> backups;
   for (uint32_t s = 0; s < TMVIndex::kNumShards; ++s) {
@@ -384,6 +390,38 @@ cedar::Status TMVEngine::ReplacePartitionEdgesAtomic(
   }
 
   return cedar::Status::OK();
+}
+
+std::vector<TMVEngine::EdgeAppend> TMVEngine::ExportPartitionEdges(
+    uint32_t partition_id) const {
+  std::lock_guard<std::mutex> append_guard(append_mutex_);
+  std::vector<EdgeAppend> appends;
+  for (uint32_t s = 0; s < TMVIndex::kNumShards; ++s) {
+    const TMVIndex::Shard& shard = index_.shards_[s];
+    std::lock_guard<std::mutex> holder{shard.lock};
+    for (const auto& item : shard.entries) {
+      const uint64_t entity_id = item.first;
+      const TMVVertexEntry& entry = item.second;
+      std::lock_guard<std::mutex> entry_guard(entry.list_mutex);
+      auto collect = [&](Direction dir, TMVChunk* chunk) {
+        while (chunk) {
+          uint32_t count = chunk->event_count.load(std::memory_order_acquire);
+          for (uint32_t i = 0; i < count; ++i) {
+            const TMVEdge& edge = chunk->edges[i];
+            if (edge.reserved == partition_id) {
+              appends.push_back(EdgeAppend{entity_id, dir, edge, false});
+            }
+          }
+          chunk = chunk->next.load(std::memory_order_acquire);
+        }
+      };
+      collect(Direction::kOut,
+              entry.out_chunk_head.load(std::memory_order_acquire));
+      collect(Direction::kIn,
+              entry.in_chunk_head.load(std::memory_order_acquire));
+    }
+  }
+  return appends;
 }
 
 TMVEngine::VertexBackup TMVEngine::BackupVertex(uint64_t entity_id) const {

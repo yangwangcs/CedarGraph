@@ -35,6 +35,7 @@
 #include "cedar/gcn/storage_backfill_service.h"
 #include "cedar/gcn/storage_cdc_client.h"
 #include "cedar/gcn/tmv_engine.h"
+#include "cedar/gcn/tmv_snapshot_store.h"
 #include "cedar/gcn/watermark_gc.h"
 
 namespace cedar {
@@ -100,6 +101,7 @@ class GcnNode {
   std::unique_ptr<gcn::TMVEngine> engine_;
   std::unique_ptr<gcn::EventApplier> event_applier_;
   std::unique_ptr<gcn::CheckpointStore> checkpoint_store_;
+  std::unique_ptr<gcn::TmvSnapshotStore> tmv_snapshot_store_;
   std::unique_ptr<gcn::StorageBackfillService> backfill_service_;
   std::unique_ptr<gcn::GcnServiceImpl> service_impl_;
   std::unique_ptr<grpc::Server> grpc_server_;

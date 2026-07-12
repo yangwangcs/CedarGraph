@@ -127,6 +127,8 @@ TEST(GcnNodeCdcTest, StandaloneNodeConsumesWithoutSetStorage) {
   EXPECT_EQ(progress.partition_epoch, 7u);
   EXPECT_EQ(progress.applied_offset, 1u);
   EXPECT_EQ(progress.applied_version, 99u);
+  EXPECT_TRUE(std::filesystem::exists(
+      directory / "tmv_snapshots" / "partition_3.tmv"));
 
   EXPECT_TRUE(node.Stop().ok());
   std::filesystem::remove_all(directory);

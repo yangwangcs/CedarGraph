@@ -54,6 +54,7 @@ class TMVEngine {
   cedar::Status ReplacePartitionEdgesAtomic(
       uint32_t partition_id,
       const std::vector<EdgeAppend>& appends);
+  std::vector<EdgeAppend> ExportPartitionEdges(uint32_t partition_id) const;
 
   std::vector<TMVEdge> ScanAtTime(uint64_t entity_id,
                                   Direction dir,

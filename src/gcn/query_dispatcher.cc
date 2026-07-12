@@ -20,6 +20,8 @@
 
 #include "cedar/gcn/storage_backfill_service.h"
 
+#include <limits>
+
 namespace cedar {
 namespace gcn {
 
@@ -35,8 +37,50 @@ void QueryDispatcher::SetPartitionProgress(uint32_t partition_id,
       PartitionProgress{partition_epoch, applied_version, query_ready};
 }
 
+QueryDispatcher::ActiveQueryRegistration::ActiveQueryRegistration(
+    QueryDispatcher* dispatcher, uint64_t version)
+    : dispatcher_(dispatcher),
+      version_(version),
+      registered_(dispatcher != nullptr && version != 0) {
+  if (registered_) {
+    dispatcher_->RegisterActiveQuery(version_);
+  }
+}
+
+QueryDispatcher::ActiveQueryRegistration::~ActiveQueryRegistration() {
+  if (registered_) {
+    dispatcher_->UnregisterActiveQuery(version_);
+  }
+}
+
+void QueryDispatcher::RegisterActiveQuery(uint64_t version) {
+  std::lock_guard<std::mutex> lock(active_query_mutex_);
+  active_query_versions_.insert(version);
+}
+
+void QueryDispatcher::UnregisterActiveQuery(uint64_t version) {
+  std::lock_guard<std::mutex> lock(active_query_mutex_);
+  auto it = active_query_versions_.find(version);
+  if (it != active_query_versions_.end()) {
+    active_query_versions_.erase(it);
+  }
+}
+
+uint64_t QueryDispatcher::MinimumActiveQueryVersion() const {
+  std::lock_guard<std::mutex> lock(active_query_mutex_);
+  if (active_query_versions_.empty()) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return *active_query_versions_.begin();
+}
+
+uint64_t QueryDispatcher::ActiveQueryVersion(const TraversalRequest& req) {
+  return req.query_time();
+}
+
 grpc::Status QueryDispatcher::DispatchTraversal(const TraversalRequest& req,
                                                 TraversalResponse* resp) {
+  ActiveQueryRegistration active_query(this, ActiveQueryVersion(req));
   resp->Clear();
   resp->set_trace_id(req.trace_id());
 
@@ -94,6 +138,7 @@ grpc::Status QueryDispatcher::DispatchTraversal(const TraversalRequest& req,
 
 grpc::Status QueryDispatcher::DispatchSubQuery(const SubQueryRequest& req,
                                                SubQueryResponse* resp) {
+  ActiveQueryRegistration active_query(this, req.query_time());
   resp->Clear();
   resp->set_trace_id(req.trace_id());
 

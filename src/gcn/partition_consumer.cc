@@ -10,12 +10,14 @@ namespace cedar::gcn {
 PartitionConsumer::PartitionConsumer(StorageCdcSource* source,
                                      CheckpointStore* checkpoints,
                                      EventApplier* applier, TMVEngine* engine,
-                                     Options options)
+                                     Options options,
+                                     TmvSnapshotStore* snapshot_store)
     : source_(source),
       checkpoints_(checkpoints),
       applier_(applier),
       engine_(engine),
-      options_(options) {}
+      options_(options),
+      snapshot_store_(snapshot_store) {}
 
 PartitionConsumer::~PartitionConsumer() {
   Stop(std::chrono::milliseconds(1000)).IgnoreError();
@@ -151,8 +153,19 @@ Status PartitionConsumer::RunOnce(PartitionLease lease) {
       checkpoint->applied_offset + 1 >= state.earliest_offset()) {
     after_offset = checkpoint->applied_offset;
     applied_version = checkpoint->applied_version;
-    if (applier_->AppliedOffset(lease.partition_id) != after_offset ||
-        applier_->AppliedVersion(lease.partition_id) != applied_version) {
+    if (snapshot_store_ && !checkpoint->tmv_snapshot_id.empty()) {
+      auto restored = snapshot_store_->RestorePartition(engine_,
+                                                        lease.partition_id);
+      if (!restored.ok() ||
+          restored.ValueOrDie().partition_id != lease.partition_id ||
+          restored.ValueOrDie().applied_offset != after_offset ||
+          restored.ValueOrDie().applied_version != applied_version) {
+        needs_snapshot = true;
+      }
+    }
+    if (!needs_snapshot &&
+        (applier_->AppliedOffset(lease.partition_id) != after_offset ||
+         applier_->AppliedVersion(lease.partition_id) != applied_version)) {
       CEDAR_RETURN_IF_ERROR(applier_->SeedPartitionProgress(
           lease.partition_id, after_offset, applied_version));
     }
@@ -172,9 +185,16 @@ Status PartitionConsumer::RunOnce(PartitionLease lease) {
       return snapshot_or.status();
     }
     const auto& snapshot = snapshot_or.ValueOrDie();
+    std::string snapshot_id = snapshot.snapshot_id;
+    if (snapshot_store_) {
+      CEDAR_RETURN_IF_ERROR(snapshot_store_->SavePartition(
+          *engine_, lease.partition_id, snapshot.applied_version,
+          snapshot.applied_offset));
+      snapshot_id = "tmv-" + snapshot.snapshot_id;
+    }
     CEDAR_RETURN_IF_ERROR(checkpoints_->Save(
         {lease.partition_id, state.partition_epoch(), snapshot.applied_offset,
-         snapshot.applied_version, snapshot.snapshot_id}));
+         snapshot.applied_version, snapshot_id}));
     after_offset = snapshot.applied_offset;
     applied_version = snapshot.applied_version;
   }
@@ -234,6 +254,16 @@ Status PartitionConsumer::RunOnce(PartitionLease lease) {
 
   SetProgress(PartitionConsumerState::kReady, observed_lease, after_offset,
               applied_version, high_watermark, true);
+  if (snapshot_store_ && after_offset > 0) {
+    CEDAR_RETURN_IF_ERROR(snapshot_store_->SavePartition(
+        *engine_, lease.partition_id, applied_version, after_offset));
+    CEDAR_RETURN_IF_ERROR(checkpoints_->Save(
+        {lease.partition_id, state.partition_epoch(), after_offset,
+         applied_version,
+         "tmv-" + std::to_string(lease.partition_id) + "-" +
+             std::to_string(applied_version) + "-" +
+             std::to_string(after_offset)}));
+  }
   return Status::OK();
 }
 

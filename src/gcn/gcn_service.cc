@@ -19,6 +19,8 @@
 #include "cedar/gcn/gcn_service.h"
 #include "cedar/dtx/security.h"
 
+#include <limits>
+
 namespace {
 grpc::Status CheckAuth(grpc::ServerContext* context,
                        cedar::dtx::security::Permission perm) {
@@ -101,6 +103,13 @@ void GcnServiceImpl::SetNodeReadiness(bool ready, std::string reason) {
   std::lock_guard<std::mutex> lock(readiness_mutex_);
   ready_ = ready;
   readiness_reason_ = std::move(reason);
+}
+
+uint64_t GcnServiceImpl::MinimumActiveQueryVersion() const {
+  if (!dispatcher_) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return dispatcher_->MinimumActiveQueryVersion();
 }
 
 grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* context,

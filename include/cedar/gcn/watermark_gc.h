@@ -11,6 +11,14 @@ namespace gcn {
 
 class TMVEngine;
 
+struct WatermarkInputs {
+  uint64_t minimum_applied_version = 0;
+  uint64_t minimum_active_query_version = 0;
+  uint64_t retention_floor_version = 0;
+};
+
+uint64_t ComputeSafeWatermark(const WatermarkInputs& inputs);
+
 // Background thread that periodically calls TMVEngine::DropBelowWatermark()
 // to free chunks whose max_valid_to is below the current watermark.
 class WatermarkGc {

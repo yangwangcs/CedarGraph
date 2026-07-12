@@ -17,6 +17,7 @@
 #include "cedar/gcn/event_applier.h"
 #include "cedar/gcn/storage_cdc_client.h"
 #include "cedar/gcn/tmv_engine.h"
+#include "cedar/gcn/tmv_snapshot_store.h"
 
 namespace cedar::gcn {
 
@@ -58,7 +59,8 @@ class PartitionConsumer {
 
   PartitionConsumer(StorageCdcSource* source, CheckpointStore* checkpoints,
                     EventApplier* applier, TMVEngine* engine,
-                    Options options);
+                    Options options,
+                    TmvSnapshotStore* snapshot_store = nullptr);
   ~PartitionConsumer();
 
   PartitionConsumer(const PartitionConsumer&) = delete;
@@ -82,6 +84,7 @@ class PartitionConsumer {
   EventApplier* applier_;
   TMVEngine* engine_;
   Options options_;
+  TmvSnapshotStore* snapshot_store_;
 
   mutable std::mutex mutex_;
   std::condition_variable cv_;

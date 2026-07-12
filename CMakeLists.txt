@@ -1014,6 +1014,10 @@ list(FIND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/storage_cdc_client.cc" GCN_ST
 if(GCN_STORAGE_CDC_CLIENT_SOURCE_INDEX EQUAL -1)
     list(APPEND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/storage_cdc_client.cc")
 endif()
+list(FIND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/tmv_snapshot_store.cc" GCN_TMV_SNAPSHOT_STORE_SOURCE_INDEX)
+if(GCN_TMV_SNAPSHOT_STORE_SOURCE_INDEX EQUAL -1)
+    list(APPEND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/tmv_snapshot_store.cc")
+endif()
 add_library(cedar_gcn ${GCN_SOURCES}
     ${PROTO_OUT_DIR}/gcn_service.pb.cc
     ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc

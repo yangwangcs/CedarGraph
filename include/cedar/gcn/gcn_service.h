@@ -67,6 +67,7 @@ class GcnServiceImpl final : public GcnService::Service {
                             uint64_t applied_version,
                             bool query_ready);
   void SetNodeReadiness(bool ready, std::string reason);
+  uint64_t MinimumActiveQueryVersion() const;
 
   // Graph traversal from a root entity
   grpc::Status Traverse(grpc::ServerContext* context,
