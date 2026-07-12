@@ -38,24 +38,28 @@ Status PartitionConsumer::Start(PartitionLease lease) {
   if (!state_or.ok()) {
     return state_or.status();
   }
-  if (state_or.ValueOrDie().partition_epoch() != lease.partition_epoch) {
+  const auto& state = state_or.ValueOrDie();
+  if (lease.partition_epoch != 0 &&
+      state.partition_epoch() != lease.partition_epoch) {
     return Status::Conflict("StorageD partition epoch does not match lease");
   }
+  PartitionLease observed_lease = lease;
+  observed_lease.partition_epoch = state.partition_epoch();
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
     running_ = true;
     stop_requested_ = false;
-    lease_ = lease;
+    lease_ = observed_lease;
     progress_ = PartitionConsumerProgress{};
-    progress_.partition_id = lease.partition_id;
-    progress_.partition_epoch = lease.partition_epoch;
-    progress_.lease_epoch = lease.lease_epoch;
+    progress_.partition_id = observed_lease.partition_id;
+    progress_.partition_epoch = observed_lease.partition_epoch;
+    progress_.lease_epoch = observed_lease.lease_epoch;
     progress_.state = PartitionConsumerState::kStarting;
     progress_.query_ready = false;
   }
 
-  worker_ = std::thread([this, lease] { WorkerLoop(lease); });
+  worker_ = std::thread([this, observed_lease] { WorkerLoop(observed_lease); });
   return Status::OK();
 }
 

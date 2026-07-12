@@ -842,6 +842,10 @@ add_executable(test_gcn_cdc_consumer gcn/test_gcn_cdc_consumer.cc)
 target_link_libraries(test_gcn_cdc_consumer cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_gcn_cdc_consumer)
 
+add_executable(test_gcn_lease_lifecycle gcn/test_gcn_lease_lifecycle.cc)
+target_link_libraries(test_gcn_lease_lifecycle cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_lease_lifecycle)
+
 add_executable(test_gcn_node_cdc gcn/test_gcn_node_cdc.cc)
 target_link_libraries(test_gcn_node_cdc cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_gcn_node_cdc)

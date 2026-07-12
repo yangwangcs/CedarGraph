@@ -47,6 +47,16 @@ DEFINE_string(gcn_storage_endpoints, "",
               "--gcn_partition_ids");
 DEFINE_int32(gcn_cdc_poll_interval_ms, 50,
              "CDC poll interval for standalone GCN partition consumers");
+DEFINE_bool(gcn_use_metad_leases, false,
+            "Use MetaD dynamic GCN leases instead of static partition leases");
+DEFINE_uint64(gcn_node_id, 0,
+              "Stable GCN node id for MetaD lease registration; defaults to port");
+DEFINE_uint64(gcn_incarnation, 0,
+              "GCN process incarnation for MetaD lease registration; defaults to start time");
+DEFINE_string(gcn_advertised_endpoint, "",
+              "GCN endpoint advertised to MetaD; defaults to bind_address:port");
+DEFINE_int32(gcn_lease_renew_interval_ms, 5000,
+             "MetaD GCN lease renewal interval in milliseconds");
 
 std::atomic<bool> g_shutdown{false};
 
@@ -96,6 +106,17 @@ bool BuildCdcOptions(cedar::GcnNode::Options* options) {
   options->checkpoint_directory = FLAGS_gcn_checkpoint_dir;
   options->cdc_poll_interval =
       std::chrono::milliseconds(FLAGS_gcn_cdc_poll_interval_ms);
+  if (FLAGS_gcn_lease_renew_interval_ms <= 0) {
+    std::cerr << "[GCN] --gcn_lease_renew_interval_ms must be positive"
+              << std::endl;
+    return false;
+  }
+  options->lease_renew_interval =
+      std::chrono::milliseconds(FLAGS_gcn_lease_renew_interval_ms);
+  options->gcn_id = FLAGS_gcn_node_id;
+  options->gcn_incarnation = FLAGS_gcn_incarnation;
+  options->advertised_endpoint = FLAGS_gcn_advertised_endpoint;
+  options->use_metad_leases = FLAGS_gcn_use_metad_leases;
 
   const auto partition_ids = SplitCommaSeparated(FLAGS_gcn_partition_ids);
   const auto partition_epochs = SplitCommaSeparated(FLAGS_gcn_partition_epochs);
@@ -153,7 +174,9 @@ bool BuildCdcOptions(cedar::GcnNode::Options* options) {
     }
     lease.partition_epoch = partition_epoch;
     lease.lease_epoch = partition_epoch;
-    options->partition_leases.push_back(lease);
+    if (!FLAGS_gcn_use_metad_leases) {
+      options->partition_leases.push_back(lease);
+    }
 
     auto channel = grpc::CreateChannel(storage_endpoints[i],
                                        creds.ValueOrDie());

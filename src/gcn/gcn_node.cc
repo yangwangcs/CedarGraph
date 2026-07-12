@@ -21,6 +21,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "cedar/dtx/raft/grpc_tls.h"
@@ -163,7 +164,12 @@ GcnNode::~GcnNode() {
 
   // Create CoordinatorClient connection to metad
   if (options_.enable_coordinator) {
-    auto coordinator_creds = cedar::dtx::raft::TlsCredentialFactory::CreateClientCredentialsFromEnvStrict();
+    StatusOr<std::shared_ptr<grpc::ChannelCredentials>> coordinator_creds =
+        options_.use_insecure_coordinator
+            ? StatusOr<std::shared_ptr<grpc::ChannelCredentials>>(
+                  grpc::InsecureChannelCredentials())
+            : cedar::dtx::raft::TlsCredentialFactory::
+                  CreateClientCredentialsFromEnvStrict();
     if (!coordinator_creds.ok()) {
       return cedar::Status::IOError("Failed to create coordinator TLS credentials: " + coordinator_creds.status().ToString());
     }
@@ -213,19 +219,29 @@ GcnNode::~GcnNode() {
     return cedar::Status::InvalidArgument("CDC poll interval must be positive");
   }
 
-  std::unordered_set<uint32_t> seen_partitions;
-  for (const auto& lease : options_.partition_leases) {
-    if (!seen_partitions.insert(lease.partition_id).second) {
-      service_impl_->SetNodeReadiness(false, "duplicate partition lease");
-      return cedar::Status::InvalidArgument(
-          "duplicate partition lease " + std::to_string(lease.partition_id));
-    }
-    auto source_it = options_.storage_cdc_sources.find(lease.partition_id);
-    if (source_it == options_.storage_cdc_sources.end() || !source_it->second) {
-      service_impl_->SetNodeReadiness(false, "missing StorageD CDC source");
-      return cedar::Status::InvalidArgument(
-          "missing StorageD CDC source for partition " +
-          std::to_string(lease.partition_id));
+  const bool dynamic_leases =
+      options_.enable_coordinator && options_.use_metad_leases;
+  const int node_port = options_.port == 0 ? FLAGS_gcn_port : options_.port;
+  const std::string bind_address =
+      options_.bind_address.empty() ? FLAGS_gcn_bind_address
+                                    : options_.bind_address;
+  const std::string default_endpoint =
+      bind_address + ":" + std::to_string(node_port);
+  if (!dynamic_leases) {
+    std::unordered_set<uint32_t> seen_partitions;
+    for (const auto& lease : options_.partition_leases) {
+      if (!seen_partitions.insert(lease.partition_id).second) {
+        service_impl_->SetNodeReadiness(false, "duplicate partition lease");
+        return cedar::Status::InvalidArgument(
+            "duplicate partition lease " + std::to_string(lease.partition_id));
+      }
+      auto source_it = options_.storage_cdc_sources.find(lease.partition_id);
+      if (source_it == options_.storage_cdc_sources.end() || !source_it->second) {
+        service_impl_->SetNodeReadiness(false, "missing StorageD CDC source");
+        return cedar::Status::InvalidArgument(
+            "missing StorageD CDC source for partition " +
+            std::to_string(lease.partition_id));
+      }
     }
   }
 
@@ -243,30 +259,55 @@ GcnNode::~GcnNode() {
   running_ = true;
   service_impl_->SetNodeReadiness(false, "partition consumers starting");
 
-  consumers_.clear();
-  for (const auto& lease : options_.partition_leases) {
-    auto source_it = options_.storage_cdc_sources.find(lease.partition_id);
-    gcn::PartitionConsumer::Options consumer_options;
-    consumer_options.poll_interval = options_.cdc_poll_interval;
-    auto consumer = std::make_unique<gcn::PartitionConsumer>(
-        source_it->second.get(), checkpoint_store_.get(), event_applier_.get(),
-        engine_.get(), consumer_options, tmv_snapshot_store_.get());
-    auto status = consumer->Start(lease);
-    if (!status.ok()) {
-      for (auto& started : consumers_) {
-        if (started) {
-          started->Stop(std::chrono::milliseconds(1000)).IgnoreError();
-        }
-      }
-      consumers_.clear();
+  {
+    std::lock_guard<std::mutex> lock(consumers_mutex_);
+    consumers_.clear();
+    stopped_progress_.clear();
+  }
+  if (dynamic_leases) {
+    if (!coordinator_client_) {
       running_ = false;
-      service_impl_->SetNodeReadiness(false, status.ToString());
-      return status;
+      return cedar::Status::InvalidArgument("coordinator client is not initialized");
     }
-    consumers_.push_back(std::move(consumer));
+    runtime_gcn_id_ =
+        options_.gcn_id == 0 ? static_cast<uint64_t>(node_port) : options_.gcn_id;
+    runtime_gcn_incarnation_ =
+        options_.gcn_incarnation == 0
+            ? static_cast<uint64_t>(
+                  std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count())
+            : options_.gcn_incarnation;
+    const std::string endpoint =
+        options_.advertised_endpoint.empty() ? default_endpoint
+                                             : options_.advertised_endpoint;
+    auto register_status =
+        coordinator_client_->RegisterGcn(runtime_gcn_id_, endpoint,
+                                         runtime_gcn_incarnation_);
+    if (!register_status.ok()) {
+      running_ = false;
+      service_impl_->SetNodeReadiness(false, register_status.ToString());
+      return register_status;
+    }
+  } else {
+    for (const auto& lease : options_.partition_leases) {
+      auto status = StartConsumerForPartitionLease(lease);
+      if (!status.ok()) {
+        std::lock_guard<std::mutex> lock(consumers_mutex_);
+        for (auto& started : consumers_) {
+          if (started) {
+            started->Stop(std::chrono::milliseconds(1000)).IgnoreError();
+          }
+        }
+        consumers_.clear();
+        running_ = false;
+        service_impl_->SetNodeReadiness(false, status.ToString());
+        return status;
+      }
+    }
   }
 
-  if (consumers_.empty()) {
+  if (!dynamic_leases && consumers_.empty()) {
     service_impl_->SetNodeReadiness(false, "no partition leases configured");
   }
 
@@ -283,9 +324,16 @@ GcnNode::~GcnNode() {
   running_ = false;
   stop_cv_.notify_all();
 
-  for (auto& consumer : consumers_) {
-    if (consumer) {
-      consumer->Stop(std::chrono::milliseconds(1000)).IgnoreError();
+  {
+    std::lock_guard<std::mutex> lock(consumers_mutex_);
+    for (auto& consumer : consumers_) {
+      if (consumer) {
+        auto progress = consumer->GetProgress();
+        consumer->Stop(std::chrono::milliseconds(1000)).IgnoreError();
+        progress.state = gcn::PartitionConsumerState::kStopped;
+        progress.query_ready = false;
+        stopped_progress_[progress.partition_id] = progress;
+      }
     }
   }
 
@@ -332,6 +380,7 @@ void GcnNode::PublishConsumerProgress() {
   if (!service_impl_) {
     return;
   }
+  std::lock_guard<std::mutex> lock(consumers_mutex_);
   bool all_ready = !consumers_.empty();
   std::string not_ready_reason = consumers_.empty()
                                      ? "no partition leases configured"
@@ -358,6 +407,7 @@ void GcnNode::PublishConsumerProgress() {
 
 gcn::PartitionConsumerProgress GcnNode::GetPartitionProgress(
     uint32_t partition_id) const {
+  std::lock_guard<std::mutex> lock(consumers_mutex_);
   for (const auto& consumer : consumers_) {
     if (!consumer) {
       continue;
@@ -367,35 +417,171 @@ gcn::PartitionConsumerProgress GcnNode::GetPartitionProgress(
       return progress;
     }
   }
+  auto stopped_it = stopped_progress_.find(partition_id);
+  if (stopped_it != stopped_progress_.end()) {
+    return stopped_it->second;
+  }
   return gcn::PartitionConsumerProgress{};
+}
+
+std::vector<dtx::GcnPartitionProgress> GcnNode::CollectLeaseProgress() const {
+  std::lock_guard<std::mutex> lock(consumers_mutex_);
+  std::vector<dtx::GcnPartitionProgress> progress;
+  progress.reserve(consumers_.size());
+  for (const auto& consumer : consumers_) {
+    if (!consumer) {
+      continue;
+    }
+    auto item = consumer->GetProgress();
+    // MetaD progress field 2 is the GCN lease epoch/generation, despite the
+    // historical proto/internal member name partition_epoch. StorageD CDC
+    // partition_epoch remains local consumer progress and must not be used for
+    // MetaD lease ownership validation.
+    progress.push_back(dtx::GcnPartitionProgress{
+        item.partition_id,
+        item.lease_epoch,
+        item.applied_offset,
+        item.applied_version,
+        item.query_ready,
+    });
+  }
+  return progress;
+}
+
+cedar::Status GcnNode::StartConsumerForLease(const dtx::GcnLease& lease) {
+  gcn::PartitionLease partition_lease;
+  partition_lease.partition_id = lease.partition_id;
+  partition_lease.partition_epoch = 0;
+  partition_lease.lease_epoch = lease.lease_epoch;
+  return StartConsumerForPartitionLease(partition_lease);
+}
+
+cedar::Status GcnNode::StartConsumerForPartitionLease(
+    const gcn::PartitionLease& partition_lease) {
+  auto source_it =
+      options_.storage_cdc_sources.find(partition_lease.partition_id);
+  if (source_it == options_.storage_cdc_sources.end() || !source_it->second) {
+    return cedar::Status::InvalidArgument(
+        "missing StorageD CDC source for partition " +
+        std::to_string(partition_lease.partition_id));
+  }
+  gcn::PartitionConsumer::Options consumer_options;
+  consumer_options.poll_interval = options_.cdc_poll_interval;
+  auto consumer = std::make_unique<gcn::PartitionConsumer>(
+      source_it->second.get(), checkpoint_store_.get(), event_applier_.get(),
+      engine_.get(), consumer_options, tmv_snapshot_store_.get());
+  auto status = consumer->Start(partition_lease);
+  if (!status.ok()) {
+    return status;
+  }
+  std::lock_guard<std::mutex> lock(consumers_mutex_);
+  stopped_progress_.erase(partition_lease.partition_id);
+  consumers_.push_back(std::move(consumer));
+  return cedar::Status::OK();
+}
+
+void GcnNode::ReconcileLeases(const std::vector<dtx::GcnLease>& leases) {
+  std::unordered_map<uint32_t, dtx::GcnLease> desired;
+  const uint64_t now_ms = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+  for (const auto& lease : leases) {
+    if (lease.gcn_id != runtime_gcn_id_) {
+      continue;
+    }
+    if (lease.expires_at_ms <= now_ms) {
+      continue;
+    }
+    if (options_.storage_cdc_sources.find(lease.partition_id) !=
+        options_.storage_cdc_sources.end()) {
+      desired[lease.partition_id] = lease;
+    }
+  }
+
+  std::vector<dtx::GcnLease> start_leases;
+  {
+    std::lock_guard<std::mutex> lock(consumers_mutex_);
+    for (auto it = consumers_.begin(); it != consumers_.end();) {
+      if (!*it) {
+        it = consumers_.erase(it);
+        continue;
+      }
+      auto progress = (*it)->GetProgress();
+      auto desired_it = desired.find(progress.partition_id);
+      if (desired_it == desired.end() ||
+          desired_it->second.lease_epoch != progress.lease_epoch) {
+        (*it)->Stop(std::chrono::milliseconds(1000)).IgnoreError();
+        progress.state = gcn::PartitionConsumerState::kStopped;
+        progress.query_ready = false;
+        stopped_progress_[progress.partition_id] = progress;
+        it = consumers_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    for (const auto& [partition_id, lease] : desired) {
+      bool exists = false;
+      for (const auto& consumer : consumers_) {
+        if (consumer && consumer->GetProgress().partition_id == partition_id) {
+          exists = true;
+          break;
+        }
+      }
+      if (!exists) {
+        start_leases.push_back(lease);
+      }
+    }
+  }
+  for (const auto& lease : start_leases) {
+    auto status = StartConsumerForLease(lease);
+    if (!status.ok()) {
+      CEDAR_LOG_WARN() << "Failed to start GCN partition consumer for "
+                       << lease.partition_id << ": " << status.ToString()
+                       << "\n";
+    }
+  }
 }
 
 void GcnNode::HeartbeatLoop() {
   while (running_.load()) {
     if (coordinator_client_) {
-      // TODO(#C-GCN-003): When TMVEngine supports enumerating cached vertices,
-      // construct real CacheWindow vectors from the engine and pass them here.
-      // For now we send an empty heartbeat so MetaD knows this GCN is alive.
-      std::vector<coordinator::CacheWindow> windows;
-      auto status = coordinator_client_->Heartbeat(windows);
-      if (!status.ok()) {
-        CEDAR_LOG_WARN() << "GCN heartbeat failed: " << status.ToString() << "\n";
+      if (options_.use_metad_leases) {
+        auto leases = coordinator_client_->RenewGcnLeases(
+            runtime_gcn_id_, runtime_gcn_incarnation_, CollectLeaseProgress());
+        if (leases.ok()) {
+          ReconcileLeases(leases.ValueOrDie());
+        } else {
+          CEDAR_LOG_WARN() << "GCN lease renewal failed: "
+                           << leases.status().ToString() << "\n";
+          ReconcileLeases({});
+        }
+      } else {
+        std::vector<coordinator::CacheWindow> windows;
+        auto status = coordinator_client_->Heartbeat(windows);
+        if (!status.ok()) {
+          CEDAR_LOG_WARN() << "GCN heartbeat failed: " << status.ToString() << "\n";
+        }
       }
     }
     if (watermark_gc_) {
       uint64_t minimum_applied_version = std::numeric_limits<uint64_t>::max();
-      bool all_partitions_have_applied_state = !consumers_.empty();
-      for (const auto& consumer : consumers_) {
-        if (!consumer) {
-          all_partitions_have_applied_state = false;
-          continue;
-        }
-        auto progress = consumer->GetProgress();
-        if (progress.applied_version == 0) {
-          all_partitions_have_applied_state = false;
-        } else {
-          minimum_applied_version =
-              std::min(minimum_applied_version, progress.applied_version);
+      bool all_partitions_have_applied_state = false;
+      {
+        std::lock_guard<std::mutex> lock(consumers_mutex_);
+        all_partitions_have_applied_state = !consumers_.empty();
+        for (const auto& consumer : consumers_) {
+          if (!consumer) {
+            all_partitions_have_applied_state = false;
+            continue;
+          }
+          auto progress = consumer->GetProgress();
+          if (progress.applied_version == 0) {
+            all_partitions_have_applied_state = false;
+          } else {
+            minimum_applied_version =
+                std::min(minimum_applied_version, progress.applied_version);
+          }
         }
       }
       if (!all_partitions_have_applied_state ||
@@ -415,7 +601,9 @@ void GcnNode::HeartbeatLoop() {
     std::unique_lock<std::mutex> lock(stop_mutex_);
     stop_cv_.wait_for(
         lock,
-        std::chrono::milliseconds(FLAGS_gcn_heartbeat_interval_ms),
+        options_.use_metad_leases
+            ? options_.lease_renew_interval
+            : std::chrono::milliseconds(FLAGS_gcn_heartbeat_interval_ms),
         [this]() { return !running_.load(); });
   }
 }

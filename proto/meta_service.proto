@@ -322,6 +322,10 @@ enum GcnLeaseStatusCode {
 
 message GcnPartitionProgress {
     uint32 partition_id = 1;
+    // Carries the GCN lease epoch/generation for this partition. This field is
+    // intentionally not the StorageD CDC partition_epoch; GCNs may discover the
+    // StorageD partition epoch independently while preserving the MetaD lease
+    // epoch for ownership validation. Kept as field 2 for wire compatibility.
     uint64 partition_epoch = 2;
     uint64 applied_offset = 3;
     uint64 applied_version = 4;

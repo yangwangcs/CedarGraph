@@ -20,8 +20,10 @@
 #include <condition_variable>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
@@ -60,6 +62,12 @@ class GcnNode {
     std::map<uint32_t, std::shared_ptr<gcn::StorageCdcSource>>
         storage_cdc_sources;
     std::chrono::milliseconds cdc_poll_interval{50};
+    std::chrono::milliseconds lease_renew_interval{5000};
+    uint64_t gcn_id{0};
+    uint64_t gcn_incarnation{0};
+    std::string advertised_endpoint;
+    bool use_insecure_coordinator = false;
+    bool use_metad_leases = false;
   };
 
   GcnNode();
@@ -96,6 +104,11 @@ class GcnNode {
   void CdcListenerLoop();
   void HeartbeatLoop();
   void PublishConsumerProgress();
+  std::vector<dtx::GcnPartitionProgress> CollectLeaseProgress() const;
+  void ReconcileLeases(const std::vector<dtx::GcnLease>& leases);
+  cedar::Status StartConsumerForLease(const dtx::GcnLease& lease);
+  cedar::Status StartConsumerForPartitionLease(
+      const gcn::PartitionLease& lease);
 
   Options options_;
   std::unique_ptr<gcn::TMVEngine> engine_;
@@ -111,6 +124,10 @@ class GcnNode {
 
   std::unique_ptr<gcn::WatermarkGc> watermark_gc_;
   std::vector<std::unique_ptr<gcn::PartitionConsumer>> consumers_;
+  mutable std::mutex consumers_mutex_;
+  std::unordered_map<uint32_t, gcn::PartitionConsumerProgress> stopped_progress_;
+  uint64_t runtime_gcn_id_ = 0;
+  uint64_t runtime_gcn_incarnation_ = 0;
 
   std::vector<std::string> peer_addresses_;
 

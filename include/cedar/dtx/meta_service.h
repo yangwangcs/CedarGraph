@@ -278,6 +278,9 @@ struct GcnRegistration {
 
 struct GcnPartitionProgress {
     uint32_t partition_id{0};
+    // GCN lease epoch/generation for ownership validation. This mirrors
+    // proto field 2, whose historical name is partition_epoch for wire
+    // compatibility; it is not the StorageD CDC partition epoch.
     uint64_t partition_epoch{0};
     uint64_t applied_offset{0};
     uint64_t applied_version{0};
