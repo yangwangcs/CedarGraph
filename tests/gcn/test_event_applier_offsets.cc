@@ -230,4 +230,61 @@ TEST(EventApplierOffsetTest, BatchApplyFailureDoesNotLeavePartialMutation) {
   EXPECT_TRUE(engine.ScanAtTime(30, cedar::gcn::Direction::kIn, 100).empty());
 }
 
+TEST(EventApplierOffsetTest,
+     SnapshotReplacePreservesOtherPartitionReverseEdgesOnSharedTarget) {
+  cedar::gcn::TMVEngine engine(32);
+  cedar::gcn::EventApplier applier(&engine);
+
+  ASSERT_TRUE(applier.ApplyChangeRecord(MakeEdgeRecord(3, 1, 10, 100,
+                                                       cedar::cdc::CHANGE_OPERATION_CREATE,
+                                                       100))
+                  .ok());
+  ASSERT_TRUE(applier.ApplyChangeRecord(MakeEdgeRecord(4, 1, 20, 100,
+                                                       cedar::cdc::CHANGE_OPERATION_CREATE,
+                                                       101))
+                  .ok());
+
+  std::vector<cedar::cdc::ChangeRecord> snapshot_records = {
+      MakeEdgeRecord(3, 5, 10, 300, cedar::cdc::CHANGE_OPERATION_CREATE, 500)};
+  ASSERT_TRUE(
+      applier.ApplySnapshotRecordsAtomically(3, 5, 500, snapshot_records).ok());
+
+  auto shared_target_reverse =
+      engine.ScanAtTime(100, cedar::gcn::Direction::kIn, 500);
+  ASSERT_EQ(shared_target_reverse.size(), 1u);
+  EXPECT_EQ(shared_target_reverse[0].target_id, 20u);
+  auto partition_b_reverse =
+      engine.ScanAtTime(100, cedar::gcn::Direction::kIn, 101);
+  ASSERT_EQ(partition_b_reverse.size(), 1u);
+  EXPECT_EQ(partition_b_reverse[0].target_id, 20u);
+  auto replacement_reverse =
+      engine.ScanAtTime(300, cedar::gcn::Direction::kIn, 500);
+  ASSERT_EQ(replacement_reverse.size(), 1u);
+  EXPECT_EQ(replacement_reverse[0].target_id, 10u);
+}
+
+TEST(EventApplierOffsetTest,
+     SnapshotReplaceRemovesUntrackedStalePartitionEdgesAlreadyInTmv) {
+  cedar::gcn::TMVEngine engine(32);
+  cedar::gcn::EventApplier applier(&engine);
+
+  cedar::gcn::TMVEdge stale{};
+  stale.target_id = 100;
+  stale.valid_from = 100;
+  stale.valid_to = std::numeric_limits<uint32_t>::max();
+  stale.edge_type = 2;
+  stale.reserved = 3;
+  ASSERT_TRUE(engine.AppendEdge(10, cedar::gcn::Direction::kOut, stale, true)
+                  .ok());
+
+  std::vector<cedar::cdc::ChangeRecord> snapshot_records = {
+      MakeEdgeRecord(3, 5, 11, 101, cedar::cdc::CHANGE_OPERATION_CREATE, 500)};
+  ASSERT_TRUE(
+      applier.ApplySnapshotRecordsAtomically(3, 5, 500, snapshot_records).ok());
+
+  EXPECT_TRUE(engine.ScanAtTime(10, cedar::gcn::Direction::kOut, 500).empty());
+  EXPECT_TRUE(engine.ScanAtTime(100, cedar::gcn::Direction::kIn, 500).empty());
+  EXPECT_FALSE(engine.ScanAtTime(11, cedar::gcn::Direction::kOut, 500).empty());
+}
+
 }  // namespace

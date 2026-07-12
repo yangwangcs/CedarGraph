@@ -826,6 +826,10 @@ add_executable(test_storage_cdc_client gcn/test_storage_cdc_client.cc)
 target_link_libraries(test_storage_cdc_client cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_storage_cdc_client)
 
+add_executable(test_gcn_cdc_consumer gcn/test_gcn_cdc_consumer.cc)
+target_link_libraries(test_gcn_cdc_consumer cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_cdc_consumer)
+
 add_executable(test_adaptive_execution queryd/test_adaptive_execution.cc)
 target_link_libraries(test_adaptive_execution ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_adaptive_execution)

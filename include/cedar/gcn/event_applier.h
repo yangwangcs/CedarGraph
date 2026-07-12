@@ -57,6 +57,16 @@ class EventApplier {
   uint64_t AppliedOffset(uint32_t partition_id) const;
   uint64_t AppliedVersion(uint32_t partition_id) const;
 
+  // Seed durable partition progress after loading a checkpoint or publishing a
+  // verified snapshot. This does not mutate TMV data.
+  cedar::Status SeedPartitionProgress(uint32_t partition_id,
+                                      uint64_t applied_offset,
+                                      uint64_t applied_version);
+  cedar::Status ApplySnapshotRecordsAtomically(
+      uint32_t partition_id, uint64_t applied_offset,
+      uint64_t applied_version,
+      const std::vector<cedar::cdc::ChangeRecord>& records);
+
   uint64_t applied_version() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return applied_version_;

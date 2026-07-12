@@ -183,6 +183,256 @@ cedar::Status TMVEngine::AppendEdgesAtomic(
   return cedar::Status::OK();
 }
 
+cedar::Status TMVEngine::ReplaceVerticesAtomic(
+    const std::set<uint64_t>& entity_ids,
+    const std::vector<EdgeAppend>& appends) {
+  std::lock_guard<std::mutex> append_guard(append_mutex_);
+  std::vector<VertexBackup> backups;
+  backups.reserve(entity_ids.size());
+  for (uint64_t entity_id : entity_ids) {
+    backups.push_back(BackupVertex(entity_id));
+  }
+  for (uint64_t entity_id : entity_ids) {
+    InvalidateVertex(entity_id);
+  }
+
+  std::vector<AppendMutation> mutations;
+  mutations.reserve(appends.size() * 2);
+  std::vector<uint64_t> created_entries;
+  created_entries.reserve(appends.size() * 2);
+  auto rollback = [&]() {
+    for (auto it = mutations.rbegin(); it != mutations.rend(); ++it) {
+      RollbackAppend(*it);
+    }
+    for (auto it = created_entries.rbegin(); it != created_entries.rend();
+         ++it) {
+      RemoveEntryIfEmpty(*it);
+    }
+  };
+
+  for (const auto& append : appends) {
+    bool created = false;
+    TMVVertexEntry* entry = FindOrCreateEntry(append.entity_id, &created);
+    if (created) {
+      created_entries.push_back(append.entity_id);
+    }
+    AppendMutation mutation;
+    if (!AppendToEntry(entry, append.dir, append.edge, &mutation)) {
+      rollback();
+      for (const auto& backup : backups) {
+        if (!RestoreVertex(backup)) {
+          return cedar::Status::ResourceExhausted(
+              "TMV pool exhausted restoring replaced vertices");
+        }
+      }
+      return cedar::Status::ResourceExhausted("TMV pool exhausted");
+    }
+    mutations.push_back(mutation);
+
+    if (append.reverse && append.dir == Direction::kOut) {
+      TMVEdge reverse_edge = append.edge;
+      reverse_edge.target_id = append.entity_id;
+      bool reverse_created = false;
+      TMVVertexEntry* reverse_entry =
+          FindOrCreateEntry(append.edge.target_id, &reverse_created);
+      if (reverse_created) {
+        created_entries.push_back(append.edge.target_id);
+      }
+      AppendMutation reverse_mutation;
+      if (!AppendToEntry(reverse_entry, Direction::kIn, reverse_edge,
+                         &reverse_mutation)) {
+        rollback();
+        for (const auto& backup : backups) {
+          if (!RestoreVertex(backup)) {
+            return cedar::Status::ResourceExhausted(
+                "TMV pool exhausted restoring replaced vertices");
+          }
+        }
+        return cedar::Status::ResourceExhausted("TMV pool exhausted");
+      }
+      mutations.push_back(reverse_mutation);
+    }
+  }
+
+  return cedar::Status::OK();
+}
+
+cedar::Status TMVEngine::ReplacePartitionEdgesAtomic(
+    uint32_t partition_id,
+    const std::vector<EdgeAppend>& appends) {
+  std::lock_guard<std::mutex> append_guard(append_mutex_);
+
+  std::vector<VertexBackup> backups;
+  for (uint32_t s = 0; s < TMVIndex::kNumShards; ++s) {
+    TMVIndex::Shard& shard = index_.shards_[s];
+    std::lock_guard<std::mutex> holder{shard.lock};
+    for (const auto& [entity_id, entry] : shard.entries) {
+      VertexBackup backup;
+      backup.entity_id = entity_id;
+      bool has_partition_edge = false;
+      std::lock_guard<std::mutex> entry_guard(entry.list_mutex);
+      auto collect = [&](TMVChunk* chunk, std::vector<TMVEdge>* edges) {
+        while (chunk) {
+          uint32_t count = chunk->event_count.load(std::memory_order_acquire);
+          for (uint32_t i = 0; i < count; ++i) {
+            edges->push_back(chunk->edges[i]);
+            if (chunk->edges[i].reserved == partition_id) {
+              has_partition_edge = true;
+            }
+          }
+          chunk = chunk->next.load(std::memory_order_acquire);
+        }
+      };
+      collect(entry.out_chunk_head.load(std::memory_order_acquire),
+              &backup.out_edges);
+      collect(entry.in_chunk_head.load(std::memory_order_acquire),
+              &backup.in_edges);
+      if (has_partition_edge) {
+        backups.push_back(std::move(backup));
+      }
+    }
+  }
+
+  auto restore_original_backups = [&]() -> cedar::Status {
+    for (const auto& backup : backups) {
+      InvalidateVertex(backup.entity_id);
+    }
+    for (const auto& backup : backups) {
+      if (!RestoreVertex(backup)) {
+        return cedar::Status::ResourceExhausted(
+            "TMV pool exhausted restoring partition replacement");
+      }
+    }
+    return cedar::Status::OK();
+  };
+
+  for (const auto& backup : backups) {
+    InvalidateVertex(backup.entity_id);
+  }
+  for (const auto& backup : backups) {
+    TMVVertexEntry* entry = nullptr;
+    bool entry_created = false;
+    auto restore_filtered = [&](Direction dir,
+                                const std::vector<TMVEdge>& edges) -> bool {
+      for (const auto& edge : edges) {
+        if (edge.reserved == partition_id) {
+          continue;
+        }
+        if (!entry) {
+          entry = FindOrCreateEntry(backup.entity_id, &entry_created);
+        }
+        if (!AppendToEntry(entry, dir, edge)) {
+          return false;
+        }
+      }
+      return true;
+    };
+    if (!restore_filtered(Direction::kOut, backup.out_edges) ||
+        !restore_filtered(Direction::kIn, backup.in_edges)) {
+      CEDAR_RETURN_IF_ERROR(restore_original_backups());
+      return cedar::Status::ResourceExhausted(
+          "TMV pool exhausted filtering partition replacement");
+    }
+  }
+
+  std::vector<AppendMutation> mutations;
+  mutations.reserve(appends.size() * 2);
+  std::vector<uint64_t> created_entries;
+  created_entries.reserve(appends.size() * 2);
+  auto rollback_appends = [&]() {
+    for (auto it = mutations.rbegin(); it != mutations.rend(); ++it) {
+      RollbackAppend(*it);
+    }
+    for (auto it = created_entries.rbegin(); it != created_entries.rend();
+         ++it) {
+      RemoveEntryIfEmpty(*it);
+    }
+  };
+
+  for (const auto& append : appends) {
+    bool created = false;
+    TMVVertexEntry* entry = FindOrCreateEntry(append.entity_id, &created);
+    if (created) {
+      created_entries.push_back(append.entity_id);
+    }
+    AppendMutation mutation;
+    if (!AppendToEntry(entry, append.dir, append.edge, &mutation)) {
+      rollback_appends();
+      CEDAR_RETURN_IF_ERROR(restore_original_backups());
+      return cedar::Status::ResourceExhausted("TMV pool exhausted");
+    }
+    mutations.push_back(mutation);
+
+    if (append.reverse && append.dir == Direction::kOut) {
+      TMVEdge reverse_edge = append.edge;
+      reverse_edge.target_id = append.entity_id;
+      bool reverse_created = false;
+      TMVVertexEntry* reverse_entry =
+          FindOrCreateEntry(append.edge.target_id, &reverse_created);
+      if (reverse_created) {
+        created_entries.push_back(append.edge.target_id);
+      }
+      AppendMutation reverse_mutation;
+      if (!AppendToEntry(reverse_entry, Direction::kIn, reverse_edge,
+                         &reverse_mutation)) {
+        rollback_appends();
+        CEDAR_RETURN_IF_ERROR(restore_original_backups());
+        return cedar::Status::ResourceExhausted("TMV pool exhausted");
+      }
+      mutations.push_back(reverse_mutation);
+    }
+  }
+
+  return cedar::Status::OK();
+}
+
+TMVEngine::VertexBackup TMVEngine::BackupVertex(uint64_t entity_id) const {
+  VertexBackup backup;
+  backup.entity_id = entity_id;
+  uint32_t shard_idx = static_cast<uint32_t>(entity_id) &
+                       (TMVIndex::kNumShards - 1);
+  const TMVIndex::Shard& shard = index_.shards_[shard_idx];
+  std::lock_guard<std::mutex> holder{shard.lock};
+  auto it = shard.entries.find(entity_id);
+  if (it == shard.entries.end()) {
+    return backup;
+  }
+  const TMVVertexEntry& entry = it->second;
+  std::lock_guard<std::mutex> entry_guard(entry.list_mutex);
+  auto collect = [](TMVChunk* chunk, std::vector<TMVEdge>* edges) {
+    while (chunk) {
+      uint32_t count = chunk->event_count.load(std::memory_order_acquire);
+      for (uint32_t i = 0; i < count; ++i) {
+        edges->push_back(chunk->edges[i]);
+      }
+      chunk = chunk->next.load(std::memory_order_acquire);
+    }
+  };
+  collect(entry.out_chunk_head.load(std::memory_order_acquire),
+          &backup.out_edges);
+  collect(entry.in_chunk_head.load(std::memory_order_acquire),
+          &backup.in_edges);
+  return backup;
+}
+
+bool TMVEngine::RestoreVertex(const VertexBackup& backup) {
+  if (backup.out_edges.empty() && backup.in_edges.empty()) {
+    return true;
+  }
+  TMVVertexEntry* entry = index_.FindOrCreate(backup.entity_id);
+  for (const auto& edge : backup.out_edges) {
+    if (!AppendToEntry(entry, Direction::kOut, edge)) {
+      return false;
+    }
+  }
+  for (const auto& edge : backup.in_edges) {
+    if (!AppendToEntry(entry, Direction::kIn, edge)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool TMVEngine::AppendToEntry(TMVVertexEntry* entry,
                               Direction dir,
                               const TMVEdge& edge,

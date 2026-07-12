@@ -88,6 +88,22 @@ class StorageCdcRpcTest : public ::testing::Test {
     ASSERT_TRUE(partition_->Commit(txn_id, cedar::Timestamp(commit_ts)).ok());
   }
 
+  cedar::cdc::ChangeRecord Record(uint64_t entity_id,
+                                  cedar::cdc::ChangeOperation op,
+                                  std::string payload = "payload") const {
+    cedar::cdc::ChangeRecord record;
+    record.set_txn_id(entity_id);
+    record.set_entity_id(entity_id);
+    record.set_target_id(2000 + entity_id);
+    record.set_entity_type(static_cast<uint32_t>(cedar::EntityType::EdgeOut));
+    record.set_edge_type(1);
+    record.set_column_id(1);
+    record.set_operation(op);
+    record.set_valid_from(700 + entity_id);
+    record.set_payload(std::move(payload));
+    return record;
+  }
+
   std::unique_ptr<cedar::storage::StorageService::Stub> StartGrpcServer() {
     grpc::ServerBuilder builder;
     int port = 0;
@@ -278,6 +294,95 @@ TEST_F(StorageCdcRpcTest, GetComputeSnapshotDoesNotMarkTruncatedBatchFinal) {
   EXPECT_EQ(second.sequence(), 1);
   EXPECT_EQ(third.sequence(), 2);
   EXPECT_EQ(third.records(0).offset(), 5);
+}
+
+TEST_F(StorageCdcRpcTest, GetComputeSnapshotSurvivesCdcRetentionCompaction) {
+  CommitRecords(3);
+  auto* log = partition_manager_->GetChangeLog(8);
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->Compact(3).ok());
+  EXPECT_EQ(log->GetState().earliest_offset, 3u);
+  auto stub = StartGrpcServer();
+
+  grpc::ClientContext context;
+  cedar::storage::GetComputeSnapshotRequest request;
+  request.set_partition_id(8);
+  request.set_limit_records(10);
+  request.set_limit_bytes(1 << 20);
+  request.set_expected_epoch(1);
+
+  auto reader = stub->GetComputeSnapshot(&context, request);
+  cedar::storage::ComputeSnapshotBatch batch;
+  ASSERT_TRUE(reader->Read(&batch));
+  EXPECT_FALSE(reader->Read(&batch));
+  auto status = reader->Finish();
+
+  ASSERT_TRUE(status.ok()) << status.error_message();
+  EXPECT_TRUE(batch.final());
+  ASSERT_EQ(batch.records_size(), 3);
+  EXPECT_EQ(batch.records(0).offset(), 1);
+  EXPECT_EQ(batch.records(1).offset(), 2);
+  EXPECT_EQ(batch.records(2).offset(), 3);
+}
+
+TEST_F(StorageCdcRpcTest, GetComputeSnapshotAllowsDeleteFoldedEmptySnapshot) {
+  auto* log = partition_manager_->GetChangeLog(8);
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->AppendCommittedBatch(
+                      700, {Record(1, cedar::cdc::CHANGE_OPERATION_UPDATE)})
+                  .ok());
+  ASSERT_TRUE(log->AppendCommittedBatch(
+                      800, {Record(1, cedar::cdc::CHANGE_OPERATION_DELETE)})
+                  .ok());
+  ASSERT_TRUE(log->Compact(3).ok());
+  auto stub = StartGrpcServer();
+
+  grpc::ClientContext context;
+  cedar::storage::GetComputeSnapshotRequest request;
+  request.set_partition_id(8);
+  request.set_snapshot_version(800);
+  request.set_limit_records(10);
+  request.set_limit_bytes(1 << 20);
+  request.set_expected_epoch(1);
+
+  auto reader = stub->GetComputeSnapshot(&context, request);
+  cedar::storage::ComputeSnapshotBatch batch;
+  ASSERT_TRUE(reader->Read(&batch));
+  EXPECT_FALSE(reader->Read(&batch));
+  auto status = reader->Finish();
+
+  ASSERT_TRUE(status.ok()) << status.error_message();
+  EXPECT_TRUE(batch.final());
+  EXPECT_EQ(batch.records_size(), 0);
+}
+
+TEST_F(StorageCdcRpcTest, GetComputeSnapshotRejectsOversizedLaterPage) {
+  auto* log = partition_manager_->GetChangeLog(8);
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->AppendCommittedBatch(
+                      700, {Record(1, cedar::cdc::CHANGE_OPERATION_UPDATE,
+                                   "small")})
+                  .ok());
+  ASSERT_TRUE(log->AppendCommittedBatch(
+                      700, {Record(2, cedar::cdc::CHANGE_OPERATION_UPDATE,
+                                   std::string(4096, 'x'))})
+                  .ok());
+  auto stub = StartGrpcServer();
+
+  grpc::ClientContext context;
+  cedar::storage::GetComputeSnapshotRequest request;
+  request.set_partition_id(8);
+  request.set_resume_offset(1);
+  request.set_limit_records(10);
+  request.set_limit_bytes(128);
+  request.set_expected_epoch(1);
+
+  auto reader = stub->GetComputeSnapshot(&context, request);
+  cedar::storage::ComputeSnapshotBatch batch;
+  EXPECT_FALSE(reader->Read(&batch));
+  auto status = reader->Finish();
+
+  EXPECT_EQ(status.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED);
 }
 
 TEST_F(StorageCdcRpcTest, GetComputeSnapshotHonorsRequestedSnapshotVersion) {

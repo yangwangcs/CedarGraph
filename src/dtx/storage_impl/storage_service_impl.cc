@@ -1761,20 +1761,17 @@ grpc::Status StorageServiceImpl::GetComputeSnapshot(
       return grpc::Status::CANCELLED;
     }
 
-    auto records = log->ReadAfter(cursor,
-                                  request->limit_records(),
-                                  request->limit_bytes());
+    auto records = log->SnapshotRecords(snapshot_version, cursor,
+                                        request->limit_records(),
+                                        request->limit_bytes());
     if (!records.ok()) {
-      return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+      return grpc::Status(records.status().IsResourceExhausted()
+                              ? grpc::StatusCode::RESOURCE_EXHAUSTED
+                              : grpc::StatusCode::UNAVAILABLE,
                           records.status().ToString());
     }
 
     const auto& batch_records = records.ValueOrDie();
-    if (batch_records.empty() && cursor < state.high_watermark) {
-      return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
-                          "next CDC record exceeds snapshot byte limit");
-    }
-
     uint64_t max_seen_offset = cursor;
     cedar::storage::ComputeSnapshotBatch batch;
     batch.set_partition_id(pid);
@@ -1784,21 +1781,22 @@ grpc::Status StorageServiceImpl::GetComputeSnapshot(
     batch.set_sequence(sequence);
     for (const auto& record : batch_records) {
       max_seen_offset = std::max(max_seen_offset, record.offset());
-      if (record.commit_version() <= snapshot_version) {
-        *batch.add_records() = record;
-      }
+      *batch.add_records() = record;
     }
 
-    const bool reached_log_end = max_seen_offset >= state.high_watermark ||
-                                 batch_records.empty();
-    if (batch.records_size() == 0 && wrote_batch && !reached_log_end) {
-      cursor = max_seen_offset;
-      continue;
+    bool reached_snapshot_end = batch_records.empty();
+    if (!reached_snapshot_end) {
+      auto peek = log->SnapshotRecords(snapshot_version, max_seen_offset, 1,
+                                       request->limit_bytes());
+      if (!peek.ok()) {
+        return grpc::Status(peek.status().IsResourceExhausted()
+                                ? grpc::StatusCode::RESOURCE_EXHAUSTED
+                                : grpc::StatusCode::UNAVAILABLE,
+                            peek.status().ToString());
+      }
+      reached_snapshot_end = peek.ValueOrDie().empty();
     }
-    if (batch.records_size() == 0 && wrote_batch && reached_log_end) {
-      batch.set_resume_offset(cursor);
-    }
-    batch.set_final(reached_log_end);
+    batch.set_final(reached_snapshot_end);
     batch.set_checksum(ComputeSnapshotChecksum(batch));
 
     if (DeadlineExpired(context)) {
@@ -1813,7 +1811,7 @@ grpc::Status StorageServiceImpl::GetComputeSnapshot(
     wrote_batch = true;
     ++sequence;
     cursor = max_seen_offset;
-    if (reached_log_end) {
+    if (reached_snapshot_end) {
       return grpc::Status::OK;
     }
   }

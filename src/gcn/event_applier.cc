@@ -141,6 +141,56 @@ uint64_t EventApplier::AppliedVersion(uint32_t partition_id) const {
   return state->progress.applied_version;
 }
 
+cedar::Status EventApplier::SeedPartitionProgress(uint32_t partition_id,
+                                                  uint64_t applied_offset,
+                                                  uint64_t applied_version) {
+  PartitionApplyState* state = GetOrCreatePartitionState(partition_id);
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (state->pending_batch.batch_size != 0) {
+    return cedar::Status::Conflict(
+        "cannot seed CDC progress while a batch is pending");
+  }
+  if (applied_offset < state->progress.applied_offset) {
+    return cedar::Status::Conflict("cannot move CDC applied offset backward");
+  }
+  state->progress.applied_offset = applied_offset;
+  state->progress.applied_version = applied_version;
+  return cedar::Status::OK();
+}
+
+cedar::Status EventApplier::ApplySnapshotRecordsAtomically(
+    uint32_t partition_id, uint64_t applied_offset,
+    uint64_t applied_version,
+    const std::vector<cedar::cdc::ChangeRecord>& records) {
+  PartitionApplyState* state = GetOrCreatePartitionState(partition_id);
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (state->pending_batch.batch_size != 0) {
+    return cedar::Status::Conflict(
+        "cannot publish snapshot while a batch is pending");
+  }
+  if (applied_offset < state->progress.applied_offset) {
+    return cedar::Status::Conflict("cannot move CDC applied offset backward");
+  }
+
+  std::vector<TMVEngine::EdgeAppend> appends;
+  appends.reserve(records.size());
+  for (const auto& record : records) {
+    if (record.partition_id() != partition_id) {
+      return cedar::Status::InvalidArgument(
+          "snapshot record partition mismatch");
+    }
+    CEDAR_RETURN_IF_ERROR(ValidateChangeRecordForApply(record));
+    appends.push_back(BuildEdgeAppend(record));
+  }
+  if (tmv_engine_) {
+    CEDAR_RETURN_IF_ERROR(
+        tmv_engine_->ReplacePartitionEdgesAtomic(partition_id, appends));
+  }
+  state->progress.applied_offset = applied_offset;
+  state->progress.applied_version = applied_version;
+  return cedar::Status::OK();
+}
+
 cedar::Status EventApplier::ApplyInternal(const GraphCDCEvent& event) {
   TMVEdge edge;
   edge.target_id = event.target_id;
@@ -168,7 +218,7 @@ TMVEngine::EdgeAppend EventApplier::BuildEdgeAppend(
   edge.target_id = record.target_id();
   edge.attr_offset = 0;
   edge.edge_type = record.edge_type();
-  edge.reserved = 0;
+  edge.reserved = record.partition_id();
   const uint32_t valid_from = record.valid_from() == 0
                                   ? ClampValidTime(record.commit_version())
                                   : ClampValidTime(record.valid_from());

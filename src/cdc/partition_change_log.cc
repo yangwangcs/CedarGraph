@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -24,6 +25,24 @@ constexpr uint32_t kFrameMagic = 0x43444331;  // CDC1
 constexpr uint16_t kFrameVersion = 1;
 constexpr size_t kFrameHeaderBytes = 16;
 constexpr const char* kManifestName = "MANIFEST";
+constexpr const char* kSnapshotName = "SNAPSHOT";
+
+std::string SnapshotLogicalKey(const ChangeRecord& record) {
+  std::ostringstream key;
+  key << record.partition_id() << ':' << record.entity_id() << ':'
+      << record.target_id() << ':' << record.entity_type() << ':'
+      << record.edge_type() << ':' << record.column_id();
+  return key.str();
+}
+
+StatusOr<size_t> SerializedSize(const ChangeRecord& record) {
+  std::string payload;
+  if (!record.SerializeToString(&payload)) {
+    return Status::Corruption("PartitionChangeLog",
+                              "failed to size ChangeRecord");
+  }
+  return payload.size();
+}
 
 struct FrameHeader {
   uint32_t magic;
@@ -263,6 +282,54 @@ Status AtomicWriteFile(const std::filesystem::path& path,
   return FsyncDirectory(path.parent_path());
 }
 
+StatusOr<std::vector<ChangeRecord>> ReadRecordFrameFile(
+    const std::filesystem::path& path, uint32_t partition_id,
+    uint64_t partition_epoch) {
+  std::vector<ChangeRecord> records;
+  if (!std::filesystem::exists(path)) {
+    return records;
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in.is_open()) {
+    return Status::IOError("PartitionChangeLog",
+                           "cannot open record frame file " + path.string());
+  }
+  while (true) {
+    FrameHeader header{};
+    in.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (in.gcount() == 0 && in.eof()) {
+      break;
+    }
+    if (in.gcount() != static_cast<std::streamsize>(sizeof(header)) ||
+        header.magic != kFrameMagic || header.version != kFrameVersion) {
+      return Status::Corruption("PartitionChangeLog",
+                                "invalid record frame file header");
+    }
+    std::string payload(header.payload_size, '\0');
+    in.read(payload.data(), payload.size());
+    if (in.gcount() != static_cast<std::streamsize>(payload.size())) {
+      return Status::Corruption("PartitionChangeLog",
+                                "truncated record frame file");
+    }
+    if (crc32c::Value(payload.data(), payload.size()) != header.crc32c) {
+      return Status::Corruption("PartitionChangeLog",
+                                "record frame file checksum mismatch");
+    }
+    ChangeRecord record;
+    if (!record.ParseFromString(payload)) {
+      return Status::Corruption("PartitionChangeLog",
+                                "invalid record frame payload");
+    }
+    if (record.partition_id() != partition_id ||
+        record.partition_epoch() != partition_epoch) {
+      return Status::Corruption("PartitionChangeLog",
+                                "snapshot record partition metadata mismatch");
+    }
+    records.push_back(std::move(record));
+  }
+  return records;
+}
+
 Status ReadSegmentRange(const std::filesystem::path& path, uint64_t* first,
                         uint64_t* last, uint64_t* bytes) {
   *first = 0;
@@ -347,6 +414,7 @@ Status PartitionChangeLog::AppendCommittedBatch(
     records[i].set_batch_size(static_cast<uint32_t>(records.size()));
     CEDAR_RETURN_IF_ERROR(AppendRecordFrame(records[i]));
     records_.push_back(records[i]);
+    snapshot_records_.push_back(records[i]);
   }
   if (!records.empty()) {
     state_.high_watermark += records.size();
@@ -356,6 +424,7 @@ Status PartitionChangeLog::AppendCommittedBatch(
       state_.earliest_offset = records_.front().offset();
     }
   }
+  CEDAR_RETURN_IF_ERROR(PersistSnapshotRecordsLocked());
   return PersistManifestLocked();
 }
 
@@ -387,6 +456,84 @@ StatusOr<std::vector<ChangeRecord>> PartitionChangeLog::ReadAfter(
     }
     out.push_back(record);
     bytes += payload.size();
+    if (out.size() >= effective_records) {
+      break;
+    }
+  }
+  return out;
+}
+
+StatusOr<std::vector<ChangeRecord>> PartitionChangeLog::SnapshotRecords(
+    uint64_t snapshot_version, uint64_t after_offset, size_t limit_records,
+    size_t limit_bytes) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  const size_t effective_records =
+      std::min(limit_records, options_.max_fetch_records);
+  const size_t effective_bytes = std::min(limit_bytes, options_.max_fetch_bytes);
+  std::vector<ChangeRecord> out;
+  if (effective_records == 0 || effective_bytes == 0) {
+    return out;
+  }
+
+  std::unordered_map<std::string, ChangeRecord> latest_by_key;
+  for (const auto& record : snapshot_records_) {
+    if (record.commit_version() > snapshot_version) {
+      continue;
+    }
+    latest_by_key[SnapshotLogicalKey(record)] = record;
+  }
+
+  std::vector<ChangeRecord> folded;
+  folded.reserve(latest_by_key.size());
+  for (auto& [key, record] : latest_by_key) {
+    (void)key;
+    if (record.operation() == CHANGE_OPERATION_DELETE) {
+      continue;
+    }
+    folded.push_back(std::move(record));
+  }
+  std::sort(folded.begin(), folded.end(),
+            [](const ChangeRecord& a, const ChangeRecord& b) {
+              if (a.entity_id() != b.entity_id()) {
+                return a.entity_id() < b.entity_id();
+              }
+              if (a.target_id() != b.target_id()) {
+                return a.target_id() < b.target_id();
+              }
+              if (a.edge_type() != b.edge_type()) {
+                return a.edge_type() < b.edge_type();
+              }
+              return a.column_id() < b.column_id();
+            });
+
+  size_t bytes = 0;
+  uint64_t snapshot_offset = 0;
+  for (auto record : folded) {
+    ++snapshot_offset;
+    if (snapshot_offset <= after_offset) {
+      continue;
+    }
+    record.set_offset(snapshot_offset);
+    record.set_txn_id(snapshot_offset);
+    record.set_batch_index(0);
+    record.set_batch_size(1);
+    if (record.operation() == CHANGE_OPERATION_UNSPECIFIED) {
+      record.set_operation(CHANGE_OPERATION_UPDATE);
+    }
+    auto record_bytes_or = SerializedSize(record);
+    if (!record_bytes_or.ok()) {
+      return record_bytes_or.status();
+    }
+    const size_t record_bytes = record_bytes_or.ValueOrDie();
+    if (!out.empty() && bytes + record_bytes > effective_bytes) {
+      break;
+    }
+    if (out.empty() && record_bytes > effective_bytes) {
+      return Status::ResourceExhausted(
+          "next snapshot record exceeds snapshot byte limit");
+    }
+    out.push_back(std::move(record));
+    bytes += record_bytes;
     if (out.size() >= effective_records) {
       break;
     }
@@ -454,6 +601,7 @@ Status PartitionChangeLog::Recover() {
   state_.partition_epoch = options_.partition_epoch;
   state_.earliest_offset = 1;
   records_.clear();
+  snapshot_records_.clear();
   active_segment_first_offset_ = 1;
   active_segment_size_ = 0;
 
@@ -563,6 +711,7 @@ Status PartitionChangeLog::Recover() {
       }
       segment_last_offset = record.offset();
       records_.push_back(record);
+      snapshot_records_.push_back(record);
       state_.high_watermark = record.offset();
       state_.committed_version =
           std::max<uint64_t>(state_.committed_version, record.commit_version());
@@ -604,6 +753,16 @@ Status PartitionChangeLog::Recover() {
       return Status::Corruption("PartitionChangeLog",
                                 "manifest watermark mismatch");
     }
+  }
+  auto snapshot_records =
+      ReadRecordFrameFile(std::filesystem::path(options_.directory) /
+                              kSnapshotName,
+                          options_.partition_id, options_.partition_epoch);
+  if (!snapshot_records.ok()) {
+    return snapshot_records.status();
+  }
+  if (!snapshot_records.ValueOrDie().empty()) {
+    snapshot_records_ = std::move(snapshot_records.ValueOrDie());
   }
   if (!manifest.ValueOrDie().present) {
     manifest_segment_names_.clear();
@@ -655,6 +814,54 @@ Status PartitionChangeLog::AppendRecordFrame(const ChangeRecord& record) {
     return s;
   }
   active_segment_size_ += frame_size;
+  return FsyncDirectory(dir);
+}
+
+Status PartitionChangeLog::PersistSnapshotRecordsLocked() const {
+  const std::filesystem::path dir(options_.directory);
+  std::filesystem::create_directories(dir);
+  const auto path = dir / kSnapshotName;
+  const auto tmp = dir / (std::string(kSnapshotName) + ".tmp");
+  int fd = ::open(tmp.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  if (fd < 0) {
+    return PosixError("open snapshot frame file: " + tmp.string());
+  }
+  Status s = Status::OK();
+  for (const auto& record : snapshot_records_) {
+    std::string payload;
+    if (!record.SerializeToString(&payload)) {
+      s = Status::Corruption("PartitionChangeLog",
+                             "failed to serialize snapshot record");
+      break;
+    }
+    FrameHeader header{kFrameMagic, kFrameVersion, 0,
+                       static_cast<uint32_t>(payload.size()),
+                       crc32c::Value(payload.data(), payload.size())};
+    s = WriteAll(fd, &header, sizeof(header));
+    if (!s.ok()) {
+      break;
+    }
+    s = WriteAll(fd, payload.data(), payload.size());
+    if (!s.ok()) {
+      break;
+    }
+  }
+  if (s.ok() && ::fsync(fd) != 0) {
+    s = PosixError("fsync snapshot frame file: " + tmp.string());
+  }
+  if (::close(fd) != 0 && s.ok()) {
+    s = PosixError("close snapshot frame file: " + tmp.string());
+  }
+  if (!s.ok()) {
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored);
+    return s;
+  }
+  if (::rename(tmp.c_str(), path.c_str()) != 0) {
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored);
+    return PosixError("rename snapshot frame file: " + path.string());
+  }
   return FsyncDirectory(dir);
 }
 

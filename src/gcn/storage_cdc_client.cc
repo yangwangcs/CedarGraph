@@ -16,6 +16,7 @@ StorageCdcClient::StorageCdcClient(std::shared_ptr<grpc::Channel> channel,
 StatusOr<cedar::storage::GetChangeLogStateResponse>
 StorageCdcClient::GetState(uint32_t partition_id, uint64_t expected_epoch) {
   grpc::ClientContext context;
+  ContextRegistration registration(this, &context);
   ConfigureContext(&context);
 
   cedar::storage::GetChangeLogStateRequest request;
@@ -37,6 +38,7 @@ StorageCdcClient::GetState(uint32_t partition_id, uint64_t expected_epoch) {
 StatusOr<cedar::storage::FetchChangesResponse> StorageCdcClient::Fetch(
     uint32_t partition_id, uint64_t after_offset, uint64_t expected_epoch) {
   grpc::ClientContext context;
+  ContextRegistration registration(this, &context);
   ConfigureContext(&context);
 
   cedar::storage::FetchChangesRequest request;
@@ -70,6 +72,7 @@ Status StorageCdcClient::StreamSnapshot(
   }
 
   grpc::ClientContext context;
+  ContextRegistration registration(this, &context);
   ConfigureContext(&context);
 
   cedar::storage::GetComputeSnapshotRequest request;
@@ -87,6 +90,35 @@ Status StorageCdcClient::StreamSnapshot(
     CEDAR_RETURN_IF_ERROR(on_batch(batch));
   }
   return MapGrpcStatus(reader->Finish());
+}
+
+void StorageCdcClient::Cancel() {
+  std::lock_guard<std::mutex> lock(contexts_mutex_);
+  for (grpc::ClientContext* context : active_contexts_) {
+    if (context) {
+      context->TryCancel();
+    }
+  }
+}
+
+StorageCdcClient::ContextRegistration::ContextRegistration(
+    StorageCdcClient* client, grpc::ClientContext* context)
+    : client_(client), context_(context) {
+  client_->RegisterContext(context_);
+}
+
+StorageCdcClient::ContextRegistration::~ContextRegistration() {
+  client_->UnregisterContext(context_);
+}
+
+void StorageCdcClient::RegisterContext(grpc::ClientContext* context) {
+  std::lock_guard<std::mutex> lock(contexts_mutex_);
+  active_contexts_.insert(context);
+}
+
+void StorageCdcClient::UnregisterContext(grpc::ClientContext* context) {
+  std::lock_guard<std::mutex> lock(contexts_mutex_);
+  active_contexts_.erase(context);
 }
 
 void StorageCdcClient::ConfigureContext(grpc::ClientContext* context) const {

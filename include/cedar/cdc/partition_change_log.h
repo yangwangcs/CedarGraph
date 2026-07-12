@@ -43,6 +43,10 @@ class PartitionChangeLog {
   StatusOr<std::vector<ChangeRecord>> ReadAfter(uint64_t offset,
                                                 size_t limit_records,
                                                 size_t limit_bytes) const;
+  StatusOr<std::vector<ChangeRecord>> SnapshotRecords(uint64_t snapshot_version,
+                                                      uint64_t after_offset,
+                                                      size_t limit_records,
+                                                      size_t limit_bytes) const;
   ChangeLogState GetState() const;
   Status Compact(uint64_t retain_from_offset);
 
@@ -51,6 +55,7 @@ class PartitionChangeLog {
 
   Status Recover();
   Status AppendRecordFrame(const ChangeRecord& record);
+  Status PersistSnapshotRecordsLocked() const;
   Status RewriteSegmentsLocked();
   Status PersistManifestLocked() const;
 
@@ -58,6 +63,7 @@ class PartitionChangeLog {
   mutable std::mutex mu_;
   ChangeLogState state_;
   std::vector<ChangeRecord> records_;
+  std::vector<ChangeRecord> snapshot_records_;
   std::vector<std::string> manifest_segment_names_;
   uint64_t active_segment_first_offset_ = 1;
   size_t active_segment_size_ = 0;

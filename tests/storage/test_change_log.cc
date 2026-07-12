@@ -312,4 +312,24 @@ TEST_F(PartitionChangeLogTest, CompactDropsEarlierOffsets) {
   EXPECT_EQ(result.ValueOrDie()[1].offset(), 5);
 }
 
+TEST_F(PartitionChangeLogTest, SnapshotRecordsSurviveCompactionAndReopen) {
+  auto log = OpenLog(Options());
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->AppendCommittedBatch(100, MakeBatch(5)).ok());
+  ASSERT_TRUE(log->Compact(4).ok());
+
+  log.reset();
+  auto reopened = OpenLog(Options());
+  ASSERT_NE(reopened, nullptr);
+  auto retained = reopened->ReadAfter(0, 10, 1 << 20);
+  ASSERT_TRUE(retained.ok()) << retained.status().ToString();
+  ASSERT_EQ(retained.ValueOrDie().size(), 2);
+
+  auto snapshot = reopened->SnapshotRecords(100, 0, 10, 1 << 20);
+  ASSERT_TRUE(snapshot.ok()) << snapshot.status().ToString();
+  ASSERT_EQ(snapshot.ValueOrDie().size(), 5);
+  EXPECT_EQ(snapshot.ValueOrDie()[0].offset(), 1);
+  EXPECT_EQ(snapshot.ValueOrDie()[4].offset(), 5);
+}
+
 }  // namespace
