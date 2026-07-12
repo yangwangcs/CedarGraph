@@ -266,6 +266,41 @@ struct NodeChange {
 };
 
 // =============================================================================
+// GCN registration / lease state
+// =============================================================================
+
+struct GcnRegistration {
+    uint64_t gcn_id{0};
+    std::string endpoint;
+    uint64_t incarnation{0};
+    uint64_t last_heartbeat_ms{0};
+};
+
+struct GcnPartitionProgress {
+    uint32_t partition_id{0};
+    uint64_t partition_epoch{0};
+    uint64_t applied_offset{0};
+    uint64_t applied_version{0};
+    bool query_ready{false};
+};
+
+struct GcnLease {
+    uint32_t partition_id{0};
+    uint64_t gcn_id{0};
+    uint64_t lease_epoch{0};
+    uint64_t expires_at_ms{0};
+};
+
+struct GcnRoute {
+    uint32_t partition_id{0};
+    uint64_t gcn_id{0};
+    std::string endpoint;
+    uint64_t lease_epoch{0};
+    uint64_t applied_version{0};
+    uint64_t expires_at_ms{0};
+};
+
+// =============================================================================
 // 元数据服务配置
 // =============================================================================
 
@@ -342,6 +377,17 @@ public:
     StatusOr<NodeInfo> GetNode(NodeID node_id) const;
     std::vector<NodeInfo> GetAliveNodes() const;
     std::vector<NodeInfo> GetAllNodes() const;
+
+    // ===== GCN registration and partition leases =====
+
+    Status RegisterGcn(const GcnRegistration& registration);
+    StatusOr<std::vector<GcnLease>> RenewGcnLeases(
+        uint64_t gcn_id,
+        uint64_t incarnation,
+        const std::vector<GcnPartitionProgress>& progress);
+    StatusOr<GcnRoute> LocateGcn(uint32_t partition_id,
+                                 uint64_t required_version) const;
+    void ExpireGcnForTest(uint64_t gcn_id);
     
     // ===== Schema 管理 =====
     
@@ -415,6 +461,20 @@ private:
         std::vector<NodeInfo> GetAliveNodes(uint64_t timeout_sec) const;
         std::vector<std::string> ListSpaces() const;
         std::vector<NodeInfo> GetAllNodes() const;
+
+        Status RegisterGcn(const GcnRegistration& registration);
+        StatusOr<std::vector<GcnLease>> RenewGcnLeases(
+            uint64_t gcn_id,
+            uint64_t incarnation,
+            const std::vector<GcnPartitionProgress>& progress,
+            uint64_t now_ms);
+        std::vector<GcnLease> GetGcnLeasesForOwner(
+            uint64_t gcn_id,
+            uint64_t now_ms) const;
+        StatusOr<GcnRoute> LocateGcn(uint32_t partition_id,
+                                     uint64_t required_version,
+                                     uint64_t now_ms) const;
+        void ExpireGcnForTest(uint64_t gcn_id);
         
         // Schema
         Status CreateLabelSchema(const std::string& space_name, const LabelSchema& schema);
@@ -453,6 +513,11 @@ private:
         // 节点信息
         std::unordered_map<NodeID, NodeInfo> nodes_;
         std::unordered_map<NodeID, NodeStatus> node_statuses_;
+
+        std::unordered_map<uint64_t, GcnRegistration> gcn_registrations_;
+        std::unordered_map<uint32_t, GcnLease> gcn_leases_;
+        std::unordered_map<uint32_t, uint64_t> gcn_next_lease_epoch_;
+        std::unordered_map<uint32_t, GcnPartitionProgress> gcn_progress_;
         
         std::atomic<LogIndex> last_applied_index_{0};
     };

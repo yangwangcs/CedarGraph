@@ -260,6 +260,10 @@ add_executable(test_meta_service dtx/unit/test_meta_service.cc)
 target_link_libraries(test_meta_service ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_meta_service)
 
+add_executable(test_meta_gcn_lease dtx/test_meta_gcn_lease.cc)
+target_link_libraries(test_meta_gcn_lease ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_meta_gcn_lease)
+
 add_executable(test_meta_service_grpc_client dtx/unit/test_meta_service_grpc_client.cc)
 target_link_libraries(test_meta_service_grpc_client ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_meta_service_grpc_client)
