@@ -1006,6 +1006,10 @@ target_link_libraries(cedar_client cedar gRPC::grpc++ OpenSSL::Crypto pthread)
 # GCN (Graph Compute Node)
 # =============================================================================
 file(GLOB GCN_SOURCES src/gcn/*.cc)
+list(FIND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/checkpoint_store.cc" GCN_CHECKPOINT_SOURCE_INDEX)
+if(GCN_CHECKPOINT_SOURCE_INDEX EQUAL -1)
+    list(APPEND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/checkpoint_store.cc")
+endif()
 add_library(cedar_gcn ${GCN_SOURCES}
     ${PROTO_OUT_DIR}/gcn_service.pb.cc
     ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc

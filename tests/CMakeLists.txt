@@ -818,6 +818,10 @@ target_link_libraries(test_gcn_service cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_gcn_service PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_gcn_service)
 
+add_executable(test_gcn_checkpoint gcn/test_gcn_checkpoint.cc)
+target_link_libraries(test_gcn_checkpoint cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_checkpoint)
+
 add_executable(test_adaptive_execution queryd/test_adaptive_execution.cc)
 target_link_libraries(test_adaptive_execution ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_adaptive_execution)
