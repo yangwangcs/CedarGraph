@@ -9,7 +9,10 @@ data:
       bind_address: "0.0.0.0"
       port: 9669
       meta_server: "metad:10559"
-      gcn_server: "gcn:9780"
+      # GCN is discovered dynamically through MetaD LocateGcn. Leave the legacy
+      # static GCN endpoint empty to avoid routing through a load-balanced
+      # service that may not own the partition lease.
+      gcn_server: ""
       health_port: 9668
       metrics_port: 9667
 

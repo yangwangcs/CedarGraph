@@ -961,22 +961,35 @@ gtest_discover_tests(test_storage_backfill)
 add_executable(test_graph_service_router
     service/test_graph_service_router.cc
     ../src/service/graph_service_router.cc
+    ../src/service/gcn_route_cache.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
 )
-target_link_libraries(test_graph_service_router cedar_cypher ${GTEST_MAIN_TARGET})
+target_link_libraries(test_graph_service_router cedar_cypher cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_graph_service_router PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_graph_service_router)
+
+add_executable(test_graphd_gcn_routing
+    service/test_graphd_gcn_routing.cc
+    ../src/service/graph_service_router.cc
+    ../src/service/gcn_route_cache.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
+)
+target_link_libraries(test_graphd_gcn_routing cedar_cypher cedar_gcn ${GTEST_MAIN_TARGET})
+target_link_directories(test_graphd_gcn_routing PRIVATE /opt/homebrew/lib)
+gtest_discover_tests(test_graphd_gcn_routing)
 
 add_executable(test_graph_service_router_auth
     service/test_graph_service_router_auth.cc
     ../src/service/graph_service_router.cc
+    ../src/service/gcn_route_cache.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/query_service.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/query_service.grpc.pb.cc
 )
-target_link_libraries(test_graph_service_router_auth cedar_cypher ${GTEST_MAIN_TARGET})
+target_link_libraries(test_graph_service_router_auth cedar_cypher cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_graph_service_router_auth PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_graph_service_router_auth)
 
@@ -992,11 +1005,12 @@ gtest_discover_tests(test_migration_pipeline)
 add_executable(test_service_meta_critical
     service/test_service_meta_critical.cc
     ../src/service/graph_service_router.cc
+    ../src/service/gcn_route_cache.cc
     ../src/dtx/grpc/meta_service_grpc.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
 )
-target_link_libraries(test_service_meta_critical cedar_cypher ${GTEST_MAIN_TARGET})
+target_link_libraries(test_service_meta_critical cedar_cypher cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_service_meta_critical PRIVATE /opt/homebrew/lib)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(test_service_meta_critical PRIVATE -Wno-vla-cxx-extension)

@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gcn
+  namespace: cedargraph
+  labels:
+    app: gcn
+    app.kubernetes.io/name: gcn
+    app.kubernetes.io/component: compute
+    app.kubernetes.io/part-of: cedargraph
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gcn
+  template:
+    metadata:
+      labels:
+        app: gcn
+        app.kubernetes.io/name: gcn
+        app.kubernetes.io/component: compute
+        app.kubernetes.io/part-of: cedargraph
+    spec:
+      containers:
+      - name: gcn
+        image: cedargraph:k8s-fix-20260630
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - |
+          gcn_id="$(printf '%s' "${POD_NAME}" | cksum | awk '{print $1}')"
+          incarnation="$(date +%s%3N)"
+          exec /usr/local/bin/graphcomputenode \
+            --gcn_bind_address "0.0.0.0" \
+            --gcn_port "9780" \
+            --gcn_coordinator "metad:10559" \
+            --gcn_checkpoint_dir "/var/lib/cedar/gcn/checkpoints" \
+            --gcn_use_metad_leases=true \
+            --gcn_node_id "${gcn_id}" \
+            --gcn_incarnation "${incarnation}" \
+            --gcn_advertised_endpoint "${POD_IP}:9780" \
+            --gcn_partition_ids "0,1,2" \
+            --gcn_storage_endpoints "storaged-0.storaged:9779,storaged-1.storaged:9779,storaged-2.storaged:9779"
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: CEDAR_METAD_ENDPOINT
+          value: "metad:10559"
+        - name: CEDAR_GRPC_TLS_ENABLED
+          value: "1"
+        - name: CEDAR_GRPC_SERVER_CERT
+          value: "/etc/cedar/tls/tls.crt"
+        - name: CEDAR_GRPC_SERVER_KEY
+          value: "/etc/cedar/tls/tls.key"
+        - name: CEDAR_GRPC_CA_CERT
+          value: "/etc/cedar/tls/ca.crt"
+        - name: CEDAR_GRPC_MTLS_ENABLED
+          value: "0"
+        - name: CEDAR_GRPC_CLIENT_CERT
+          value: "/etc/cedar/tls/client.crt"
+        - name: CEDAR_GRPC_CLIENT_KEY
+          value: "/etc/cedar/tls/client.key"
+        ports:
+        - name: grpc
+          containerPort: 9780
+          protocol: TCP
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        livenessProbe:
+          tcpSocket:
+            port: grpc
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          tcpSocket:
+            port: grpc
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: checkpoints
+          mountPath: /var/lib/cedar/gcn
+        - name: gcn-tls
+          mountPath: /etc/cedar/tls
+          readOnly: true
+      volumes:
+      - name: checkpoints
+        emptyDir: {}
+      - name: gcn-tls
+        secret:
+          secretName: gcn-tls
+          optional: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gcn
+  namespace: cedargraph
+  labels:
+    app: gcn
+spec:
+  selector:
+    app: gcn
+  ports:
+  - name: grpc
+    port: 9780
+    targetPort: 9780
+  type: ClusterIP

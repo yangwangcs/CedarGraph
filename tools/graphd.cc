@@ -166,7 +166,7 @@ struct Config {
   int port = 9669;
   std::string bind_address = "0.0.0.0";
   std::string meta_server = "127.0.0.1:10559";
-  std::string gcn_server = "127.0.0.1:9780";
+  std::string gcn_server;
   int health_port = 9668;
   int metrics_port = 9667;
   cedar::dtx::raft::TlsConfig tls;
@@ -225,7 +225,7 @@ Config ParseArgs(int argc, char* argv[]) {
       std::cout << "  -p, --port <port>      Port to listen on (default: 9669)" << std::endl;
       std::cout << "  -b, --bind <addr>      Bind address (default: 0.0.0.0)" << std::endl;
       std::cout << "  -m, --meta <addr>      MetaD gRPC server address (default: 127.0.0.1:10559)" << std::endl;
-      std::cout << "  -g, --gcn <addr>       GCN server address (default: 127.0.0.1:9780)" << std::endl;
+      std::cout << "  -g, --gcn <addr>       Legacy static GCN server address (default: disabled; dynamic MetaD LocateGcn is preferred)" << std::endl;
       std::cout << "  --health_port <port>   Health HTTP port (default: 9668)" << std::endl;
       std::cout << "  --metrics_port <port>  Metrics HTTP port (default: 9667)" << std::endl;
       std::cout << "  -c, --config <path>    Configuration file (YAML)" << std::endl;

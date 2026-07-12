@@ -32,7 +32,9 @@
 #include "cedar/dtx/transaction_recovery_manager.h"
 #include "cedar/dtx/transaction_timeout_manager.h"
 #include "cedar/dtx/security.h"
+#include "cedar/gcn/coordinator_client.h"
 #include "cedar/gcn/scatter_gather_router.h"
+#include "cedar/service/gcn_route_cache.h"
 
 namespace cedar {
 namespace queryd {
@@ -217,8 +219,17 @@ class GraphServiceRouter final : public cedar::query::QueryService::Service,
       const std::string& node_addr);
   
   // GCN 客户端
+  std::unique_ptr<cedar::service::GcnRouteCache> dynamic_gcn_routes_;
   std::shared_ptr<cedar::gcn::ScatterGatherRouter> gcn_router_;
   std::vector<std::string> gcn_peer_addresses_;
+
+  bool TryGcnTraversal(uint64_t root_entity_id,
+                       uint32_t partition_id,
+                       uint64_t required_version,
+                       uint32_t edge_type,
+                       uint32_t max_hops,
+                       uint64_t query_time,
+                       std::vector<uint64_t>* visited_entity_ids);
   
   // 执行单分区查询
   Status ExecutePartitionQuery(const std::string& query,

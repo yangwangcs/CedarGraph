@@ -14,6 +14,7 @@
 #include <regex>
 #include <sstream>
 #include <thread>
+#include <utility>
 
 #include "cedar/cypher/execution_plan.h"
 #include "cedar/cypher/parser.h"
@@ -235,6 +236,36 @@ Status GraphServiceRouter::Initialize(const std::string& meta_server_addr,
   }
 
   CEDAR_LOG_INFO() << "[GraphD] Connected to MetaD at " << meta_server_addr << std::endl;
+
+  // Dynamic GCN routing uses MetaD LocateGcn and does not require a static
+  // -g/CEDAR_GCN_ENDPOINT peer. If no explicit version is requested by the
+  // caller, GraphD sends required_version=0, which means "latest available"
+  // without imposing a minimum served_version gate.
+  auto meta_creds = CreateClientCredentialsWithEnvFallback(tls_config_);
+  if (!meta_creds.ok()) {
+    CEDAR_LOG_ERROR() << "[GraphD] Dynamic GCN MetaD TLS error: "
+                      << meta_creds.status().ToString() << std::endl;
+  } else if (!meta_addresses.empty()) {
+    auto coordinator_channel =
+        grpc::CreateChannel(meta_addresses.front(), meta_creds.ValueOrDie());
+    auto coordinator_client =
+        std::make_shared<cedar::gcn::CoordinatorClient>(coordinator_channel);
+    auto gcn_creds = CreateClientCredentialsWithEnvFallback(tls_config_);
+    if (!gcn_creds.ok()) {
+      CEDAR_LOG_ERROR() << "[GraphD] Dynamic GCN TLS error: "
+                        << gcn_creds.status().ToString() << std::endl;
+    } else {
+      dynamic_gcn_routes_ = std::make_unique<GcnRouteCache>(
+          [coordinator_client](uint32_t partition_id, uint64_t required_version) {
+            return coordinator_client->LocateGcn(partition_id, required_version);
+          },
+          [creds = gcn_creds.ValueOrDie()](const std::string& endpoint) {
+            return grpc::CreateChannel(endpoint, creds);
+          });
+      CEDAR_LOG_INFO() << "[GraphD] Dynamic GCN locator initialized via MetaD "
+                       << meta_addresses.front() << std::endl;
+    }
+  }
   
   // 初始化 GCN 路由（如果配置了）
   gcn_router_ = std::make_shared<cedar::gcn::ScatterGatherRouter>();
@@ -326,6 +357,57 @@ Status GraphServiceRouter::Stop() {
 }
 
 // ========== gRPC 方法实现 ==========
+
+bool GraphServiceRouter::TryGcnTraversal(uint64_t root_entity_id,
+                                         uint32_t partition_id,
+                                         uint64_t required_version,
+                                         uint32_t edge_type,
+                                         uint32_t max_hops,
+                                         uint64_t query_time,
+                                         std::vector<uint64_t>* visited_entity_ids) {
+  if (!visited_entity_ids) {
+    return false;
+  }
+
+  cedar::gcn::TraversalRequest gcn_request;
+  gcn_request.set_trace_id("graphd-traverse");
+  gcn_request.set_root_entity_id(root_entity_id);
+  gcn_request.set_partition_id(partition_id);
+  gcn_request.set_required_version(required_version);
+  gcn_request.set_query_time(query_time);
+  gcn_request.set_max_hops(max_hops);
+  gcn_request.set_edge_type(edge_type);
+
+  if (dynamic_gcn_routes_) {
+    auto dynamic_response =
+        dynamic_gcn_routes_->Traverse(partition_id, required_version, gcn_request);
+    if (dynamic_response.ok()) {
+      visited_entity_ids->assign(dynamic_response.ValueOrDie().visited_entity_ids().begin(),
+                                 dynamic_response.ValueOrDie().visited_entity_ids().end());
+      return true;
+    }
+    CEDAR_LOG_WARN() << "[GraphD] Dynamic GCN traversal unavailable for partition "
+                     << partition_id << ": "
+                     << dynamic_response.status().ToString()
+                     << "; falling back to StorageD" << std::endl;
+    return false;
+  }
+
+  // Backward-compatible static GCN peer path for explicit legacy deployments.
+  // It is only used when the dynamic MetaD LocateGcn path is not configured;
+  // once dynamic routing exists, any dynamic miss/stale/version/epoch failure
+  // must fall back to StorageD instead of bypassing the lease gate.
+  if (gcn_router_ && !gcn_peer_addresses_.empty()) {
+    auto static_response = gcn_router_->ScatterTraversalByEntity(gcn_request);
+    if (static_response.success()) {
+      visited_entity_ids->assign(static_response.visited_entity_ids().begin(),
+                                 static_response.visited_entity_ids().end());
+      return true;
+    }
+  }
+
+  return false;
+}
 
 grpc::Status GraphServiceRouter::ExecuteQuery(grpc::ServerContext* context,
                                               const ExecuteQueryRequest* request,
@@ -885,32 +967,36 @@ grpc::Status GraphServiceRouter::Traverse(grpc::ServerContext* context,
     return st;
   }
 
-  // 优先路由到 GCN（支持多 GCN Scatter-Gather）
-  if (gcn_router_ && !gcn_peer_addresses_.empty()) {
-    cedar::gcn::TraversalRequest gcn_request;
-    gcn_request.set_trace_id("graphd-traverse");
-    gcn_request.set_root_entity_id(request->start_node_id());
-    gcn_request.set_query_time(request->as_of_timestamp() > 0
-                                ? request->as_of_timestamp() : UINT64_MAX);
-    gcn_request.set_max_hops(request->max_depth() > 0 ? request->max_depth() : 3);
-    gcn_request.set_edge_type(request->edge_types_size() > 0 ? request->edge_types(0) : 0);
-
-    auto gcn_response = gcn_router_->ScatterTraversalByEntity(gcn_request);
-    if (gcn_response.success()) {
-      response->set_success(true);
-      response->set_nodes_visited(gcn_response.visited_entity_ids_size());
-      for (const auto& entity_id : gcn_response.visited_entity_ids()) {
-        auto* path = response->add_paths();
-        path->add_nodes()->set_id(entity_id);
-      }
-      return grpc::Status::OK;
+  uint32_t partition_id = CalculatePartition(request->start_node_id());
+  // TraverseRequest currently exposes as_of_timestamp as GraphD's only
+  // externally supplied version-like lower bound. When it is absent,
+  // required_version=0 means "accept the GCN's latest ready snapshot" while
+  // still validating success/cache_status and a non-zero StorageD partition
+  // epoch in the GCN response.
+  const uint64_t required_version = request->as_of_timestamp() > 0
+                                        ? request->as_of_timestamp()
+                                        : 0;
+  const uint64_t query_time = request->as_of_timestamp() > 0
+                                  ? request->as_of_timestamp()
+                                  : UINT64_MAX;
+  std::vector<uint64_t> gcn_visited;
+  if (TryGcnTraversal(request->start_node_id(),
+                      partition_id,
+                      required_version,
+                      request->edge_types_size() > 0 ? request->edge_types(0) : 0,
+                      request->max_depth() > 0 ? request->max_depth() : 3,
+                      query_time,
+                      &gcn_visited)) {
+    response->set_success(true);
+    response->set_nodes_visited(static_cast<uint32_t>(gcn_visited.size()));
+    for (const auto entity_id : gcn_visited) {
+      auto* path = response->add_paths();
+      path->add_nodes()->set_id(entity_id);
     }
-    // GCN 失败时回退到 StorageD
+    return grpc::Status::OK;
   }
   
   // 回退：路由到 StorageD
-  uint32_t partition_id = CalculatePartition(request->start_node_id());
-  
   auto route_result = GetPartitionRoute(partition_id);
   if (!route_result.ok()) {
     response->set_success(false);
@@ -2096,6 +2182,40 @@ Status GraphServiceRouter::ExecutePartitionQuery(
     cedar::query::ResultSet* result,
     std::vector<::cedar::CedarKey>* read_keys,
     ::cedar::Timestamp read_timestamp) {
+  if (route_ctx.query_type == QueryType::NEIGHBOR_TRAVERSAL) {
+    uint64_t start_id = route_ctx.start_node_id;
+    if (start_id == 0 && !route_ctx.entity_ids.empty()) {
+      start_id = route_ctx.entity_ids[0];
+    }
+    if (start_id != 0 && CalculatePartition(start_id) == partition_id) {
+      std::vector<uint64_t> gcn_visited;
+      const uint64_t required_version = route_ctx.has_temporal_constraint
+                                            ? route_ctx.as_of_timestamp
+                                            : 0;
+      const uint64_t query_time = route_ctx.has_temporal_constraint
+                                      ? route_ctx.as_of_timestamp
+                                      : UINT64_MAX;
+      if (TryGcnTraversal(start_id,
+                          partition_id,
+                          required_version,
+                          route_ctx.edge_type,
+                          route_ctx.hops == 0 ? 1 : route_ctx.hops,
+                          query_time,
+                          &gcn_visited)) {
+        for (const auto entity_id : gcn_visited) {
+          auto* row = result->add_rows();
+          row->add_values()->set_int_val(static_cast<int64_t>(entity_id));
+        }
+        result->set_total_rows(result->total_rows() +
+                               static_cast<int32_t>(gcn_visited.size()));
+        (void)query;
+        (void)read_keys;
+        (void)read_timestamp;
+        return Status::OK();
+      }
+    }
+  }
+
   // Get partition route
   auto route_result = GetPartitionRoute(partition_id);
   if (!route_result.ok()) {

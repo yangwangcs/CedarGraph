@@ -521,6 +521,7 @@ target_link_libraries(cedar_queryd
 add_executable(graphd
     tools/graphd.cc
     src/service/graph_service_router.cc
+    src/service/gcn_route_cache.cc
     src/service/graphd_registrar.cc
     src/service/query_result_aggregator.cc
     ${PROTO_OUT_DIR}/query_service.pb.cc
@@ -538,7 +539,7 @@ target_include_directories(graphd PRIVATE
     ${CMAKE_SOURCE_DIR}
 )
 target_link_directories(graphd PRIVATE /opt/homebrew/lib)
-target_link_libraries(graphd cedar_cypher)
+target_link_libraries(graphd cedar_cypher cedar_gcn)
 target_compile_definitions(graphd PRIVATE CEDAR_NO_GLOG)
 
 # Test client for GraphD
