@@ -20,10 +20,12 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "cedar/core/status.h"
 #include "cedar/coordinator/location_table.h"
+#include "cedar/dtx/meta_service.h"
 #include "meta_service.grpc.pb.h"
 
 namespace cedar {
@@ -47,6 +49,19 @@ class CoordinatorClient {
 
   // Send a heartbeat containing all currently cached windows.
   cedar::Status Heartbeat(const std::vector<coordinator::CacheWindow>& windows);
+
+  cedar::Status RegisterGcn(uint64_t gcn_id,
+                            const std::string& endpoint,
+                            uint64_t incarnation);
+
+  cedar::StatusOr<std::vector<cedar::dtx::GcnLease>> RenewGcnLeases(
+      uint64_t gcn_id,
+      uint64_t incarnation,
+      const std::vector<cedar::dtx::GcnPartitionProgress>& progress);
+
+  cedar::StatusOr<cedar::dtx::GcnRoute> LocateGcn(
+      uint32_t partition_id,
+      uint64_t required_version);
 
  private:
   std::shared_ptr<grpc::Channel> channel_;

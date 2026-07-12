@@ -307,6 +307,86 @@ message GcnHeartbeatResponse {
 }
 
 // ============================================================================
+// GCN Lease 控制面
+// ============================================================================
+
+enum GcnLeaseStatusCode {
+    GCN_LEASE_STATUS_OK = 0;
+    GCN_LEASE_STATUS_STALE_INCARNATION = 1;
+    GCN_LEASE_STATUS_STALE_LEASE = 2;
+    GCN_LEASE_STATUS_NO_ELIGIBLE_GCN = 3;
+    GCN_LEASE_STATUS_NOT_LEADER = 4;
+    GCN_LEASE_STATUS_INVALID_ARGUMENT = 5;
+    GCN_LEASE_STATUS_INTERNAL_ERROR = 6;
+}
+
+message GcnPartitionProgress {
+    uint32 partition_id = 1;
+    uint64 partition_epoch = 2;
+    uint64 applied_offset = 3;
+    uint64 applied_version = 4;
+    bool query_ready = 5;
+}
+
+message GcnPartitionLease {
+    uint32 partition_id = 1;
+    uint64 gcn_id = 2;
+    uint64 lease_epoch = 3;
+    uint64 expires_at_ms = 4;
+    string lease_token = 5;
+}
+
+message GcnRoute {
+    uint32 partition_id = 1;
+    uint64 gcn_id = 2;
+    string endpoint = 3;
+    uint64 lease_epoch = 4;
+    uint64 applied_version = 5;
+    uint64 expires_at_ms = 6;
+}
+
+message RegisterGcnRequest {
+    uint64 gcn_id = 1;
+    string endpoint = 2;
+    uint64 incarnation = 3;
+    uint64 last_heartbeat_ms = 4;
+}
+
+message RegisterGcnResponse {
+    bool success = 1;
+    string error_msg = 2;
+    GcnLeaseStatusCode status_code = 3;
+    string leader_address = 4;
+}
+
+message RenewGcnLeasesRequest {
+    uint64 gcn_id = 1;
+    uint64 incarnation = 2;
+    repeated GcnPartitionProgress progress = 3;
+}
+
+message RenewGcnLeasesResponse {
+    bool success = 1;
+    string error_msg = 2;
+    GcnLeaseStatusCode status_code = 3;
+    string leader_address = 4;
+    repeated GcnPartitionLease leases = 5;
+}
+
+message LocateGcnRequest {
+    uint32 partition_id = 1;
+    uint64 required_version = 2;
+}
+
+message LocateGcnResponse {
+    bool success = 1;
+    string error_msg = 2;
+    GcnLeaseStatusCode status_code = 3;
+    string leader_address = 4;
+    GcnRoute route = 5;
+}
+
+// ============================================================================
 // Meta Service gRPC 服务
 // ============================================================================
 
@@ -362,6 +442,11 @@ service MetaService {
     rpc LocateCache(LocateCacheRequest) returns (LocateCacheResponse);
     rpc ReportCache(ReportCacheRequest) returns (ReportCacheResponse);
     rpc GcnHeartbeat(GcnHeartbeatRequest) returns (GcnHeartbeatResponse);
+
+    // GCN Lease 控制面
+    rpc RegisterGcn(RegisterGcnRequest) returns (RegisterGcnResponse);
+    rpc RenewGcnLeases(RenewGcnLeasesRequest) returns (RenewGcnLeasesResponse);
+    rpc LocateGcn(LocateGcnRequest) returns (LocateGcnResponse);
 }
 
 // ============================================================================

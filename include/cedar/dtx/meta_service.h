@@ -289,6 +289,7 @@ struct GcnLease {
     uint64_t gcn_id{0};
     uint64_t lease_epoch{0};
     uint64_t expires_at_ms{0};
+    std::string lease_token;
 };
 
 struct GcnRoute {
