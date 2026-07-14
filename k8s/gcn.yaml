@@ -1,5 +1,5 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: gcn
   namespace: cedargraph
@@ -9,6 +9,7 @@ metadata:
     app.kubernetes.io/component: compute
     app.kubernetes.io/part-of: cedargraph
 spec:
+  serviceName: gcn
   replicas: 2
   selector:
     matchLabels:
@@ -31,6 +32,9 @@ spec:
         - |
           gcn_id="$(printf '%s' "${POD_NAME}" | cksum | awk '{print $1}')"
           incarnation="$(date +%s%3N)"
+          # Advertise stable StatefulSet DNS instead of Pod IP so TLS can use
+          # DNS SANs such as gcn-0.gcn or *.gcn.cedargraph.svc.cluster.local.
+          advertised_endpoint="${POD_NAME}.gcn:9780"
           exec /usr/local/bin/graphcomputenode \
             --gcn_bind_address "0.0.0.0" \
             --gcn_port "9780" \
@@ -39,7 +43,7 @@ spec:
             --gcn_use_metad_leases=true \
             --gcn_node_id "${gcn_id}" \
             --gcn_incarnation "${incarnation}" \
-            --gcn_advertised_endpoint "${POD_IP}:9780" \
+            --gcn_advertised_endpoint "${advertised_endpoint}" \
             --gcn_partition_ids "0,1,2" \
             --gcn_storage_endpoints "storaged-0.storaged:9779,storaged-1.storaged:9779,storaged-2.storaged:9779"
         env:
@@ -47,10 +51,6 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
-        - name: POD_IP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.podIP
         - name: CEDAR_METAD_ENDPOINT
           value: "metad:10559"
         - name: CEDAR_GRPC_TLS_ENABLED
@@ -120,4 +120,4 @@ spec:
   - name: grpc
     port: 9780
     targetPort: 9780
-  type: ClusterIP
+  clusterIP: None
