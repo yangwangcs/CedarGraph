@@ -129,6 +129,18 @@ public:
                                const cedar::meta::GcnHeartbeatRequest* request,
                                cedar::meta::GcnHeartbeatResponse* response) override;
 
+    grpc::Status RegisterGcn(grpc::ServerContext* context,
+                             const cedar::meta::RegisterGcnRequest* request,
+                             cedar::meta::RegisterGcnResponse* response) override;
+
+    grpc::Status RenewGcnLeases(grpc::ServerContext* context,
+                                const cedar::meta::RenewGcnLeasesRequest* request,
+                                cedar::meta::RenewGcnLeasesResponse* response) override;
+
+    grpc::Status LocateGcn(grpc::ServerContext* context,
+                           const cedar::meta::LocateGcnRequest* request,
+                           cedar::meta::LocateGcnResponse* response) override;
+
     // GraphD 管理 - 支持多实例负载均衡
     grpc::Status RegisterGraphD(grpc::ServerContext* context,
                                  const cedar::meta::RegisterGraphDRequest* request,

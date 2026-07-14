@@ -41,8 +41,6 @@ spec:
         env:
         - name: CEDAR_METAD_ENDPOINT
           value: "metad:10559"
-        - name: CEDAR_GCN_ENDPOINT
-          value: "gcn:9780"
         - name: CEDAR_GRAPHD_AUTH_JWT_SECRET
           valueFrom:
             secretKeyRef:
@@ -85,8 +83,6 @@ spec:
           name: health
         - containerPort: 9667
           name: metrics
-        - containerPort: 9780
-          name: gcn
         resources:
           requests:
             memory: "1Gi"

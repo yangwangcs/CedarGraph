@@ -10,6 +10,7 @@ resources:
   # - graphd-secrets.yaml
   - metad.yaml
   - storaged.yaml
+  - gcn.yaml
   - graphd.yaml
   - storaged-config.yaml
   - graphd-config.yaml

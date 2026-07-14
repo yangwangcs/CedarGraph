@@ -56,6 +56,7 @@ set(PROTO_FILES
     ${CMAKE_SOURCE_DIR}/proto/storage_service.proto
     ${CMAKE_SOURCE_DIR}/proto/dtx_protocol.proto
     ${CMAKE_SOURCE_DIR}/proto/gcn_service.proto
+    ${CMAKE_SOURCE_DIR}/proto/cdc_service.proto
 )
 
 add_custom_command(
@@ -79,6 +80,8 @@ add_custom_command(
            ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.h
            ${PROTO_OUT_DIR}/gcn_service.pb.cc ${PROTO_OUT_DIR}/gcn_service.pb.h
            ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc ${PROTO_OUT_DIR}/gcn_service.grpc.pb.h
+           ${PROTO_OUT_DIR}/cdc_service.pb.cc ${PROTO_OUT_DIR}/cdc_service.pb.h
+           ${PROTO_OUT_DIR}/cdc_service.grpc.pb.cc ${PROTO_OUT_DIR}/cdc_service.grpc.pb.h
     COMMAND protobuf::protoc
     ARGS --grpc_out=${PROTO_OUT_DIR}
          --cpp_out=${PROTO_OUT_DIR}
@@ -108,6 +111,8 @@ add_custom_target(generate_proto ALL
             ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.h
             ${PROTO_OUT_DIR}/gcn_service.pb.cc ${PROTO_OUT_DIR}/gcn_service.pb.h
             ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc ${PROTO_OUT_DIR}/gcn_service.grpc.pb.h
+            ${PROTO_OUT_DIR}/cdc_service.pb.cc ${PROTO_OUT_DIR}/cdc_service.pb.h
+            ${PROTO_OUT_DIR}/cdc_service.grpc.pb.cc ${PROTO_OUT_DIR}/cdc_service.grpc.pb.h
 )
 
 # Find required packages
@@ -389,6 +394,11 @@ set(CEDAR_GOVERNANCE_SOURCES
     src/governance/health_checker.cc
 )
 
+set(CEDAR_CDC_SOURCES
+    src/cdc/partition_change_log.cc
+    src/cdc/change_log_maintenance.cc
+)
+
 # Create cedar library
 add_library(cedar STATIC
     ${CEDAR_CORE_SOURCES}
@@ -401,6 +411,7 @@ add_library(cedar STATIC
     ${CEDAR_DRIVER_SOURCES}
     ${CEDAR_DTX_SOURCES}
     ${CEDAR_PARTITION_SOURCES}
+    ${CEDAR_CDC_SOURCES}
     src/service/partition_migration_service.cc
     ${PROTO_OUT_DIR}/raft_service.pb.cc
     ${PROTO_OUT_DIR}/raft_service.grpc.pb.cc
@@ -412,6 +423,8 @@ add_library(cedar STATIC
     ${PROTO_OUT_DIR}/migration_service.grpc.pb.cc
     ${PROTO_OUT_DIR}/dtx_protocol.pb.cc
     ${PROTO_OUT_DIR}/dtx_protocol.grpc.pb.cc
+    ${PROTO_OUT_DIR}/cdc_service.pb.cc
+    ${PROTO_OUT_DIR}/cdc_service.grpc.pb.cc
 )
 if(TARGET OBJ_LIB)
     add_dependencies(cedar OBJ_LIB)
@@ -508,6 +521,7 @@ target_link_libraries(cedar_queryd
 add_executable(graphd
     tools/graphd.cc
     src/service/graph_service_router.cc
+    src/service/gcn_route_cache.cc
     src/service/graphd_registrar.cc
     src/service/query_result_aggregator.cc
     ${PROTO_OUT_DIR}/query_service.pb.cc
@@ -525,7 +539,7 @@ target_include_directories(graphd PRIVATE
     ${CMAKE_SOURCE_DIR}
 )
 target_link_directories(graphd PRIVATE /opt/homebrew/lib)
-target_link_libraries(graphd cedar_cypher)
+target_link_libraries(graphd cedar_cypher cedar_gcn)
 target_compile_definitions(graphd PRIVATE CEDAR_NO_GLOG)
 
 # Test client for GraphD
@@ -993,6 +1007,18 @@ target_link_libraries(cedar_client cedar gRPC::grpc++ OpenSSL::Crypto pthread)
 # GCN (Graph Compute Node)
 # =============================================================================
 file(GLOB GCN_SOURCES src/gcn/*.cc)
+list(FIND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/checkpoint_store.cc" GCN_CHECKPOINT_SOURCE_INDEX)
+if(GCN_CHECKPOINT_SOURCE_INDEX EQUAL -1)
+    list(APPEND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/checkpoint_store.cc")
+endif()
+list(FIND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/storage_cdc_client.cc" GCN_STORAGE_CDC_CLIENT_SOURCE_INDEX)
+if(GCN_STORAGE_CDC_CLIENT_SOURCE_INDEX EQUAL -1)
+    list(APPEND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/storage_cdc_client.cc")
+endif()
+list(FIND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/tmv_snapshot_store.cc" GCN_TMV_SNAPSHOT_STORE_SOURCE_INDEX)
+if(GCN_TMV_SNAPSHOT_STORE_SOURCE_INDEX EQUAL -1)
+    list(APPEND GCN_SOURCES "${CMAKE_SOURCE_DIR}/src/gcn/tmv_snapshot_store.cc")
+endif()
 add_library(cedar_gcn ${GCN_SOURCES}
     ${PROTO_OUT_DIR}/gcn_service.pb.cc
     ${PROTO_OUT_DIR}/gcn_service.grpc.pb.cc

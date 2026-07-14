@@ -26,6 +26,14 @@ enum TraversalAlgorithm {
   DFS = 1;
 }
 
+enum CacheStatus {
+  CACHE_STATUS_UNSPECIFIED = 0;
+  CACHE_STATUS_HIT = 1;
+  CACHE_STATUS_MISS = 2;
+  CACHE_STATUS_VERSION_LAG = 3;
+  CACHE_STATUS_NOT_READY = 4;
+}
+
 message TraversalRequest {
     string trace_id = 1;
     uint64 root_entity_id = 2;
@@ -34,6 +42,7 @@ message TraversalRequest {
     uint32 edge_type = 5;
     uint64 required_version = 6;
     TraversalAlgorithm algorithm = 7;
+    optional uint32 partition_id = 8;
 
     // Reserved for future extensions
     reserved 100 to 199;
@@ -47,6 +56,8 @@ message TraversalResponse {
     bytes result_payload = 5;
     uint64 served_version = 6;
     bool truncated = 7;
+    uint64 partition_epoch = 8;
+    CacheStatus cache_status = 9;
 
     // Reserved for future extensions
     reserved 100 to 199;
@@ -128,6 +139,17 @@ message Ack {
 }
 
 // =============================================================================
+// Health / readiness
+// =============================================================================
+
+message HealthRequest {}
+
+message HealthResponse {
+    bool ready = 1;
+    string reason = 2;
+}
+
+// =============================================================================
 // GcnService
 // =============================================================================
 
@@ -143,4 +165,7 @@ service GcnService {
 
     // Event stream for change data capture
     rpc OnEventStream(stream Ack) returns (stream CDCEvent);
+
+    // Node health/readiness for routing and deployment probes
+    rpc GetHealth(HealthRequest) returns (HealthResponse);
 }

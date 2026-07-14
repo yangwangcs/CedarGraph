@@ -1,12 +1,22 @@
 #include "cedar/gcn/watermark_gc.h"
 
 #include <chrono>
+#include <algorithm>
 #include <thread>
 
 #include "cedar/gcn/tmv_engine.h"
 
 namespace cedar {
 namespace gcn {
+
+uint64_t ComputeSafeWatermark(const WatermarkInputs& inputs) {
+  if (inputs.minimum_applied_version == 0) {
+    return 0;
+  }
+  return std::min({inputs.minimum_applied_version,
+                   inputs.minimum_active_query_version,
+                   inputs.retention_floor_version});
+}
 
 WatermarkGc::WatermarkGc(TMVEngine* engine)
     : engine_(engine),

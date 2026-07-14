@@ -33,12 +33,14 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 // Note: condition_variable is included after memory to ensure proper std namespace
 #include <condition_variable>
 
 #include "cedar/core/status.h"
+#include "cedar/cdc/partition_change_log.h"
 #include "cedar/types/descriptor.h"
 #include "cedar/cypher/cypher_engine.h"
 #include "cedar/storage/cedar_graph_storage.h"
@@ -64,7 +66,6 @@ class DTXServiceImpl;
 #include "meta_service.grpc.pb.h"
 
 namespace cedar {
-
 // Forward declaration for governance layer integration
 namespace governance {
   class ServiceRegistry;
@@ -142,6 +143,9 @@ class PartitionStorage {
   Status Commit(TxnID txn_id, Timestamp commit_ts);
   Status Abort(TxnID txn_id);
   Status Inquire(TxnID txn_id, DistributedTxnState* state);
+  void SetChangeLog(cedar::cdc::PartitionChangeLog* change_log) {
+    change_log_ = change_log;
+  }
 
   // Utility
   bool IsReadOnly() const;
@@ -162,6 +166,7 @@ class PartitionStorage {
   
   // Recover transaction state from WAL (replay COMMIT/ABORT records)
   Status RecoverFromWAL();
+  Status RecoverCdcIntents();
 
   // Get the underlying shared storage engine
   CedarGraphStorage* GetSharedStorage() const { return shared_storage_; }
@@ -174,12 +179,18 @@ class PartitionStorage {
   static PartitionID ExtractPartitionId(const CedarKey& key);
 
  private:
+  Status PersistCdcIntent(TxnID txn_id, uint64_t commit_version,
+                          const std::vector<std::pair<uint64_t, cedar::cdc::ChangeRecord>>& records) const;
+  Status DeleteCdcIntent(TxnID txn_id) const;
+  std::string CdcIntentDir() const;
+  std::string CdcIntentPath(TxnID txn_id) const;
   Status WriteTxnWAL(uint64_t txn_id, const std::string& operation);
 
   PartitionID partition_id_;
   CedarGraphStorage* shared_storage_;  // Shared across all partitions (legacy)
   StorageBackend* backend_;            // Storage backend (shared or partitioned)
   StoragePartitionManager* manager_;   // For cross-partition operations
+  cedar::cdc::PartitionChangeLog* change_log_ = nullptr;  // Not owned.
   
   std::atomic<bool> is_readonly_{false};
   mutable std::shared_mutex txn_mutex_;
@@ -204,6 +215,9 @@ class StoragePartitionManager {
     size_t max_open_partitions = 256;
     size_t per_partition_memtable_mb = 16;
     bool enable_lru_eviction = true;
+    bool enable_cdc = true;
+    std::string cdc_directory;
+    uint64_t partition_epoch = 1;
   };
 
   StoragePartitionManager();
@@ -217,6 +231,7 @@ class StoragePartitionManager {
   Status AddPartition(PartitionID pid);
   Status RemovePartition(PartitionID pid);
   bool HasPartition(PartitionID pid) const;
+  cedar::cdc::PartitionChangeLog* GetChangeLog(PartitionID pid);
 
   // Queries
   std::vector<PartitionID> GetAllPartitions() const;
@@ -248,6 +263,7 @@ class StoragePartitionManager {
   std::unique_ptr<StorageBackend> backend_;  // Shared or partitioned backend
   std::unique_ptr<CedarGraphStorage> shared_storage_;  // For shared mode (backward compat)
   std::unordered_map<PartitionID, std::unique_ptr<PartitionStorage>> partitions_;
+  std::unordered_map<PartitionID, std::unique_ptr<cedar::cdc::PartitionChangeLog>> change_logs_;
   mutable std::shared_mutex partitions_mutex_;
   std::atomic<bool> initialized_{false};
   
@@ -329,6 +345,18 @@ class StorageServiceImpl final : public cedar::storage::StorageService::Service 
   grpc::Status GetCommittedVersion(grpc::ServerContext* context,
                                    const cedar::storage::GetCommittedVersionRequest* request,
                                    cedar::storage::GetCommittedVersionResponse* response) override;
+
+  grpc::Status GetChangeLogState(grpc::ServerContext* context,
+                                 const cedar::storage::GetChangeLogStateRequest* request,
+                                 cedar::storage::GetChangeLogStateResponse* response) override;
+
+  grpc::Status FetchChanges(grpc::ServerContext* context,
+                            const cedar::storage::FetchChangesRequest* request,
+                            cedar::storage::FetchChangesResponse* response) override;
+
+  grpc::Status GetComputeSnapshot(grpc::ServerContext* context,
+                                  const cedar::storage::GetComputeSnapshotRequest* request,
+                                  grpc::ServerWriter<cedar::storage::ComputeSnapshotBatch>* writer) override;
 
   // Partition management
   grpc::Status GetPartitionInfo(grpc::ServerContext* context,

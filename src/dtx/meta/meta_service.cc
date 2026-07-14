@@ -1,6 +1,7 @@
 #include "cedar/core/logging.h"
 #include "cedar/dtx/meta_service.h"
 #include "cedar/dtx/meta_service_impl.h"
+#include <algorithm>
 #include <chrono>
 #include <thread>
 #include <sstream>
@@ -44,6 +45,38 @@ static StatusOr<std::string> ReadString(const std::string& data, size_t& pos) {
 }
 
 namespace {
+
+constexpr uint32_t kDefaultGcnPartitionCount = 128;
+constexpr uint64_t kGcnLeaseTtlMs = 30000;
+
+uint64_t NowMsForGcnLeases() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+}
+
+void AppendFixed64(std::string& out, uint64_t value) {
+    out.append(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+void AppendFixed32(std::string& out, uint32_t value) {
+    out.append(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+bool ReadFixed64(const std::string& data, size_t& pos, uint64_t* value) {
+    if (pos + sizeof(uint64_t) > data.size()) return false;
+    std::memcpy(value, &data[pos], sizeof(uint64_t));
+    pos += sizeof(uint64_t);
+    return true;
+}
+
+bool ReadFixed32(const std::string& data, size_t& pos, uint32_t* value) {
+    if (pos + sizeof(uint32_t) > data.size()) return false;
+    std::memcpy(value, &data[pos], sizeof(uint32_t));
+    pos += sizeof(uint32_t);
+    return true;
+}
 
 template <typename Proto>
 std::string SerializeProto(const Proto& proto) {
@@ -208,6 +241,128 @@ NodeStatus FromProto(const cedar::meta::NodeStatus& proto) {
     }
     status.timestamp = std::chrono::system_clock::from_time_t(proto.timestamp_unix());
     return status;
+}
+
+std::string SerializeGcnRegistration(const GcnRegistration& registration) {
+    std::string out;
+    AppendFixed64(out, registration.gcn_id);
+    AppendString(out, registration.endpoint);
+    AppendFixed64(out, registration.incarnation);
+    AppendFixed64(out, registration.last_heartbeat_ms);
+    return out;
+}
+
+StatusOr<GcnRegistration> DeserializeGcnRegistration(const std::string& data) {
+    size_t pos = 0;
+    GcnRegistration registration;
+    if (!ReadFixed64(data, pos, &registration.gcn_id)) {
+        return Status::InvalidArgument("Corrupt GCN registration id");
+    }
+    auto endpoint = ReadString(data, pos);
+    if (!endpoint.ok()) return endpoint.status();
+    registration.endpoint = endpoint.ValueOrDie();
+    if (!ReadFixed64(data, pos, &registration.incarnation) ||
+        !ReadFixed64(data, pos, &registration.last_heartbeat_ms) ||
+        pos != data.size()) {
+        return Status::InvalidArgument("Corrupt GCN registration");
+    }
+    return registration;
+}
+
+std::string SerializeGcnLease(const GcnLease& lease) {
+    std::string out;
+    AppendFixed32(out, lease.partition_id);
+    AppendFixed64(out, lease.gcn_id);
+    AppendFixed64(out, lease.lease_epoch);
+    AppendFixed64(out, lease.expires_at_ms);
+    return out;
+}
+
+StatusOr<GcnLease> DeserializeGcnLease(const std::string& data) {
+    size_t pos = 0;
+    GcnLease lease;
+    if (!ReadFixed32(data, pos, &lease.partition_id) ||
+        !ReadFixed64(data, pos, &lease.gcn_id) ||
+        !ReadFixed64(data, pos, &lease.lease_epoch) ||
+        !ReadFixed64(data, pos, &lease.expires_at_ms) ||
+        pos != data.size()) {
+        return Status::InvalidArgument("Corrupt GCN lease");
+    }
+    return lease;
+}
+
+std::string SerializeGcnProgress(const GcnPartitionProgress& progress) {
+    std::string out;
+    AppendFixed32(out, progress.partition_id);
+    AppendFixed64(out, progress.partition_epoch);
+    AppendFixed64(out, progress.applied_offset);
+    AppendFixed64(out, progress.applied_version);
+    out.push_back(progress.query_ready ? 1 : 0);
+    return out;
+}
+
+StatusOr<GcnPartitionProgress> DeserializeGcnProgress(const std::string& data) {
+    size_t pos = 0;
+    GcnPartitionProgress progress;
+    if (!ReadFixed32(data, pos, &progress.partition_id) ||
+        !ReadFixed64(data, pos, &progress.partition_epoch) ||
+        !ReadFixed64(data, pos, &progress.applied_offset) ||
+        !ReadFixed64(data, pos, &progress.applied_version) ||
+        pos + 1 != data.size()) {
+        return Status::InvalidArgument("Corrupt GCN progress");
+    }
+    progress.query_ready = data[pos] != 0;
+    return progress;
+}
+
+std::string SerializeGcnRenewCommand(
+    uint64_t gcn_id,
+    uint64_t incarnation,
+    uint64_t renew_now_ms,
+    const std::vector<GcnPartitionProgress>& progress) {
+    std::string out;
+    AppendFixed64(out, gcn_id);
+    AppendFixed64(out, incarnation);
+    AppendFixed64(out, renew_now_ms);
+    AppendFixed32(out, static_cast<uint32_t>(progress.size()));
+    for (const auto& item : progress) {
+        AppendString(out, SerializeGcnProgress(item));
+    }
+    return out;
+}
+
+struct GcnRenewCommand {
+    uint64_t gcn_id{0};
+    uint64_t incarnation{0};
+    uint64_t renew_now_ms{0};
+    std::vector<GcnPartitionProgress> progress;
+};
+
+StatusOr<GcnRenewCommand> DeserializeGcnRenewCommand(
+    const std::string& data) {
+    size_t pos = 0;
+    GcnRenewCommand command;
+    if (!ReadFixed64(data, pos, &command.gcn_id) ||
+        !ReadFixed64(data, pos, &command.incarnation) ||
+        !ReadFixed64(data, pos, &command.renew_now_ms)) {
+        return Status::InvalidArgument("Corrupt GCN renew header");
+    }
+    uint32_t progress_count = 0;
+    if (!ReadFixed32(data, pos, &progress_count)) {
+        return Status::InvalidArgument("Corrupt GCN renew progress count");
+    }
+    command.progress.reserve(progress_count);
+    for (uint32_t i = 0; i < progress_count; ++i) {
+        auto progress_data = ReadString(data, pos);
+        if (!progress_data.ok()) return progress_data.status();
+        auto progress = DeserializeGcnProgress(progress_data.ValueOrDie());
+        if (!progress.ok()) return progress.status();
+        command.progress.push_back(progress.ValueOrDie());
+    }
+    if (pos != data.size()) {
+        return Status::InvalidArgument("GCN renew command has trailing bytes");
+    }
+    return command;
 }
 
 cedar::meta::PropertyDef ToProto(const PropertyDef& def) {
@@ -631,6 +786,175 @@ std::vector<NodeInfo> MetadataService::MetadataStateMachine::GetAllNodes() const
     return result;
 }
 
+Status MetadataService::MetadataStateMachine::RegisterGcn(
+    const GcnRegistration& registration) {
+    if (registration.gcn_id == 0 || registration.endpoint.empty()) {
+        return Status::InvalidArgument("GCN registration requires id and endpoint");
+    }
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    auto existing_it = gcn_registrations_.find(registration.gcn_id);
+    if (existing_it != gcn_registrations_.end() &&
+        existing_it->second.incarnation > registration.incarnation) {
+        return Status::Conflict("stale GCN incarnation");
+    }
+    if (existing_it != gcn_registrations_.end() &&
+        existing_it->second.incarnation < registration.incarnation) {
+        for (const auto& [partition_id, lease] : gcn_leases_) {
+            if (lease.gcn_id == registration.gcn_id) {
+                gcn_progress_.erase(partition_id);
+            }
+        }
+    }
+    gcn_registrations_[registration.gcn_id] = registration;
+    return Status::OK();
+}
+
+StatusOr<std::vector<GcnLease>>
+MetadataService::MetadataStateMachine::RenewGcnLeases(
+    uint64_t gcn_id,
+    uint64_t incarnation,
+    const std::vector<GcnPartitionProgress>& progress,
+    uint64_t now_ms) {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    auto registration_it = gcn_registrations_.find(gcn_id);
+    if (registration_it == gcn_registrations_.end()) {
+        return Status::NotFound("GCN is not registered");
+    }
+    if (registration_it->second.incarnation != incarnation) {
+        return Status::Conflict("stale GCN incarnation");
+    }
+    const bool renewing_registration_was_live =
+        registration_it->second.last_heartbeat_ms + kGcnLeaseTtlMs >= now_ms;
+    registration_it->second.last_heartbeat_ms = now_ms;
+
+    auto is_live = [&](uint64_t candidate_id) {
+        auto it = gcn_registrations_.find(candidate_id);
+        return it != gcn_registrations_.end() &&
+               it->second.last_heartbeat_ms + kGcnLeaseTtlMs >= now_ms;
+    };
+
+    for (uint32_t partition_id = 0; partition_id < kDefaultGcnPartitionCount;
+         ++partition_id) {
+        auto lease_it = gcn_leases_.find(partition_id);
+        const bool lease_owner_was_live =
+            lease_it != gcn_leases_.end() &&
+            (lease_it->second.gcn_id != gcn_id || renewing_registration_was_live);
+        if (lease_it != gcn_leases_.end() &&
+            lease_it->second.expires_at_ms >= now_ms &&
+            lease_owner_was_live &&
+            is_live(lease_it->second.gcn_id)) {
+            lease_it->second.expires_at_ms =
+                std::max(lease_it->second.expires_at_ms,
+                         now_ms + kGcnLeaseTtlMs);
+            continue;
+        }
+
+        uint64_t best_gcn_id = 0;
+        for (const auto& [candidate_id, candidate] : gcn_registrations_) {
+            if (candidate.last_heartbeat_ms + kGcnLeaseTtlMs < now_ms) {
+                continue;
+            }
+            if (best_gcn_id == 0 || candidate_id < best_gcn_id) {
+                best_gcn_id = candidate_id;
+            }
+        }
+        if (best_gcn_id == 0) {
+            continue;
+        }
+        uint64_t& next_epoch = gcn_next_lease_epoch_[partition_id];
+        if (next_epoch == 0) {
+            next_epoch = 1;
+        } else {
+            ++next_epoch;
+        }
+        gcn_leases_[partition_id] =
+            GcnLease{partition_id, best_gcn_id, next_epoch,
+                     now_ms + kGcnLeaseTtlMs};
+        gcn_progress_.erase(partition_id);
+    }
+
+    for (const auto& item : progress) {
+        auto lease_it = gcn_leases_.find(item.partition_id);
+        if (lease_it != gcn_leases_.end() &&
+            lease_it->second.gcn_id == gcn_id &&
+            lease_it->second.expires_at_ms >= now_ms &&
+            item.partition_epoch == lease_it->second.lease_epoch) {
+            gcn_progress_[item.partition_id] = item;
+        }
+    }
+
+    std::vector<GcnLease> leases;
+    leases.reserve(gcn_leases_.size());
+    for (const auto& [partition_id, lease] : gcn_leases_) {
+        (void)partition_id;
+        leases.push_back(lease);
+    }
+    std::sort(leases.begin(), leases.end(),
+              [](const GcnLease& a, const GcnLease& b) {
+                  return a.partition_id < b.partition_id;
+              });
+    return leases;
+}
+
+std::vector<GcnLease>
+MetadataService::MetadataStateMachine::GetGcnLeasesForOwner(
+    uint64_t gcn_id,
+    uint64_t now_ms) const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::vector<GcnLease> leases;
+    for (const auto& [partition_id, lease] : gcn_leases_) {
+        (void)partition_id;
+        if (lease.gcn_id == gcn_id && lease.expires_at_ms >= now_ms) {
+            leases.push_back(lease);
+        }
+    }
+    std::sort(leases.begin(), leases.end(),
+              [](const GcnLease& a, const GcnLease& b) {
+                  return a.partition_id < b.partition_id;
+              });
+    return leases;
+}
+
+StatusOr<GcnRoute> MetadataService::MetadataStateMachine::LocateGcn(
+    uint32_t partition_id,
+    uint64_t required_version,
+    uint64_t now_ms) const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    auto lease_it = gcn_leases_.find(partition_id);
+    if (lease_it == gcn_leases_.end() ||
+        lease_it->second.expires_at_ms < now_ms) {
+        return Status::NotFound("no live GCN lease");
+    }
+    auto registration_it = gcn_registrations_.find(lease_it->second.gcn_id);
+    if (registration_it == gcn_registrations_.end() ||
+        registration_it->second.last_heartbeat_ms + kGcnLeaseTtlMs < now_ms) {
+        return Status::NotFound("GCN owner is not live");
+    }
+    auto progress_it = gcn_progress_.find(partition_id);
+    if (progress_it == gcn_progress_.end() ||
+        !progress_it->second.query_ready ||
+        progress_it->second.partition_epoch != lease_it->second.lease_epoch ||
+        progress_it->second.applied_version < required_version) {
+        return Status::NotFound("GCN owner is not version eligible");
+    }
+    GcnRoute route;
+    route.partition_id = partition_id;
+    route.gcn_id = lease_it->second.gcn_id;
+    route.endpoint = registration_it->second.endpoint;
+    route.lease_epoch = lease_it->second.lease_epoch;
+    route.applied_version = progress_it->second.applied_version;
+    route.expires_at_ms = lease_it->second.expires_at_ms;
+    return route;
+}
+
+void MetadataService::MetadataStateMachine::ExpireGcnForTest(uint64_t gcn_id) {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    auto it = gcn_registrations_.find(gcn_id);
+    if (it != gcn_registrations_.end()) {
+        it->second.last_heartbeat_ms = 0;
+    }
+}
+
 Status MetadataService::MetadataStateMachine::CreateLabelSchema(
     const std::string& space_name, const LabelSchema& schema) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
@@ -728,7 +1052,7 @@ std::string MetadataService::MetadataStateMachine::Serialize() const {
     std::string result;
     // Magic + version
     result.append("CMSN", 4);  // Cedar Meta Snapshot
-    uint32_t version = 3;  // Added indexes serialization
+    uint32_t version = 4;  // Added GCN lease serialization
     result.append(reinterpret_cast<const char*>(&version), sizeof(version));
     
     // spaces
@@ -801,6 +1125,40 @@ std::string MetadataService::MetadataStateMachine::Serialize() const {
             result.append(reinterpret_cast<const char*>(&unique), sizeof(unique));
         }
     }
+
+    uint32_t gcn_registration_count =
+        static_cast<uint32_t>(gcn_registrations_.size());
+    result.append(reinterpret_cast<const char*>(&gcn_registration_count),
+                  sizeof(gcn_registration_count));
+    for (const auto& [gcn_id, registration] : gcn_registrations_) {
+        (void)gcn_id;
+        AppendString(result, SerializeGcnRegistration(registration));
+    }
+
+    uint32_t gcn_lease_count = static_cast<uint32_t>(gcn_leases_.size());
+    result.append(reinterpret_cast<const char*>(&gcn_lease_count),
+                  sizeof(gcn_lease_count));
+    for (const auto& [partition_id, lease] : gcn_leases_) {
+        (void)partition_id;
+        AppendString(result, SerializeGcnLease(lease));
+    }
+
+    uint32_t gcn_next_epoch_count =
+        static_cast<uint32_t>(gcn_next_lease_epoch_.size());
+    result.append(reinterpret_cast<const char*>(&gcn_next_epoch_count),
+                  sizeof(gcn_next_epoch_count));
+    for (const auto& [partition_id, next_epoch] : gcn_next_lease_epoch_) {
+        AppendFixed32(result, partition_id);
+        AppendFixed64(result, next_epoch);
+    }
+
+    uint32_t gcn_progress_count = static_cast<uint32_t>(gcn_progress_.size());
+    result.append(reinterpret_cast<const char*>(&gcn_progress_count),
+                  sizeof(gcn_progress_count));
+    for (const auto& [partition_id, progress] : gcn_progress_) {
+        (void)partition_id;
+        AppendString(result, SerializeGcnProgress(progress));
+    }
     
     return result;
 }
@@ -812,6 +1170,11 @@ Status MetadataService::MetadataStateMachine::Deserialize(const std::string& dat
     node_statuses_.clear();
     partition_maps_.clear();
     schemas_.clear();
+    indexes_.clear();
+    gcn_registrations_.clear();
+    gcn_leases_.clear();
+    gcn_next_lease_epoch_.clear();
+    gcn_progress_.clear();
     
     size_t pos = 0;
     if (data.size() < 8) return Status::InvalidArgument("Snapshot data too short");
@@ -826,7 +1189,7 @@ Status MetadataService::MetadataStateMachine::Deserialize(const std::string& dat
     uint32_t version;
     std::memcpy(&version, &data[pos], sizeof(version));
     pos += sizeof(version);
-    if (version < 2 || version > 3) {
+    if (version < 2 || version > 4) {
         return Status::InvalidArgument("Unsupported snapshot version");
     }
     
@@ -955,6 +1318,76 @@ Status MetadataService::MetadataStateMachine::Deserialize(const std::string& dat
                 indexes_[space_name][index.name] = index;
             }
         }
+    }
+
+    if (version >= 4) {
+        if (pos + sizeof(uint32_t) > data.size()) {
+            return Status::InvalidArgument("Corrupt GCN registration count");
+        }
+        uint32_t gcn_registration_count = 0;
+        std::memcpy(&gcn_registration_count, &data[pos],
+                    sizeof(gcn_registration_count));
+        pos += sizeof(uint32_t);
+        for (uint32_t i = 0; i < gcn_registration_count; ++i) {
+            auto registration_data = ReadString(data, pos);
+            if (!registration_data.ok()) return registration_data.status();
+            auto registration =
+                DeserializeGcnRegistration(registration_data.ValueOrDie());
+            if (!registration.ok()) return registration.status();
+            gcn_registrations_[registration.ValueOrDie().gcn_id] =
+                registration.ValueOrDie();
+        }
+
+        if (pos + sizeof(uint32_t) > data.size()) {
+            return Status::InvalidArgument("Corrupt GCN lease count");
+        }
+        uint32_t gcn_lease_count = 0;
+        std::memcpy(&gcn_lease_count, &data[pos], sizeof(gcn_lease_count));
+        pos += sizeof(uint32_t);
+        for (uint32_t i = 0; i < gcn_lease_count; ++i) {
+            auto lease_data = ReadString(data, pos);
+            if (!lease_data.ok()) return lease_data.status();
+            auto lease = DeserializeGcnLease(lease_data.ValueOrDie());
+            if (!lease.ok()) return lease.status();
+            gcn_leases_[lease.ValueOrDie().partition_id] = lease.ValueOrDie();
+        }
+
+        if (pos + sizeof(uint32_t) > data.size()) {
+            return Status::InvalidArgument("Corrupt GCN next epoch count");
+        }
+        uint32_t gcn_next_epoch_count = 0;
+        std::memcpy(&gcn_next_epoch_count, &data[pos],
+                    sizeof(gcn_next_epoch_count));
+        pos += sizeof(uint32_t);
+        for (uint32_t i = 0; i < gcn_next_epoch_count; ++i) {
+            uint32_t partition_id = 0;
+            uint64_t next_epoch = 0;
+            if (!ReadFixed32(data, pos, &partition_id) ||
+                !ReadFixed64(data, pos, &next_epoch)) {
+                return Status::InvalidArgument("Corrupt GCN next epoch entry");
+            }
+            gcn_next_lease_epoch_[partition_id] = next_epoch;
+        }
+
+        if (pos + sizeof(uint32_t) > data.size()) {
+            return Status::InvalidArgument("Corrupt GCN progress count");
+        }
+        uint32_t gcn_progress_count = 0;
+        std::memcpy(&gcn_progress_count, &data[pos],
+                    sizeof(gcn_progress_count));
+        pos += sizeof(uint32_t);
+        for (uint32_t i = 0; i < gcn_progress_count; ++i) {
+            auto progress_data = ReadString(data, pos);
+            if (!progress_data.ok()) return progress_data.status();
+            auto progress = DeserializeGcnProgress(progress_data.ValueOrDie());
+            if (!progress.ok()) return progress.status();
+            gcn_progress_[progress.ValueOrDie().partition_id] =
+                progress.ValueOrDie();
+        }
+    }
+
+    if (pos != data.size()) {
+        return Status::InvalidArgument("Snapshot has trailing bytes");
     }
     
     return Status::OK();
@@ -1173,6 +1606,62 @@ std::vector<NodeInfo> MetadataService::GetAllNodes() const {
     return state_machine_.GetAllNodes();
 }
 
+Status MetadataService::RegisterGcn(const GcnRegistration& registration) {
+    if (registration.gcn_id == 0 || registration.endpoint.empty()) {
+        return Status::InvalidArgument("GCN registration requires id and endpoint");
+    }
+    if (config_.test_mode) {
+        return state_machine_.RegisterGcn(registration);
+    }
+    if (!raft_node_) {
+        return Status::IOError("Raft node not initialized");
+    }
+    if (!raft_node_->IsLeader()) {
+        return Status::InvalidArgument("Not leader");
+    }
+    RaftCommand cmd;
+    cmd.type = RaftCommandType::kRegisterGcn;
+    cmd.payload = SerializeGcnRegistration(registration);
+    return raft_node_->Propose(cmd);
+}
+
+StatusOr<std::vector<GcnLease>> MetadataService::RenewGcnLeases(
+    uint64_t gcn_id,
+    uint64_t incarnation,
+    const std::vector<GcnPartitionProgress>& progress) {
+    if (config_.test_mode) {
+        return state_machine_.RenewGcnLeases(
+            gcn_id, incarnation, progress, NowMsForGcnLeases());
+    }
+    if (!raft_node_) {
+        return Status::IOError("Raft node not initialized");
+    }
+    if (!raft_node_->IsLeader()) {
+        return Status::InvalidArgument("Not leader");
+    }
+    RaftCommand cmd;
+    cmd.type = RaftCommandType::kRenewGcnLeases;
+    const uint64_t renew_now_ms = NowMsForGcnLeases();
+    cmd.payload = SerializeGcnRenewCommand(
+        gcn_id, incarnation, renew_now_ms, progress);
+    auto status = raft_node_->Propose(cmd);
+    if (!status.ok()) {
+        return status;
+    }
+    return state_machine_.GetGcnLeasesForOwner(gcn_id, renew_now_ms);
+}
+
+StatusOr<GcnRoute> MetadataService::LocateGcn(
+    uint32_t partition_id,
+    uint64_t required_version) const {
+    return state_machine_.LocateGcn(partition_id, required_version,
+                                    NowMsForGcnLeases());
+}
+
+void MetadataService::ExpireGcnForTest(uint64_t gcn_id) {
+    state_machine_.ExpireGcnForTest(gcn_id);
+}
+
 Status MetadataService::CreateLabelSchema(const std::string& space_name, const LabelSchema& schema) {
     return state_machine_.CreateLabelSchema(space_name, schema);
 }
@@ -1292,6 +1781,40 @@ bool MetadataService::ApplyRaftCommand(const struct RaftCommand& cmd) {
                           << e.what() << std::endl;
                 return false;
             }
+        }
+        case RaftCommandType::kRegisterGcn: {
+            auto registration = DeserializeGcnRegistration(cmd.payload);
+            if (!registration.ok()) {
+                CEDAR_LOG_ERROR() << "[MetadataService] Failed to deserialize GCN registration: "
+                          << registration.status().ToString() << std::endl;
+                return false;
+            }
+            auto status = state_machine_.RegisterGcn(registration.ValueOrDie());
+            if (!status.ok()) {
+                CEDAR_LOG_ERROR() << "[MetadataService] Failed to apply GCN registration: "
+                          << status.ToString() << std::endl;
+                return false;
+            }
+            return true;
+        }
+        case RaftCommandType::kRenewGcnLeases: {
+            auto renew = DeserializeGcnRenewCommand(cmd.payload);
+            if (!renew.ok()) {
+                CEDAR_LOG_ERROR() << "[MetadataService] Failed to deserialize GCN lease renew: "
+                          << renew.status().ToString() << std::endl;
+                return false;
+            }
+            auto leases = state_machine_.RenewGcnLeases(
+                renew.ValueOrDie().gcn_id,
+                renew.ValueOrDie().incarnation,
+                renew.ValueOrDie().progress,
+                renew.ValueOrDie().renew_now_ms);
+            if (!leases.ok()) {
+                CEDAR_LOG_ERROR() << "[MetadataService] Failed to apply GCN lease renew: "
+                          << leases.status().ToString() << std::endl;
+                return false;
+            }
+            return true;
         }
         default:
             return true;

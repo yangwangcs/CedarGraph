@@ -41,6 +41,8 @@ echo -e "${YELLOW}Stopping CedarGraph Nebula Cluster...${NC}"
 echo ""
 
 # Stop in reverse order
+stop_service "GCN" "$PID_DIR/gcn.pid"
+
 for i in 2 1 0; do
     stop_service "StorageD-$i" "$PID_DIR/storaged$i.pid"
 done

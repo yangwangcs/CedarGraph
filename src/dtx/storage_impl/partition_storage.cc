@@ -13,14 +13,18 @@
 // limitations under the License.
 
 #include "cedar/dtx/storage_service_impl.h"
+#include "cedar/cdc/partition_change_log.h"
 #include "cedar/dtx/monitoring.h"
 #include "cedar/storage/lsm_engine.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <system_error>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -31,6 +35,8 @@ namespace dtx {
 namespace {
 
 namespace fs = std::filesystem;
+
+constexpr char kCdcIntentMagic[] = "CEDAR_CDC_INTENT_V1";
 
 Status FilesystemStatus(const std::string& operation,
                         const fs::path& path,
@@ -59,6 +65,64 @@ bool HasParentTraversal(const fs::path& path) {
     if (part == "..") return true;
   }
   return false;
+}
+
+struct CdcIntentBatch {
+  uint64_t txn_id = 0;
+  uint64_t commit_version = 0;
+  std::vector<std::pair<uint64_t, cedar::cdc::ChangeRecord>> records;
+};
+
+StatusOr<CdcIntentBatch> ReadCdcIntentFile(const fs::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Status::IOError("ReadCdcIntentFile", "failed to open " + path.string());
+  }
+
+  uint32_t magic_size = 0;
+  in.read(reinterpret_cast<char*>(&magic_size), sizeof(magic_size));
+  if (!in || magic_size == 0 || magic_size > 1024) {
+    return Status::Corruption("ReadCdcIntentFile", "invalid magic size");
+  }
+  std::string magic(magic_size, '\0');
+  in.read(magic.data(), magic.size());
+  if (!in || magic != kCdcIntentMagic) {
+    return Status::Corruption("ReadCdcIntentFile", "invalid magic");
+  }
+
+  CdcIntentBatch batch;
+  uint32_t record_count = 0;
+  in.read(reinterpret_cast<char*>(&batch.txn_id), sizeof(batch.txn_id));
+  in.read(reinterpret_cast<char*>(&batch.commit_version),
+          sizeof(batch.commit_version));
+  in.read(reinterpret_cast<char*>(&record_count), sizeof(record_count));
+  if (!in || record_count > 1000000) {
+    return Status::Corruption("ReadCdcIntentFile", "invalid record count");
+  }
+
+  batch.records.reserve(record_count);
+  for (uint32_t i = 0; i < record_count; ++i) {
+    uint64_t storage_timestamp = 0;
+    in.read(reinterpret_cast<char*>(&storage_timestamp),
+            sizeof(storage_timestamp));
+    if (!in) {
+      return Status::Corruption("ReadCdcIntentFile",
+                                "invalid storage timestamp");
+    }
+    uint32_t record_size = 0;
+    in.read(reinterpret_cast<char*>(&record_size), sizeof(record_size));
+    if (!in || record_size == 0 || record_size > 16 * 1024 * 1024) {
+      return Status::Corruption("ReadCdcIntentFile", "invalid record size");
+    }
+    std::string serialized(record_size, '\0');
+    in.read(serialized.data(), serialized.size());
+    cedar::cdc::ChangeRecord record;
+    if (!in || !record.ParseFromString(serialized)) {
+      return Status::Corruption("ReadCdcIntentFile", "invalid ChangeRecord");
+    }
+    batch.records.push_back({storage_timestamp, std::move(record)});
+  }
+  return batch;
 }
 
 }  // namespace
@@ -256,9 +320,11 @@ Status PartitionStorage::Commit(TxnID txn_id, Timestamp commit_ts) {
   }
   
   auto& state = it->second;
-  if (state.status != DistributedTxnState::kPrepared) {
-    return Status::InvalidArgument("Transaction not in prepared state: " + std::to_string(txn_id));
+  if (state.status != DistributedTxnState::kPrepared &&
+      state.status != DistributedTxnState::kCommitting) {
+    return Status::InvalidArgument("Transaction not in committable state: " + std::to_string(txn_id));
   }
+  state.status = DistributedTxnState::kCommitting;
   
   struct WriteEntry {
     CedarKey key;
@@ -278,6 +344,34 @@ Status PartitionStorage::Commit(TxnID txn_id, Timestamp commit_ts) {
       desc = desc_it->second;
     }
     validated_writes.push_back({key, desc});
+  }
+
+  std::vector<cedar::cdc::ChangeRecord> records;
+  std::vector<std::pair<uint64_t, cedar::cdc::ChangeRecord>> intent_records;
+  if (change_log_ != nullptr && !validated_writes.empty()) {
+    records.reserve(validated_writes.size());
+    intent_records.reserve(validated_writes.size());
+    for (const auto& entry : validated_writes) {
+      cedar::cdc::ChangeRecord record;
+      record.set_txn_id(txn_id);
+      record.set_entity_id(entry.key.entity_id());
+      record.set_target_id(entry.key.target_id());
+      record.set_entity_type(static_cast<uint32_t>(entry.key.entity_type()));
+      record.set_edge_type(entry.key.IsEdge() ? entry.key.column_id() : 0);
+      record.set_column_id(entry.key.column_id());
+      record.set_operation(entry.desc.IsTombstone()
+                               ? cedar::cdc::CHANGE_OPERATION_DELETE
+                               : cedar::cdc::CHANGE_OPERATION_UPDATE);
+      record.set_valid_from(commit_ts.value());
+      uint64_t raw_descriptor = entry.desc.AsRaw();
+      record.set_payload(
+          std::string(reinterpret_cast<const char*>(&raw_descriptor),
+                      sizeof(raw_descriptor)));
+      intent_records.push_back({entry.key.timestamp().value(), record});
+      records.push_back(std::move(record));
+    }
+    CEDAR_RETURN_IF_ERROR(
+        PersistCdcIntent(txn_id, commit_ts.value(), intent_records));
   }
 
   size_t written_count = 0;
@@ -303,11 +397,230 @@ Status PartitionStorage::Commit(TxnID txn_id, Timestamp commit_ts) {
     written_count++;
   }
 
+  if (change_log_ != nullptr && !records.empty()) {
+    Status s = change_log_->AppendCommittedBatch(commit_ts.value(),
+                                                 std::move(records));
+    if (!s.ok()) {
+      state.status = DistributedTxnState::kCommitting;
+      return Status::IOError(
+          "CDC append failed during commit — recovery must retry commit: " +
+          s.ToString());
+    }
+    Status delete_intent = DeleteCdcIntent(txn_id);
+    if (!delete_intent.ok()) {
+      std::cerr << "[PartitionStorage::Commit] CDC intent cleanup warning txn_id="
+                << txn_id << " partition=" << partition_id_ << " error="
+                << delete_intent.ToString() << std::endl;
+    }
+  }
+
   state.status = DistributedTxnState::kCommitted;
   WriteTxnWAL(txn_id, "COMMIT");
   committed_txns_.insert(txn_id);
   prepared_txns_.erase(it);
   
+  return Status::OK();
+}
+
+std::string PartitionStorage::CdcIntentDir() const {
+  const std::string root = manager_ ? manager_->GetDataRoot() : "/tmp/cedar_storage";
+  return root + "/cdc_intents/partition_" + std::to_string(partition_id_);
+}
+
+std::string PartitionStorage::CdcIntentPath(TxnID txn_id) const {
+  return CdcIntentDir() + "/txn_" + std::to_string(txn_id) + ".intent";
+}
+
+Status PartitionStorage::PersistCdcIntent(
+    TxnID txn_id, uint64_t commit_version,
+    const std::vector<std::pair<uint64_t, cedar::cdc::ChangeRecord>>& records) const {
+  if (records.empty()) {
+    return Status::OK();
+  }
+  fs::path dir(CdcIntentDir());
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  if (ec) {
+    return FilesystemStatus("create CDC intent directory", dir, ec);
+  }
+
+  fs::path final_path(CdcIntentPath(txn_id));
+  fs::path tmp_path = final_path;
+  tmp_path += ".tmp";
+
+  int fd = ::open(tmp_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
+    return Status::IOError("PersistCdcIntent", "failed to open temp intent");
+  }
+
+  auto write_all = [&](const void* data, size_t size) -> Status {
+    const char* cursor = static_cast<const char*>(data);
+    while (size > 0) {
+      ssize_t written = ::write(fd, cursor, size);
+      if (written <= 0) {
+        return Status::IOError("PersistCdcIntent", "failed to write intent");
+      }
+      cursor += written;
+      size -= static_cast<size_t>(written);
+    }
+    return Status::OK();
+  };
+
+  const std::string magic = kCdcIntentMagic;
+  uint32_t magic_size = static_cast<uint32_t>(magic.size());
+  uint64_t tid = txn_id;
+  uint64_t version = commit_version;
+  uint32_t record_count = static_cast<uint32_t>(records.size());
+  Status s = write_all(&magic_size, sizeof(magic_size));
+  if (s.ok()) s = write_all(magic.data(), magic.size());
+  if (s.ok()) s = write_all(&tid, sizeof(tid));
+  if (s.ok()) s = write_all(&version, sizeof(version));
+  if (s.ok()) s = write_all(&record_count, sizeof(record_count));
+  for (const auto& [storage_timestamp, record] : records) {
+    if (!s.ok()) break;
+    std::string serialized;
+    if (!record.SerializeToString(&serialized)) {
+      s = Status::Corruption("PersistCdcIntent", "failed to serialize record");
+      break;
+    }
+    uint32_t record_size = static_cast<uint32_t>(serialized.size());
+    s = write_all(&storage_timestamp, sizeof(storage_timestamp));
+    if (!s.ok()) break;
+    s = write_all(&record_size, sizeof(record_size));
+    if (s.ok()) s = write_all(serialized.data(), serialized.size());
+  }
+
+  if (s.ok()) {
+#ifdef __APPLE__
+    if (::fcntl(fd, F_FULLFSYNC) < 0) {
+      s = Status::IOError("PersistCdcIntent", "F_FULLFSYNC failed");
+    }
+#else
+    if (::fsync(fd) < 0) {
+      s = Status::IOError("PersistCdcIntent", "fsync failed");
+    }
+#endif
+  }
+  ::close(fd);
+  if (!s.ok()) {
+    fs::remove(tmp_path, ec);
+    return s;
+  }
+
+  fs::rename(tmp_path, final_path, ec);
+  if (ec) {
+    return FilesystemStatus("rename CDC intent", tmp_path, ec);
+  }
+
+  int dir_fd = ::open(dir.c_str(), O_RDONLY);
+  if (dir_fd >= 0) {
+    ::fsync(dir_fd);
+    ::close(dir_fd);
+  }
+  return Status::OK();
+}
+
+Status PartitionStorage::DeleteCdcIntent(TxnID txn_id) const {
+  std::error_code ec;
+  fs::remove(CdcIntentPath(txn_id), ec);
+  if (ec) {
+    return FilesystemStatus("remove CDC intent", CdcIntentPath(txn_id), ec);
+  }
+  return Status::OK();
+}
+
+Status PartitionStorage::RecoverCdcIntents() {
+  if (change_log_ == nullptr) {
+    return Status::OK();
+  }
+  fs::path dir(CdcIntentDir());
+  std::error_code ec;
+  if (!fs::exists(dir, ec)) {
+    return Status::OK();
+  }
+  if (ec) {
+    return FilesystemStatus("stat CDC intent directory", dir, ec);
+  }
+
+  for (const auto& entry : fs::directory_iterator(dir, ec)) {
+    if (ec) {
+      return FilesystemStatus("iterate CDC intent directory", dir, ec);
+    }
+    if (!entry.is_regular_file() || entry.path().extension() != ".intent") {
+      continue;
+    }
+    auto batch_or = ReadCdcIntentFile(entry.path());
+    if (!batch_or.ok()) {
+      return batch_or.status();
+    }
+    auto batch = std::move(batch_or.ValueOrDie());
+    bool already_published = false;
+    uint64_t offset = 0;
+    std::vector<bool> matched_indexes(batch.records.size(), false);
+    while (true) {
+      auto page = change_log_->ReadAfter(offset, 4096,
+                                         std::numeric_limits<size_t>::max());
+      if (!page.ok()) {
+        return page.status();
+      }
+      const auto& records = page.ValueOrDie();
+      if (records.empty()) {
+        break;
+      }
+      for (const auto& record : records) {
+        offset = std::max(offset, record.offset());
+        if (record.txn_id() == batch.txn_id &&
+            record.commit_version() == batch.commit_version &&
+            record.batch_size() == batch.records.size() &&
+            record.batch_index() < batch.records.size()) {
+          const auto& expected = batch.records[record.batch_index()].second;
+          if (record.entity_id() == expected.entity_id() &&
+              record.target_id() == expected.target_id() &&
+              record.entity_type() == expected.entity_type() &&
+              record.column_id() == expected.column_id() &&
+              record.operation() == expected.operation() &&
+              record.payload() == expected.payload()) {
+            matched_indexes[record.batch_index()] = true;
+          }
+        }
+      }
+      if (!matched_indexes.empty() &&
+          std::all_of(matched_indexes.begin(), matched_indexes.end(),
+                      [](bool matched) { return matched; })) {
+        already_published = true;
+        break;
+      }
+    }
+    if (!already_published && !batch.records.empty()) {
+      CedarGraphStorage* storage = GetEffectiveStorage();
+      if (!storage) {
+        return Status::IOError("RecoverCdcIntents", "Storage not initialized");
+      }
+      std::vector<cedar::cdc::ChangeRecord> records;
+      records.reserve(batch.records.size());
+      for (const auto& [storage_timestamp, record] : batch.records) {
+        Descriptor desc;
+        if (record.payload().size() >= sizeof(uint64_t)) {
+          uint64_t raw_descriptor = 0;
+          std::memcpy(&raw_descriptor, record.payload().data(),
+                      sizeof(raw_descriptor));
+          desc = Descriptor(raw_descriptor);
+        }
+        CEDAR_RETURN_IF_ERROR(storage->Put(record.entity_id(),
+                                           storage_timestamp, desc,
+                                           Timestamp(batch.commit_version)));
+        records.push_back(record);
+      }
+      CEDAR_RETURN_IF_ERROR(change_log_->AppendCommittedBatch(
+          batch.commit_version, std::move(records)));
+    }
+    std::error_code remove_ec;
+    fs::remove(entry.path(), remove_ec);
+    if (remove_ec) {
+      return FilesystemStatus("remove recovered CDC intent", entry.path(),
+                              remove_ec);
+    }
+  }
   return Status::OK();
 }
 

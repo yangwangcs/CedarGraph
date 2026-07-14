@@ -519,6 +519,47 @@ StorageNodeMetrics* MetricsCollector::GetNodeMetrics(PartitionID pid) {
   return nullptr;
 }
 
+void MetricsCollector::RecordCdcPartitionMetrics(
+    PartitionID pid, const CdcPartitionMetrics& metrics) {
+  const std::string labels = "{partition=\"" + std::to_string(pid) + "\"}";
+  auto& registry = MetricsRegistry::Instance();
+  registry.GetGauge("cedar_cdc_high_watermark" + labels,
+                    "CDC high watermark")
+      ->Set(static_cast<double>(metrics.state.high_watermark));
+  registry.GetGauge("cedar_cdc_earliest_offset" + labels,
+                    "CDC earliest retained offset")
+      ->Set(static_cast<double>(metrics.state.earliest_offset));
+  registry.GetGauge("cedar_cdc_committed_version" + labels,
+                    "CDC committed version")
+      ->Set(static_cast<double>(metrics.state.committed_version));
+  registry.GetGauge("cedar_cdc_segment_bytes" + labels,
+                    "CDC retained segment bytes")
+      ->Set(static_cast<double>(metrics.state.segment_bytes));
+  registry.GetGauge("cedar_cdc_segment_count" + labels,
+                    "CDC retained segment count")
+      ->Set(static_cast<double>(metrics.state.segment_count));
+  registry.GetGauge("cedar_cdc_stale_epoch_total" + labels,
+                    "CDC stale epoch responses")
+      ->Set(static_cast<double>(metrics.stale_epoch_total));
+  registry.GetGauge("cedar_cdc_checksum_failures_total" + labels,
+                    "CDC checksum failures")
+      ->Set(static_cast<double>(metrics.checksum_failures_total));
+  if (metrics.has_append_latency) {
+    registry.GetHistogram("cedar_cdc_append_latency_seconds" + labels,
+                          "CDC append latency in seconds",
+                          std::vector<double>{0.001, 0.005, 0.01, 0.025,
+                                              0.05, 0.1, 0.25, 0.5, 1.0})
+        ->Observe(metrics.append_latency_seconds);
+  }
+  if (metrics.has_fetch_latency) {
+    registry.GetHistogram("cedar_cdc_fetch_latency_seconds" + labels,
+                          "CDC fetch latency in seconds",
+                          std::vector<double>{0.001, 0.005, 0.01, 0.025,
+                                              0.05, 0.1, 0.25, 0.5, 1.0})
+        ->Observe(metrics.fetch_latency_seconds);
+  }
+}
+
 void MetricsCollector::CollectionLoop() {
   while (running_.load()) {
     Collect();

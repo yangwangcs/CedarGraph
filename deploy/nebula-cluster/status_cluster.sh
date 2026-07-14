@@ -17,6 +17,7 @@ PID_DIR="$BASE_DIR/pids"
 METAD_PORT=9559
 GRAPHD_PORT=9669
 STORAGED_PORTS=(9779 9780 9781)
+GCN_PORT=9782
 
 check_service() {
     local name=$1
@@ -74,13 +75,19 @@ for i in 0 1 2; do
     check_service "StorageD-$i" "$PID_DIR/storaged$i.pid"
     check_port $port "StorageD-$i"
 done
+echo ""
+
+# Check GCN
+echo -e "${BLUE}GCN (Graph Compute Node)${NC}"
+check_service "GCN" "$PID_DIR/gcn.pid"
+check_port $GCN_PORT "GCN"
 
 echo ""
 echo -e "${BLUE}============================================${NC}"
 
 # Summary
 running=0
-total=5
+total=6
 
 check_service_silent() {
     local pid_file=$1
@@ -98,6 +105,7 @@ if check_service_silent "$PID_DIR/graphd.pid"; then ((running++)); fi
 if check_service_silent "$PID_DIR/storaged0.pid"; then ((running++)); fi
 if check_service_silent "$PID_DIR/storaged1.pid"; then ((running++)); fi
 if check_service_silent "$PID_DIR/storaged2.pid"; then ((running++)); fi
+if check_service_silent "$PID_DIR/gcn.pid"; then ((running++)); fi
 
 if [ $running -eq $total ]; then
     echo -e "${GREEN}All $total services are running${NC}"

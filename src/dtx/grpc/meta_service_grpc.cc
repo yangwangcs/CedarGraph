@@ -27,10 +27,49 @@ grpc::Status CheckAuth(grpc::ServerContext* context,
 grpc::StatusCode MapStatusToGrpcCode(const cedar::Status& status) {
     if (status.IsInvalidArgument()) return grpc::StatusCode::INVALID_ARGUMENT;
     if (status.IsNotFound()) return grpc::StatusCode::NOT_FOUND;
+    if (status.IsConflict()) return grpc::StatusCode::ABORTED;
+    if (status.IsNotLeader()) return grpc::StatusCode::FAILED_PRECONDITION;
     if (status.IsResourceExhausted()) return grpc::StatusCode::RESOURCE_EXHAUSTED;
+    if (status.IsUnavailable()) return grpc::StatusCode::UNAVAILABLE;
+    if (status.IsCancelled()) return grpc::StatusCode::CANCELLED;
     if (status.IsNotSupportedError()) return grpc::StatusCode::UNIMPLEMENTED;
     if (status.IsIOError()) return grpc::StatusCode::UNAVAILABLE;
     return grpc::StatusCode::INTERNAL;
+}
+
+cedar::meta::GcnLeaseStatusCode GcnStatusCodeFromStatus(
+    const cedar::Status& status) {
+  if (status.ok()) return cedar::meta::GCN_LEASE_STATUS_OK;
+  if (status.IsConflict()) return cedar::meta::GCN_LEASE_STATUS_STALE_INCARNATION;
+  if (status.IsNotFound()) return cedar::meta::GCN_LEASE_STATUS_NO_ELIGIBLE_GCN;
+  if (status.IsNotLeader()) return cedar::meta::GCN_LEASE_STATUS_NOT_LEADER;
+  if (status.IsInvalidArgument()) return cedar::meta::GCN_LEASE_STATUS_INVALID_ARGUMENT;
+  return cedar::meta::GCN_LEASE_STATUS_INTERNAL_ERROR;
+}
+
+std::string MakeGcnLeaseToken(const cedar::dtx::GcnLease& lease) {
+  return std::to_string(lease.gcn_id) + ":" +
+         std::to_string(lease.partition_id) + ":" +
+         std::to_string(lease.lease_epoch);
+}
+
+void FillGcnLeaseProto(const cedar::dtx::GcnLease& lease,
+                       cedar::meta::GcnPartitionLease* proto) {
+  proto->set_partition_id(lease.partition_id);
+  proto->set_gcn_id(lease.gcn_id);
+  proto->set_lease_epoch(lease.lease_epoch);
+  proto->set_expires_at_ms(lease.expires_at_ms);
+  proto->set_lease_token(MakeGcnLeaseToken(lease));
+}
+
+void FillGcnRouteProto(const cedar::dtx::GcnRoute& route,
+                       cedar::meta::GcnRoute* proto) {
+  proto->set_partition_id(route.partition_id);
+  proto->set_gcn_id(route.gcn_id);
+  proto->set_endpoint(route.endpoint);
+  proto->set_lease_epoch(route.lease_epoch);
+  proto->set_applied_version(route.applied_version);
+  proto->set_expires_at_ms(route.expires_at_ms);
 }
 
  cedar::dtx::PartitionAssignment PartitionAssignmentFromProto(
@@ -660,6 +699,138 @@ grpc::Status MetaServiceGrpcImpl::GcnHeartbeat(grpc::ServerContext* context,
     }
     location_table_.Heartbeat(windows);
     response->set_success(true);
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::RegisterGcn(
+    grpc::ServerContext* context,
+    const cedar::meta::RegisterGcnRequest* request,
+    cedar::meta::RegisterGcnResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (!meta_service_) {
+        response->set_success(false);
+        response->set_error_msg("Meta service is not available");
+        response->set_status_code(cedar::meta::GCN_LEASE_STATUS_INTERNAL_ERROR);
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, response->error_msg());
+    }
+    if (!meta_service_->IsLeader()) {
+        response->set_success(false);
+        response->set_error_msg("Not a leader");
+        response->set_status_code(cedar::meta::GCN_LEASE_STATUS_NOT_LEADER);
+        auto leader = meta_service_->GetLeaderAddress();
+        if (!leader.empty()) response->set_leader_address(leader);
+        return grpc::Status::OK;
+    }
+    GcnRegistration registration;
+    registration.gcn_id = request->gcn_id();
+    registration.endpoint = request->endpoint();
+    registration.incarnation = request->incarnation();
+    registration.last_heartbeat_ms = request->last_heartbeat_ms();
+    auto status = meta_service_->RegisterGcn(registration);
+    response->set_success(status.ok());
+    response->set_status_code(GcnStatusCodeFromStatus(status));
+    if (!status.ok()) {
+        response->set_error_msg(status.ToString());
+        return grpc::Status(MapStatusToGrpcCode(status), status.ToString());
+    }
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::RenewGcnLeases(
+    grpc::ServerContext* context,
+    const cedar::meta::RenewGcnLeasesRequest* request,
+    cedar::meta::RenewGcnLeasesResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kWrite); !st.ok()) return st;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (!meta_service_) {
+        response->set_success(false);
+        response->set_error_msg("Meta service is not available");
+        response->set_status_code(cedar::meta::GCN_LEASE_STATUS_INTERNAL_ERROR);
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, response->error_msg());
+    }
+    if (!meta_service_->IsLeader()) {
+        response->set_success(false);
+        response->set_error_msg("Not a leader");
+        response->set_status_code(cedar::meta::GCN_LEASE_STATUS_NOT_LEADER);
+        auto leader = meta_service_->GetLeaderAddress();
+        if (!leader.empty()) response->set_leader_address(leader);
+        return grpc::Status::OK;
+    }
+    std::vector<GcnPartitionProgress> progress;
+    progress.reserve(request->progress_size());
+    for (const auto& item : request->progress()) {
+        progress.push_back(GcnPartitionProgress{
+            item.partition_id(),
+            item.partition_epoch(),
+            item.applied_offset(),
+            item.applied_version(),
+            item.query_ready(),
+        });
+    }
+    auto leases = meta_service_->RenewGcnLeases(
+        request->gcn_id(), request->incarnation(), progress);
+    if (!leases.ok()) {
+        response->set_success(false);
+        response->set_status_code(GcnStatusCodeFromStatus(leases.status()));
+        response->set_error_msg(leases.status().ToString());
+        return grpc::Status(MapStatusToGrpcCode(leases.status()),
+                            leases.status().ToString());
+    }
+    for (const auto& item : progress) {
+        bool matched = false;
+        for (const auto& lease : leases.ValueOrDie()) {
+            if (lease.partition_id == item.partition_id) {
+                matched = true;
+                if (lease.lease_epoch != item.partition_epoch) {
+                    response->set_success(false);
+                    response->set_status_code(cedar::meta::GCN_LEASE_STATUS_STALE_LEASE);
+                    response->set_error_msg("stale GCN lease epoch");
+                    return grpc::Status(grpc::StatusCode::ABORTED,
+                                        response->error_msg());
+                }
+                break;
+            }
+        }
+        if (!matched) {
+            response->set_success(false);
+            response->set_status_code(cedar::meta::GCN_LEASE_STATUS_STALE_LEASE);
+            response->set_error_msg("progress reported for unowned GCN partition");
+            return grpc::Status(grpc::StatusCode::ABORTED,
+                                response->error_msg());
+        }
+    }
+    response->set_success(true);
+    response->set_status_code(cedar::meta::GCN_LEASE_STATUS_OK);
+    for (const auto& lease : leases.ValueOrDie()) {
+        FillGcnLeaseProto(lease, response->add_leases());
+    }
+    return grpc::Status::OK;
+}
+
+grpc::Status MetaServiceGrpcImpl::LocateGcn(
+    grpc::ServerContext* context,
+    const cedar::meta::LocateGcnRequest* request,
+    cedar::meta::LocateGcnResponse* response) {
+    if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead); !st.ok()) return st;
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    if (!meta_service_) {
+        response->set_success(false);
+        response->set_error_msg("Meta service is not available");
+        response->set_status_code(cedar::meta::GCN_LEASE_STATUS_INTERNAL_ERROR);
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, response->error_msg());
+    }
+    auto route = meta_service_->LocateGcn(
+        request->partition_id(), request->required_version());
+    response->set_success(route.ok());
+    response->set_status_code(route.ok() ? cedar::meta::GCN_LEASE_STATUS_OK
+                                         : GcnStatusCodeFromStatus(route.status()));
+    if (!route.ok()) {
+        response->set_error_msg(route.status().ToString());
+        return grpc::Status(MapStatusToGrpcCode(route.status()),
+                            route.status().ToString());
+    }
+    FillGcnRouteProto(route.ValueOrDie(), response->mutable_route());
     return grpc::Status::OK;
 }
 

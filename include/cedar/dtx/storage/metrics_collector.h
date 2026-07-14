@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "cedar/core/status.h"
+#include "cedar/cdc/partition_change_log.h"
 #include "cedar/dtx/types.h"
 
 namespace cedar {
@@ -266,6 +267,16 @@ class MetricsRegistry {
 
 class MetricsCollector {
  public:
+  struct CdcPartitionMetrics {
+    cedar::cdc::ChangeLogState state;
+    double append_latency_seconds = 0.0;
+    double fetch_latency_seconds = 0.0;
+    bool has_append_latency = false;
+    bool has_fetch_latency = false;
+    uint64_t stale_epoch_total = 0;
+    uint64_t checksum_failures_total = 0;
+  };
+
   struct Config {
     std::chrono::milliseconds collection_interval{60000};  // 1 minute
     std::string endpoint = ":9090";  // Prometheus scrape endpoint
@@ -290,6 +301,10 @@ class MetricsCollector {
   
   // Get node metrics
   StorageNodeMetrics* GetNodeMetrics(PartitionID pid);
+
+  // Record per-partition CDC watermarks, segment stats, latencies, and errors.
+  void RecordCdcPartitionMetrics(PartitionID pid,
+                                 const CdcPartitionMetrics& metrics);
 
  private:
   void CollectionLoop();

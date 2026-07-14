@@ -62,6 +62,8 @@ enum class RaftCommandType : uint8_t {
   kUpdateAssignment = 5,
   kBatch = 6,  // Multiple commands in one log entry
   kUpdateNodeStatus = 7,
+  kRegisterGcn = 8,
+  kRenewGcnLeases = 9,
 };
 
 // Serialized Raft command

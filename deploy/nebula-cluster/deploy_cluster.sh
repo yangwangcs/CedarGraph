@@ -8,6 +8,7 @@
 #   - MetaD: 1 node @ 127.0.0.1:9559 (metadata service)
 #   - GraphD: 1 node @ 127.0.0.1:9669 (query service)
 #   - StorageD: 3 nodes @ 127.0.0.1:9779-9781 (storage service)
+#   - GCN: 1 node @ 127.0.0.1:9782 (compute cache + CDC consumer)
 #
 
 set -e
@@ -29,6 +30,7 @@ PID_DIR="$BASE_DIR/pids"
 METAD_PORT=9559
 GRAPHD_PORT=9669
 STORAGED_PORTS=(9779 9780 9781)
+GCN_PORT=9782
 
 # Build directory
 BUILD_DIR="${BUILD_DIR:-$(pwd)/build}"
@@ -42,7 +44,8 @@ echo ""
 cleanup() {
     echo -e "${YELLOW}Cleaning up existing cluster...${NC}"
     pkill -f "metad.*--port $METAD_PORT" 2>/dev/null || true
-    pkill -f "cedar-queryd.*$GRAPHD_PORT" 2>/dev/null || true
+    pkill -f "cedar-graphd.*--port $GRAPHD_PORT" 2>/dev/null || true
+    pkill -f "graphcomputenode.*--gcn_port $GCN_PORT" 2>/dev/null || true
     pkill -f "storaged.*--node_id" 2>/dev/null || true
     sleep 2
     rm -rf "$BASE_DIR"
@@ -56,15 +59,21 @@ check_executables() {
         exit 1
     fi
     
-    if [ ! -f "$BUILD_DIR/cedar-queryd" ]; then
-        echo -e "${RED}Error: cedar-queryd not found at $BUILD_DIR/cedar-queryd${NC}"
-        echo "Please build with: cd build && make cedar-queryd"
+    if [ ! -f "$BUILD_DIR/cedar-graphd" ]; then
+        echo -e "${RED}Error: cedar-graphd not found at $BUILD_DIR/cedar-graphd${NC}"
+        echo "Please build with: cd build && make graphd"
         exit 1
     fi
     
     if [ ! -f "$BUILD_DIR/storaged" ]; then
         echo -e "${RED}Error: storaged not found at $BUILD_DIR/storaged${NC}"
         echo "Please build with: cd build && make storaged"
+        exit 1
+    fi
+
+    if [ ! -f "$BUILD_DIR/graphcomputenode" ]; then
+        echo -e "${RED}Error: graphcomputenode not found at $BUILD_DIR/graphcomputenode${NC}"
+        echo "Please build with: cd build && make graphcomputenode"
         exit 1
     fi
     
@@ -80,8 +89,43 @@ setup_dirs() {
     for i in 0 1 2; do
         mkdir -p "$DATA_DIR/storaged$i"
     done
+    mkdir -p "$DATA_DIR/gcn/checkpoints"
     mkdir -p "$PID_DIR"
     echo -e "${GREEN}✓ Directories created${NC}"
+}
+
+# Start GCN node
+start_gcn() {
+    echo -e "${YELLOW}Starting GCN (Graph Compute Node)...${NC}"
+
+    local log_file="$LOG_DIR/gcn.log"
+    local pid_file="$PID_DIR/gcn.pid"
+    local storage_endpoints="127.0.0.1:${STORAGED_PORTS[0]},127.0.0.1:${STORAGED_PORTS[1]},127.0.0.1:${STORAGED_PORTS[2]}"
+
+    CEDAR_GRPC_ALLOW_INSECURE=1 "$BUILD_DIR/graphcomputenode" \
+        --gcn_bind_address "127.0.0.1" \
+        --gcn_port "$GCN_PORT" \
+        --gcn_coordinator "127.0.0.1:$METAD_PORT" \
+        --gcn_checkpoint_dir "$DATA_DIR/gcn/checkpoints" \
+        --gcn_use_metad_leases=true \
+        --gcn_node_id 1 \
+        --gcn_incarnation "$(date +%s%3N)" \
+        --gcn_advertised_endpoint "127.0.0.1:$GCN_PORT" \
+        --gcn_partition_ids "0,1,2" \
+        --gcn_storage_endpoints "$storage_endpoints" \
+        > "$log_file" 2>&1 &
+
+    local pid=$!
+    echo $pid > "$pid_file"
+
+    sleep 2
+
+    if kill -0 $pid 2>/dev/null; then
+        echo -e "${GREEN}✓ GCN started on port $GCN_PORT (PID: $pid)${NC}"
+    else
+        echo -e "${RED}✗ GCN failed to start. Check log: $log_file${NC}"
+        exit 1
+    fi
 }
 
 # Start MetaD
@@ -117,9 +161,11 @@ start_graphd() {
     local log_file="$LOG_DIR/graphd.log"
     local pid_file="$PID_DIR/graphd.pid"
     
-    "$BUILD_DIR/cedar-queryd" \
-        --listen="127.0.0.1:$GRAPHD_PORT" \
-        --meta="127.0.0.1:$METAD_PORT" \
+    CEDAR_GRPC_ALLOW_INSECURE=1 \
+    "$BUILD_DIR/cedar-graphd" \
+        --bind "127.0.0.1" \
+        --port "$GRAPHD_PORT" \
+        --meta "127.0.0.1:$METAD_PORT" \
         > "$log_file" 2>&1 &
     
     local pid=$!
@@ -191,6 +237,11 @@ print_status() {
         echo "    Log: $LOG_DIR/storaged$i.log"
     done
     echo ""
+    echo -e "${GREEN}GCN (Graph Compute Node)${NC}"
+    echo "  Address: 127.0.0.1:$GCN_PORT"
+    echo "  PID: $(cat $PID_DIR/gcn.pid 2>/dev/null || echo 'N/A')"
+    echo "  Log: $LOG_DIR/gcn.log"
+    echo ""
     echo -e "${BLUE}============================================${NC}"
     echo -e "${GREEN}All services started successfully!${NC}"
     echo -e "${BLUE}============================================${NC}"
@@ -223,6 +274,7 @@ main() {
     start_metad
     start_graphd
     start_storaged
+    start_gcn
     
     # Print status
     print_status

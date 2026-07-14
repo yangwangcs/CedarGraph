@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <string>
 
 #include "cedar/gcn/query_dispatcher.h"
 #include "cedar/gcn/scatter_gather_router.h"
@@ -61,6 +62,13 @@ class GcnServiceImpl final : public GcnService::Service {
   // Enqueue a CDC event to be streamed to connected clients.
   void EnqueueEvent(const CDCEvent& event);
 
+  void SetPartitionProgress(uint32_t partition_id,
+                            uint64_t partition_epoch,
+                            uint64_t applied_version,
+                            bool query_ready);
+  void SetNodeReadiness(bool ready, std::string reason);
+  uint64_t MinimumActiveQueryVersion() const;
+
   // Graph traversal from a root entity
   grpc::Status Traverse(grpc::ServerContext* context,
                         const TraversalRequest* request,
@@ -81,6 +89,10 @@ class GcnServiceImpl final : public GcnService::Service {
       grpc::ServerContext* context,
       grpc::ServerReaderWriter<CDCEvent, Ack>* stream) override;
 
+  grpc::Status GetHealth(grpc::ServerContext* context,
+                         const HealthRequest* request,
+                         HealthResponse* response) override;
+
  private:
   std::function<void(const cedar::gcn::CDCEvent&)> on_event_callback_;
   std::unique_ptr<QueryDispatcher> dispatcher_;
@@ -89,6 +101,9 @@ class GcnServiceImpl final : public GcnService::Service {
   std::mutex queue_mutex_;
   std::condition_variable queue_cv_;
   bool stream_closed_ = false;
+  mutable std::mutex readiness_mutex_;
+  bool ready_ = false;
+  std::string readiness_reason_ = "Dispatcher not available";
 };
 
 }  // namespace gcn

@@ -19,6 +19,8 @@
 #include "cedar/gcn/gcn_service.h"
 #include "cedar/dtx/security.h"
 
+#include <limits>
+
 namespace {
 grpc::Status CheckAuth(grpc::ServerContext* context,
                        cedar::dtx::security::Permission perm) {
@@ -35,6 +37,11 @@ grpc::Status CheckAuth(grpc::ServerContext* context,
     return grpc::Status(grpc::StatusCode::PERMISSION_DENIED, st.ToString());
   }
   return grpc::Status::OK;
+}
+
+bool CanRouteTraversalMiss(const cedar::gcn::TraversalResponse& response) {
+  return response.cache_status() == cedar::gcn::CACHE_STATUS_UNSPECIFIED ||
+         response.cache_status() == cedar::gcn::CACHE_STATUS_MISS;
 }
 }  // namespace
 
@@ -82,6 +89,29 @@ void GcnServiceImpl::EnqueueEvent(const CDCEvent& event) {
   queue_cv_.notify_one();
 }
 
+void GcnServiceImpl::SetPartitionProgress(uint32_t partition_id,
+                                          uint64_t partition_epoch,
+                                          uint64_t applied_version,
+                                          bool query_ready) {
+  if (dispatcher_) {
+    dispatcher_->SetPartitionProgress(partition_id, partition_epoch,
+                                      applied_version, query_ready);
+  }
+}
+
+void GcnServiceImpl::SetNodeReadiness(bool ready, std::string reason) {
+  std::lock_guard<std::mutex> lock(readiness_mutex_);
+  ready_ = ready;
+  readiness_reason_ = std::move(reason);
+}
+
+uint64_t GcnServiceImpl::MinimumActiveQueryVersion() const {
+  if (!dispatcher_) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return dispatcher_->MinimumActiveQueryVersion();
+}
+
 grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* context,
                                       const TraversalRequest* request,
                                       TraversalResponse* response) {
@@ -90,7 +120,7 @@ grpc::Status GcnServiceImpl::Traverse(grpc::ServerContext* context,
   if (dispatcher_) {
     auto status = dispatcher_->DispatchTraversal(*request, response);
     // On local miss, try distributed routing via ScatterGatherRouter
-    if (!response->success() && router_) {
+    if (!response->success() && router_ && CanRouteTraversalMiss(*response)) {
       *response = router_->ScatterTraversalByEntity(*request);
     }
     return status;
@@ -174,6 +204,23 @@ grpc::Status GcnServiceImpl::OnEventStream(
     }
   }
 
+  return grpc::Status::OK;
+}
+
+grpc::Status GcnServiceImpl::GetHealth(grpc::ServerContext* context,
+                                       const HealthRequest* request,
+                                       HealthResponse* response) {
+  (void)request;
+  if (auto st = CheckAuth(context, cedar::dtx::security::Permission::kRead);
+      !st.ok()) {
+    return st;
+  }
+  if (context->IsCancelled()) return grpc::Status::CANCELLED;
+
+  std::lock_guard<std::mutex> lock(readiness_mutex_);
+  response->Clear();
+  response->set_ready(ready_);
+  response->set_reason(readiness_reason_);
   return grpc::Status::OK;
 }
 

@@ -110,6 +110,7 @@ void StoragePartitionManager::Shutdown() {
   
   // Clear all logical partition views
   partitions_.clear();
+  change_logs_.clear();
   
   // Close backend
   if (backend_) {
@@ -153,6 +154,30 @@ Status StoragePartitionManager::AddPartition(PartitionID pid) {
   // No physical directory created, partition_id is encoded in keys
   CedarGraphStorage* shared = shared_storage_ ? shared_storage_.get() : nullptr;
   auto storage = std::make_unique<PartitionStorage>(pid, shared, this, backend_.get());
+  if (config_.enable_cdc) {
+    cedar::cdc::PartitionChangeLog::Options cdc_options;
+    const std::string cdc_root = config_.cdc_directory.empty()
+                                     ? (config_.data_root + "/cdc")
+                                     : config_.cdc_directory;
+    cdc_options.directory = cdc_root + "/partition_" + std::to_string(pid);
+    cdc_options.partition_id = pid;
+    cdc_options.partition_epoch = config_.partition_epoch;
+    auto log = cedar::cdc::PartitionChangeLog::Open(cdc_options);
+    if (!log.ok()) {
+      return Status::IOError("Failed to open CDC change log for partition " +
+                             std::to_string(pid) + ": " +
+                             log.status().ToString());
+    }
+    auto owned_log = std::move(log.ValueOrDie());
+    storage->SetChangeLog(owned_log.get());
+    change_logs_[pid] = std::move(owned_log);
+    auto intent_status = storage->RecoverCdcIntents();
+    if (!intent_status.ok()) {
+      return Status::IOError("Failed to recover CDC intents for partition " +
+                             std::to_string(pid) + ": " +
+                             intent_status.ToString());
+    }
+  }
   
   // Recover any prepared transaction state from WAL
   auto recover_status = storage->RecoverFromWAL();
@@ -180,8 +205,19 @@ Status StoragePartitionManager::RemovePartition(PartitionID pid) {
   // 2. Or explicit DeleteRange for the partition's key space
   
   partitions_.erase(it);
+  change_logs_.erase(pid);
   
   return Status::OK();
+}
+
+cedar::cdc::PartitionChangeLog* StoragePartitionManager::GetChangeLog(
+    PartitionID pid) {
+  std::shared_lock<std::shared_mutex> lock(partitions_mutex_);
+  auto it = change_logs_.find(pid);
+  if (it == change_logs_.end()) {
+    return nullptr;
+  }
+  return it->second.get();
 }
 
 bool StoragePartitionManager::HasPartition(PartitionID pid) const {

@@ -117,6 +117,14 @@ add_executable(test_cedar_graph_storage storage/test_cedar_graph_storage.cc)
 target_link_libraries(test_cedar_graph_storage ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_cedar_graph_storage)
 
+add_executable(test_change_record storage/test_change_record.cc)
+target_link_libraries(test_change_record ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_change_record)
+
+add_executable(test_change_log storage/test_change_log.cc)
+target_link_libraries(test_change_log ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_change_log)
+
 add_executable(test_edge_atomicity storage/test_edge_atomicity.cc)
 target_link_libraries(test_edge_atomicity ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_edge_atomicity)
@@ -251,6 +259,14 @@ add_test(NAME test_2pc_recovery COMMAND test_2pc_recovery)
 add_executable(test_meta_service dtx/unit/test_meta_service.cc)
 target_link_libraries(test_meta_service ${CEDAR_TEST_LIBS})
 gtest_discover_tests(test_meta_service)
+
+add_executable(test_meta_gcn_lease dtx/test_meta_gcn_lease.cc)
+target_link_libraries(test_meta_gcn_lease ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_meta_gcn_lease)
+
+add_executable(test_meta_gcn_rpc dtx/test_meta_gcn_rpc.cc)
+target_link_libraries(test_meta_gcn_rpc ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_meta_gcn_rpc)
 
 add_executable(test_meta_service_grpc_client dtx/unit/test_meta_service_grpc_client.cc)
 target_link_libraries(test_meta_service_grpc_client ${CEDAR_TEST_LIBS})
@@ -402,6 +418,18 @@ gtest_discover_tests(test_distinct_no_collision)
 add_executable(test_storage_service_impl dtx/test_storage_service_impl.cc)
 target_link_libraries(test_storage_service_impl ${CEDAR_TEST_LIBS} cedar_queryd)
 gtest_discover_tests(test_storage_service_impl)
+
+add_executable(test_storage_cdc_commit dtx/test_storage_cdc_commit.cc)
+target_link_libraries(test_storage_cdc_commit ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_cdc_commit)
+
+add_executable(test_storage_cdc_rpc dtx/test_storage_cdc_rpc.cc)
+target_link_libraries(test_storage_cdc_rpc ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_storage_cdc_rpc)
+
+add_executable(test_change_log_maintenance storage/test_change_log_maintenance.cc)
+target_link_libraries(test_change_log_maintenance ${CEDAR_TEST_LIBS})
+gtest_discover_tests(test_change_log_maintenance)
 
 # Storage Service auth tests (P0-5)
 add_executable(test_storage_service_auth dtx/test_storage_service_auth.cc)
@@ -793,10 +821,34 @@ add_executable(test_tmv_engine_safety gcn/test_tmv_engine_safety.cc)
 target_link_libraries(test_tmv_engine_safety cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_tmv_engine_safety)
 
+add_executable(test_tmv_snapshot_recovery gcn/test_tmv_snapshot_recovery.cc)
+target_link_libraries(test_tmv_snapshot_recovery cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_tmv_snapshot_recovery)
+
 add_executable(test_gcn_service gcn/test_gcn_service.cc)
 target_link_libraries(test_gcn_service cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_gcn_service PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_gcn_service)
+
+add_executable(test_gcn_checkpoint gcn/test_gcn_checkpoint.cc)
+target_link_libraries(test_gcn_checkpoint cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_checkpoint)
+
+add_executable(test_storage_cdc_client gcn/test_storage_cdc_client.cc)
+target_link_libraries(test_storage_cdc_client cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_storage_cdc_client)
+
+add_executable(test_gcn_cdc_consumer gcn/test_gcn_cdc_consumer.cc)
+target_link_libraries(test_gcn_cdc_consumer cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_cdc_consumer)
+
+add_executable(test_gcn_lease_lifecycle gcn/test_gcn_lease_lifecycle.cc)
+target_link_libraries(test_gcn_lease_lifecycle cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_lease_lifecycle)
+
+add_executable(test_gcn_node_cdc gcn/test_gcn_node_cdc.cc)
+target_link_libraries(test_gcn_node_cdc cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_node_cdc)
 
 add_executable(test_adaptive_execution queryd/test_adaptive_execution.cc)
 target_link_libraries(test_adaptive_execution ${CEDAR_TEST_LIBS} cedar_queryd)
@@ -824,6 +876,10 @@ target_link_directories(test_query_dispatcher PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_query_dispatcher cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_query_dispatcher)
 
+add_executable(test_gcn_version_gate gcn/test_gcn_version_gate.cc)
+target_link_libraries(test_gcn_version_gate cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_version_gate)
+
 add_executable(test_coordinator_client gcn/test_coordinator_client.cc)
 target_link_directories(test_coordinator_client PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_coordinator_client cedar_gcn ${GTEST_MAIN_TARGET})
@@ -849,6 +905,11 @@ target_link_directories(test_event_applier PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_event_applier cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_event_applier)
 
+add_executable(test_event_applier_offsets gcn/test_event_applier_offsets.cc)
+target_link_directories(test_event_applier_offsets PRIVATE /opt/homebrew/lib)
+target_link_libraries(test_event_applier_offsets cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_event_applier_offsets)
+
 add_executable(event_applier_backpressure_test gcn/event_applier_backpressure_test.cc)
 target_link_directories(event_applier_backpressure_test PRIVATE /opt/homebrew/lib)
 target_link_libraries(event_applier_backpressure_test cedar_gcn ${GTEST_MAIN_TARGET})
@@ -863,6 +924,10 @@ add_executable(test_watermark_gc gcn/test_watermark_gc.cc)
 target_link_directories(test_watermark_gc PRIVATE /opt/homebrew/lib)
 target_link_libraries(test_watermark_gc cedar_gcn ${GTEST_MAIN_TARGET})
 gtest_discover_tests(test_watermark_gc)
+
+add_executable(test_gcn_watermark_safety gcn/test_gcn_watermark_safety.cc)
+target_link_libraries(test_gcn_watermark_safety cedar_gcn ${GTEST_MAIN_TARGET})
+gtest_discover_tests(test_gcn_watermark_safety)
 
 add_executable(test_gcn_event_stream gcn/test_gcn_event_stream.cc)
 target_link_libraries(test_gcn_event_stream cedar_gcn ${GTEST_MAIN_TARGET})
@@ -896,22 +961,35 @@ gtest_discover_tests(test_storage_backfill)
 add_executable(test_graph_service_router
     service/test_graph_service_router.cc
     ../src/service/graph_service_router.cc
+    ../src/service/gcn_route_cache.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
 )
-target_link_libraries(test_graph_service_router cedar_cypher ${GTEST_MAIN_TARGET})
+target_link_libraries(test_graph_service_router cedar_cypher cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_graph_service_router PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_graph_service_router)
+
+add_executable(test_graphd_gcn_routing
+    service/test_graphd_gcn_routing.cc
+    ../src/service/graph_service_router.cc
+    ../src/service/gcn_route_cache.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
+    ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
+)
+target_link_libraries(test_graphd_gcn_routing cedar_cypher cedar_gcn ${GTEST_MAIN_TARGET})
+target_link_directories(test_graphd_gcn_routing PRIVATE /opt/homebrew/lib)
+gtest_discover_tests(test_graphd_gcn_routing)
 
 add_executable(test_graph_service_router_auth
     service/test_graph_service_router_auth.cc
     ../src/service/graph_service_router.cc
+    ../src/service/gcn_route_cache.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/query_service.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/query_service.grpc.pb.cc
 )
-target_link_libraries(test_graph_service_router_auth cedar_cypher ${GTEST_MAIN_TARGET})
+target_link_libraries(test_graph_service_router_auth cedar_cypher cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_graph_service_router_auth PRIVATE /opt/homebrew/lib)
 gtest_discover_tests(test_graph_service_router_auth)
 
@@ -927,11 +1005,12 @@ gtest_discover_tests(test_migration_pipeline)
 add_executable(test_service_meta_critical
     service/test_service_meta_critical.cc
     ../src/service/graph_service_router.cc
+    ../src/service/gcn_route_cache.cc
     ../src/dtx/grpc/meta_service_grpc.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.pb.cc
     ${CMAKE_BINARY_DIR}/generated_proto/cedar_graph.grpc.pb.cc
 )
-target_link_libraries(test_service_meta_critical cedar_cypher ${GTEST_MAIN_TARGET})
+target_link_libraries(test_service_meta_critical cedar_cypher cedar_gcn ${GTEST_MAIN_TARGET})
 target_link_directories(test_service_meta_critical PRIVATE /opt/homebrew/lib)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(test_service_meta_critical PRIVATE -Wno-vla-cxx-extension)
